@@ -45285,9 +45285,9 @@ async function diracV202Dispatcher(req, res) {
 }
 
 function diracCentralVerifyBuildAttestationV230() {
-    const encoded = String(process.env.DIRAC_BACKEND_BUILD_ATTESTATION_V230 || '').trim();
-  const signature = String(process.env.DIRAC_BACKEND_BUILD_ATTESTATION_SIGNATURE_V230 || '').trim();
-  const publicKeyPem = String(process.env.DIRAC_BACKEND_ATTESTATION_PUBLIC_KEY_PEM || '').trim();
+    const diracAttestationBundleV230 = (() => { try { const raw = Buffer.from(String(process.env.DIRAC_BACKEND_ATTESTATION_BUNDLE_V230 || '').trim(), 'base64url').toString('utf8'); const parsed = JSON.parse(raw); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}; } catch (_) { return {}; } })();
+  const encoded = String(diracAttestationBundleV230.encoded || '').trim(), signature = String(diracAttestationBundleV230.signature || '').trim();
+  const publicKeyPem = String(diracAttestationBundleV230.public_key_pem || '').trim();
   if (!encoded || !signature || !publicKeyPem) return { ok: false, reason: 'build_attestation_missing' };
   let publicKey;
   try { publicKey = crypto.createPublicKey(publicKeyPem); } catch (_) { return { ok: false, reason: 'build_attestation_public_key_invalid' }; }
