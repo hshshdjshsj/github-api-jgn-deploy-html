@@ -45323,7 +45323,7 @@ function diracCentralVerifyBuildAttestationV230() {
   if (String(payload.attestation_type || '') !== 'dirac-backend-security-attestation-v230'
       || String(payload.attestation_key_sha256 || '') !== publicKeyFingerprint
       || String(payload.build_sha256 || '') !== actualHash
-      || String(payload.node_version || '') !== process.version
+      || String(payload.node_version || '').replace(/^v(\d+)\..*$/, '$1') !== String(process.versions.node || '').split('.')[0]
       || String(payload.owasp_profile || '') !== 'OWASP-TOP-10-2025-BACKEND'
       || String(payload.asvs_profile || '') !== 'OWASP-ASVS-5.0-L2-BACKEND'
       || payload.owasp_backend_gate !== 'PASS'
