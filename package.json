@@ -1,0 +1,11 @@
+{
+  "name": "dirac-customer-security",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": "24.x"
+  },
+  "dependencies": {
+    "argon2": "0.45.1"
+  }
+}
