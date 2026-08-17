@@ -4340,14 +4340,14 @@ async function supabaseFetch(path, options = {}) {
   }
 
   const key = options.auth === 'service' ? target.serviceKey : target.anonKey;
-  const bearer = options.bearer || key;
-  if (!key || !bearer || Buffer.byteLength(String(key), 'utf8') < 20) {
+  const bearer = options.bearer || (/^sb_(?:secret|publishable)_/.test(String(key)) ? '' : key);
+  if (!key || Buffer.byteLength(String(key), 'utf8') < 20 || (options.bearer !== undefined && !bearer)) {
     return { ok: false, status: 503, data: { code: 'SUPABASE_KEY_INVALID' } };
   }
 
   const headers = {
     apikey: key,
-    Authorization: `Bearer ${bearer}`,
+    ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
     'Content-Type': 'application/json'
   };
 
