@@ -35,7 +35,7 @@ function diracS2SServerIdV250() {
 function diracRoleHostnameV250(role) {
   const clean = String(role || '').trim().toLowerCase();
   if (!DIRAC_UNIVERSAL_APP_ROLES_V250.has(clean)) throw new Error('DIRAC_TARGET_ROLE_INVALID');
-  return clean + '.' + diracBaseDomainV250();
+  return (clean === 'recovery' ? 'secure' : clean) + '.' + diracBaseDomainV250();
 }
 
 function diracRoleOriginV250(role) {
@@ -38866,8 +38866,7 @@ function diracCentralVercel2OnlyActionGuardV150(action) {
     'domain_login', 'domain_register', 'domain_logout', 'domain_me', 'domain_mfa_status',
     'dirac_mfa_passkey_start', 'dirac_mfa_passkey_verify', 'domain_mfa_passkey_start',
     'domain_mfa_passkey_verify', 'dirac_mfa_passkey_status', 'domain_mfa_passkey_status',
-    'dirac_passkey_status', 'domain_passkey_status', 'customer_session_handoff_issue',
-    'customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify'
+    'dirac_passkey_status', 'domain_passkey_status', 'customer_session_handoff_issue'
   ]);
   const dashboard = new Set([
     'domain_dashboard_me', 'dashboard', 'my_orders', 'customer_orders', 'pesanan_saya',
@@ -42737,7 +42736,7 @@ function diracRecoveryHpkeAssertS2SCallerBindingV226() {
   return true;
 }
 
-if (process.env.NODE_ENV === 'production' && diracAppRoleV250() === 'security') diracRecoveryHpkeAssertS2SCallerBindingV226();
+if (process.env.NODE_ENV === 'production') diracRecoveryHpkeAssertS2SCallerBindingV226();
 const DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159 = globalThis.__DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159__ || new Map();
 globalThis.__DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159__ = DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159;
 
