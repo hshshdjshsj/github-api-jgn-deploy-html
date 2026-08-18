@@ -994,7 +994,7 @@ function getLoginSecurityIp(req) {
   };
   const socketIp = normalizeIp(req && req.socket && req.socket.remoteAddress);
   const configuredMode = String(process.env.DIRAC_TRUSTED_PROXY_MODE || '').trim().toLowerCase();
-  const proxyMode = configuredMode || 'none';
+  const proxyMode = configuredMode || (String(process.env.VERCEL || '').trim() === '1' ? 'vercel' : 'none');
   if (proxyMode === 'vercel') {
     const vercelForwarded = normalizeIp(headers['x-vercel-forwarded-for']);
     return vercelForwarded || socketIp || 'unknown';
