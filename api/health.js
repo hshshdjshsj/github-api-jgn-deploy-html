@@ -43746,7 +43746,6 @@ async function diracS2SCheckRevocationLocalV206(serverId, keyVersion) {
   if (!envStatus.ok) return { ok: false, unavailable: true, reason: envStatus.reason || 'env_revocation_unavailable' };
   if (envStatus.revoked === true) return { ok: true, revoked: true, record: { source: 'environment', revoked: true } };
   const memory = DIRAC_S2S_REVOCATION_MEMORY_V206.get(key);
-  if (memory && memory.revoked === true) return { ok: true, revoked: true, record: memory };
   if (typeof readPersistentSecurityJsonStrictV194 !== 'function') return { ok: false, unavailable: true, reason: 'revocation_store_unavailable' };
   const lookup = await readPersistentSecurityJsonStrictV194(key);
   if (!lookup || lookup.ok !== true) return { ok: false, unavailable: true, reason: 'revocation_store_unavailable' };
@@ -43778,8 +43777,12 @@ async function diracS2SApplyRevocationV206(evidence) {
   };
   if (typeof writePersistentSecurityJsonRequiredV194 !== 'function') return false;
   const wrote = await writePersistentSecurityJsonRequiredV194(key, record, blockedUntilMs, Math.ceil(diracCentralBlockMsV146() / 1000));
-  if (wrote === true) DIRAC_S2S_REVOCATION_MEMORY_V206.set(key, record);
-  return wrote === true;
+  if (wrote !== true) return false;
+  const confirmed = await readPersistentSecurityJsonStrictV194(key);
+  const confirmedRecord = confirmed && confirmed.ok === true && confirmed.found && confirmed.record && typeof confirmed.record === 'object' ? confirmed.record : null;
+  const persisted = Boolean(confirmedRecord && confirmedRecord.revoked === true && String(confirmedRecord.evidence_hash || '') === String(record.evidence_hash || ''));
+  if (persisted) DIRAC_S2S_REVOCATION_MEMORY_V206.set(key, confirmedRecord);
+  return persisted;
 }
 
 function diracS2SEvidenceV206(ctx, verification, failureCode) {
@@ -43901,7 +43904,11 @@ async function diracS2SProcessSecurityReportV206(ctx) {
   const expectedEvidenceHash = crypto.createHash('sha512').update(diracS2SStableJsonV206(evidence), 'utf8').digest('hex');
   evidence.evidence_hash = suppliedEvidenceHash;
   if (!/^[a-f0-9]{128}$/.test(suppliedEvidenceHash) || !(typeof safeEqual === 'function' ? safeEqual(suppliedEvidenceHash, expectedEvidenceHash) : suppliedEvidenceHash === expectedEvidenceHash)) return { ok: false, reason: 'security_report_evidence_hash_invalid' };
-  if (diracS2SIdV206(evidence.reporter_server_id) !== reporterServerId || Number(evidence.attributed_valid_signature_count || 0) < 1) return { ok: false, reason: 'security_report_reporter_or_attribution_invalid' };
+  const failedSignatureIndexes = Array.isArray(evidence.failed_signature_indexes) ? evidence.failed_signature_indexes.map(Number) : [];
+  const attributedValidSignatureCount = Number(evidence.attributed_valid_signature_count || 0);
+  const uniqueFailedSignatureIndexes = new Set(failedSignatureIndexes);
+  if (String(evidence.failure_code || '') !== 's2s_seven_signature_invalid' || failedSignatureIndexes.length < 1 || uniqueFailedSignatureIndexes.size !== failedSignatureIndexes.length || failedSignatureIndexes.some((index) => !Number.isInteger(index) || index < 1 || index > 7) || !Number.isInteger(attributedValidSignatureCount) || attributedValidSignatureCount < 1 || attributedValidSignatureCount > 6 || attributedValidSignatureCount + failedSignatureIndexes.length !== 7) return { ok: false, reason: 'security_report_non_cryptographic_failure_rejected' };
+  if (diracS2SIdV206(evidence.reporter_server_id) !== reporterServerId || attributedValidSignatureCount < 1) return { ok: false, reason: 'security_report_reporter_or_attribution_invalid' };
   const incidentId = String(evidence.incident_id || '').trim();
   if (!/^[A-Za-z0-9_-]{16,180}$/.test(incidentId)) return { ok: false, reason: 'security_report_incident_id_invalid' };
   const incidentKey = 's2s-incident:' + incidentId;
