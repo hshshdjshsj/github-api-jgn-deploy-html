@@ -35,7 +35,7 @@ function diracS2SServerIdV250() {
 function diracRoleHostnameV250(role) {
   const clean = String(role || '').trim().toLowerCase();
   if (!DIRAC_UNIVERSAL_APP_ROLES_V250.has(clean)) throw new Error('DIRAC_TARGET_ROLE_INVALID');
-  return (clean === 'recovery' ? 'secure' : clean) + '.' + diracBaseDomainV250();
+  return clean + '.' + diracBaseDomainV250();
 }
 
 function diracRoleOriginV250(role) {
@@ -42736,7 +42736,7 @@ function diracRecoveryHpkeAssertS2SCallerBindingV226() {
   return true;
 }
 
-if (process.env.NODE_ENV === 'production' && diracAppRoleV250() === 'security') diracRecoveryHpkeAssertS2SCallerBindingV226();
+if (process.env.NODE_ENV === 'production') diracRecoveryHpkeAssertS2SCallerBindingV226();
 const DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159 = globalThis.__DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159__ || new Map();
 globalThis.__DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159__ = DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159;
 
