@@ -8933,9 +8933,9 @@ function customerSecurityLostPasskeyBindings(req, owner) {
   try { sessionHash = typeof diracCentralRequestSessionHashV146 === 'function' ? diracCentralRequestSessionHashV146(req) : ''; } catch (_) {}
   const deviceMaterial = [ip, ua, acceptLanguage, secChUa, origin, sessionHash].join('|');
   return {
-    emailBindingHash: customerSecurityLostPasskeyHashHex('email-binding', email),
-    customerBindingHash: customerSecurityLostPasskeyHashHex('customer-binding', customerId),
-    authUserBindingHash: customerSecurityLostPasskeyHashHex('auth-user-binding', authUserId),
+    emailBindingHash: crypto.createHmac('sha256', customerSecurityRecoveryWorkerSecret()).update('dirac-recovery-worker-binding-v228:email-binding\n').update(email).digest('hex'),
+    customerBindingHash: crypto.createHmac('sha256', customerSecurityRecoveryWorkerSecret()).update('dirac-recovery-worker-binding-v228:customer-binding\n').update(customerId).digest('hex'),
+    authUserBindingHash: crypto.createHmac('sha256', customerSecurityRecoveryWorkerSecret()).update('dirac-recovery-worker-binding-v228:auth-user-binding\n').update(authUserId).digest('hex'),
     deviceBindingHash: customerSecurityLostPasskeyHashHex('device-binding', deviceMaterial),
     sessionHash: customerSecurityLostPasskeyWorkerHash(sessionHash),
     ipHash: customerSecurityLostPasskeyHashHex('ip', ip),
