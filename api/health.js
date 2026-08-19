@@ -33720,7 +33720,7 @@ try {
       const now = Date.now();
       const keys = typeof diracV107BuildKeys === 'function' ? diracV107BuildKeys(req || {}) : [];
       const cleanKeys = keys.map((item) => String(item && item.key || '')).filter(Boolean).slice(0, 12);
-      const cacheKey = 'hard-ban:' + diracV145Hash(cleanKeys.join('|') || diracV145FallbackRequestKey(req));
+      const cacheKey = 'hard-ban:' + diracV145Hash(cleanKeys.filter((key) => !/^global-ban(?:-active)?:cookie:/.test(key)).join('|') || diracV145FallbackRequestKey(req));
       const cached = DIRAC_SECURITY_WRITE_CACHE_V145.get(cacheKey);
 
       if (cached && Number(cached.until || 0) > now && (!res || cached.cookieSet)) {
