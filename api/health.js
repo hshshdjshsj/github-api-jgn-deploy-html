@@ -38866,7 +38866,7 @@ function diracCentralVercel2OnlyActionGuardV150(action) {
     'domain_login', 'domain_register', 'domain_logout', 'domain_me', 'domain_mfa_status',
     'dirac_mfa_passkey_start', 'dirac_mfa_passkey_verify', 'domain_mfa_passkey_start',
     'domain_mfa_passkey_verify', 'dirac_mfa_passkey_status', 'domain_mfa_passkey_status',
-    'dirac_passkey_status', 'domain_passkey_status', 'customer_session_handoff_issue', 'customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify', 'security_report'
+    'dirac_passkey_status', 'domain_passkey_status', 'customer_session_handoff_issue', 'customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify', 'security_report', 'customer_security_recovery_hpke_submit'
   ]);
   const dashboard = new Set([
     'domain_dashboard_me', 'dashboard', 'my_orders', 'customer_orders', 'pesanan_saya',
@@ -38907,7 +38907,7 @@ function diracCentralVercel2OnlyActionGuardV150(action) {
   if (role === 'parfum' && parfum.has(clean)) return { ok: true };
   if (role === 'pesanan' && pesanan.has(clean)) return { ok: true };
   if (role === 'www' && www.has(clean)) return { ok: true };
-  if (role === 'recovery' && (clean === String(DIRAC_RECOVERY_WORKER_ACTION || '').toLowerCase() || /^customer_security_recovery_(?:hpke|worker)/.test(clean))) return { ok: true };
+  if (role === 'recovery' && clean !== 'customer_security_recovery_hpke_submit' && (clean === String(DIRAC_RECOVERY_WORKER_ACTION || '').toLowerCase() || /^customer_security_recovery_(?:hpke|worker)/.test(clean))) return { ok: true };
 
   return { ok: false, reason: 'action_not_owned_by_app_role:' + role };
 }
@@ -38927,7 +38927,7 @@ function diracCentralServer1RecoveryEnvPartitionGuardV190(action) {
   const role = diracAppRoleV250();
   const cleanAction = String(action || '').trim().toLowerCase();
   const recoveryWorkerAction = String(typeof DIRAC_RECOVERY_WORKER_ACTION !== 'undefined' ? DIRAC_RECOVERY_WORKER_ACTION : '').trim().toLowerCase();
-  const recoveryExecutionAction = cleanAction === recoveryWorkerAction || /^customer_security_recovery_(?:hpke|worker)/.test(cleanAction);
+  const recoveryExecutionAction = cleanAction !== 'customer_security_recovery_hpke_submit' && (cleanAction === recoveryWorkerAction || /^customer_security_recovery_(?:hpke|worker)/.test(cleanAction));
   const present = (name) => Boolean(String(process.env[name] || '').trim());
   const recoveryPrivateEnvPresent = diracUniversalRecoveryPrivateEnvNamesV250().some(present);
 
