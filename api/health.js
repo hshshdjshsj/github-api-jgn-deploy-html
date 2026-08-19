@@ -330,7 +330,7 @@ function setCors(req, res, options = {}) {
   );
   if (options.isDomainAction) {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    const exposedHeaders = ['X-Domain-Token-Refreshed', 'Retry-After'];
+    const exposedHeaders = ['X-Domain-Token-Refreshed', 'Retry-After', 'X-Dirac-Page-Nonce'];
     if (!shouldHideDomainAuthTokens()) {
       exposedHeaders.unshift('X-Domain-Access-Token', 'X-Domain-Refresh-Token');
     }
