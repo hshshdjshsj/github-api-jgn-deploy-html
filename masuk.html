@@ -1,62 +1,92 @@
 <!doctype html>
-<html lang="id" data-effective-theme="dark" data-motion="full" data-a2f-error-fix="debug-v223">
+<html lang="id" data-effective-theme="dark" data-motion="full" data-a2f-error-fix="debug-v225">
 <head>
-<meta id="dirac-csp-sha512-v1" http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'sha512-NGV9z+jcqyP2EdFQI/u0gsq++OugUTVdiC0qTNhI2YI/h+TGVMwfpA5Ue+f/n9kTjQ9CLUwcDUxsu0v4hH8/IQ==' 'sha512-wsWaH00Q8n4tfS4755zfveIw+qGpS4Q/Rj3mlheyB4Ce02LDxRwNzadWFW+UV9t0vX64lG/h4THBtmRPrGidUA==' 'sha512-tw/rCB11Sih/koLtKj6JWYuBRb2oP8Z+0vvkoSPUkD0P4roTKZmGqXHkERcyHqKyWZ0/nd8AAN3i/9MlKl448Q==' 'sha512-l+IwaNieZyBApwX5Xc+sObORx523xiWfRFXcwbUuqngFkupM/P/Ifzvd1AG0DBnKU6Yra+BanWbX4cT8YSw5CA==' 'sha512-+HDFH35scMEOLX9FXGHnz/vcM0bjWi7s8dAu1tAKgkhBJ20iEGzQPoybP1gUfq7yrw3vGMI7qgNlRv3oDMSVkg==' 'sha512-6jB+GpDxMtqSTdSXgPSBUd7YaqkznsUT6YlFHk1RWmh2MsEIpQJ04JMbW5SaslxcbsCkRhoLy8UpvzLyaPHfVg==' 'sha512-XDU/LNHLU3WtqUxtqLXGEbh0Ov38hgX5QpQCt+i7S7Y3LRX8bRZrRqQvQl6xz2zCnZFcOINAQqkZsDZ+PIlZTw==' 'sha512-QDX879FueZhVZFZFX0n+phLeIkVIh6cgiYTlC357I3UIKXrP2bS3YkjScfHWmHjZviTAW8uzAh8vDrfyu8UbFA==' 'sha512-kktS7corYjQTG2hRz67eL9AzMFzuQ912ucLi/JOven5YheK9er+e1Xz8Idqw4J599GSwyyBXEZo6KQBJm/FMqg==' 'sha512-K1MWkmjyvjUAWktjR1Q5YJvI2ZyGeBfURJFBF5wAceI0CeK0T+HQ5Rr04s/y0/ZdHpvTkNx8XYYQFzJpTVcsEw==' 'sha512-Du2fNyYTUN1Zltua+n3lH8on0RzFkBzDBRvrX9jR2bDU7aPAbr+uvB5QKdd0FRVrCRu9MwUUDErLr09AF3Y0Rw==' 'sha512-X+wuAqvrwZcEMYeVzKtMo7DXUOMYvBzUzcp5RptBWh9zFBdLDFXoGbZJhJh+w7XEh7iFgMhjsXH+O0IwcSYQOA==' 'sha512-RIoyd/4UOJBP5wt/xr1NnWbaU3waGSjH2bCdDxK0aoZ+Ih+eH9d0lOYeW3a0ulunxL2IRNIpPs+/I90lkg0lNQ==' 'sha512-WFRiqCpHMZbZ9wBEi7haPtnPXL8Pyb3RfYZIl8n0pSynj/ybtksCa8yRAXPTXNOzIcgm8fHUde8XPLrqfnfa5Q==' 'sha512-XNamYgaD3HnMI8rUQeOrCP/XcsNF6SL4730fXFAWltu+44LbVKb+fnHGlRGd2LAMJBaTGh42jlODxXFNsHiqLg==' 'sha512-xRmoON9Bx3/yoTwLlM0RW1lft8Q0Yy2Q2TL5w3Q/NeDc1IyTtvv+qluD96kSFe9IVCe66vwaQWGqToym0EIs+Q==' 'sha512-tRntzdc4iI2qT2vhmoC9QElgeFubVS/fFLn0VTXOaY6ZZt246hHICHJZrdX8nnYvEJtohfbu00uHD+buukr15w==' 'sha512-oXdo5a4+uGsnMTAxl6IML512gUkOnY5m4zhLYRNliGNXh/VsvwYXpky8KS0405dD/3AScaC+VVnm6nF9k7t45w==' 'sha512-MimukslXEckswvmeYDx53Tk/eK9bA8mHNvUngp4MBdeBCGPRmP6DYp2qRzoAdV8o0VpHzCn+PuOU66JEM57Pqg==' 'sha512-HogybZzshOq8hCqxp7t2NdF2ba9JrU9Qj+eywRFR9V6L5/KjJlZr1l/otFFTvYsvA4Rasx9s5dfuSkQUejS7sw==' 'sha512-eKewiKbPcpi4/YZ0CCxn2Hc+qp/EpCm/UWcDKQ73Vs4S/6889mjaJvtkLcfWKyDsFP8SDZBzsezAXfmlzmt1jA==' 'sha512-ZxqLPAw53DIdCGbHYDR7+YT6UFz82eebSVMjBkrJcD9QuR5BsOFp88oVVqa9HhsPhqF+znohhv8KLxsP6tIbLA==' 'sha512-SKB6OOF93AmzHOCT4rOuupCxccET8bKMZXDr+IztXF2ln9UWfARwe1WDxrop7TJ3j+yvg7lkkmSXF3SQnyUPAg==' 'sha512-R7TGx9lzJ8jwOcJvWKogRADoyPxTjsiykxYCqmfF6JhcAbYEQvHGDpJ9XrX+bbVncX3scvB5E7yGzRcaUNKJ0w==' 'sha512-+Urzj9Gkh75tipj752nFWbghs4EkVd0mVqR90V4g4OoFMx+uDL0smYGnJwxa4HzaJQO22/J91FSeDoOIlcHvhQ==' 'sha512-K0W4UxfxbDmVjMztFPPeRPkWHY7qxiw6VkS+pX/Q3FUCkyjzbE8torQegIQIlzcKUD4rFUZZoupv5RAyU2UxyA==' 'sha512-cgV2hTKL/UNuG6RAobAKVCOk7yRx5clk1bt/C0rwBnjFI/p74ijyVq80mztVlZ1emvdWdq6+8ThjGM23f5JwZA==' 'sha512-uAU/pHO8w/hvg9mvCtEIRimF1ZcGYkHOJeJYERehzuWWnvmYaz72GWW35wb3m+iacixN9R9plBXRMqVgAX2W/w==' 'sha512-2UCaz2I8HFzjxwr0EoNBWNCW7vbEMdv8AtWqNJY+P/52EJHcb94jtxMrZioP3YEfsUvko4p4U6mYvNvY6Mg9DQ==' 'sha512-z3pkhSB8FYXcG7J8rJx4xGrBsXcCM2sMJEV7FGPCaNPGpqRZ7BvVskAcdvlkeUOSaORwKpiGRhOgAlDPYqsroQ==' 'sha512-40hhVGP/j+MnwX5eSDnJclgCEX8J1dKHwBrtBGkWnhfhVNS+4NxO5Emn1XX/FBpIDTfJvlVzMEKW0dLPdaT7pA==' 'sha512-rwtia4MIqd4wtjMwMg/leen4GdxL0+fpw+RnQ6YE03RWKblklFd1gowaVoTP6kkQwNz3ErEogZVYgIBExFQifA==' 'sha512-TeImBWNPHmFEBfYoBHAGZYoqpWeByOWZ7304uRzyP6P+R9yb5xCnXThdpzOzSO/6g1xKcsnxQecTM1b2ZIgjAQ==' 'sha512-yiRrA5pT0hEfbajiB5M93YIyTaJm14/gADeAfCPUqGyMEr0cX8cybYGpNMC0Gwy01OdV0hwqPLnDhzxO2nLKvA==' 'sha512-m/WKbxf9y3veIC+WDqq0yYHcee08Xe9YPY2b9EXkOI8iRdg7F1Y+jTwLapb7veUXKPsoYMk0FMQEFtGnBYpyiw==' 'sha512-kFcLE95hcOZ1pHFKqcoZoCKoGCz9xSLNq5jx91+KYlgz5IgL8L1c40DEYAtmtBjKQLk3sgvCKaHH8vvwWoEYaQ==' 'sha512-7yF6fpL2TAEiGdDz/jNtyJOjx1U2btYfe74FPBs37fWczNeISkoGHydQgM4aVBMrqxTydg9Hp5BsPOthjQDyzA==' 'sha512-DFi737zRh4jYNSNCQXSPtn7nlatis4Qbz7eST63MDQtJllUwT1rPS/maYAN8APPTZNWxryh7kRUH/6fFlMbEug=='; script-src-elem 'self' 'sha512-NGV9z+jcqyP2EdFQI/u0gsq++OugUTVdiC0qTNhI2YI/h+TGVMwfpA5Ue+f/n9kTjQ9CLUwcDUxsu0v4hH8/IQ==' 'sha512-wsWaH00Q8n4tfS4755zfveIw+qGpS4Q/Rj3mlheyB4Ce02LDxRwNzadWFW+UV9t0vX64lG/h4THBtmRPrGidUA==' 'sha512-tw/rCB11Sih/koLtKj6JWYuBRb2oP8Z+0vvkoSPUkD0P4roTKZmGqXHkERcyHqKyWZ0/nd8AAN3i/9MlKl448Q==' 'sha512-l+IwaNieZyBApwX5Xc+sObORx523xiWfRFXcwbUuqngFkupM/P/Ifzvd1AG0DBnKU6Yra+BanWbX4cT8YSw5CA==' 'sha512-+HDFH35scMEOLX9FXGHnz/vcM0bjWi7s8dAu1tAKgkhBJ20iEGzQPoybP1gUfq7yrw3vGMI7qgNlRv3oDMSVkg==' 'sha512-6jB+GpDxMtqSTdSXgPSBUd7YaqkznsUT6YlFHk1RWmh2MsEIpQJ04JMbW5SaslxcbsCkRhoLy8UpvzLyaPHfVg==' 'sha512-XDU/LNHLU3WtqUxtqLXGEbh0Ov38hgX5QpQCt+i7S7Y3LRX8bRZrRqQvQl6xz2zCnZFcOINAQqkZsDZ+PIlZTw==' 'sha512-QDX879FueZhVZFZFX0n+phLeIkVIh6cgiYTlC357I3UIKXrP2bS3YkjScfHWmHjZviTAW8uzAh8vDrfyu8UbFA==' 'sha512-kktS7corYjQTG2hRz67eL9AzMFzuQ912ucLi/JOven5YheK9er+e1Xz8Idqw4J599GSwyyBXEZo6KQBJm/FMqg==' 'sha512-K1MWkmjyvjUAWktjR1Q5YJvI2ZyGeBfURJFBF5wAceI0CeK0T+HQ5Rr04s/y0/ZdHpvTkNx8XYYQFzJpTVcsEw==' 'sha512-Du2fNyYTUN1Zltua+n3lH8on0RzFkBzDBRvrX9jR2bDU7aPAbr+uvB5QKdd0FRVrCRu9MwUUDErLr09AF3Y0Rw==' 'sha512-X+wuAqvrwZcEMYeVzKtMo7DXUOMYvBzUzcp5RptBWh9zFBdLDFXoGbZJhJh+w7XEh7iFgMhjsXH+O0IwcSYQOA==' 'sha512-RIoyd/4UOJBP5wt/xr1NnWbaU3waGSjH2bCdDxK0aoZ+Ih+eH9d0lOYeW3a0ulunxL2IRNIpPs+/I90lkg0lNQ==' 'sha512-WFRiqCpHMZbZ9wBEi7haPtnPXL8Pyb3RfYZIl8n0pSynj/ybtksCa8yRAXPTXNOzIcgm8fHUde8XPLrqfnfa5Q==' 'sha512-XNamYgaD3HnMI8rUQeOrCP/XcsNF6SL4730fXFAWltu+44LbVKb+fnHGlRGd2LAMJBaTGh42jlODxXFNsHiqLg==' 'sha512-xRmoON9Bx3/yoTwLlM0RW1lft8Q0Yy2Q2TL5w3Q/NeDc1IyTtvv+qluD96kSFe9IVCe66vwaQWGqToym0EIs+Q==' 'sha512-tRntzdc4iI2qT2vhmoC9QElgeFubVS/fFLn0VTXOaY6ZZt246hHICHJZrdX8nnYvEJtohfbu00uHD+buukr15w==' 'sha512-oXdo5a4+uGsnMTAxl6IML512gUkOnY5m4zhLYRNliGNXh/VsvwYXpky8KS0405dD/3AScaC+VVnm6nF9k7t45w==' 'sha512-MimukslXEckswvmeYDx53Tk/eK9bA8mHNvUngp4MBdeBCGPRmP6DYp2qRzoAdV8o0VpHzCn+PuOU66JEM57Pqg==' 'sha512-HogybZzshOq8hCqxp7t2NdF2ba9JrU9Qj+eywRFR9V6L5/KjJlZr1l/otFFTvYsvA4Rasx9s5dfuSkQUejS7sw==' 'sha512-eKewiKbPcpi4/YZ0CCxn2Hc+qp/EpCm/UWcDKQ73Vs4S/6889mjaJvtkLcfWKyDsFP8SDZBzsezAXfmlzmt1jA==' 'sha512-ZxqLPAw53DIdCGbHYDR7+YT6UFz82eebSVMjBkrJcD9QuR5BsOFp88oVVqa9HhsPhqF+znohhv8KLxsP6tIbLA==' 'sha512-SKB6OOF93AmzHOCT4rOuupCxccET8bKMZXDr+IztXF2ln9UWfARwe1WDxrop7TJ3j+yvg7lkkmSXF3SQnyUPAg==' 'sha512-R7TGx9lzJ8jwOcJvWKogRADoyPxTjsiykxYCqmfF6JhcAbYEQvHGDpJ9XrX+bbVncX3scvB5E7yGzRcaUNKJ0w==' 'sha512-+Urzj9Gkh75tipj752nFWbghs4EkVd0mVqR90V4g4OoFMx+uDL0smYGnJwxa4HzaJQO22/J91FSeDoOIlcHvhQ==' 'sha512-K0W4UxfxbDmVjMztFPPeRPkWHY7qxiw6VkS+pX/Q3FUCkyjzbE8torQegIQIlzcKUD4rFUZZoupv5RAyU2UxyA==' 'sha512-cgV2hTKL/UNuG6RAobAKVCOk7yRx5clk1bt/C0rwBnjFI/p74ijyVq80mztVlZ1emvdWdq6+8ThjGM23f5JwZA==' 'sha512-uAU/pHO8w/hvg9mvCtEIRimF1ZcGYkHOJeJYERehzuWWnvmYaz72GWW35wb3m+iacixN9R9plBXRMqVgAX2W/w==' 'sha512-2UCaz2I8HFzjxwr0EoNBWNCW7vbEMdv8AtWqNJY+P/52EJHcb94jtxMrZioP3YEfsUvko4p4U6mYvNvY6Mg9DQ==' 'sha512-z3pkhSB8FYXcG7J8rJx4xGrBsXcCM2sMJEV7FGPCaNPGpqRZ7BvVskAcdvlkeUOSaORwKpiGRhOgAlDPYqsroQ==' 'sha512-40hhVGP/j+MnwX5eSDnJclgCEX8J1dKHwBrtBGkWnhfhVNS+4NxO5Emn1XX/FBpIDTfJvlVzMEKW0dLPdaT7pA==' 'sha512-rwtia4MIqd4wtjMwMg/leen4GdxL0+fpw+RnQ6YE03RWKblklFd1gowaVoTP6kkQwNz3ErEogZVYgIBExFQifA==' 'sha512-TeImBWNPHmFEBfYoBHAGZYoqpWeByOWZ7304uRzyP6P+R9yb5xCnXThdpzOzSO/6g1xKcsnxQecTM1b2ZIgjAQ==' 'sha512-yiRrA5pT0hEfbajiB5M93YIyTaJm14/gADeAfCPUqGyMEr0cX8cybYGpNMC0Gwy01OdV0hwqPLnDhzxO2nLKvA==' 'sha512-m/WKbxf9y3veIC+WDqq0yYHcee08Xe9YPY2b9EXkOI8iRdg7F1Y+jTwLapb7veUXKPsoYMk0FMQEFtGnBYpyiw==' 'sha512-kFcLE95hcOZ1pHFKqcoZoCKoGCz9xSLNq5jx91+KYlgz5IgL8L1c40DEYAtmtBjKQLk3sgvCKaHH8vvwWoEYaQ==' 'sha512-7yF6fpL2TAEiGdDz/jNtyJOjx1U2btYfe74FPBs37fWczNeISkoGHydQgM4aVBMrqxTydg9Hp5BsPOthjQDyzA==' 'sha512-DFi737zRh4jYNSNCQXSPtn7nlatis4Qbz7eST63MDQtJllUwT1rPS/maYAN8APPTZNWxryh7kRUH/6fFlMbEug=='; script-src-attr 'unsafe-hashes' 'sha512-ZZOXFnQLKr2DK9UXztKaZK8J0tNko3QjZ59ij1qq0LRliAwMQCezAuE8J+5ef6/tyNH3hZbil0j7xMumeQQFSA==' 'sha512-h4tRh/EP7lcPhgrQkcP7kdUh2nkUHvsJqQE6VGKoGHz1fwaDRYMYO2pcLfgCqVq5qg+3cWmzduqAJpwbhOR26A==' 'sha512-mGB6thUEkmh1ZUJxak/5zPgQO8Mkm57qWcZ4ygqJY6VBg8fkT6hIs5MH8NHzzSILwfdVoDgKLLScqUoY8duMkA=='; style-src 'self' https://fonts.googleapis.com 'sha512-swdahkaFC+CfFy4BGLM7GYIXXZJOhU08fmgQ7EcCUF4QpGYhgmQOEpwnUdaAwoNCy8KhCEmDj/kw1BbfSKav0Q==' 'sha512-823c9C/PnHMkuCjJIL6LKyRFd6J4swVkkejl/eRg7j/hcnKKSgBDtMsNHmilDNs3xtgPCDbSPvZGjqAW43duKQ==' 'sha512-pbgXhUzxSOZjYhQ7gsMNJmXnzo/I2CYytDfIZcKfJiVzVtWRnvhZUEQ/XHal2ZIDEks+dVI7G5ec8ARJxhyRcQ==' 'sha512-BABq/sceOY0hU5cpeQoFr3937SIsSqTK3bVJKjUTzW0LkREWyCJihqO17EWixuqQGFtYZq1UCK0mWZnWUltxjQ==' 'sha512-zn2TYoNoAdofGJnCeE4gc0/yUbe2boWA1cZt7AgaGK2o43YRWvKvgahvALPhvZe8MBj2tt0BZOvdDmcvyuqvrw==' 'sha512-NcdaVFaBI6sVfD0MOjkqoR8lRKBaFIX0ys49UW3x0nkNPww1NB2NHzGL4C1PUfEmeFk9bsEzOcXlEKQaPBB0dg==' 'sha512-I9Ro551Wa/Bym/Xps1OHHPgCGuU9/vgCfp4btZnfbyLWZrbIo+Nz8Tr6G0V4X80EOKZYqvE1aSSZUH78aWgA9g==' 'sha512-i3+b7SXO4eIvvrwFXjOilsTNEO4eAKgKAO+4hmohISmgwj18B5hxRmAtbu9YObHk4Ut/y1AFWZtD4PCv31quDw==' 'sha512-VSqguNf18JLezD2yalXuSkgAJetwc5gaZSL+4fJyImGF4zRNjRHojcEp1ywOml1k1qLnvMwwq3ZdmWScm+FWKg==' 'sha512-Izi41AzV5/hcVDWPn/UhPH9ktv6vubThYtpdjQjXJ0W9KHAgsEewlPQ2BTwlqAhyvCFZeX12YQzrglJadxJ4jw==' 'sha512-ttWMn6zpMrZ30LQ1ZaBZsJIzWcQGhoL21bw32RyqHfzv74dK3BgjoKcopg7bIqmEsMcMqcjMG+0JRXAaXOEUjA==' 'sha512-HEnsJdoeOXCq7boulcQJfkvMbq6TuFeyhYTyduT6yih9ZzQQFM0ZkVc3ksobks8cGo2MTvAKJ8N5dwNLBGT21A==' 'sha512-7hYFEBE95YyyBb8pdMSonOz/jLTmWPmJCSexKZ5ZVRpJR/HXImRHYPFAa5EX7znFwl/PQDyLHQRhdJXl3SOqmw==' 'sha512-tURKDo+/gT3/MVEXhmR3UawuEV0OQYtksyXn0blWxIBXZY1QJut0layv8UwxVlLoxMsdEOuvMAk1/fzQ5D0lbA==' 'sha512-xmCOPsN3gM73RvrlRK4XEE5quJzH0qXy3vClX8/z5XehwT+KDRZZ6wffjopAQuelP7Gf3G8K1zc92X60uE7LMA==' 'sha512-moELquslSKaKeM3tZ5K5KUHe3DiYiPAy+JqvAnfX4lsh4ynLyQJaPEW/FU8F72Mv8FiUv5tDMQn61hEBmW5qtg==' 'sha512-iIVONYnFVWNIkewDXE7DuHuDkXhkDrjq3dNEYWmDVvnSuDOTywUKy2ugAGqUY4xTkJZuwjbdyQTILvdtwMABOw==' 'sha512-YvX/PWbYeqUsx4BStLvSe9Y+PNSAv/tHAdYMdw7lKsNMyM/8Li+Zgawsc0X0pFjaMFgABF1rtMLAjlwis2Dx4g==' 'sha512-fBRrkb87Ge2WsjnMHE5dHw03MVBT+ZduvMqnxWhZtk3mM8qTapEGAUeYF3+yhGd0GoPBNOwvuBgU1DxQdSGauw==' 'sha512-o9M8vSuPaC9bCpOHkMpd3YIkoZ6f/FGE1LGUiMLlEAKcJZsLjzZuKstVKzVNvD6ue4EwmcRquVm8GJjySnR2gw==' 'sha512-qMtGN4iObNu7cBGBmE75Q+BOvsaW6hMH9e19kskk29Bv5Og/Ho27dibQV+opVjd6Jb2qY6nkddOdbU43VQvHVg==' 'sha512-vdMBTh0N8XDNVsTTyg1CYukRDB26+e9PnFj/k7czcnLtZkgCJEL5lNSuCSEVQVkEyEMiK/QcAfkQJLsRrVB3wA==' 'sha512-RsadMlJRN/EPeBfpKpFWdV5aN2lLleEm5TwlzJdng635jSVxRJ8iwDUxCFgBaqIbDj+cWdssfAN2jBa6pf8hDQ==' 'sha512-045BbG1+FadSb0XwTEP8tR8QZEkVtavYXb2HsA8DFIVJccz170aZNicoASdyykfaz3rPlhkWVmrft7nRhB9l+Q==' 'sha512-9T+dD5PGlxlmgi9doy/7dC240XnUnMBXfqwRPGFSOI62hv5ok4m8HOEQt3kQWYv7OxO6kbXknHeKCeRLWenCEA==' 'sha512-9+uM4NivHTWsPYM9liroto0T2tIJe9mWlgJ3rKX7EGX8vDF11ViDbXn83WGbulQXRpEBn8GhVm+bD6T+yI++Kg==' 'sha512-FtojSnQVtdjxL+j6c5vNr0NMz5WCcseBvuf2ar2cBggxyO5pLgGtchDVZtvP4OJ9W5pKqUKiimrSYTwWUIlvSA==' 'sha512-Rv7cctzwPU3tPQVDYyiOXt1JZ4Ap/3GjG9UbhlUWOUdj/mDeUZ6H7AHzCd6sXPvyta+JQeiLZAZvbXSIa1J9ug==' 'sha512-aZf/meLRxlpnNk1waw+ZZqKPXOosuZDiDyHa6mls7adlRDN92TQDVkuIGEq74Xad9Vgh/qRO9yGvYDYXZXviDA==' 'sha512-6bShVUY1ZB/2egZ4Tltdn3xExFpVNJ6wnZ6tfetrXn/yt8zbQqYPBGvK7t6qiwb/DEGpMPL9EO5Zkfe8tkOYWw==' 'sha512-oFPgYUxkrqF/0O2EHiIiF9aP5DIQImLW8XW5hGZ9KJNCDJEb1lYEveeuCbLapQkcrFb2Xrd3gk1hZfc2vcAmww==' 'sha512-GB/9C66ZVnAb/pgp2oQSJX0DKV/xZOYG79wem/rytmvOw29h1peCjkvD7tU/YHYZLoJidYfLhdsMY/jN/TPuGA==' 'sha512-3uMX/QNcqXCvpJqXCIFtR6xPhi6lMwBytEJZbIGkmAnsEB9hSMQEYWYTzh3ySS40ukoAXJvp11CnVLn9gIA5og==' 'sha512-GW25CG0+XkPC+PZzWIY1NQ5FsE0EmrGINhyq7C2V9opyNURCoIOYjI/bc/SMVvEsneOng6CdCwIx80uWoeJDSA==' 'sha512-YgTTZu0v6V9mS2gL4ZceYNQ0Apqz1xL3oRRrD2I0ucaFQmm/ROIsgEvpkE18Qc4PLdmAQDxZvQWlqCXwJs494g==' 'sha512-aY3a+W2ontkmkBkbIUVh5j1Cmo2keJCDbBNcZWSfSXKExh6NmxT0CsS3R4NheEx6PP87SYrmgG/N0c/ErfZu6A==' 'sha512-AsMPw3X07ik1WELjrwPGSpeZEwTlKMDqUk65QpUaKK60Db9v7vgQYvPpjsAK8O2V86/It6ShqhIiqX/4Zd/lEQ==' 'sha512-LFsXZIiTH8uk1SyfeApsUP0JXBOFScJDQNIRqvtz18W4cxCOsiX/qbVgTmiFVppLlGjaLrQRrDCrDNd5uaGUgw==' 'sha512-ssEHpdfc19YOUaufOdKhWcI0j9MpGu0d6uidgN9/nSqnaVcLM4Jv6pqMS5Gysbevb1J/8htX52L2uHhENfPOkg==' 'sha512-t2ZGdGmOp3lPKyF6mqTlMlydj/Kd82Blxj7MfhcL40mcjTl9EIjBcz20KrGb5x8ty35QQsTFzCPZCKc0QwZi+w==' 'sha512-B065DeZ6RRG/ehoF7b3KK+vYb4rK/tkD359MhMAN7ZCf6wrz346/BBnOfBWogdalkZ37Yk4lSCF14Iw/WzOggQ==' 'sha512-c1VI0I4L/bzglIuhjSUa0S5hD714mqYcJzmVBonJRlcdLEHWwp3KzKeNcfOABN5VDZUe99BjKmQnniJaC/W9Fw==' 'sha512-Tg2STko/jtSz/JBdwfviSw1KwoZKnzrFwjIj5tIZ/soxoUUvhZhbwtfcyJbBXeAbZLQ+BGQCMKOEeINGEqJAbw==' 'sha512-f1c3kSurSDwEyNjVxCFhU+Q7xPrnM98bcArYYXjimnJednKDIk8D7dhDJvULs3BqjzFFsECm7YngzYwH4HlyXw==' 'sha512-xvPLzU8agX8bqbuTTTLFZantJ4hvA288YrfVHefjaFa79eiVCllTd+GAbLe+/a1I54t4rGPJTw2FMcWO+RFGJw=='; style-src-elem 'self' https://fonts.googleapis.com 'sha512-swdahkaFC+CfFy4BGLM7GYIXXZJOhU08fmgQ7EcCUF4QpGYhgmQOEpwnUdaAwoNCy8KhCEmDj/kw1BbfSKav0Q==' 'sha512-823c9C/PnHMkuCjJIL6LKyRFd6J4swVkkejl/eRg7j/hcnKKSgBDtMsNHmilDNs3xtgPCDbSPvZGjqAW43duKQ==' 'sha512-pbgXhUzxSOZjYhQ7gsMNJmXnzo/I2CYytDfIZcKfJiVzVtWRnvhZUEQ/XHal2ZIDEks+dVI7G5ec8ARJxhyRcQ==' 'sha512-BABq/sceOY0hU5cpeQoFr3937SIsSqTK3bVJKjUTzW0LkREWyCJihqO17EWixuqQGFtYZq1UCK0mWZnWUltxjQ==' 'sha512-zn2TYoNoAdofGJnCeE4gc0/yUbe2boWA1cZt7AgaGK2o43YRWvKvgahvALPhvZe8MBj2tt0BZOvdDmcvyuqvrw==' 'sha512-NcdaVFaBI6sVfD0MOjkqoR8lRKBaFIX0ys49UW3x0nkNPww1NB2NHzGL4C1PUfEmeFk9bsEzOcXlEKQaPBB0dg==' 'sha512-I9Ro551Wa/Bym/Xps1OHHPgCGuU9/vgCfp4btZnfbyLWZrbIo+Nz8Tr6G0V4X80EOKZYqvE1aSSZUH78aWgA9g==' 'sha512-i3+b7SXO4eIvvrwFXjOilsTNEO4eAKgKAO+4hmohISmgwj18B5hxRmAtbu9YObHk4Ut/y1AFWZtD4PCv31quDw==' 'sha512-VSqguNf18JLezD2yalXuSkgAJetwc5gaZSL+4fJyImGF4zRNjRHojcEp1ywOml1k1qLnvMwwq3ZdmWScm+FWKg==' 'sha512-Izi41AzV5/hcVDWPn/UhPH9ktv6vubThYtpdjQjXJ0W9KHAgsEewlPQ2BTwlqAhyvCFZeX12YQzrglJadxJ4jw==' 'sha512-ttWMn6zpMrZ30LQ1ZaBZsJIzWcQGhoL21bw32RyqHfzv74dK3BgjoKcopg7bIqmEsMcMqcjMG+0JRXAaXOEUjA==' 'sha512-HEnsJdoeOXCq7boulcQJfkvMbq6TuFeyhYTyduT6yih9ZzQQFM0ZkVc3ksobks8cGo2MTvAKJ8N5dwNLBGT21A==' 'sha512-7hYFEBE95YyyBb8pdMSonOz/jLTmWPmJCSexKZ5ZVRpJR/HXImRHYPFAa5EX7znFwl/PQDyLHQRhdJXl3SOqmw==' 'sha512-tURKDo+/gT3/MVEXhmR3UawuEV0OQYtksyXn0blWxIBXZY1QJut0layv8UwxVlLoxMsdEOuvMAk1/fzQ5D0lbA==' 'sha512-xmCOPsN3gM73RvrlRK4XEE5quJzH0qXy3vClX8/z5XehwT+KDRZZ6wffjopAQuelP7Gf3G8K1zc92X60uE7LMA==' 'sha512-moELquslSKaKeM3tZ5K5KUHe3DiYiPAy+JqvAnfX4lsh4ynLyQJaPEW/FU8F72Mv8FiUv5tDMQn61hEBmW5qtg==' 'sha512-iIVONYnFVWNIkewDXE7DuHuDkXhkDrjq3dNEYWmDVvnSuDOTywUKy2ugAGqUY4xTkJZuwjbdyQTILvdtwMABOw==' 'sha512-YvX/PWbYeqUsx4BStLvSe9Y+PNSAv/tHAdYMdw7lKsNMyM/8Li+Zgawsc0X0pFjaMFgABF1rtMLAjlwis2Dx4g==' 'sha512-fBRrkb87Ge2WsjnMHE5dHw03MVBT+ZduvMqnxWhZtk3mM8qTapEGAUeYF3+yhGd0GoPBNOwvuBgU1DxQdSGauw==' 'sha512-o9M8vSuPaC9bCpOHkMpd3YIkoZ6f/FGE1LGUiMLlEAKcJZsLjzZuKstVKzVNvD6ue4EwmcRquVm8GJjySnR2gw==' 'sha512-qMtGN4iObNu7cBGBmE75Q+BOvsaW6hMH9e19kskk29Bv5Og/Ho27dibQV+opVjd6Jb2qY6nkddOdbU43VQvHVg==' 'sha512-vdMBTh0N8XDNVsTTyg1CYukRDB26+e9PnFj/k7czcnLtZkgCJEL5lNSuCSEVQVkEyEMiK/QcAfkQJLsRrVB3wA==' 'sha512-RsadMlJRN/EPeBfpKpFWdV5aN2lLleEm5TwlzJdng635jSVxRJ8iwDUxCFgBaqIbDj+cWdssfAN2jBa6pf8hDQ==' 'sha512-045BbG1+FadSb0XwTEP8tR8QZEkVtavYXb2HsA8DFIVJccz170aZNicoASdyykfaz3rPlhkWVmrft7nRhB9l+Q==' 'sha512-9T+dD5PGlxlmgi9doy/7dC240XnUnMBXfqwRPGFSOI62hv5ok4m8HOEQt3kQWYv7OxO6kbXknHeKCeRLWenCEA==' 'sha512-9+uM4NivHTWsPYM9liroto0T2tIJe9mWlgJ3rKX7EGX8vDF11ViDbXn83WGbulQXRpEBn8GhVm+bD6T+yI++Kg==' 'sha512-FtojSnQVtdjxL+j6c5vNr0NMz5WCcseBvuf2ar2cBggxyO5pLgGtchDVZtvP4OJ9W5pKqUKiimrSYTwWUIlvSA==' 'sha512-Rv7cctzwPU3tPQVDYyiOXt1JZ4Ap/3GjG9UbhlUWOUdj/mDeUZ6H7AHzCd6sXPvyta+JQeiLZAZvbXSIa1J9ug==' 'sha512-aZf/meLRxlpnNk1waw+ZZqKPXOosuZDiDyHa6mls7adlRDN92TQDVkuIGEq74Xad9Vgh/qRO9yGvYDYXZXviDA==' 'sha512-6bShVUY1ZB/2egZ4Tltdn3xExFpVNJ6wnZ6tfetrXn/yt8zbQqYPBGvK7t6qiwb/DEGpMPL9EO5Zkfe8tkOYWw==' 'sha512-oFPgYUxkrqF/0O2EHiIiF9aP5DIQImLW8XW5hGZ9KJNCDJEb1lYEveeuCbLapQkcrFb2Xrd3gk1hZfc2vcAmww==' 'sha512-GB/9C66ZVnAb/pgp2oQSJX0DKV/xZOYG79wem/rytmvOw29h1peCjkvD7tU/YHYZLoJidYfLhdsMY/jN/TPuGA==' 'sha512-3uMX/QNcqXCvpJqXCIFtR6xPhi6lMwBytEJZbIGkmAnsEB9hSMQEYWYTzh3ySS40ukoAXJvp11CnVLn9gIA5og==' 'sha512-GW25CG0+XkPC+PZzWIY1NQ5FsE0EmrGINhyq7C2V9opyNURCoIOYjI/bc/SMVvEsneOng6CdCwIx80uWoeJDSA==' 'sha512-YgTTZu0v6V9mS2gL4ZceYNQ0Apqz1xL3oRRrD2I0ucaFQmm/ROIsgEvpkE18Qc4PLdmAQDxZvQWlqCXwJs494g==' 'sha512-aY3a+W2ontkmkBkbIUVh5j1Cmo2keJCDbBNcZWSfSXKExh6NmxT0CsS3R4NheEx6PP87SYrmgG/N0c/ErfZu6A==' 'sha512-AsMPw3X07ik1WELjrwPGSpeZEwTlKMDqUk65QpUaKK60Db9v7vgQYvPpjsAK8O2V86/It6ShqhIiqX/4Zd/lEQ==' 'sha512-LFsXZIiTH8uk1SyfeApsUP0JXBOFScJDQNIRqvtz18W4cxCOsiX/qbVgTmiFVppLlGjaLrQRrDCrDNd5uaGUgw==' 'sha512-ssEHpdfc19YOUaufOdKhWcI0j9MpGu0d6uidgN9/nSqnaVcLM4Jv6pqMS5Gysbevb1J/8htX52L2uHhENfPOkg==' 'sha512-t2ZGdGmOp3lPKyF6mqTlMlydj/Kd82Blxj7MfhcL40mcjTl9EIjBcz20KrGb5x8ty35QQsTFzCPZCKc0QwZi+w==' 'sha512-B065DeZ6RRG/ehoF7b3KK+vYb4rK/tkD359MhMAN7ZCf6wrz346/BBnOfBWogdalkZ37Yk4lSCF14Iw/WzOggQ==' 'sha512-c1VI0I4L/bzglIuhjSUa0S5hD714mqYcJzmVBonJRlcdLEHWwp3KzKeNcfOABN5VDZUe99BjKmQnniJaC/W9Fw==' 'sha512-Tg2STko/jtSz/JBdwfviSw1KwoZKnzrFwjIj5tIZ/soxoUUvhZhbwtfcyJbBXeAbZLQ+BGQCMKOEeINGEqJAbw==' 'sha512-f1c3kSurSDwEyNjVxCFhU+Q7xPrnM98bcArYYXjimnJednKDIk8D7dhDJvULs3BqjzFFsECm7YngzYwH4HlyXw==' 'sha512-xvPLzU8agX8bqbuTTTLFZantJ4hvA288YrfVHefjaFa79eiVCllTd+GAbLe+/a1I54t4rGPJTw2FMcWO+RFGJw=='; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://diracgroup.store https://secure.diracgroup.store https://api.diracgroup.store https://fonts.googleapis.com https://fonts.gstatic.com; form-action 'self' https://api.diracgroup.store; frame-src 'none'; child-src 'none'; worker-src 'self' blob:; media-src 'self' data: blob:; manifest-src 'self'; upgrade-insecure-requests">
-<script src="dirac-domain-runtime.js" integrity="sha512-Oc213S8eq+W//vehI7xxjFgJG/kGJc8EQh+4MAGYweVNQhJLNDFwpRFsiEmYRBVZNVvIFiJxch4XiBhuBdBVvQ==" referrerpolicy="no-referrer"></script>
-<script id="dirac-a2f-independent-probe-v224">
+<meta id="dirac-csp-sha512-v1" http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'sha512-mLbqJKlfgnVV3F9SunhPyMM0QTR7w3qKrrxl1VR+ScVpN//9O570blbJMvC9f5WzrQ/4lXN9VBWMkO5RjmMwKQ==' 'sha512-/q2hkqR/gC364grxieH2qx4wjsH0yljieiQnGeTFPlP9ivKPXpArSzkHok6qUCekzPWk5dC6APiKiVNzKFjM9A==' 'sha512-o9SaqeLt7+77kngskcgFu21pXKBaq9yv8Vcic285ss1jDI7HTCQ+nN56SZ+dqQGozp9OaqNV94bQnp8s4R1eYA==' 'sha512-tw/rCB11Sih/koLtKj6JWYuBRb2oP8Z+0vvkoSPUkD0P4roTKZmGqXHkERcyHqKyWZ0/nd8AAN3i/9MlKl448Q==' 'sha512-l+IwaNieZyBApwX5Xc+sObORx523xiWfRFXcwbUuqngFkupM/P/Ifzvd1AG0DBnKU6Yra+BanWbX4cT8YSw5CA==' 'sha512-+HDFH35scMEOLX9FXGHnz/vcM0bjWi7s8dAu1tAKgkhBJ20iEGzQPoybP1gUfq7yrw3vGMI7qgNlRv3oDMSVkg==' 'sha512-6jB+GpDxMtqSTdSXgPSBUd7YaqkznsUT6YlFHk1RWmh2MsEIpQJ04JMbW5SaslxcbsCkRhoLy8UpvzLyaPHfVg==' 'sha512-XDU/LNHLU3WtqUxtqLXGEbh0Ov38hgX5QpQCt+i7S7Y3LRX8bRZrRqQvQl6xz2zCnZFcOINAQqkZsDZ+PIlZTw==' 'sha512-QDX879FueZhVZFZFX0n+phLeIkVIh6cgiYTlC357I3UIKXrP2bS3YkjScfHWmHjZviTAW8uzAh8vDrfyu8UbFA==' 'sha512-kktS7corYjQTG2hRz67eL9AzMFzuQ912ucLi/JOven5YheK9er+e1Xz8Idqw4J599GSwyyBXEZo6KQBJm/FMqg==' 'sha512-K1MWkmjyvjUAWktjR1Q5YJvI2ZyGeBfURJFBF5wAceI0CeK0T+HQ5Rr04s/y0/ZdHpvTkNx8XYYQFzJpTVcsEw==' 'sha512-Du2fNyYTUN1Zltua+n3lH8on0RzFkBzDBRvrX9jR2bDU7aPAbr+uvB5QKdd0FRVrCRu9MwUUDErLr09AF3Y0Rw==' 'sha512-X+wuAqvrwZcEMYeVzKtMo7DXUOMYvBzUzcp5RptBWh9zFBdLDFXoGbZJhJh+w7XEh7iFgMhjsXH+O0IwcSYQOA==' 'sha512-RIoyd/4UOJBP5wt/xr1NnWbaU3waGSjH2bCdDxK0aoZ+Ih+eH9d0lOYeW3a0ulunxL2IRNIpPs+/I90lkg0lNQ==' 'sha512-WFRiqCpHMZbZ9wBEi7haPtnPXL8Pyb3RfYZIl8n0pSynj/ybtksCa8yRAXPTXNOzIcgm8fHUde8XPLrqfnfa5Q==' 'sha512-XNamYgaD3HnMI8rUQeOrCP/XcsNF6SL4730fXFAWltu+44LbVKb+fnHGlRGd2LAMJBaTGh42jlODxXFNsHiqLg==' 'sha512-xRmoON9Bx3/yoTwLlM0RW1lft8Q0Yy2Q2TL5w3Q/NeDc1IyTtvv+qluD96kSFe9IVCe66vwaQWGqToym0EIs+Q==' 'sha512-tRntzdc4iI2qT2vhmoC9QElgeFubVS/fFLn0VTXOaY6ZZt246hHICHJZrdX8nnYvEJtohfbu00uHD+buukr15w==' 'sha512-oXdo5a4+uGsnMTAxl6IML512gUkOnY5m4zhLYRNliGNXh/VsvwYXpky8KS0405dD/3AScaC+VVnm6nF9k7t45w==' 'sha512-MimukslXEckswvmeYDx53Tk/eK9bA8mHNvUngp4MBdeBCGPRmP6DYp2qRzoAdV8o0VpHzCn+PuOU66JEM57Pqg==' 'sha512-HogybZzshOq8hCqxp7t2NdF2ba9JrU9Qj+eywRFR9V6L5/KjJlZr1l/otFFTvYsvA4Rasx9s5dfuSkQUejS7sw==' 'sha512-eKewiKbPcpi4/YZ0CCxn2Hc+qp/EpCm/UWcDKQ73Vs4S/6889mjaJvtkLcfWKyDsFP8SDZBzsezAXfmlzmt1jA==' 'sha512-ZxqLPAw53DIdCGbHYDR7+YT6UFz82eebSVMjBkrJcD9QuR5BsOFp88oVVqa9HhsPhqF+znohhv8KLxsP6tIbLA==' 'sha512-SKB6OOF93AmzHOCT4rOuupCxccET8bKMZXDr+IztXF2ln9UWfARwe1WDxrop7TJ3j+yvg7lkkmSXF3SQnyUPAg==' 'sha512-R7TGx9lzJ8jwOcJvWKogRADoyPxTjsiykxYCqmfF6JhcAbYEQvHGDpJ9XrX+bbVncX3scvB5E7yGzRcaUNKJ0w==' 'sha512-+Urzj9Gkh75tipj752nFWbghs4EkVd0mVqR90V4g4OoFMx+uDL0smYGnJwxa4HzaJQO22/J91FSeDoOIlcHvhQ==' 'sha512-K0W4UxfxbDmVjMztFPPeRPkWHY7qxiw6VkS+pX/Q3FUCkyjzbE8torQegIQIlzcKUD4rFUZZoupv5RAyU2UxyA==' 'sha512-cgV2hTKL/UNuG6RAobAKVCOk7yRx5clk1bt/C0rwBnjFI/p74ijyVq80mztVlZ1emvdWdq6+8ThjGM23f5JwZA==' 'sha512-nlSxVsqW5LmOPz1vAWSJBjkNxQzClFwm0n/7dPgcCnj/4iRHrEmML05WKK2u04ZkTJoHuSDQyDqMlktQRuki0Q==' 'sha512-2UCaz2I8HFzjxwr0EoNBWNCW7vbEMdv8AtWqNJY+P/52EJHcb94jtxMrZioP3YEfsUvko4p4U6mYvNvY6Mg9DQ==' 'sha512-z3pkhSB8FYXcG7J8rJx4xGrBsXcCM2sMJEV7FGPCaNPGpqRZ7BvVskAcdvlkeUOSaORwKpiGRhOgAlDPYqsroQ==' 'sha512-40hhVGP/j+MnwX5eSDnJclgCEX8J1dKHwBrtBGkWnhfhVNS+4NxO5Emn1XX/FBpIDTfJvlVzMEKW0dLPdaT7pA==' 'sha512-rwtia4MIqd4wtjMwMg/leen4GdxL0+fpw+RnQ6YE03RWKblklFd1gowaVoTP6kkQwNz3ErEogZVYgIBExFQifA==' 'sha512-TeImBWNPHmFEBfYoBHAGZYoqpWeByOWZ7304uRzyP6P+R9yb5xCnXThdpzOzSO/6g1xKcsnxQecTM1b2ZIgjAQ==' 'sha512-yiRrA5pT0hEfbajiB5M93YIyTaJm14/gADeAfCPUqGyMEr0cX8cybYGpNMC0Gwy01OdV0hwqPLnDhzxO2nLKvA==' 'sha512-m/WKbxf9y3veIC+WDqq0yYHcee08Xe9YPY2b9EXkOI8iRdg7F1Y+jTwLapb7veUXKPsoYMk0FMQEFtGnBYpyiw==' 'sha512-kFcLE95hcOZ1pHFKqcoZoCKoGCz9xSLNq5jx91+KYlgz5IgL8L1c40DEYAtmtBjKQLk3sgvCKaHH8vvwWoEYaQ==' 'sha512-7yF6fpL2TAEiGdDz/jNtyJOjx1U2btYfe74FPBs37fWczNeISkoGHydQgM4aVBMrqxTydg9Hp5BsPOthjQDyzA=='; script-src-elem 'self' 'sha512-mLbqJKlfgnVV3F9SunhPyMM0QTR7w3qKrrxl1VR+ScVpN//9O570blbJMvC9f5WzrQ/4lXN9VBWMkO5RjmMwKQ==' 'sha512-/q2hkqR/gC364grxieH2qx4wjsH0yljieiQnGeTFPlP9ivKPXpArSzkHok6qUCekzPWk5dC6APiKiVNzKFjM9A==' 'sha512-o9SaqeLt7+77kngskcgFu21pXKBaq9yv8Vcic285ss1jDI7HTCQ+nN56SZ+dqQGozp9OaqNV94bQnp8s4R1eYA==' 'sha512-tw/rCB11Sih/koLtKj6JWYuBRb2oP8Z+0vvkoSPUkD0P4roTKZmGqXHkERcyHqKyWZ0/nd8AAN3i/9MlKl448Q==' 'sha512-l+IwaNieZyBApwX5Xc+sObORx523xiWfRFXcwbUuqngFkupM/P/Ifzvd1AG0DBnKU6Yra+BanWbX4cT8YSw5CA==' 'sha512-+HDFH35scMEOLX9FXGHnz/vcM0bjWi7s8dAu1tAKgkhBJ20iEGzQPoybP1gUfq7yrw3vGMI7qgNlRv3oDMSVkg==' 'sha512-6jB+GpDxMtqSTdSXgPSBUd7YaqkznsUT6YlFHk1RWmh2MsEIpQJ04JMbW5SaslxcbsCkRhoLy8UpvzLyaPHfVg==' 'sha512-XDU/LNHLU3WtqUxtqLXGEbh0Ov38hgX5QpQCt+i7S7Y3LRX8bRZrRqQvQl6xz2zCnZFcOINAQqkZsDZ+PIlZTw==' 'sha512-QDX879FueZhVZFZFX0n+phLeIkVIh6cgiYTlC357I3UIKXrP2bS3YkjScfHWmHjZviTAW8uzAh8vDrfyu8UbFA==' 'sha512-kktS7corYjQTG2hRz67eL9AzMFzuQ912ucLi/JOven5YheK9er+e1Xz8Idqw4J599GSwyyBXEZo6KQBJm/FMqg==' 'sha512-K1MWkmjyvjUAWktjR1Q5YJvI2ZyGeBfURJFBF5wAceI0CeK0T+HQ5Rr04s/y0/ZdHpvTkNx8XYYQFzJpTVcsEw==' 'sha512-Du2fNyYTUN1Zltua+n3lH8on0RzFkBzDBRvrX9jR2bDU7aPAbr+uvB5QKdd0FRVrCRu9MwUUDErLr09AF3Y0Rw==' 'sha512-X+wuAqvrwZcEMYeVzKtMo7DXUOMYvBzUzcp5RptBWh9zFBdLDFXoGbZJhJh+w7XEh7iFgMhjsXH+O0IwcSYQOA==' 'sha512-RIoyd/4UOJBP5wt/xr1NnWbaU3waGSjH2bCdDxK0aoZ+Ih+eH9d0lOYeW3a0ulunxL2IRNIpPs+/I90lkg0lNQ==' 'sha512-WFRiqCpHMZbZ9wBEi7haPtnPXL8Pyb3RfYZIl8n0pSynj/ybtksCa8yRAXPTXNOzIcgm8fHUde8XPLrqfnfa5Q==' 'sha512-XNamYgaD3HnMI8rUQeOrCP/XcsNF6SL4730fXFAWltu+44LbVKb+fnHGlRGd2LAMJBaTGh42jlODxXFNsHiqLg==' 'sha512-xRmoON9Bx3/yoTwLlM0RW1lft8Q0Yy2Q2TL5w3Q/NeDc1IyTtvv+qluD96kSFe9IVCe66vwaQWGqToym0EIs+Q==' 'sha512-tRntzdc4iI2qT2vhmoC9QElgeFubVS/fFLn0VTXOaY6ZZt246hHICHJZrdX8nnYvEJtohfbu00uHD+buukr15w==' 'sha512-oXdo5a4+uGsnMTAxl6IML512gUkOnY5m4zhLYRNliGNXh/VsvwYXpky8KS0405dD/3AScaC+VVnm6nF9k7t45w==' 'sha512-MimukslXEckswvmeYDx53Tk/eK9bA8mHNvUngp4MBdeBCGPRmP6DYp2qRzoAdV8o0VpHzCn+PuOU66JEM57Pqg==' 'sha512-HogybZzshOq8hCqxp7t2NdF2ba9JrU9Qj+eywRFR9V6L5/KjJlZr1l/otFFTvYsvA4Rasx9s5dfuSkQUejS7sw==' 'sha512-eKewiKbPcpi4/YZ0CCxn2Hc+qp/EpCm/UWcDKQ73Vs4S/6889mjaJvtkLcfWKyDsFP8SDZBzsezAXfmlzmt1jA==' 'sha512-ZxqLPAw53DIdCGbHYDR7+YT6UFz82eebSVMjBkrJcD9QuR5BsOFp88oVVqa9HhsPhqF+znohhv8KLxsP6tIbLA==' 'sha512-SKB6OOF93AmzHOCT4rOuupCxccET8bKMZXDr+IztXF2ln9UWfARwe1WDxrop7TJ3j+yvg7lkkmSXF3SQnyUPAg==' 'sha512-R7TGx9lzJ8jwOcJvWKogRADoyPxTjsiykxYCqmfF6JhcAbYEQvHGDpJ9XrX+bbVncX3scvB5E7yGzRcaUNKJ0w==' 'sha512-+Urzj9Gkh75tipj752nFWbghs4EkVd0mVqR90V4g4OoFMx+uDL0smYGnJwxa4HzaJQO22/J91FSeDoOIlcHvhQ==' 'sha512-K0W4UxfxbDmVjMztFPPeRPkWHY7qxiw6VkS+pX/Q3FUCkyjzbE8torQegIQIlzcKUD4rFUZZoupv5RAyU2UxyA==' 'sha512-cgV2hTKL/UNuG6RAobAKVCOk7yRx5clk1bt/C0rwBnjFI/p74ijyVq80mztVlZ1emvdWdq6+8ThjGM23f5JwZA==' 'sha512-nlSxVsqW5LmOPz1vAWSJBjkNxQzClFwm0n/7dPgcCnj/4iRHrEmML05WKK2u04ZkTJoHuSDQyDqMlktQRuki0Q==' 'sha512-2UCaz2I8HFzjxwr0EoNBWNCW7vbEMdv8AtWqNJY+P/52EJHcb94jtxMrZioP3YEfsUvko4p4U6mYvNvY6Mg9DQ==' 'sha512-z3pkhSB8FYXcG7J8rJx4xGrBsXcCM2sMJEV7FGPCaNPGpqRZ7BvVskAcdvlkeUOSaORwKpiGRhOgAlDPYqsroQ==' 'sha512-40hhVGP/j+MnwX5eSDnJclgCEX8J1dKHwBrtBGkWnhfhVNS+4NxO5Emn1XX/FBpIDTfJvlVzMEKW0dLPdaT7pA==' 'sha512-rwtia4MIqd4wtjMwMg/leen4GdxL0+fpw+RnQ6YE03RWKblklFd1gowaVoTP6kkQwNz3ErEogZVYgIBExFQifA==' 'sha512-TeImBWNPHmFEBfYoBHAGZYoqpWeByOWZ7304uRzyP6P+R9yb5xCnXThdpzOzSO/6g1xKcsnxQecTM1b2ZIgjAQ==' 'sha512-yiRrA5pT0hEfbajiB5M93YIyTaJm14/gADeAfCPUqGyMEr0cX8cybYGpNMC0Gwy01OdV0hwqPLnDhzxO2nLKvA==' 'sha512-m/WKbxf9y3veIC+WDqq0yYHcee08Xe9YPY2b9EXkOI8iRdg7F1Y+jTwLapb7veUXKPsoYMk0FMQEFtGnBYpyiw==' 'sha512-kFcLE95hcOZ1pHFKqcoZoCKoGCz9xSLNq5jx91+KYlgz5IgL8L1c40DEYAtmtBjKQLk3sgvCKaHH8vvwWoEYaQ==' 'sha512-7yF6fpL2TAEiGdDz/jNtyJOjx1U2btYfe74FPBs37fWczNeISkoGHydQgM4aVBMrqxTydg9Hp5BsPOthjQDyzA=='; script-src-attr 'unsafe-hashes' 'sha512-ZZOXFnQLKr2DK9UXztKaZK8J0tNko3QjZ59ij1qq0LRliAwMQCezAuE8J+5ef6/tyNH3hZbil0j7xMumeQQFSA==' 'sha512-h4tRh/EP7lcPhgrQkcP7kdUh2nkUHvsJqQE6VGKoGHz1fwaDRYMYO2pcLfgCqVq5qg+3cWmzduqAJpwbhOR26A==' 'sha512-mGB6thUEkmh1ZUJxak/5zPgQO8Mkm57qWcZ4ygqJY6VBg8fkT6hIs5MH8NHzzSILwfdVoDgKLLScqUoY8duMkA=='; style-src 'self' 'sha512-swdahkaFC+CfFy4BGLM7GYIXXZJOhU08fmgQ7EcCUF4QpGYhgmQOEpwnUdaAwoNCy8KhCEmDj/kw1BbfSKav0Q==' 'sha512-823c9C/PnHMkuCjJIL6LKyRFd6J4swVkkejl/eRg7j/hcnKKSgBDtMsNHmilDNs3xtgPCDbSPvZGjqAW43duKQ==' 'sha512-pbgXhUzxSOZjYhQ7gsMNJmXnzo/I2CYytDfIZcKfJiVzVtWRnvhZUEQ/XHal2ZIDEks+dVI7G5ec8ARJxhyRcQ==' 'sha512-BABq/sceOY0hU5cpeQoFr3937SIsSqTK3bVJKjUTzW0LkREWyCJihqO17EWixuqQGFtYZq1UCK0mWZnWUltxjQ==' 'sha512-zn2TYoNoAdofGJnCeE4gc0/yUbe2boWA1cZt7AgaGK2o43YRWvKvgahvALPhvZe8MBj2tt0BZOvdDmcvyuqvrw==' 'sha512-NcdaVFaBI6sVfD0MOjkqoR8lRKBaFIX0ys49UW3x0nkNPww1NB2NHzGL4C1PUfEmeFk9bsEzOcXlEKQaPBB0dg==' 'sha512-I9Ro551Wa/Bym/Xps1OHHPgCGuU9/vgCfp4btZnfbyLWZrbIo+Nz8Tr6G0V4X80EOKZYqvE1aSSZUH78aWgA9g==' 'sha512-i3+b7SXO4eIvvrwFXjOilsTNEO4eAKgKAO+4hmohISmgwj18B5hxRmAtbu9YObHk4Ut/y1AFWZtD4PCv31quDw==' 'sha512-VSqguNf18JLezD2yalXuSkgAJetwc5gaZSL+4fJyImGF4zRNjRHojcEp1ywOml1k1qLnvMwwq3ZdmWScm+FWKg==' 'sha512-Izi41AzV5/hcVDWPn/UhPH9ktv6vubThYtpdjQjXJ0W9KHAgsEewlPQ2BTwlqAhyvCFZeX12YQzrglJadxJ4jw==' 'sha512-ttWMn6zpMrZ30LQ1ZaBZsJIzWcQGhoL21bw32RyqHfzv74dK3BgjoKcopg7bIqmEsMcMqcjMG+0JRXAaXOEUjA==' 'sha512-HEnsJdoeOXCq7boulcQJfkvMbq6TuFeyhYTyduT6yih9ZzQQFM0ZkVc3ksobks8cGo2MTvAKJ8N5dwNLBGT21A==' 'sha512-7hYFEBE95YyyBb8pdMSonOz/jLTmWPmJCSexKZ5ZVRpJR/HXImRHYPFAa5EX7znFwl/PQDyLHQRhdJXl3SOqmw==' 'sha512-tURKDo+/gT3/MVEXhmR3UawuEV0OQYtksyXn0blWxIBXZY1QJut0layv8UwxVlLoxMsdEOuvMAk1/fzQ5D0lbA==' 'sha512-xmCOPsN3gM73RvrlRK4XEE5quJzH0qXy3vClX8/z5XehwT+KDRZZ6wffjopAQuelP7Gf3G8K1zc92X60uE7LMA==' 'sha512-moELquslSKaKeM3tZ5K5KUHe3DiYiPAy+JqvAnfX4lsh4ynLyQJaPEW/FU8F72Mv8FiUv5tDMQn61hEBmW5qtg==' 'sha512-iIVONYnFVWNIkewDXE7DuHuDkXhkDrjq3dNEYWmDVvnSuDOTywUKy2ugAGqUY4xTkJZuwjbdyQTILvdtwMABOw==' 'sha512-YvX/PWbYeqUsx4BStLvSe9Y+PNSAv/tHAdYMdw7lKsNMyM/8Li+Zgawsc0X0pFjaMFgABF1rtMLAjlwis2Dx4g==' 'sha512-fBRrkb87Ge2WsjnMHE5dHw03MVBT+ZduvMqnxWhZtk3mM8qTapEGAUeYF3+yhGd0GoPBNOwvuBgU1DxQdSGauw==' 'sha512-o9M8vSuPaC9bCpOHkMpd3YIkoZ6f/FGE1LGUiMLlEAKcJZsLjzZuKstVKzVNvD6ue4EwmcRquVm8GJjySnR2gw==' 'sha512-qMtGN4iObNu7cBGBmE75Q+BOvsaW6hMH9e19kskk29Bv5Og/Ho27dibQV+opVjd6Jb2qY6nkddOdbU43VQvHVg==' 'sha512-vdMBTh0N8XDNVsTTyg1CYukRDB26+e9PnFj/k7czcnLtZkgCJEL5lNSuCSEVQVkEyEMiK/QcAfkQJLsRrVB3wA==' 'sha512-RsadMlJRN/EPeBfpKpFWdV5aN2lLleEm5TwlzJdng635jSVxRJ8iwDUxCFgBaqIbDj+cWdssfAN2jBa6pf8hDQ==' 'sha512-045BbG1+FadSb0XwTEP8tR8QZEkVtavYXb2HsA8DFIVJccz170aZNicoASdyykfaz3rPlhkWVmrft7nRhB9l+Q==' 'sha512-9T+dD5PGlxlmgi9doy/7dC240XnUnMBXfqwRPGFSOI62hv5ok4m8HOEQt3kQWYv7OxO6kbXknHeKCeRLWenCEA==' 'sha512-9+uM4NivHTWsPYM9liroto0T2tIJe9mWlgJ3rKX7EGX8vDF11ViDbXn83WGbulQXRpEBn8GhVm+bD6T+yI++Kg==' 'sha512-FtojSnQVtdjxL+j6c5vNr0NMz5WCcseBvuf2ar2cBggxyO5pLgGtchDVZtvP4OJ9W5pKqUKiimrSYTwWUIlvSA==' 'sha512-Rv7cctzwPU3tPQVDYyiOXt1JZ4Ap/3GjG9UbhlUWOUdj/mDeUZ6H7AHzCd6sXPvyta+JQeiLZAZvbXSIa1J9ug==' 'sha512-aZf/meLRxlpnNk1waw+ZZqKPXOosuZDiDyHa6mls7adlRDN92TQDVkuIGEq74Xad9Vgh/qRO9yGvYDYXZXviDA==' 'sha512-6bShVUY1ZB/2egZ4Tltdn3xExFpVNJ6wnZ6tfetrXn/yt8zbQqYPBGvK7t6qiwb/DEGpMPL9EO5Zkfe8tkOYWw==' 'sha512-oFPgYUxkrqF/0O2EHiIiF9aP5DIQImLW8XW5hGZ9KJNCDJEb1lYEveeuCbLapQkcrFb2Xrd3gk1hZfc2vcAmww==' 'sha512-GB/9C66ZVnAb/pgp2oQSJX0DKV/xZOYG79wem/rytmvOw29h1peCjkvD7tU/YHYZLoJidYfLhdsMY/jN/TPuGA==' 'sha512-3uMX/QNcqXCvpJqXCIFtR6xPhi6lMwBytEJZbIGkmAnsEB9hSMQEYWYTzh3ySS40ukoAXJvp11CnVLn9gIA5og==' 'sha512-GW25CG0+XkPC+PZzWIY1NQ5FsE0EmrGINhyq7C2V9opyNURCoIOYjI/bc/SMVvEsneOng6CdCwIx80uWoeJDSA==' 'sha512-YgTTZu0v6V9mS2gL4ZceYNQ0Apqz1xL3oRRrD2I0ucaFQmm/ROIsgEvpkE18Qc4PLdmAQDxZvQWlqCXwJs494g==' 'sha512-aY3a+W2ontkmkBkbIUVh5j1Cmo2keJCDbBNcZWSfSXKExh6NmxT0CsS3R4NheEx6PP87SYrmgG/N0c/ErfZu6A==' 'sha512-AsMPw3X07ik1WELjrwPGSpeZEwTlKMDqUk65QpUaKK60Db9v7vgQYvPpjsAK8O2V86/It6ShqhIiqX/4Zd/lEQ==' 'sha512-LFsXZIiTH8uk1SyfeApsUP0JXBOFScJDQNIRqvtz18W4cxCOsiX/qbVgTmiFVppLlGjaLrQRrDCrDNd5uaGUgw==' 'sha512-ssEHpdfc19YOUaufOdKhWcI0j9MpGu0d6uidgN9/nSqnaVcLM4Jv6pqMS5Gysbevb1J/8htX52L2uHhENfPOkg==' 'sha512-t2ZGdGmOp3lPKyF6mqTlMlydj/Kd82Blxj7MfhcL40mcjTl9EIjBcz20KrGb5x8ty35QQsTFzCPZCKc0QwZi+w==' 'sha512-B065DeZ6RRG/ehoF7b3KK+vYb4rK/tkD359MhMAN7ZCf6wrz346/BBnOfBWogdalkZ37Yk4lSCF14Iw/WzOggQ==' 'sha512-c1VI0I4L/bzglIuhjSUa0S5hD714mqYcJzmVBonJRlcdLEHWwp3KzKeNcfOABN5VDZUe99BjKmQnniJaC/W9Fw==' 'sha512-Tg2STko/jtSz/JBdwfviSw1KwoZKnzrFwjIj5tIZ/soxoUUvhZhbwtfcyJbBXeAbZLQ+BGQCMKOEeINGEqJAbw==' 'sha512-f1c3kSurSDwEyNjVxCFhU+Q7xPrnM98bcArYYXjimnJednKDIk8D7dhDJvULs3BqjzFFsECm7YngzYwH4HlyXw==' 'sha512-xvPLzU8agX8bqbuTTTLFZantJ4hvA288YrfVHefjaFa79eiVCllTd+GAbLe+/a1I54t4rGPJTw2FMcWO+RFGJw==' https://fonts.googleapis.com; style-src-elem 'self' 'sha512-swdahkaFC+CfFy4BGLM7GYIXXZJOhU08fmgQ7EcCUF4QpGYhgmQOEpwnUdaAwoNCy8KhCEmDj/kw1BbfSKav0Q==' 'sha512-823c9C/PnHMkuCjJIL6LKyRFd6J4swVkkejl/eRg7j/hcnKKSgBDtMsNHmilDNs3xtgPCDbSPvZGjqAW43duKQ==' 'sha512-pbgXhUzxSOZjYhQ7gsMNJmXnzo/I2CYytDfIZcKfJiVzVtWRnvhZUEQ/XHal2ZIDEks+dVI7G5ec8ARJxhyRcQ==' 'sha512-BABq/sceOY0hU5cpeQoFr3937SIsSqTK3bVJKjUTzW0LkREWyCJihqO17EWixuqQGFtYZq1UCK0mWZnWUltxjQ==' 'sha512-zn2TYoNoAdofGJnCeE4gc0/yUbe2boWA1cZt7AgaGK2o43YRWvKvgahvALPhvZe8MBj2tt0BZOvdDmcvyuqvrw==' 'sha512-NcdaVFaBI6sVfD0MOjkqoR8lRKBaFIX0ys49UW3x0nkNPww1NB2NHzGL4C1PUfEmeFk9bsEzOcXlEKQaPBB0dg==' 'sha512-I9Ro551Wa/Bym/Xps1OHHPgCGuU9/vgCfp4btZnfbyLWZrbIo+Nz8Tr6G0V4X80EOKZYqvE1aSSZUH78aWgA9g==' 'sha512-i3+b7SXO4eIvvrwFXjOilsTNEO4eAKgKAO+4hmohISmgwj18B5hxRmAtbu9YObHk4Ut/y1AFWZtD4PCv31quDw==' 'sha512-VSqguNf18JLezD2yalXuSkgAJetwc5gaZSL+4fJyImGF4zRNjRHojcEp1ywOml1k1qLnvMwwq3ZdmWScm+FWKg==' 'sha512-Izi41AzV5/hcVDWPn/UhPH9ktv6vubThYtpdjQjXJ0W9KHAgsEewlPQ2BTwlqAhyvCFZeX12YQzrglJadxJ4jw==' 'sha512-ttWMn6zpMrZ30LQ1ZaBZsJIzWcQGhoL21bw32RyqHfzv74dK3BgjoKcopg7bIqmEsMcMqcjMG+0JRXAaXOEUjA==' 'sha512-HEnsJdoeOXCq7boulcQJfkvMbq6TuFeyhYTyduT6yih9ZzQQFM0ZkVc3ksobks8cGo2MTvAKJ8N5dwNLBGT21A==' 'sha512-7hYFEBE95YyyBb8pdMSonOz/jLTmWPmJCSexKZ5ZVRpJR/HXImRHYPFAa5EX7znFwl/PQDyLHQRhdJXl3SOqmw==' 'sha512-tURKDo+/gT3/MVEXhmR3UawuEV0OQYtksyXn0blWxIBXZY1QJut0layv8UwxVlLoxMsdEOuvMAk1/fzQ5D0lbA==' 'sha512-xmCOPsN3gM73RvrlRK4XEE5quJzH0qXy3vClX8/z5XehwT+KDRZZ6wffjopAQuelP7Gf3G8K1zc92X60uE7LMA==' 'sha512-moELquslSKaKeM3tZ5K5KUHe3DiYiPAy+JqvAnfX4lsh4ynLyQJaPEW/FU8F72Mv8FiUv5tDMQn61hEBmW5qtg==' 'sha512-iIVONYnFVWNIkewDXE7DuHuDkXhkDrjq3dNEYWmDVvnSuDOTywUKy2ugAGqUY4xTkJZuwjbdyQTILvdtwMABOw==' 'sha512-YvX/PWbYeqUsx4BStLvSe9Y+PNSAv/tHAdYMdw7lKsNMyM/8Li+Zgawsc0X0pFjaMFgABF1rtMLAjlwis2Dx4g==' 'sha512-fBRrkb87Ge2WsjnMHE5dHw03MVBT+ZduvMqnxWhZtk3mM8qTapEGAUeYF3+yhGd0GoPBNOwvuBgU1DxQdSGauw==' 'sha512-o9M8vSuPaC9bCpOHkMpd3YIkoZ6f/FGE1LGUiMLlEAKcJZsLjzZuKstVKzVNvD6ue4EwmcRquVm8GJjySnR2gw==' 'sha512-qMtGN4iObNu7cBGBmE75Q+BOvsaW6hMH9e19kskk29Bv5Og/Ho27dibQV+opVjd6Jb2qY6nkddOdbU43VQvHVg==' 'sha512-vdMBTh0N8XDNVsTTyg1CYukRDB26+e9PnFj/k7czcnLtZkgCJEL5lNSuCSEVQVkEyEMiK/QcAfkQJLsRrVB3wA==' 'sha512-RsadMlJRN/EPeBfpKpFWdV5aN2lLleEm5TwlzJdng635jSVxRJ8iwDUxCFgBaqIbDj+cWdssfAN2jBa6pf8hDQ==' 'sha512-045BbG1+FadSb0XwTEP8tR8QZEkVtavYXb2HsA8DFIVJccz170aZNicoASdyykfaz3rPlhkWVmrft7nRhB9l+Q==' 'sha512-9T+dD5PGlxlmgi9doy/7dC240XnUnMBXfqwRPGFSOI62hv5ok4m8HOEQt3kQWYv7OxO6kbXknHeKCeRLWenCEA==' 'sha512-9+uM4NivHTWsPYM9liroto0T2tIJe9mWlgJ3rKX7EGX8vDF11ViDbXn83WGbulQXRpEBn8GhVm+bD6T+yI++Kg==' 'sha512-FtojSnQVtdjxL+j6c5vNr0NMz5WCcseBvuf2ar2cBggxyO5pLgGtchDVZtvP4OJ9W5pKqUKiimrSYTwWUIlvSA==' 'sha512-Rv7cctzwPU3tPQVDYyiOXt1JZ4Ap/3GjG9UbhlUWOUdj/mDeUZ6H7AHzCd6sXPvyta+JQeiLZAZvbXSIa1J9ug==' 'sha512-aZf/meLRxlpnNk1waw+ZZqKPXOosuZDiDyHa6mls7adlRDN92TQDVkuIGEq74Xad9Vgh/qRO9yGvYDYXZXviDA==' 'sha512-6bShVUY1ZB/2egZ4Tltdn3xExFpVNJ6wnZ6tfetrXn/yt8zbQqYPBGvK7t6qiwb/DEGpMPL9EO5Zkfe8tkOYWw==' 'sha512-oFPgYUxkrqF/0O2EHiIiF9aP5DIQImLW8XW5hGZ9KJNCDJEb1lYEveeuCbLapQkcrFb2Xrd3gk1hZfc2vcAmww==' 'sha512-GB/9C66ZVnAb/pgp2oQSJX0DKV/xZOYG79wem/rytmvOw29h1peCjkvD7tU/YHYZLoJidYfLhdsMY/jN/TPuGA==' 'sha512-3uMX/QNcqXCvpJqXCIFtR6xPhi6lMwBytEJZbIGkmAnsEB9hSMQEYWYTzh3ySS40ukoAXJvp11CnVLn9gIA5og==' 'sha512-GW25CG0+XkPC+PZzWIY1NQ5FsE0EmrGINhyq7C2V9opyNURCoIOYjI/bc/SMVvEsneOng6CdCwIx80uWoeJDSA==' 'sha512-YgTTZu0v6V9mS2gL4ZceYNQ0Apqz1xL3oRRrD2I0ucaFQmm/ROIsgEvpkE18Qc4PLdmAQDxZvQWlqCXwJs494g==' 'sha512-aY3a+W2ontkmkBkbIUVh5j1Cmo2keJCDbBNcZWSfSXKExh6NmxT0CsS3R4NheEx6PP87SYrmgG/N0c/ErfZu6A==' 'sha512-AsMPw3X07ik1WELjrwPGSpeZEwTlKMDqUk65QpUaKK60Db9v7vgQYvPpjsAK8O2V86/It6ShqhIiqX/4Zd/lEQ==' 'sha512-LFsXZIiTH8uk1SyfeApsUP0JXBOFScJDQNIRqvtz18W4cxCOsiX/qbVgTmiFVppLlGjaLrQRrDCrDNd5uaGUgw==' 'sha512-ssEHpdfc19YOUaufOdKhWcI0j9MpGu0d6uidgN9/nSqnaVcLM4Jv6pqMS5Gysbevb1J/8htX52L2uHhENfPOkg==' 'sha512-t2ZGdGmOp3lPKyF6mqTlMlydj/Kd82Blxj7MfhcL40mcjTl9EIjBcz20KrGb5x8ty35QQsTFzCPZCKc0QwZi+w==' 'sha512-B065DeZ6RRG/ehoF7b3KK+vYb4rK/tkD359MhMAN7ZCf6wrz346/BBnOfBWogdalkZ37Yk4lSCF14Iw/WzOggQ==' 'sha512-c1VI0I4L/bzglIuhjSUa0S5hD714mqYcJzmVBonJRlcdLEHWwp3KzKeNcfOABN5VDZUe99BjKmQnniJaC/W9Fw==' 'sha512-Tg2STko/jtSz/JBdwfviSw1KwoZKnzrFwjIj5tIZ/soxoUUvhZhbwtfcyJbBXeAbZLQ+BGQCMKOEeINGEqJAbw==' 'sha512-f1c3kSurSDwEyNjVxCFhU+Q7xPrnM98bcArYYXjimnJednKDIk8D7dhDJvULs3BqjzFFsECm7YngzYwH4HlyXw==' 'sha512-xvPLzU8agX8bqbuTTTLFZantJ4hvA288YrfVHefjaFa79eiVCllTd+GAbLe+/a1I54t4rGPJTw2FMcWO+RFGJw==' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://diracgroup.store https://secure.diracgroup.store https://api.diracgroup.store https://fonts.googleapis.com https://fonts.gstatic.com; form-action 'self' https://api.diracgroup.store; frame-src 'none'; child-src 'none'; worker-src 'self' blob:; media-src 'self' data: blob:; manifest-src 'self'; upgrade-insecure-requests">
+<script id="dirac-a2f-boundary-probe-v225">
 (function(){
   'use strict';
-  var state = {
-    version:'dirac-a2f-independent-probe-v224',
-    loaded_at:new Date().toISOString(),
-    sentinel_after_external_runtime:window.__DIRAC_CENTRAL_API_ROUTER_V1__ === true,
-    api_runtime_version:(window.DiracApiRuntime && window.DiracApiRuntime.version) ? String(window.DiracApiRuntime.version) : '',
-    api_runtime_origin:(window.DiracApiRuntime && window.DiracApiRuntime.origin) ? String(window.DiracApiRuntime.origin) : '',
-    violations:[], errors:[]
+  if(window.__DIRAC_A2F_BOUNDARY_PROBE_V225__) return;
+  var state = window.__DIRAC_A2F_BOUNDARY_PROBE_V225__ = {
+    version:'dirac-a2f-boundary-probe-v225',
+    loaded:true,
+    loadedAt:new Date().toISOString(),
+    sentinelBeforeRouter:window.__DIRAC_CENTRAL_API_ROUTER_V1__ === true,
+    final:null,
+    error:''
   };
-  window.__DIRAC_A2F_INDEPENDENT_PROBE_V224__ = state;
-  function clean(v){ return String(v == null ? '' : v).slice(0,240); }
-  function render(){
-    if(!document.body) return;
-    var el=document.getElementById('diracA2FIndependentProbeV224');
-    if(!el){
-      el=document.createElement('section');
-      el.id='diracA2FIndependentProbeV224';
-      el.setAttribute('data-no-i18n','');
-      el.style.cssText='position:fixed;left:6px;right:6px;top:6px;z-index:2147483647;max-height:42vh;overflow:auto;background:#07111f;color:#fff;border:2px solid #22d3ee;border-radius:10px;padding:10px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;box-shadow:0 12px 42px rgba(0,0,0,.72);text-align:left;';
-      document.body.appendChild(el);
-    }
-    var lines=[
-      'DIRAC A2F INDEPENDENT PROBE v224',
-      'HTML_PROBE=LOADED',
-      'router_sentinel_after_external_runtime='+(state.sentinel_after_external_runtime?'TRUE':'FALSE'),
-      'DiracApiRuntime.version='+(state.api_runtime_version||'(empty)'),
-      'DiracApiRuntime.origin='+(state.api_runtime_origin||'(empty)'),
-      'securitypolicyviolation_count='+state.violations.length,
-      'window_error_count='+state.errors.length
-    ];
-    if(state.violations.length){
-      var v=state.violations[state.violations.length-1];
-      lines.push('LAST_CSP='+clean(v.effectiveDirective)+' | '+clean(v.blockedURI)+' | '+clean(v.sourceFile)+' | line '+clean(v.lineNumber));
-    }
-    if(state.errors.length){
-      var e=state.errors[state.errors.length-1];
-      lines.push('LAST_ERROR='+clean(e.message)+' | '+clean(e.source)+' | line '+clean(e.line));
-    }
-    el.textContent=lines.join('\n');
+  var nativeFetch = window.fetch ? window.fetch.bind(window) : null;
+  function clean(v){ return String(v == null ? '' : v).slice(0,180); }
+  function snapshot(headersLike){
+    var out={names:[],ticket:false,signature:false,timestamp:false,nonce:false,ticketLen:0,signatureLen:0,timestampLen:0,nonceLen:0};
+    try{
+      var h=new Headers(headersLike||{}), names=[];
+      h.forEach(function(_v,k){ names.push(String(k||'').toLowerCase()); });
+      names.sort(); out.names=names;
+      function take(name,key){ var v=String(h.get(name)||''); out[key]=v.length>0; out[key+'Len']=v.length; }
+      take('X-Dirac-A2F-Ticket','ticket');
+      take('X-Dirac-A2F-Signature','signature');
+      take('X-Dirac-A2F-Timestamp','timestamp');
+      take('X-Dirac-A2F-Nonce','nonce');
+    }catch(e){ out.snapshotError=clean(e&&e.message||e); }
+    return out;
   }
-  document.addEventListener('securitypolicyviolation',function(e){
-    state.violations.push({effectiveDirective:e.effectiveDirective||'',blockedURI:e.blockedURI||'',sourceFile:e.sourceFile||'',lineNumber:e.lineNumber||0});
-    if(state.violations.length>12) state.violations.shift();
-    render();
-  });
-  window.addEventListener('error',function(e){
-    state.errors.push({message:e.message||'',source:e.filename||'',line:e.lineno||0});
-    if(state.errors.length>12) state.errors.shift();
-    render();
-  });
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',render,{once:true});
-  else setTimeout(render,0);
+  function render(title, extra){
+    function run(){
+      var box=document.getElementById('diracA2FDebugV225');
+      if(!box){
+        box=document.createElement('pre');
+        box.id='diracA2FDebugV225';
+        box.setAttribute('style','position:fixed;left:8px;right:8px;top:8px;z-index:2147483647;max-height:42vh;overflow:auto;margin:0;padding:10px;border:2px solid #b91c1c;border-radius:8px;background:#fff;color:#111;font:11px/1.35 monospace;white-space:pre-wrap;word-break:break-word;');
+        (document.body||document.documentElement).appendChild(box);
+      }
+      var f=state.final||{};
+      box.textContent=[
+        'DIRAC A2F DEBUG v225',
+        'STATUS='+clean(title||'LOADED'),
+        'probe_loaded=YES',
+        'sentinel_before_router='+(state.sentinelBeforeRouter?'TRUE':'FALSE'),
+        'sentinel_now='+(window.__DIRAC_CENTRAL_API_ROUTER_V1__===true?'TRUE':'FALSE'),
+        'api_runtime='+(window.DiracApiRuntime&&window.DiracApiRuntime.version?clean(window.DiracApiRuntime.version):'(none)'),
+        'final_method='+(f.method||'(none)'),
+        'final_url='+(f.url||'(none)'),
+        'ticket='+(f.ticket?'YES':'NO')+' len='+(f.ticketLen||0),
+        'signature='+(f.signature?'YES':'NO')+' len='+(f.signatureLen||0),
+        'timestamp='+(f.timestamp?'YES':'NO')+' len='+(f.timestampLen||0),
+        'nonce='+(f.nonce?'YES':'NO')+' len='+(f.nonceLen||0),
+        'header_names='+(f.names?f.names.join(','):'(none)'),
+        'error='+(state.error||'(none)'),
+        extra?('note='+clean(extra)):''
+      ].filter(Boolean).join('\\n');
+    }
+    if(document.body) run(); else document.addEventListener('DOMContentLoaded',run,{once:true});
+  }
+  render('LOADED');
+  document.addEventListener('DOMContentLoaded',function(){ render('DOM_READY'); },{once:true});
+  if(!nativeFetch){ state.error='native_fetch_unavailable'; render('NO_FETCH'); return; }
+  window.fetch=function(input,init){
+    var raw='';
+    try{ raw=typeof input==='string'?input:(input&&input.url)||''; }catch(_e){}
+    var u=null; try{ u=new URL(raw,window.location.href); }catch(_e2){}
+    var action=u?String(u.searchParams.get('action')||'').toLowerCase():'';
+    var isA2F=/^(dirac_mfa_passkey_start|dirac_mfa_passkey_verify)$/.test(action);
+    if(isA2F){
+      var s=snapshot((init&&init.headers)||((typeof Request!=='undefined'&&input instanceof Request)?input.headers:null));
+      s.method=String((init&&init.method)||((input&&input.method)||'GET')).toUpperCase();
+      s.url=(u?u.origin+u.pathname+'?action='+action:clean(raw));
+      state.final=s;
+      render('FINAL_BEFORE_NATIVE_FETCH');
+    }
+    try{
+      var p=nativeFetch(input,init);
+      if(isA2F&&p&&typeof p.catch==='function'){
+        return p.catch(function(err){ state.error=clean(err&&err.message||err||'fetch_failed'); render('FETCH_REJECTED'); throw err; });
+      }
+      return p;
+    }catch(err){
+      if(isA2F){ state.error=clean(err&&err.message||err||'fetch_throw'); render('FETCH_THROW'); }
+      throw err;
+    }
+  };
 })();
 </script>
 <script id="dirac-central-api-router-v1">
@@ -68,248 +98,6 @@
   var API_ORIGIN = 'https://api.diracgroup.store';
   var nativeFetch = window.fetch ? window.fetch.bind(window) : null;
   if(!nativeFetch) return;
-
-  function diracA2FDebugHeaderSnapshotV222(headersLike){
-    try{
-      var headers = new Headers(headersLike || {});
-      var names = [];
-      headers.forEach(function(_value, name){ names.push(String(name || '').toLowerCase()); });
-      names.sort();
-      var expected = [
-        'x-dirac-a2f-ticket',
-        'x-dirac-a2f-signature',
-        'x-dirac-a2f-timestamp',
-        'x-dirac-a2f-nonce',
-        'x-dirac-csrf-token',
-        'x-csrf-token',
-        'x-dirac-page-nonce'
-      ];
-      var proof = {};
-      expected.forEach(function(name){
-        var value = String(headers.get(name) || '');
-        proof[name] = {present:value.length > 0, length:value.length};
-      });
-      return {header_names:names, proof:proof};
-    }catch(error){
-      return {header_names:[], proof:{}, snapshot_error:String(error && error.message || error || 'header_snapshot_failed').slice(0,160)};
-    }
-  }
-
-  function diracA2FDebugRuntimeV222(){
-    if(window.__DIRAC_A2F_PREFLIGHT_DEBUG_V222__) return window.__DIRAC_A2F_PREFLIGHT_DEBUG_V222__;
-    var state = {
-      version:'dirac-a2f-preflight-debug-v223',
-      started_at:new Date().toISOString(),
-      events:[],
-      max_events:80
-    };
-    function safeValue(value, depth){
-      depth = Number(depth || 0);
-      if(depth > 5) return '[depth-limit]';
-      if(value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
-      if(Array.isArray(value)) return value.slice(0,80).map(function(item){ return safeValue(item, depth + 1); });
-      if(typeof value === 'object'){
-        var out = {};
-        Object.keys(value).slice(0,80).forEach(function(key){
-          if(/token|ticket|signature|nonce|csrf/i.test(key) && typeof value[key] === 'string'){
-            out[key] = '[redacted:length=' + String(value[key] || '').length + ']';
-          }else{
-            out[key] = safeValue(value[key], depth + 1);
-          }
-        });
-        return out;
-      }
-      return String(value);
-    }
-    state.snapshotHeaders = diracA2FDebugHeaderSnapshotV222;
-    state.record = function(stage, data){
-      var entry = {
-        n:state.events.length + 1,
-        at:new Date().toISOString(),
-        ms:Date.now(),
-        stage:String(stage || 'unknown').slice(0,120),
-        data:safeValue(data || {}, 0)
-      };
-      state.events.push(entry);
-      if(state.events.length > state.max_events) state.events.splice(0, state.events.length - state.max_events);
-      try{ console.error('[dirac-a2f-debug-v223]', JSON.stringify(entry)); }catch(_){}
-      try{ state.render(); }catch(_){}
-      return entry;
-    };
-    state.diagnose = function(){
-      function latest(stage){
-        for(var i=state.events.length-1;i>=0;i--){ if(state.events[i].stage === stage) return state.events[i]; }
-        return null;
-      }
-      var bootstrap = latest('a2f_bootstrap_response');
-      var attached = latest('a2f_proof_attached');
-      var router = latest('router_final_before_native_fetch');
-      function proofPresent(entry, name){
-        try{ return entry && entry.data && entry.data.headers && entry.data.headers.proof && entry.data.headers.proof[name] && entry.data.headers.proof[name].present === true; }catch(_){ return false; }
-      }
-      if(bootstrap){
-        var bp = bootstrap.data && bootstrap.data.proof || {};
-        if(!bp.timestamp_present) return 'STOP@BOOTSTRAP_RESPONSE: browser tidak dapat membaca X-Dirac-A2F-Timestamp dari response bootstrap. Periksa Access-Control-Expose-Headers pada response domain_health.';
-        if(!bp.nonce_present) return 'STOP@BOOTSTRAP_RESPONSE: browser tidak dapat membaca X-Dirac-A2F-Nonce dari response bootstrap. Periksa Access-Control-Expose-Headers pada response domain_health.';
-      }
-      if(attached && !proofPresent(attached,'x-dirac-a2f-timestamp')) return 'STOP@PROOF_ATTACH: timestamp hilang sebelum next.headers selesai dibentuk.';
-      if(attached && !proofPresent(attached,'x-dirac-a2f-nonce')) return 'STOP@PROOF_ATTACH: nonce hilang sebelum next.headers selesai dibentuk.';
-      if(router && !proofPresent(router,'x-dirac-a2f-timestamp')) return 'STOP@CENTRAL_ROUTER: timestamp hilang di antara wrapper Passkey dan router terdalam.';
-      if(router && !proofPresent(router,'x-dirac-a2f-nonce')) return 'STOP@CENTRAL_ROUTER: nonce hilang di antara wrapper Passkey dan router terdalam.';
-      if(router && proofPresent(router,'x-dirac-a2f-ticket') && proofPresent(router,'x-dirac-a2f-signature') && proofPresent(router,'x-dirac-a2f-timestamp') && proofPresent(router,'x-dirac-a2f-nonce')){
-        return 'JS_BOUNDARY_PASS: keempat header A2F masih ada tepat sebelum nativeFetch. Jika server tetap melihat preflight tanpa timestamp/nonce, titik masalah berada setelah JavaScript: pembentukan CORS preflight oleh browser atau ingress/platform.';
-      }
-      return 'BELUM_CUKUP_DATA: jalankan Passkey sampai request gagal lalu lihat event terakhir.';
-    };
-    state.dump = function(){
-      return JSON.stringify({
-        version:state.version,
-        started_at:state.started_at,
-        location:String(window.location.href || ''),
-        origin:String(window.location.origin || ''),
-        user_agent:String(navigator.userAgent || ''),
-        diagnosis:state.diagnose(),
-        events:state.events
-      }, null, 2);
-    };
-    state.renderFailureBanner = function(){
-      if(!document.body) return;
-      function latest(stage){
-        for(var i=state.events.length-1;i>=0;i--){ if(state.events[i].stage === stage) return state.events[i]; }
-        return null;
-      }
-      var rejected = latest('a2f_flow_rejected');
-      var banner = document.getElementById('diracA2FDebugV223FailureBanner');
-      if(!rejected){ if(banner) banner.remove(); return; }
-      var router = latest('router_final_before_native_fetch');
-      var attached = latest('a2f_proof_attached');
-      var bootstrap = latest('a2f_bootstrap_response');
-      function proof(entry, name){
-        try{
-          var p = entry && entry.data && entry.data.headers && entry.data.headers.proof && entry.data.headers.proof[name];
-          return p ? ((p.present ? 'YES' : 'NO') + '(len=' + Number(p.length || 0) + ')') : 'N/A';
-        }catch(_){ return 'N/A'; }
-      }
-      function bootstrapProof(name){
-        try{
-          var p = bootstrap && bootstrap.data && bootstrap.data.proof || {};
-          var presentKey = name + '_present';
-          var lengthKey = name + '_length';
-          return Object.prototype.hasOwnProperty.call(p,presentKey) ? ((p[presentKey] ? 'YES' : 'NO') + '(len=' + Number(p[lengthKey] || 0) + ')') : 'N/A';
-        }catch(_){ return 'N/A'; }
-      }
-      var source = router || attached;
-      var errorName = String(rejected.data && rejected.data.error_name || '');
-      var errorMessage = String(rejected.data && rejected.data.error_message || '').slice(0,240);
-      var lines = [
-        'DIRAC A2F DEBUG v223 - REQUEST FAILED',
-        'DIAGNOSIS: ' + state.diagnose(),
-        'BROWSER ERROR: ' + errorName + (errorMessage ? ' | ' + errorMessage : ''),
-        'BOOTSTRAP: timestamp=' + bootstrapProof('timestamp') + ' nonce=' + bootstrapProof('nonce'),
-        'FINAL BEFORE nativeFetch: ticket=' + proof(source,'x-dirac-a2f-ticket') +
-          ' signature=' + proof(source,'x-dirac-a2f-signature') +
-          ' timestamp=' + proof(source,'x-dirac-a2f-timestamp') +
-          ' nonce=' + proof(source,'x-dirac-a2f-nonce'),
-        'LAST STAGE: #' + Number(rejected.n || 0) + ' ' + String(rejected.stage || '')
-      ];
-      if(!banner){
-        banner = document.createElement('section');
-        banner.id = 'diracA2FDebugV223FailureBanner';
-        banner.setAttribute('data-no-i18n','');
-        banner.style.cssText = 'position:fixed;left:6px;right:6px;top:6px;z-index:2147483647;max-height:38vh;overflow:auto;background:#240b0b;color:#fff;border:2px solid #fb7185;border-radius:10px;padding:10px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;box-shadow:0 12px 42px rgba(0,0,0,.72);text-align:left;';
-        document.body.appendChild(banner);
-      }
-      banner.textContent = lines.join('\n');
-      try{ sessionStorage.setItem('dirac_a2f_debug_v223_last', state.dump()); }catch(_e){}
-    };
-    state.render = function(){
-      if(!document.body) return;
-      var panel = document.getElementById('diracA2FDebugV222Panel');
-      if(!panel){
-        panel = document.createElement('section');
-        panel.id = 'diracA2FDebugV222Panel';
-        panel.setAttribute('data-no-i18n','');
-        panel.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:2147483647;max-height:46vh;overflow:auto;background:#070b12;color:#d9f4ff;border:1px solid #38bdf8;border-radius:12px;padding:10px;font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;box-shadow:0 12px 40px rgba(0,0,0,.55);text-align:left;';
-        var head = document.createElement('div');
-        head.style.cssText = 'display:flex;align-items:center;gap:8px;position:sticky;top:0;background:#070b12;padding-bottom:7px;';
-        var title = document.createElement('strong');
-        title.textContent = 'DIRAC A2F DEBUG v223';
-        title.style.cssText = 'flex:1;color:#7dd3fc;font-size:12px;';
-        var copy = document.createElement('button');
-        copy.type = 'button';
-        copy.textContent = 'COPY DEBUG';
-        copy.style.cssText = 'border:1px solid #38bdf8;background:#0c1725;color:#d9f4ff;border-radius:7px;padding:5px 8px;font:inherit;';
-        copy.addEventListener('click', function(){
-          var dump = state.dump();
-          function copied(){ copy.textContent='COPIED'; setTimeout(function(){ copy.textContent='COPY DEBUG'; },1200); }
-          function fallbackCopy(){
-            try{
-              var area = document.createElement('textarea');
-              area.value = dump;
-              area.setAttribute('readonly','');
-              area.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0;';
-              document.body.appendChild(area);
-              area.focus(); area.select(); area.setSelectionRange(0, area.value.length);
-              var ok = document.execCommand && document.execCommand('copy');
-              area.remove();
-              if(ok) copied();
-              else { copy.textContent='COPY FAILED'; setTimeout(function(){ copy.textContent='COPY DEBUG'; },1600); }
-            }catch(_e){ copy.textContent='COPY FAILED'; setTimeout(function(){ copy.textContent='COPY DEBUG'; },1600); }
-          }
-          try{
-            if(navigator.clipboard && navigator.clipboard.writeText){
-              navigator.clipboard.writeText(dump).then(copied).catch(fallbackCopy);
-            }else fallbackCopy();
-          }catch(_){ fallbackCopy(); }
-        });
-        var toggle = document.createElement('button');
-        toggle.type = 'button';
-        toggle.textContent = 'MIN';
-        toggle.style.cssText = 'border:1px solid #64748b;background:#111827;color:#e5e7eb;border-radius:7px;padding:5px 8px;font:inherit;';
-        head.appendChild(title); head.appendChild(copy); head.appendChild(toggle);
-        var diagnosis = document.createElement('div');
-        diagnosis.id = 'diracA2FDebugV222Diagnosis';
-        diagnosis.style.cssText = 'white-space:pre-wrap;color:#fde68a;margin:2px 0 7px;';
-        var pre = document.createElement('pre');
-        pre.id = 'diracA2FDebugV222Pre';
-        pre.style.cssText = 'white-space:pre-wrap;word-break:break-word;margin:0;color:#d9f4ff;';
-        toggle.addEventListener('click', function(){
-          var hidden = pre.style.display === 'none';
-          pre.style.display = hidden ? 'block' : 'none';
-          diagnosis.style.display = hidden ? 'block' : 'none';
-          toggle.textContent = hidden ? 'MIN' : 'MAX';
-        });
-        panel.appendChild(head); panel.appendChild(diagnosis); panel.appendChild(pre);
-        document.body.appendChild(panel);
-      }
-      var diagnosisNode = document.getElementById('diracA2FDebugV222Diagnosis');
-      var preNode = document.getElementById('diracA2FDebugV222Pre');
-      if(diagnosisNode) diagnosisNode.textContent = 'DIAGNOSIS: ' + state.diagnose();
-      if(preNode){
-        var visible = state.events.slice(-12).map(function(entry){
-          return '#' + entry.n + ' ' + entry.stage + '\n' + JSON.stringify(entry.data, null, 2);
-        }).join('\n\n');
-        preNode.textContent = visible || 'Menunggu event A2F...';
-      }
-      try{ state.renderFailureBanner(); }catch(_e){}
-    };
-    window.__DIRAC_A2F_PREFLIGHT_DEBUG_V222__ = state;
-    window.DiracA2FDebugV222 = state;
-    if(document.readyState === 'loading'){
-      document.addEventListener('DOMContentLoaded', function(){ state.render(); }, {once:true});
-    }else{
-      setTimeout(function(){ state.render(); },0);
-    }
-    state.record('debug_runtime_loaded',{
-      href:String(window.location.href || ''),
-      origin:String(window.location.origin || ''),
-      user_agent:String(navigator.userAgent || ''),
-      csp_meta_present:!!document.getElementById('dirac-csp-sha512-v1')
-    });
-    return state;
-  }
-
-  var diracA2FDebugV222 = diracA2FDebugRuntimeV222();
 
   function parseInputUrl(input){
     try{
@@ -353,32 +141,6 @@
         next.headers = routedHeaders;
       }
     }catch(_){}
-
-    try{
-      var debugAction = String(target.searchParams.get('action') || '').toLowerCase();
-      var debugHeaders = diracA2FDebugHeaderSnapshotV222(next.headers || ((typeof Request !== 'undefined' && input instanceof Request) ? input.headers : {}));
-      if(/^(dirac_mfa_passkey_start|dirac_mfa_passkey_verify)$/.test(debugAction)){
-        diracA2FDebugV222.record('router_final_before_native_fetch',{
-          source_url:String(sourceUrl.href || ''),
-          target_url:String(target.href || ''),
-          action:debugAction,
-          method:String(next.method || ((input && input.method) || 'GET')).toUpperCase(),
-          mode:String(next.mode || ''),
-          credentials:String(next.credentials || ''),
-          headers:debugHeaders
-        });
-      }else if(debugAction === 'domain_health' && target.searchParams.has('_dirac_a2f_body_hash')){
-        diracA2FDebugV222.record('router_bootstrap_before_native_fetch',{
-          target_url:String(target.href || ''),
-          method:String(next.method || 'GET').toUpperCase(),
-          mode:String(next.mode || ''),
-          credentials:String(next.credentials || ''),
-          headers:debugHeaders
-        });
-      }
-    }catch(debugError){
-      try{ diracA2FDebugV222.record('router_debug_snapshot_error',{message:String(debugError && debugError.message || debugError || '')}); }catch(_){}
-    }
 
     if(typeof Request !== 'undefined' && input instanceof Request){
       try{
@@ -428,7 +190,7 @@
   try{
     var url = new URL(window.location.href);
     if((url.pathname || '/') === '/'){
-      window.location.replace(url.origin + '/masuk.html?t=a2f-debug-v222');
+      window.location.replace(url.origin + '/masuk.html');
       return;
     }
     if(!/\/masuk\.html$/i.test(url.pathname || '')) return;
@@ -5488,6 +5250,7 @@ html[data-effective-theme="light"] #a2fModal .dirac-authenticator-secret-safe{co
 
 </head>
 <body data-auth-mode="login">
+<div id="dirac-debug-static-v225" style="position:fixed;right:6px;bottom:6px;z-index:2147483646;padding:4px 6px;border:1px solid #111;background:#fff;color:#111;font:10px monospace">DBG-V225-STATIC</div>
 
 <script id="dirac-httponly-early-storage-guard-js">
 (function(){
@@ -5752,7 +5515,7 @@ html[data-effective-theme="light"] #a2fModal .dirac-authenticator-secret-safe{co
         <aside class="a2f-side" aria-label="Ringkasan keamanan akun">
           <div class="a2f-mini-brand">
             <span class="a2f-brand-icon" aria-hidden="true"><img class="a2f-brand-logo" src="umroh.webp" alt="" loading="eager" decoding="async" onerror="this.closest('.a2f-brand-icon').style.display='none'"></span>
-            <span><strong>Dirac Secure</strong><small data-i18n="a2fSideSub">Account protection layer</small><small data-no-i18n>DBG-V224-STATIC</small></span>
+            <span><strong>Dirac Secure</strong><small data-i18n="a2fSideSub">Account protection layer</small></span>
           </div>
           <div class="a2f-step-indicator" id="a2fStepIndicator" aria-live="polite">Langkah 1 dari 4</div>
           <ol class="a2f-steps" aria-label="Langkah aktivasi A2F">
@@ -12120,27 +11883,6 @@ html[data-effective-theme="dark"] #a2fModal[data-dirac-passkey-busy="true"] #a2f
   if(window.__DIRAC_PASSKEY_HEALTH_ENDPOINT_FINAL_FIX__) return;
   window.__DIRAC_PASSKEY_HEALTH_ENDPOINT_FINAL_FIX__ = true;
 
-  function a2fDebugV222(stage, data){
-    try{
-      if(window.DiracA2FDebugV222 && typeof window.DiracA2FDebugV222.record === 'function'){
-        window.DiracA2FDebugV222.record(stage, data || {});
-      }
-    }catch(_e){}
-  }
-
-  function a2fHeaderSnapshotV222(headersLike){
-    try{
-      if(window.DiracA2FDebugV222 && typeof window.DiracA2FDebugV222.snapshotHeaders === 'function'){
-        return window.DiracA2FDebugV222.snapshotHeaders(headersLike);
-      }
-      var headers = new Headers(headersLike || {});
-      var names = [];
-      headers.forEach(function(_value,name){ names.push(String(name || '').toLowerCase()); });
-      names.sort();
-      return {header_names:names, proof:{}};
-    }catch(_e){ return {header_names:[], proof:{}}; }
-  }
-
   function parsePayload(init){
     try{
       var body = init && init.body;
@@ -12258,12 +12000,6 @@ html[data-effective-theme="dark"] #a2fModal[data-dirac-passkey-busy="true"] #a2f
     }
 
     return sha256RawBodyHex(rawBody).then(function(bodyHash){
-      a2fDebugV222('a2f_bootstrap_request',{
-        action:action,
-        endpoint:String(endpoint || ''),
-        body_sha256:bodyHash,
-        raw_body_length:typeof rawBody === 'string' ? rawBody.length : -1
-      });
       if(typeof previousFetch !== 'function'){
         throw new Error('DIRAC_A2F_BOOTSTRAP_FETCH_UNAVAILABLE');
       }
@@ -12287,29 +12023,6 @@ html[data-effective-theme="dark"] #a2fModal[data-dirac-passkey-busy="true"] #a2f
         var pageNonce = readResponseHeader(response, 'X-Dirac-Page-Nonce');
         var a2fTicket = readResponseHeader(response, 'X-Dirac-A2F-Ticket');
         var a2fSignature = readResponseHeader(response, 'X-Dirac-A2F-Signature'); var a2fTimestamp = readResponseHeader(response, 'X-Dirac-A2F-Timestamp'); var a2fNonce = readResponseHeader(response, 'X-Dirac-A2F-Nonce');
-        var exposedHeaderNamesV222 = [];
-        try{ response.headers.forEach(function(_value,name){ exposedHeaderNamesV222.push(String(name || '').toLowerCase()); }); exposedHeaderNamesV222.sort(); }catch(_e){}
-        a2fDebugV222('a2f_bootstrap_response',{
-          status:Number(response.status || 0),
-          ok:response.ok === true,
-          response_header_names:exposedHeaderNamesV222,
-          proof:{
-            csrf_present:csrfToken.length > 0,
-            csrf_length:csrfToken.length,
-            page_nonce_present:pageNonce.length > 0,
-            page_nonce_length:pageNonce.length,
-            ticket_present:a2fTicket.length > 0,
-            ticket_length:a2fTicket.length,
-            signature_present:a2fSignature.length > 0,
-            signature_length:a2fSignature.length,
-            timestamp_present:a2fTimestamp.length > 0,
-            timestamp_length:a2fTimestamp.length,
-            timestamp_format_10_digits:/^\d{10}$/.test(a2fTimestamp),
-            nonce_present:a2fNonce.length > 0,
-            nonce_length:a2fNonce.length,
-            nonce_format_32_urlsafe:/^[A-Za-z0-9_-]{32}$/.test(a2fNonce)
-          }
-        });
         var ticketParts = a2fTicket.split('.');
 
         if(!looksLikeSignedToken(csrfToken)
@@ -12332,11 +12045,6 @@ html[data-effective-theme="dark"] #a2fModal[data-dirac-passkey-busy="true"] #a2f
         headers.set('X-Dirac-A2F-Ticket', a2fTicket);
         headers.set('X-Dirac-A2F-Signature', a2fSignature); headers.set('X-Dirac-A2F-Timestamp', a2fTimestamp); headers.set('X-Dirac-A2F-Nonce', a2fNonce);
         next.headers = headers;
-        a2fDebugV222('a2f_proof_attached',{
-          action:action,
-          endpoint:String(endpoint || ''),
-          headers:a2fHeaderSnapshotV222(headers)
-        });
         return next;
       });
     });
@@ -12348,28 +12056,8 @@ html[data-effective-theme="dark"] #a2fModal[data-dirac-passkey-busy="true"] #a2f
       var url = toUrl(input);
       if(isLegacyA2FEndpoint(url) && isPasskeyPayload(init)){
         var endpoint = passkeyHealthEndpoint(url);
-        a2fDebugV222('a2f_passkey_intercepted',{
-          legacy_url:url ? String(url.href || '') : '',
-          rewritten_endpoint:String(endpoint || ''),
-          initial_method:String(init && init.method || 'POST').toUpperCase(),
-          initial_headers:a2fHeaderSnapshotV222(init && init.headers || {})
-        });
         return attachHealthSecurity(cloneInit(init), endpoint).then(function(next){
-          a2fDebugV222('a2f_before_previous_fetch',{
-            endpoint:String(endpoint || ''),
-            method:String(next && next.method || ''),
-            mode:String(next && next.mode || ''),
-            credentials:String(next && next.credentials || ''),
-            headers:a2fHeaderSnapshotV222(next && next.headers || {})
-          });
           return previousFetch(endpoint, next);
-        }).catch(function(error){
-          a2fDebugV222('a2f_flow_rejected',{
-            endpoint:String(endpoint || ''),
-            error_name:String(error && error.name || ''),
-            error_message:String(error && error.message || error || '').slice(0,240)
-          });
-          throw error;
         });
       }
       return previousFetch(input, init);
@@ -12377,7 +12065,7 @@ html[data-effective-theme="dark"] #a2fModal[data-dirac-passkey-busy="true"] #a2f
   }
 
   window.DiracPasskeyEndpointDebug = {
-    version:'passkey-health-endpoint-final-v1+debug-v222',
+    version:'passkey-health-endpoint-final-v1',
     passkeyStart:'/api/health?action=dirac_mfa_passkey_start',
     passkeyVerify:'/api/health?action=dirac_mfa_passkey_verify',
     emailAndAuthenticator:'unchanged /api/2fa endpoints'
