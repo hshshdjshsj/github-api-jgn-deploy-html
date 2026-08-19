@@ -8171,7 +8171,7 @@ function customerSecurityLostPasskeyRecoveryCodeHash(requestId, customerId, code
 }
 
 function customerSecurityLostPasskeyRecoverySessionHash(token) {
-  return customerSecurityLostPasskeyHashHex('recovery-session', token);
+  const secret = customerSecurityRecoveryWorkerSecret(); if (!secret) throw new Error('DIRAC_RECOVERY_SESSION_HASH_SECRET_INVALID'); return crypto.createHmac('sha256', secret).update('dirac-recovery-session-hash-v1\n').update(String(token || '')).digest('hex');
 }
 
 function customerSecurityGenerateFileKeyText() {
