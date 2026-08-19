@@ -76,6 +76,16 @@ function diracUniversalBrowserOriginsV250() {
       if (u.protocol === 'https:' || (process.env.NODE_ENV !== 'production' && u.protocol === 'http:')) origins.add(u.origin.toLowerCase());
     } catch (_) {}
   };
+  for (const role of DIRAC_UNIVERSAL_APP_ROLES_V250) add(diracRoleOriginV250(role));
+  for (const item of ('api,panel,website,cs,' + String(process.env.DIRAC_OFFICIAL_SUBDOMAINS || '')).split(',')) {
+    const subdomain = String(item || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+    if (!subdomain) continue;
+    if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(subdomain)) {
+      if (process.env.NODE_ENV === 'production') throw new Error('DIRAC_OFFICIAL_SUBDOMAIN_INVALID');
+      continue;
+    }
+    add('https://' + subdomain + '.' + diracBaseDomainV250());
+  }
   add(process.env.DOMAIN_SITE_URL);
   add(process.env.SITE_URL);
   return origins;
@@ -32180,10 +32190,7 @@ try {
         if (!origins.includes(origin)) origins.push(origin);
       };
 
-      add(diracBaseOriginV250());
-      add(diracLocalOriginV250());
-      add(process.env.DOMAIN_SITE_URL);
-      add(process.env.SITE_URL);
+      diracUniversalBrowserOriginsV250().forEach((origin) => add(origin));
 
       // Produksi paling ketat: tidak lagi menerima hardcoded preview Vercel.
       // Tambahan origin hanya diterima bila sengaja diaktifkan lewat ENV ini.
@@ -36291,8 +36298,8 @@ async function customerSecurityLostPasskeyArgon2VerifyHashV157(label, value, enc
 /* RECO donor source lines 3991-4006 */
 function customerSecurityLostPasskeyOfficialBaseUrlV157() {
   // SERVER 2 SECURE ORIGIN LOCK v169:
-  // Lost-passkey static HTML and vault API are only allowed on secure.diracgroup.store.
-  // Do not fall back to diracgroup.store or www.diracgroup.store.
+  // Lost-passkey static HTML and vault API are only allowed on the ENV-derived recovery origin.
+  // Do not fall back to the base origin or any other unapproved host.
   const requiredOrigin = diracRoleOriginV250('recovery');
   const raw = String(process.env.DIRAC_LOST_PASSKEY_RECOVERY_BASE_URL || requiredOrigin).trim().replace(/\/+$/, '');
   try {
@@ -36599,13 +36606,13 @@ function customerSecurityLostPasskeyEmailEscapeHtmlV157(value) {
 
 /* RECO donor source lines 4429-4441 */
 function customerSecurityLostPasskeyRecoveryEmailBannerUrlV172() {
-  const fallback = 'https://secure.diracgroup.store/mmmail.webp';
+  const fallback = diracRoleOriginV250('recovery') + '/mmmail.webp';
   const raw = String(process.env.DIRAC_RECOVERY_EMAIL_BANNER_URL || process.env.DIRAC_LOST_PASSKEY_EMAIL_BANNER_URL || fallback).trim();
   try {
     const url = new URL(raw);
     const host = url.hostname.toLowerCase();
     if (url.protocol !== 'https:') return fallback;
-    if (host !== diracBaseDomainV250() && host !== 'www.diracgroup.store' && host !== diracRoleHostnameV250('recovery') && !host.endsWith('.diracgroup.store')) return fallback;
+    if (!new Set(Array.from(diracUniversalBrowserOriginsV250(), (origin) => new URL(origin).hostname.toLowerCase()).filter((candidate) => candidate === diracBaseDomainV250() || candidate.endsWith('.' + diracBaseDomainV250()))).has(host)) return fallback;
     return url.toString();
   } catch (_) {
     return fallback;
@@ -36685,7 +36692,7 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   const recoveryLink = customerSecurityLostPasskeyOfficialEmailLinkV187(context);
   if (!recoveryLink) return { ok: false, status: 500, code: 'RECOVERY_EMAIL_LINK_INVALID', message: 'Link recovery resmi tidak valid.' };
   const emailContext = Object.assign({}, context, { recoveryLink });
-  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || 'Dirac Secure <no-reply@diracgroup.store>').trim();
+  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Secure <no-reply@' + diracBaseDomainV250() + '>')).trim();
   const subject = 'DiracGroup Secure Recovery - Link Pemulihan Passkey';
   const text = [
     'Link recovery Passkey resmi sudah dibuat.',
@@ -41039,6 +41046,7 @@ function diracCentralIngressAllowedHostsV228() {
     diracBaseDomainV250(),
     diracRoleHostnameV250(diracAppRoleV250())
   ]);
+  allowed.add('api.' + diracBaseDomainV250());
   ['DOMAIN_SITE_URL', 'SITE_URL'].forEach((name) => {
     const raw = String(process.env[name] || '').trim();
     if (!raw) return;
@@ -42921,7 +42929,7 @@ const DIRAC_CENTRAL_THREAT_CHECKS_V146 = [
   ['upload_webshell', /\.phtml\b|\.phar\b|\.jspx?\b|\.aspx?\b|<\?php|\bbase64_decode\b|\beval\s*\(|\bshell_exec\b|\bsystem\s*\(|\bpassthru\s*\(/i],
   ['secret_file_probing', /\.env\b|\.git\b|\.svn\b|\.hg\b|\.aws\/credentials\b|\bid_rsa\b|\bwp-config\.php\b|\bconfig\.php\b|\bcomposer\.json\b|\bpackage-lock\.json\b|\/\.well-known\/security\.txt/i],
   ['csv_formula_injection', /(?:^|[\n\r=,\t ])(?:=cmd|=hyperlink|\+cmd|-cmd|@cmd)\b/i],
-  ['open_redirect', /\b(?:redirect|return|next|url|target|continue|callback)\s*=\s*(?:https?:)?\/\/(?!diracgroup\.store\b)/i],
+  ['open_redirect', new RegExp('\\b(?:redirect|return|next|url|target|continue|callback)\\s*=\\s*(?:https?:)?//(?!(?:' + Array.from(diracUniversalBrowserOriginsV250(), (origin) => new URL(origin).hostname.toLowerCase()).filter((host) => host === diracBaseDomainV250() || host.endsWith('.' + diracBaseDomainV250())).map((host) => host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')(?::443)?(?:[/?#]|$))', 'i')],
   ['oauth_token_probe', /\b(?:access_token|refresh_token|id_token|client_secret|authorization_code)\b\s*[:=]/i],
   ['graphql_introspection', /\b__schema\b|\b__type\b|\bintrospectionquery\b/i],
   ['jwt_tampering', /\beyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{10,}\.?[a-zA-Z0-9_-]*\b.*\b(?:none|alg|kid|jku|x5u)\b/i]
