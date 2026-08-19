@@ -330,7 +330,7 @@ function setCors(req, res, options = {}) {
   );
   if (options.isDomainAction) {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    const exposedHeaders = ['X-Domain-Token-Refreshed', 'Retry-After', 'X-Dirac-Page-Nonce'];
+    const exposedHeaders = ['X-Domain-Token-Refreshed', 'Retry-After', 'X-Dirac-Page-Nonce', ...(String(req && req.query && req.query.action || '').trim() === 'domain_health' ? ['X-Dirac-A2F-Ticket', 'X-Dirac-A2F-Signature', 'X-Dirac-A2F-Timestamp', 'X-Dirac-A2F-Nonce'] : [])];
     if (!shouldHideDomainAuthTokens()) {
       exposedHeaders.unshift('X-Domain-Access-Token', 'X-Domain-Refresh-Token');
     }
@@ -44877,7 +44877,7 @@ function diracCentralIssueA2FRequestProofV230(req, res, action) {
   if (!signature) return { ok: false, reason: 'a2f_issuer_signature_failed' };
   try {
     res.setHeader('X-Dirac-A2F-Ticket', ticket);
-    res.setHeader('X-Dirac-A2F-Signature', signature);
+    res.setHeader('X-Dirac-A2F-Signature', signature); res.setHeader('X-Dirac-A2F-Timestamp', String(payload.iat)); res.setHeader('X-Dirac-A2F-Nonce', String(payload.jti));
   } catch (_) {
     return { ok: false, reason: 'a2f_issuer_header_failed' };
   }
