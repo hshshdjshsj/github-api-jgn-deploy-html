@@ -40062,43 +40062,6 @@ function diracCentralEmitDebugV211(ctx, event, extra) {
     failure_point: String(extra && extra.failure_point || ctx && ctx.serviceRoleDebugV212 && ctx.serviceRoleDebugV212.failure_point || '').slice(0, 180),
     passport_hex: (() => { try { return BigInt(ctx && ctx.passport || 0n).toString(16); } catch (_) { return '0'; } })(),
     trace: diracCentralStageTraceV211(ctx, 30),
-    preflight_transport_debug: (() => {
-      if (!ctx || String(ctx.method || '').toUpperCase() !== 'OPTIONS') return undefined;
-      try {
-        const req = ctx.req || {};
-        const headers = req.headers && typeof req.headers === 'object' ? req.headers : (ctx.headers || {});
-        const merged = String(headers['access-control-request-headers'] || '');
-        const parsed = Array.from(new Set(merged.toLowerCase().split(',').map((value) => value.trim()).filter(Boolean)));
-        const rawOccurrences = [];
-        if (Array.isArray(req.rawHeaders)) {
-          for (let i = 0; i + 1 < req.rawHeaders.length; i += 2) {
-            if (String(req.rawHeaders[i] || '').toLowerCase() === 'access-control-request-headers') {
-              const value = String(req.rawHeaders[i + 1] || '').slice(0, 2048);
-              rawOccurrences.push({ value, length: value.length });
-            }
-          }
-        }
-        const distinctSource = req.headersDistinct && req.headersDistinct['access-control-request-headers'];
-        const distinct = Array.isArray(distinctSource)
-          ? distinctSource.map((value) => String(value || '').slice(0, 2048))
-          : (distinctSource == null ? [] : [String(distinctSource).slice(0, 2048)]);
-        return {
-          merged_value: merged.slice(0, 2048),
-          merged_length: merged.length,
-          parsed_headers: parsed.slice(0, 32),
-          parsed_count: parsed.length,
-          has_ticket: parsed.includes('x-dirac-a2f-ticket'),
-          has_signature: parsed.includes('x-dirac-a2f-signature'),
-          has_timestamp: parsed.includes('x-dirac-a2f-timestamp'),
-          has_nonce: parsed.includes('x-dirac-a2f-nonce'),
-          raw_occurrences: rawOccurrences,
-          distinct_values: distinct,
-          incoming_header_names: Object.keys(headers).map((name) => String(name || '').toLowerCase()).sort().slice(0, 80)
-        };
-      } catch (_) {
-        return { diagnostic_error: 'preflight_transport_debug_failed' };
-      }
-    })(),
     owner_resolution_debug: ctx && ctx.ownerResolutionDebugV212
       ? diracCentralSanitizeOutputV146(ctx.ownerResolutionDebugV212, 0)
       : undefined,
