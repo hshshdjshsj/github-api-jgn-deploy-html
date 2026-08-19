@@ -282,6 +282,10 @@ function setCors(req, res, options = {}) {
     'x-requested-with'
   ];
 
+  if (options.isDomainAction && String(req && req.query && req.query.action || '').trim() === 'domain_health') {
+    domainAllowedHeaders.push('X-Dirac-CSRF-Probe', 'x-dirac-csrf-probe');
+  }
+
   // PATCH 3A: backend-only customer auth.
   // Frontend/customer HTML tidak lagi dipercaya membawa Authorization, refresh token,
   // atau MFA proof lewat header. Browser hanya mengirim HttpOnly Secure cookie otomatis.
@@ -40642,7 +40646,9 @@ function diracCentralValidatePreflightV221(ctx) {
   if (!requestedMethod || requestedMethod === 'OPTIONS' || !contract.methods.includes(requestedMethod)) return { ok: false, reason: 'preflight_requested_method_invalid' };
   const recoveryLinkPreflightHeadersV251 = ctx.action === DIRAC_MERGED_RECOVERY_V251.linkAction
     ? new Set([...DIRAC_CENTRAL_PREFLIGHT_ALLOWED_HEADERS_V221, 'x-dirac-html-signature-version', 'x-dirac-html-signature-timestamp', 'x-dirac-html-signature-nonce', 'x-dirac-html-signature'])
-    : DIRAC_CENTRAL_PREFLIGHT_ALLOWED_HEADERS_V221;
+    : ctx.action === 'domain_health'
+      ? new Set([...DIRAC_CENTRAL_PREFLIGHT_ALLOWED_HEADERS_V221, 'x-dirac-csrf-probe'])
+      : DIRAC_CENTRAL_PREFLIGHT_ALLOWED_HEADERS_V221;
   if (requestedHeaders.length > 24 || requestedHeaders.some((name) => !/^[a-z0-9-]{1,64}$/.test(name) || !recoveryLinkPreflightHeadersV251.has(name))) {
     return { ok: false, reason: 'preflight_requested_header_invalid' };
   }
@@ -42591,6 +42597,17 @@ function diracCentralSelfTestRunV221() {
     }
   };
   expect(diracCentralValidatePreflightV221(preflightBase).ok === true, 'valid_preflight_acceptance');
+  const domainHealthProbePreflightV252 = {
+    ...preflightBase,
+    action: 'domain_health',
+    headers: {
+      ...preflightBase.headers,
+      'access-control-request-method': 'GET',
+      'access-control-request-headers': 'x-dirac-csrf-probe'
+    }
+  };
+  expect(diracCentralValidatePreflightV221(domainHealthProbePreflightV252).ok === true, 'domain_health_csrf_probe_preflight_acceptance_v252');
+  expect(diracCentralValidatePreflightV221({ ...preflightBase, headers: { ...preflightBase.headers, 'access-control-request-headers': 'x-dirac-csrf-probe' } }).ok === false, 'csrf_probe_header_rejected_outside_domain_health_v252');
   expect(diracCentralValidatePreflightV221({ ...preflightBase, headers: { ...preflightBase.headers, 'access-control-request-headers': 'x-unknown-dangerous-header' } }).ok === false, 'unknown_preflight_header_rejection');
   expect(diracCentralValidatePreflightV221({ ...preflightBase, headers: { ...preflightBase.headers, origin: 'https://evil.invalid' } }).ok === false, 'foreign_preflight_origin_rejection');
   const proofCtx = {
