@@ -17168,7 +17168,7 @@ async function diracPasskeyConfirmDashboardCookieRoundtripV241(req, res) {
     try { refererUrl = new URL(String(headers.referer || headers.referrer || '').trim()); } catch (_) {}
     if (!host || !refererUrl
         || refererUrl.protocol !== 'https:'
-        || refererUrl.hostname.toLowerCase() !== host
+        || host !== 'api.' + diracBaseDomainV250() || refererUrl.origin.toLowerCase() !== diracRoleOriginV250('auth')
         || refererUrl.pathname !== '/masuk.html') {
       return res.status(403).json({
         ok: false,
