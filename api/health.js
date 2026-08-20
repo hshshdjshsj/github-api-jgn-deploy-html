@@ -7426,7 +7426,7 @@ async function customerSecurityHandleGuardedAction(action, req, res) {
 
     if (action === 'customer_security_recovery_codes_generate') {
       if (req.method !== 'POST') return res.status(405).json({ ok: false, message: 'Gunakan POST.' });
-      return customerSecurityGenerateRecoveryCodes(req, res, action);
+      return customerSecurityGenerateRecoveryCodesRecoV251(req, res, action);
     }
 
     if (action === 'customer_security_recovery_code_verify') {
@@ -10398,17 +10398,17 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
   const activePasskeys = [];
   const bindings = customerSecurityLostPasskeyBindings(req, owner);
 
-  return customerSecurityVerifyRecoveryCodeViaWorker(
-    req,
-    res,
-    action,
-    access,
-    owner,
-    activePasskeys,
-    bindings,
-    requestId,
-    code
-  );
+  return customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, action, { access, owner, bindings, requestId, recoveryCode: code });
+
+
+
+
+
+
+
+
+
+
 }
 
 
@@ -36854,9 +36854,9 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
     ? override.bindings
     : customerSecurityLostPasskeyBindings(req, owner);
 
-  if (!localWorker) {
-    return customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, access, owner, activePasskeys, observedBindings, { password_latest_material: passwordMaterial });
-  }
+
+
+
 
   const vaultSecrets = customerSecurityLostPasskeyRequireVaultSecretsV157();
   if (!vaultSecrets.ok) {
