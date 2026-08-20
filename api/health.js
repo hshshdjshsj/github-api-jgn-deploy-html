@@ -39856,6 +39856,25 @@ function diracRecoverySecurityDbProxyRequestV234(ctx) {
   if (method === 'PATCH' && (!requestBody || typeof requestBody !== 'object' || Array.isArray(requestBody))) return { ok: false, reason: 'recovery_security_db_proxy_patch_body_invalid' };
   if (method === 'POST' && (!requestBody || typeof requestBody !== 'object')) return { ok: false, reason: 'recovery_security_db_proxy_post_body_invalid' };
   if (!diracRecoverySecurityDbProxyScopeV252(parsedPath, method, prefer, requestBody)) {
+    try {
+      const diagnosticTableV253 = String(getDiracRestTableFromPath(parsedPath.pathname) || '');
+      const diagnosticRowsV253 = Array.isArray(requestBody) ? requestBody.slice(0, 20) : [requestBody];
+      const diagnosticKeyV253 = (value) => /^[A-Za-z0-9_.:>-]{1,80}$/.test(String(value || '')) ? String(value) : 'invalid';
+      console.error('[dirac-recovery-security-db-proxy-scope-v253]', JSON.stringify({
+        patch: 'dirac-recovery-security-db-proxy-scope-v253',
+        request_id: requestId,
+        method,
+        route: parsedPath.pathname === '/auth/v1/token' ? 'auth_password_grant' : 'rest_table',
+        table: /^[a-z0-9_]{1,80}$/.test(diagnosticTableV253) ? diagnosticTableV253 : 'invalid',
+        query_keys: Array.from(new Set(Array.from(parsedPath.searchParams.keys()).slice(0, 32).map(diagnosticKeyV253))).sort(),
+        prefer_profile: /^[A-Za-z0-9=,-]{0,160}$/.test(prefer) ? prefer : 'invalid',
+        body_kind: Array.isArray(requestBody) ? 'array' : (requestBody === null ? 'null' : typeof requestBody),
+        body_key_sets: diagnosticRowsV253.map((row) => row && typeof row === 'object' && !Array.isArray(row)
+          ? Object.keys(row).slice(0, 64).map(diagnosticKeyV253).sort()
+          : []),
+        body_bytes: Buffer.byteLength(bodyJson, 'utf8')
+      }));
+    } catch (_) {}
     return { ok: false, reason: 'recovery_security_db_proxy_scope_invalid' };
   }
   return { ok: true, requestId, nonce, sentAtMs, method, path, prefer, body: requestBody };
