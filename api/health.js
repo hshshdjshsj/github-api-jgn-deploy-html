@@ -7426,7 +7426,7 @@ async function customerSecurityHandleGuardedAction(action, req, res) {
 
     if (action === 'customer_security_recovery_codes_generate') {
       if (req.method !== 'POST') return res.status(405).json({ ok: false, message: 'Gunakan POST.' });
-      return customerSecurityGenerateRecoveryCodesRecoV251(req, res, action);
+      return DIRAC_MERGED_RECOVERY_V251.generateRecoveryCodes(req, res, action);
     }
 
     if (action === 'customer_security_recovery_code_verify') {
@@ -10398,7 +10398,7 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
   const activePasskeys = [];
   const bindings = customerSecurityLostPasskeyBindings(req, owner);
 
-  return customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, action, { access, owner, bindings, requestId, recoveryCode: code });
+  return DIRAC_MERGED_RECOVERY_V251.verifyRecoveryCode(req, res, action, { access, owner, bindings, requestId, recoveryCode: code });
 
 
 
@@ -39581,6 +39581,8 @@ return Object.freeze({
   browserGuard: diracRecoveryBrowserGuardV201,
   linkGuard: diracRecoveryLinkOpenGuardV202,
   workerHandler: customerSecurityHandleRecoveryWorkerGenerateRecoV251,
+  generateRecoveryCodes: customerSecurityGenerateRecoveryCodesRecoV251,
+  verifyRecoveryCode: customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251,
   linkHandler: diracRecoveryLinkOpenV202,
   hpkeHandler: diracRecoveryCryptoV2VerifyEnvelope,
   validateHpkeEnvelope: DIRAC_RECOVERY_CRYPTO_V2.validateEnvelope,
