@@ -44042,7 +44042,7 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
     try { Object.defineProperty(req, '__diracCentralSecurityGuardPassedV146', { value: true, writable: false, enumerable: false, configurable: false }); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
     try { Object.defineProperty(req, '__diracCentralRequestIdV211', { value: ctx.requestId, writable: false, enumerable: false, configurable: false }); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
 
-    if (diracCentralVerifiedOwnerActionV217(ctx.action)) {
+    if (ctx.preflightValidatedV221 !== true && diracCentralVerifiedOwnerActionV217(ctx.action)) {
       let resolvedOwnerV215 = diracCentralOwnerFromStage26V217(ctx);
       let ownerSourceV215 = resolvedOwnerV215 ? 'stage26_idor_bola_owner_binding' : 'pre_dispatch_owner_resolution';
       if (!resolvedOwnerV215) {
