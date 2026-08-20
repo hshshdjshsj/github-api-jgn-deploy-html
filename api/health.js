@@ -7426,7 +7426,7 @@ async function customerSecurityHandleGuardedAction(action, req, res) {
 
     if (action === 'customer_security_recovery_codes_generate') {
       if (req.method !== 'POST') return res.status(405).json({ ok: false, message: 'Gunakan POST.' });
-      return DIRAC_MERGED_RECOVERY_V251.generateRecoveryCodes(req, res, action);
+      return customerSecurityGenerateRecoveryCodes(req, res, action);
     }
 
     if (action === 'customer_security_recovery_code_verify') {
@@ -34369,7 +34369,7 @@ function aesGcmDecrypt(key, nonce, ciphertext, tag, aad) {
 function parsePrivateKey(raw, expectedType) {
   const clean = String(raw || '').trim();
   if (!clean) throw fail('PRIVATE_KEY_MISSING');
-  const material = clean.includes('-----BEGIN') ? clean.replace(/\\n/g, '\n') : Buffer.from(clean, 'base64');
+  const material = clean.includes('-----BEGIN') ? clean.replace(/\\n/g, '\n') : { key: Buffer.from(clean, 'base64'), format: 'der', type: 'pkcs8' };
   const key = crypto.createPrivateKey(material);
   if (expectedType && key.asymmetricKeyType !== expectedType) throw fail('PRIVATE_KEY_TYPE_INVALID');
   return key;
@@ -34378,7 +34378,7 @@ function parsePrivateKey(raw, expectedType) {
 function parsePublicKey(raw, expectedType) {
   const clean = String(raw || '').trim();
   if (!clean) throw fail('PUBLIC_KEY_MISSING');
-  const material = clean.includes('-----BEGIN') ? clean.replace(/\\n/g, '\n') : Buffer.from(clean, 'base64');
+  const material = clean.includes('-----BEGIN') ? clean.replace(/\\n/g, '\n') : { key: Buffer.from(clean, 'base64'), format: 'der', type: 'spki' };
   const key = crypto.createPublicKey(material);
   if (expectedType && key.asymmetricKeyType !== expectedType) throw fail('PUBLIC_KEY_TYPE_INVALID');
   return key;
