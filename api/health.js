@@ -39911,6 +39911,24 @@ async function diracRecoverySecurityDbProxyHandleV234(ctx) {
   try { data = upstream && upstream.data === undefined ? null : JSON.parse(JSON.stringify(upstream.data)); }
   catch (_) { data = { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_INVALID' }; }
   if (request.path === '/auth/v1/token?grant_type=password') {
+    try {
+      const upstreamStatusV256 = Number(upstream && upstream.status || 0);
+      const upstreamOkV256 = Boolean(upstream && upstream.ok === true);
+      const targetKeyV256 = resolveDiracSupabaseTargetKey(request.path, { auth: 'anon' });
+      console.error('[dirac-recovery-auth-proxy-result-v256]', JSON.stringify({
+        patch: 'dirac-recovery-auth-proxy-result-v256',
+        request_id: request.requestId,
+        upstream_ok: upstreamOkV256,
+        upstream_status: Number.isFinite(upstreamStatusV256) ? upstreamStatusV256 : 0,
+        result_class: upstreamOkV256
+          ? 'authenticated'
+          : ([400, 401, 403].includes(upstreamStatusV256) ? 'credentials_rejected'
+            : (upstreamStatusV256 === 0 || upstreamStatusV256 >= 500 ? 'upstream_unavailable' : 'unexpected_response')),
+        target_key: ['legacy', 'security', 'customerSecurity', 'domain', 'commerce', 'paymentService'].includes(targetKeyV256)
+          ? targetKeyV256
+          : 'invalid'
+      }));
+    } catch (_) {}
     data = upstream && upstream.ok === true ? null : { code: 'RECOVERY_ACCOUNT_PASSWORD_INVALID' };
   }
   let result = { ok: Boolean(upstream && upstream.ok === true), status: Number(upstream && upstream.status || 0), data };
