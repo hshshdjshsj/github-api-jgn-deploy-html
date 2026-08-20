@@ -34393,7 +34393,7 @@ function assertPostQuantumRuntime() {
 function mlkemEncapsulate(publicKey = null) {
   assertPostQuantumRuntime();
   const key = publicKey || parsePublicKey(
-    envText('DIRAC_RECOVERY_MLKEM1024_PUBLIC_KEY_PEM') || envText('DIRAC_RECOVERY_MLKEM1024_PUBLIC_KEY_DER_B64'),
+    envText('DIRAC_RECOVERY_MLKEM1024_PUBLIC_KEY_PEM') || envText('DIRAC_RECOVERY_MLKEM1024_PUBLIC_KEY_DER_B64') || envText('DIRAC_RECOVERY_WORKER_MLKEM1024_PUBLIC_KEY'),
     'ml-kem-1024'
   );
   const result = crypto.encapsulate(key);
