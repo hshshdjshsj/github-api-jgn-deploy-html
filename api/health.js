@@ -39780,6 +39780,24 @@ function diracRecoverySecurityDbProxyScopeV252(parsedPath, method, prefer, reque
       && search.get('is_active') === 'eq.true' && Number(search.get('limit')) >= 1
       && Number(search.get('limit')) <= 20 && prefer === '';
   }
+  if (table === 'security_customer_access_blocks') {
+    const row = oneObjectRow ? rows[0] : null;
+    const metadata = row && row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : null;
+    const blockedUntilMs = Date.parse(String(row && row.blocked_until || ''));
+    return method === 'POST' && search.size === 0 && prefer === 'return=representation' && Boolean(row)
+      && Object.keys(row).sort().join(',') === 'action,blocked_until,customer_id,device_hash,fail_count,ip_hash,metadata,reason'
+      && uuid('eq.' + String(row.customer_id || ''))
+      && /^[a-f0-9]{64}$/.test(String(row.ip_hash || ''))
+      && /^[a-f0-9]{64}$/.test(String(row.device_hash || ''))
+      && row.action === 'customer_security_recovery_codes_generate'
+      && row.reason === 'recovery_account_password_invalid'
+      && row.fail_count === 1
+      && Number.isFinite(blockedUntilMs) && blockedUntilMs > Date.now() - 30_000 && blockedUntilMs <= Date.now() + 10 * 60_000
+      && metadata && Object.keys(metadata).sort().join(',') === 'origin,source,user_agent_hash'
+      && metadata.source === 'customer_security_gate'
+      && metadata.origin === null
+      && /^[a-f0-9]{64}$/.test(String(metadata.user_agent_hash || ''));
+  }
   if (table === 'security_lost_passkey_recovery_requests') {
     if (method === 'GET') return requestBody === null && requestId(search.get('request_id')) && search.get('limit') === '1' && prefer === '';
     if (method === 'PATCH') return requestId(search.get('request_id')) && oneObjectRow
