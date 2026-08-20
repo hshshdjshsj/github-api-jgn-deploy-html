@@ -39719,6 +39719,122 @@ __diracV202RegisterMiddleware(async function diracMergedRecoveryV251Wrapper(req,
   return DIRAC_MERGED_RECOVERY_V251.hpkeHandler(req,res,rctx,body);
 }, 'diracMergedRecoveryV251Wrapper');
 
+/* Server Recovery security-DB proxy: existing Central Guard remains byte-identical below. */
+const DIRAC_RECOVERY_SECURITY_DB_PROXY_V234 = 'dirac-recovery-security-db-proxy-v234';
+const DIRAC_RECOVERY_SECURITY_DB_PROXY_EVENT_V234 = 'recovery_security_db';
+const __diracS2SProcessSecurityReportBeforeRecoveryDbProxyV234 = diracS2SProcessSecurityReportV206;
+
+function diracRecoverySecurityDbProxyMacV234(value) {
+  const secret = String(customerSecurityRecoveryWorkerSecret() || '');
+  if (Buffer.byteLength(secret, 'utf8') < 64) throw new Error('RECOVERY_SECURITY_DB_PROXY_SECRET_INVALID');
+  return crypto.createHmac('sha512', secret)
+    .update(DIRAC_RECOVERY_SECURITY_DB_PROXY_V234, 'utf8')
+    .update('\n', 'utf8')
+    .update(diracS2SStableJsonV206(value), 'utf8')
+    .digest('base64url');
+}
+
+function diracRecoverySecurityDbProxyRequestV234(ctx) {
+  const body = ctx && ctx.body && typeof ctx.body === 'object' && !Array.isArray(ctx.body) ? ctx.body : null;
+  const evidence = body && body.evidence && typeof body.evidence === 'object' && !Array.isArray(body.evidence) ? body.evidence : null;
+  const reporterServerId = diracS2SIdV206(diracS2SHeaderV206(ctx && ctx.req, 'x-dirac-server-id'));
+  const expectedKeys = ['detected_at_ms', 'incident_id', 'method', 'nonce', 'page', 'path', 'type', 'version'];
+  const actualKeys = evidence ? Object.keys(evidence).sort() : [];
+  if (!ctx
+      || ctx.action !== 'security_report'
+      || ctx.method !== 'POST'
+      || ctx.classification !== 'server'
+      || ctx.__diracS2SSevenSignaturesVerifiedV206 !== true
+      || reporterServerId !== 'recovery'
+      || !body
+      || String(body.event || '') !== DIRAC_RECOVERY_SECURITY_DB_PROXY_EVENT_V234
+      || !evidence
+      || actualKeys.length !== expectedKeys.length
+      || actualKeys.some((key, index) => key !== expectedKeys[index])
+      || evidence.version !== DIRAC_RECOVERY_SECURITY_DB_PROXY_V234) {
+    return { ok: false, reason: 'recovery_security_db_proxy_envelope_invalid' };
+  }
+  const requestId = String(evidence.incident_id || '');
+  const nonce = String(evidence.nonce || '');
+  const sentAtMs = Number(evidence.detected_at_ms);
+  const method = String(evidence.method || '').toUpperCase();
+  const path = String(evidence.path || '');
+  const prefer = String(evidence.type || '');
+  if (!/^[A-Za-z0-9_-]{32}$/.test(requestId)
+      || !/^[A-Za-z0-9_-]{43}$/.test(nonce)
+      || !Number.isSafeInteger(sentAtMs)
+      || Math.abs(Date.now() - sentAtMs) > DIRAC_S2S_MAX_CLOCK_SKEW_MS_V206
+      || !['GET', 'POST', 'PATCH', 'DELETE'].includes(method)
+      || !path.startsWith('/rest/v1/')
+      || path.length > 4096
+      || path.includes('\\')
+      || /[\r\n\0]/.test(path)) {
+    return { ok: false, reason: 'recovery_security_db_proxy_binding_invalid' };
+  }
+  let parsedPath;
+  try { parsedPath = new URL(path, 'https://dirac.invalid'); }
+  catch (_) { return { ok: false, reason: 'recovery_security_db_proxy_path_invalid' }; }
+  const table = getDiracRestTableFromPath(parsedPath.pathname);
+  if (!['dirac_persistent_bans', 'dirac_s2s_security'].includes(table)
+      || parsedPath.pathname !== '/rest/v1/' + table
+      || (method !== 'POST' && !parsedPath.search.includes('security_key'))
+      || !new Set(['', 'return=minimal', 'return=representation', 'resolution=merge-duplicates', 'resolution=ignore-duplicates,return=representation']).has(prefer)) {
+    return { ok: false, reason: 'recovery_security_db_proxy_scope_invalid' };
+  }
+  const bodyJson = String(evidence.page || '');
+  let requestBody;
+  try { requestBody = JSON.parse(bodyJson); }
+  catch (_) { return { ok: false, reason: 'recovery_security_db_proxy_body_invalid' }; }
+  if (Buffer.byteLength(bodyJson, 'utf8') > 16 * 1024) return { ok: false, reason: 'recovery_security_db_proxy_body_too_large' };
+  if ((method === 'GET' || method === 'DELETE') && requestBody !== null) return { ok: false, reason: 'recovery_security_db_proxy_body_forbidden' };
+  if (method === 'PATCH' && (!requestBody || typeof requestBody !== 'object' || Array.isArray(requestBody))) return { ok: false, reason: 'recovery_security_db_proxy_patch_body_invalid' };
+  if (method === 'POST' && (!requestBody || typeof requestBody !== 'object')) return { ok: false, reason: 'recovery_security_db_proxy_post_body_invalid' };
+  if (method === 'POST') {
+    const rows = Array.isArray(requestBody) ? requestBody : [requestBody];
+    if (!rows.length || rows.length > 20 || rows.some((row) => {
+      const securityKey = String(row && row.security_key || '');
+      return !/^[A-Za-z0-9_.:-]{1,512}$/.test(securityKey)
+        || diracPersistentSecurityTableForKeyV209(securityKey) !== table;
+    })) return { ok: false, reason: 'recovery_security_db_proxy_security_key_invalid' };
+  }
+  return { ok: true, requestId, nonce, sentAtMs, method, path, prefer, body: requestBody };
+}
+
+async function diracRecoverySecurityDbProxyHandleV234(ctx) {
+  const request = diracRecoverySecurityDbProxyRequestV234(ctx);
+  if (!request.ok) return request;
+  const upstream = await supabaseFetch(request.path, {
+    method: request.method,
+    auth: 'service',
+    db: 'security',
+    prefer: request.prefer || undefined,
+    body: request.body === null ? undefined : request.body
+  }).catch(() => ({ ok: false, status: 503, data: { code: 'RECOVERY_SECURITY_DB_PROXY_UPSTREAM_FAILED' } }));
+  let data = null;
+  try { data = upstream && upstream.data === undefined ? null : JSON.parse(JSON.stringify(upstream.data)); }
+  catch (_) { data = { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_INVALID' }; }
+  let result = { ok: Boolean(upstream && upstream.ok === true), status: Number(upstream && upstream.status || 0), data };
+  if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 24 * 1024) {
+    result = { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_TOO_LARGE' } };
+  }
+  const response = {
+    ok: true,
+    event: DIRAC_RECOVERY_SECURITY_DB_PROXY_EVENT_V234,
+    version: DIRAC_RECOVERY_SECURITY_DB_PROXY_V234,
+    request_id: request.requestId,
+    result
+  };
+  return { ok: true, response: { ...response, response_mac: diracRecoverySecurityDbProxyMacV234(response) } };
+}
+
+diracS2SProcessSecurityReportV206 = async function diracS2SProcessSecurityReportRecoveryDbProxyV234(ctx) {
+  const body = ctx && ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
+  if (String(body.event || '') === DIRAC_RECOVERY_SECURITY_DB_PROXY_EVENT_V234) {
+    return diracRecoverySecurityDbProxyHandleV234(ctx);
+  }
+  return __diracS2SProcessSecurityReportBeforeRecoveryDbProxyV234(ctx);
+};
+
 /* ============================================================
    DIRAC CENTRAL SECURITY GUARD v146 - FINAL CENTRAL FLOW
    Pusat guard /api/health:
