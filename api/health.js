@@ -39734,6 +39734,78 @@ function diracRecoverySecurityDbProxyMacV234(value) {
     .digest('base64url');
 }
 
+function diracRecoverySecurityDbProxyScopeV252(parsedPath, method, prefer, requestBody) {
+  const pathname = String(parsedPath && parsedPath.pathname || '');
+  const search = parsedPath && parsedPath.searchParams;
+  const table = getDiracRestTableFromPath(pathname);
+  const uuid = (value) => /^eq\.[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+  const requestId = (value) => /^eq\.[A-Za-z0-9_-]{16,120}$/.test(String(value || ''));
+  const rows = Array.isArray(requestBody) ? requestBody : [requestBody];
+  const oneObjectRow = rows.length === 1 && rows[0] && typeof rows[0] === 'object' && !Array.isArray(rows[0]);
+  if (parsedPath && parsedPath.hash) return false;
+
+  if (pathname === '/auth/v1/token'
+      && parsedPath.search === '?grant_type=password'
+      && method === 'POST'
+      && prefer === ''
+      && oneObjectRow
+      && Object.keys(rows[0]).sort().join(',') === 'email,password'
+      && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(rows[0].email || ''))
+      && Buffer.byteLength(String(rows[0].email || ''), 'utf8') <= 320
+      && Buffer.byteLength(String(rows[0].password || ''), 'utf8') >= 1
+      && Buffer.byteLength(String(rows[0].password || ''), 'utf8') <= 4096) return true;
+
+  if (!table || pathname !== '/rest/v1/' + table || !search) return false;
+  if (['dirac_persistent_bans', 'dirac_s2s_security'].includes(table)) {
+    if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(method)
+        || (method !== 'POST' && !search.has('security_key'))
+        || !new Set(['', 'return=minimal', 'return=representation', 'resolution=merge-duplicates', 'resolution=ignore-duplicates,return=representation']).has(prefer)) return false;
+    if (method !== 'POST') return true;
+    return rows.length > 0 && rows.length <= 20 && rows.every((row) => {
+      const securityKey = String(row && row.security_key || '');
+      return /^[A-Za-z0-9_.:-]{1,512}$/.test(securityKey)
+        && diracPersistentSecurityTableForKeyV209(securityKey) === table;
+    });
+  }
+  if (table === 'security_customer_auth_links') {
+    return method === 'GET' && requestBody === null && uuid(search.get('auth_user_id'))
+      && search.get('link_status') === 'eq.active' && search.get('limit') === '2' && prefer === '';
+  }
+  if (table === 'customers') {
+    return method === 'GET' && requestBody === null && uuid(search.get('id'))
+      && search.get('limit') === '1' && prefer === '';
+  }
+  if (table === 'domain_passkeys') {
+    return method === 'GET' && requestBody === null && uuid(search.get('user_id'))
+      && search.get('is_active') === 'eq.true' && Number(search.get('limit')) >= 1
+      && Number(search.get('limit')) <= 20 && prefer === '';
+  }
+  if (table === 'security_lost_passkey_recovery_requests') {
+    if (method === 'GET') return requestBody === null && requestId(search.get('request_id')) && search.get('limit') === '1' && prefer === '';
+    if (method === 'PATCH') return requestId(search.get('request_id')) && oneObjectRow
+      && new Set(['', 'return=representation']).has(prefer);
+    return method === 'POST' && oneObjectRow
+      && /^[A-Za-z0-9_-]{16,120}$/.test(String(rows[0].request_id || ''))
+      && uuid('eq.' + String(rows[0].customer_id || ''))
+      && uuid('eq.' + String(rows[0].auth_user_id || ''))
+      && prefer === 'return=representation';
+  }
+  if (table === 'security_lost_passkey_recovery_sessions') {
+    if (method === 'PATCH') return requestId(search.get('request_id'))
+      && uuid(search.get('customer_id')) && uuid(search.get('auth_user_id'))
+      && oneObjectRow && prefer === 'return=representation';
+    return method === 'POST' && oneObjectRow
+      && /^[A-Za-z0-9_-]{16,120}$/.test(String(rows[0].request_id || ''))
+      && uuid('eq.' + String(rows[0].customer_id || ''))
+      && uuid('eq.' + String(rows[0].auth_user_id || ''))
+      && prefer === 'return=representation';
+  }
+  if (table === 'security_customer_events') {
+    return method === 'POST' && oneObjectRow && uuid('eq.' + String(rows[0].customer_id || '')) && prefer === '';
+  }
+  return false;
+}
+
 function diracRecoverySecurityDbProxyRequestV234(ctx) {
   const body = ctx && ctx.body && typeof ctx.body === 'object' && !Array.isArray(ctx.body) ? ctx.body : null;
   const evidence = body && body.evidence && typeof body.evidence === 'object' && !Array.isArray(body.evidence) ? body.evidence : null;
@@ -39765,7 +39837,7 @@ function diracRecoverySecurityDbProxyRequestV234(ctx) {
       || !Number.isSafeInteger(sentAtMs)
       || Math.abs(Date.now() - sentAtMs) > DIRAC_S2S_MAX_CLOCK_SKEW_MS_V206
       || !['GET', 'POST', 'PATCH', 'DELETE'].includes(method)
-      || !path.startsWith('/rest/v1/')
+      || (!path.startsWith('/rest/v1/') && path !== '/auth/v1/token?grant_type=password')
       || path.length > 4096
       || path.includes('\\')
       || /[\r\n\0]/.test(path)) {
@@ -39774,28 +39846,17 @@ function diracRecoverySecurityDbProxyRequestV234(ctx) {
   let parsedPath;
   try { parsedPath = new URL(path, 'https://dirac.invalid'); }
   catch (_) { return { ok: false, reason: 'recovery_security_db_proxy_path_invalid' }; }
-  const table = getDiracRestTableFromPath(parsedPath.pathname);
-  if (!['dirac_persistent_bans', 'dirac_s2s_security'].includes(table)
-      || parsedPath.pathname !== '/rest/v1/' + table
-      || (method !== 'POST' && !parsedPath.search.includes('security_key'))
-      || !new Set(['', 'return=minimal', 'return=representation', 'resolution=merge-duplicates', 'resolution=ignore-duplicates,return=representation']).has(prefer)) {
-    return { ok: false, reason: 'recovery_security_db_proxy_scope_invalid' };
-  }
   const bodyJson = String(evidence.page || '');
   let requestBody;
   try { requestBody = JSON.parse(bodyJson); }
   catch (_) { return { ok: false, reason: 'recovery_security_db_proxy_body_invalid' }; }
-  if (Buffer.byteLength(bodyJson, 'utf8') > 16 * 1024) return { ok: false, reason: 'recovery_security_db_proxy_body_too_large' };
+  const bodyLimit = path.startsWith('/rest/v1/security_lost_passkey_recovery_requests') ? 256 * 1024 : 16 * 1024;
+  if (Buffer.byteLength(bodyJson, 'utf8') > bodyLimit) return { ok: false, reason: 'recovery_security_db_proxy_body_too_large' };
   if ((method === 'GET' || method === 'DELETE') && requestBody !== null) return { ok: false, reason: 'recovery_security_db_proxy_body_forbidden' };
   if (method === 'PATCH' && (!requestBody || typeof requestBody !== 'object' || Array.isArray(requestBody))) return { ok: false, reason: 'recovery_security_db_proxy_patch_body_invalid' };
   if (method === 'POST' && (!requestBody || typeof requestBody !== 'object')) return { ok: false, reason: 'recovery_security_db_proxy_post_body_invalid' };
-  if (method === 'POST') {
-    const rows = Array.isArray(requestBody) ? requestBody : [requestBody];
-    if (!rows.length || rows.length > 20 || rows.some((row) => {
-      const securityKey = String(row && row.security_key || '');
-      return !/^[A-Za-z0-9_.:-]{1,512}$/.test(securityKey)
-        || diracPersistentSecurityTableForKeyV209(securityKey) !== table;
-    })) return { ok: false, reason: 'recovery_security_db_proxy_security_key_invalid' };
+  if (!diracRecoverySecurityDbProxyScopeV252(parsedPath, method, prefer, requestBody)) {
+    return { ok: false, reason: 'recovery_security_db_proxy_scope_invalid' };
   }
   return { ok: true, requestId, nonce, sentAtMs, method, path, prefer, body: requestBody };
 }
@@ -39805,16 +39866,20 @@ async function diracRecoverySecurityDbProxyHandleV234(ctx) {
   if (!request.ok) return request;
   const upstream = await supabaseFetch(request.path, {
     method: request.method,
-    auth: 'service',
-    db: 'security',
+    auth: request.path.startsWith('/auth/v1/') ? 'anon' : 'service',
     prefer: request.prefer || undefined,
     body: request.body === null ? undefined : request.body
   }).catch(() => ({ ok: false, status: 503, data: { code: 'RECOVERY_SECURITY_DB_PROXY_UPSTREAM_FAILED' } }));
   let data = null;
   try { data = upstream && upstream.data === undefined ? null : JSON.parse(JSON.stringify(upstream.data)); }
   catch (_) { data = { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_INVALID' }; }
+  if (request.path === '/auth/v1/token?grant_type=password') {
+    data = upstream && upstream.ok === true ? null : { code: 'RECOVERY_ACCOUNT_PASSWORD_INVALID' };
+  }
   let result = { ok: Boolean(upstream && upstream.ok === true), status: Number(upstream && upstream.status || 0), data };
-  if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 24 * 1024) {
+  const resultLimit = request.path.startsWith('/rest/v1/security_lost_passkey_recovery_requests')
+    || request.path.startsWith('/rest/v1/domain_passkeys') ? 256 * 1024 : 24 * 1024;
+  if (Buffer.byteLength(JSON.stringify(result), 'utf8') > resultLimit) {
     result = { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_TOO_LARGE' } };
   }
   const response = {
