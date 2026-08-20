@@ -46995,7 +46995,7 @@ function diracCentralDatabaseAuthRouteAllowedV230(action, url, method, authMode)
   if (path === '/auth/v1/token') {
     if (verb !== 'POST' || authMode !== 'anon' || Array.from(url.searchParams.keys()).some((key) => key !== 'grant_type') || url.searchParams.getAll('grant_type').length !== 1) return false;
     const grant = String(url.searchParams.get('grant_type') || '');
-    if (grant === 'password') return /^(?:domain_login|domain_register)$/.test(action) || /(?:recovery|password|passkey|customer_security)/.test(action);
+    if (grant === 'password') return /^(?:domain_login|domain_register|security_report)$/.test(action) || /(?:recovery|password|passkey|customer_security)/.test(action);
     if (grant === 'refresh_token') return action !== 'domain_health' && action !== 'hostinger_check' && action !== 'domain_check';
     return false;
   }
