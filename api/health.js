@@ -40061,13 +40061,71 @@ function diracRecoverySecurityDbProxyRequestV234(ctx) {
 async function diracRecoverySecurityDbProxyHandleV234(ctx) {
   const request = diracRecoverySecurityDbProxyRequestV234(ctx);
   if (!request.ok) return request;
+  const recoveryRequestPathV274 = '/rest/v1/security_lost_passkey_recovery_requests';
+  const recoverySessionPathV274 = '/rest/v1/security_lost_passkey_recovery_sessions';
+  const recoveryRequestRouteV274 = request.path === recoveryRequestPathV274
+    || request.path.startsWith(recoveryRequestPathV274 + '?');
+  const recoverySessionRouteV274 = request.path === recoverySessionPathV274
+    || request.path.startsWith(recoverySessionPathV274 + '?');
+  const recoveryVerificationRouteV274 = (recoveryRequestRouteV274 && (request.method === 'GET' || request.method === 'PATCH'))
+    || (recoverySessionRouteV274 && (request.method === 'POST' || request.method === 'PATCH'));
+  const semanticActionV274 = recoveryRequestRouteV274 && request.method === 'POST'
+    ? 'customer_security_recovery_codes_generate'
+    : recoveryVerificationRouteV274
+      ? 'customer_security_recovery_code_verify'
+      : '';
+  let upstreamContextV274 = ctx;
+  if (semanticActionV274) {
+    const semanticPolicyV274 = ACTION_POLICY[semanticActionV274];
+    const securityReportStageIndexV274 = SECURITY_PIPELINE.findIndex((stage) => stage && stage.name === 'security report');
+    const priorSecurityReportStagesV274 = securityReportStageIndexV274 > 0
+      ? SECURITY_PIPELINE.slice(0, securityReportStageIndexV274)
+      : [];
+    let priorSecurityReportPassportValidV274 = false;
+    try {
+      const priorMaskV274 = priorSecurityReportStagesV274.reduce((mask, stage) => (
+        mask | BigInt(DIRAC_V202_CHECKPOINT_BY_STAMP[stage.stamp] || 0n)
+      ), 0n);
+      priorSecurityReportPassportValidV274 = priorSecurityReportStagesV274.length === securityReportStageIndexV274
+        && priorSecurityReportStagesV274.every((stage) => ctx && ctx.guardPassport && ctx.guardPassport[stage.stamp] === true)
+        && (BigInt(ctx && ctx.passport || 0n) & priorMaskV274) === priorMaskV274;
+    } catch (_) {
+      priorSecurityReportPassportValidV274 = false;
+    }
+    if (!ctx
+        || ctx.action !== 'security_report'
+        || ctx.method !== 'POST'
+        || ctx.classification !== 'server'
+        || ctx.authentication !== 'server'
+        || ctx.__diracS2SSevenSignaturesVerifiedV206 !== true
+        || !diracCentralGuardPhaseValidV211(ctx)
+        || securityReportStageIndexV274 < 0
+        || ctx.currentStageIndexV211 !== securityReportStageIndexV274
+        || ctx.currentStageV211 !== 'security report'
+        || !priorSecurityReportPassportValidV274
+        || !DIRAC_CENTRAL_ACTIVE_ACTIONS_V146.has(semanticActionV274)
+        || DIRAC_CENTRAL_DISABLED_ACTIONS_V146.has(semanticActionV274)
+        || !semanticPolicyV274
+        || !DIRAC_CENTRAL_ASYNC_CONTEXT_V149) {
+      return { ok: false, reason: 'recovery_security_db_proxy_semantic_context_invalid' };
+    }
+    upstreamContextV274 = {
+      ...ctx,
+      action: semanticActionV274,
+      rawAction: semanticActionV274,
+      policy: semanticPolicyV274
+    };
+  }
   let upstreamExceptionV269 = null;
-  const upstream = await supabaseFetch(request.path, {
+  const invokeUpstreamV274 = () => supabaseFetch(request.path, {
     method: request.method,
     auth: request.path.startsWith('/auth/v1/') ? 'anon' : 'service', db: request.path.startsWith('/rest/v1/security_lost_passkey_recovery_') ? 'security' : undefined,
     prefer: request.prefer || undefined,
     body: request.body === null ? undefined : request.body
-  }).catch((errorV269) => {
+  });
+  const upstream = await (upstreamContextV274 === ctx
+    ? invokeUpstreamV274()
+    : DIRAC_CENTRAL_ASYNC_CONTEXT_V149.run({ ctx: upstreamContextV274 }, invokeUpstreamV274)).catch((errorV269) => {
     const safeCodeV269 = (value) => /^[A-Za-z0-9_.:-]{1,120}$/.test(String(value || '')) ? String(value) : '';
     upstreamExceptionV269 = {
       name: safeCodeV269(errorV269 && errorV269.name),
