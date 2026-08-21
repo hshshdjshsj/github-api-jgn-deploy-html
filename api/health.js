@@ -40119,7 +40119,7 @@ async function diracRecoverySecurityDbProxyHandleV234(ctx) {
   let upstreamExceptionV269 = null;
   const invokeUpstreamV274 = () => supabaseFetch(request.path, {
     method: request.method,
-    auth: request.path.startsWith('/auth/v1/') ? 'anon' : 'service', db: request.path.startsWith('/rest/v1/security_lost_passkey_recovery_') ? 'security' : undefined,
+    auth: request.path.startsWith('/auth/v1/') ? 'anon' : 'service', db: request.path.startsWith('/rest/v1/security_lost_passkey_recovery_') ? 'legacy' : undefined,
     prefer: request.prefer || undefined,
     body: request.body === null ? undefined : request.body
   });
@@ -40154,7 +40154,7 @@ async function diracRecoverySecurityDbProxyHandleV234(ctx) {
           ? 'security_lost_passkey_recovery_sessions'
           : 'security_lost_passkey_recovery_requests',
         method: request.method,
-        target_key: 'security',
+        target_key: 'legacy',
         upstream_ok: Boolean(upstream && upstream.ok === true),
         upstream_status: Number.isFinite(upstreamStatusV269) ? upstreamStatusV269 : 0,
         result_class: resultClassV269,
