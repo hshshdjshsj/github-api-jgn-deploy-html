@@ -41434,9 +41434,24 @@ async function diracCentralCaptureRawRequestV230(req) {
     const method = String(req.method || 'GET').toUpperCase();
     const declared = String(req.headers && req.headers['content-length'] || '').trim();
     const bodyCapable = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+    const vercelRawReplayV263 = Boolean(
+      diracV143NormalizeAction(String(new URLSearchParams(String(req.url || '').split('?').slice(1).join('?')).get('action') || '')) === 'security_report' &&
+      req.readableEnded === true &&
+      bodyDescriptorV230 &&
+      !bodyHasDataValueV230 &&
+      bodyDescriptorV230.configurable === true &&
+      bodyDescriptorV230.enumerable === true &&
+      typeof bodyDescriptorV230.get === 'function' &&
+      typeof bodyDescriptorV230.set === 'function' &&
+      Object.prototype.hasOwnProperty.call(req, 'read') &&
+      Object.prototype.hasOwnProperty.call(req, 'on') &&
+      Object.prototype.hasOwnProperty.call(req, 'addListener') &&
+      typeof req.read === 'function' &&
+      req.on === req.addListener
+    );
     const streamReadable =
       typeof req.on === 'function' &&
-      !req.readableEnded &&
+      (!req.readableEnded || vercelRawReplayV263) &&
       req.destroyed !== true;
     const bodyExpected = bodyCapable
       && (
