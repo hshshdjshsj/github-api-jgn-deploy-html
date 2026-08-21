@@ -39778,13 +39778,54 @@ const DIRAC_RECOVERY_SECURITY_DB_PAGE_CODEC_MARKER_V265 = '~br256-v265.';
 const DIRAC_RECOVERY_SECURITY_DB_PAGE_SCAN_PREVIEW_CHARS_V265 = 3000;
 const DIRAC_RECOVERY_SECURITY_DB_PAGE_RAW_LIMIT_V265 = 256 * 1024;
 const DIRAC_RECOVERY_SECURITY_DB_PAGE_WIRE_LIMIT_V265 = 30 * 1024;
+const DIRAC_RECOVERY_SECURITY_DB_PAGE_FIELD_CHUNK_CHARS_V273 = 23 * 1024;
+const DIRAC_RECOVERY_SECURITY_DB_PAGE_SEGMENT_CHARS_V273 = 128;
 const DIRAC_RECOVERY_SECURITY_DB_PAGE_COMPRESSED_LIMIT_V265 = 20 * 1024;
 
+function diracRecoverySecurityDbProxyPreviewV273(serializedBody) {
+  let structured = '';
+  try {
+    structured = JSON.stringify(JSON.parse(String(serializedBody || '')), (key, value) => {
+      if (typeof value !== 'string' || value.length <= 160) return value;
+      if (!value.startsWith('$argon2id$') && !/^[A-Za-z0-9+/_-]+={0,2}$/.test(value)) return value;
+      return '[dirac-crypto-value:' + String(Buffer.byteLength(value, 'utf8')) + ':'
+        + crypto.createHash('sha256').update(value, 'utf8').digest('hex') + ']';
+    });
+  } catch (_) {
+    structured = '';
+  }
+  return String(structured || '').slice(0, DIRAC_RECOVERY_SECURITY_DB_PAGE_SCAN_PREVIEW_CHARS_V265)
+    .padEnd(DIRAC_RECOVERY_SECURITY_DB_PAGE_SCAN_PREVIEW_CHARS_V265, ' ');
+}
+
+function diracRecoverySecurityDbProxyUnframeContinuationV273(value) {
+  if (typeof value !== 'string' || !value.length) return null;
+  const segments = value.split('~');
+  if (!segments.length || segments.some((segment, index) => !segment.length
+      || segment.length > DIRAC_RECOVERY_SECURITY_DB_PAGE_SEGMENT_CHARS_V273
+      || (index < segments.length - 1 && segment.length !== DIRAC_RECOVERY_SECURITY_DB_PAGE_SEGMENT_CHARS_V273)
+      || !/^[A-Za-z0-9_-]+$/.test(segment))) return null;
+  return segments.join('');
+}
+
 function diracRecoverySecurityDbProxyDecodePageV265(value, cleanPath, method) {
-  const page = String(value || '');
+  const fragmentedPageV273 = Array.isArray(value);
+  const continuationV273 = fragmentedPageV273
+    ? diracRecoverySecurityDbProxyUnframeContinuationV273(value[1])
+    : '';
+  if ((!fragmentedPageV273 && typeof value !== 'string')
+      || (fragmentedPageV273
+        && (value.length !== 2
+          || value.some((part) => typeof part !== 'string' || !part.length || part.length > DIRAC_RECOVERY_SECURITY_DB_PAGE_FIELD_CHUNK_CHARS_V273)
+          || value[0].length !== DIRAC_RECOVERY_SECURITY_DB_PAGE_FIELD_CHUNK_CHARS_V273
+          || continuationV273 === null))) {
+    return { ok: false, reason: 'recovery_security_db_proxy_page_fragment_invalid' };
+  }
+  const page = fragmentedPageV273 ? value[0] + continuationV273 : value;
   const markerOffset = DIRAC_RECOVERY_SECURITY_DB_PAGE_SCAN_PREVIEW_CHARS_V265;
   if (page.slice(markerOffset, markerOffset + DIRAC_RECOVERY_SECURITY_DB_PAGE_CODEC_MARKER_V265.length)
       !== DIRAC_RECOVERY_SECURITY_DB_PAGE_CODEC_MARKER_V265) {
+    if (fragmentedPageV273) return { ok: false, reason: 'recovery_security_db_proxy_page_fragment_uncompressed_forbidden' };
     return { ok: true, bodyJson: page, compressed: false, bodyBytes: Buffer.byteLength(page, 'utf8'), compressedBytes: 0 };
   }
   if (!String(cleanPath || '').startsWith('/rest/v1/security_lost_passkey_recovery_requests')
@@ -39823,7 +39864,7 @@ function diracRecoverySecurityDbProxyDecodePageV265(value, cleanPath, method) {
     let bodyJson;
     try { bodyJson = new TextDecoder('utf-8', { fatal: true }).decode(raw); }
     catch (_) { return { ok: false, reason: 'recovery_security_db_proxy_compressed_utf8_invalid' }; }
-    if (!safeEqual(bodyJson.slice(0, DIRAC_RECOVERY_SECURITY_DB_PAGE_SCAN_PREVIEW_CHARS_V265), preview)) {
+    if (!safeEqual(diracRecoverySecurityDbProxyPreviewV273(bodyJson), preview)) {
       return { ok: false, reason: 'recovery_security_db_proxy_compressed_preview_invalid' };
     }
     return { ok: true, bodyJson, compressed: true, bodyBytes: raw.byteLength, compressedBytes: compressed.byteLength };
