@@ -39773,6 +39773,68 @@ function diracRecoverySecurityDbProxyMacV234(value) {
     .digest('base64url');
 }
 
+const DIRAC_RECOVERY_SECURITY_DB_PAGE_CODEC_V265 = 'dirac-recovery-security-db-page-br-v265';
+const DIRAC_RECOVERY_SECURITY_DB_PAGE_CODEC_MARKER_V265 = '~br256-v265.';
+const DIRAC_RECOVERY_SECURITY_DB_PAGE_SCAN_PREVIEW_CHARS_V265 = 3000;
+const DIRAC_RECOVERY_SECURITY_DB_PAGE_RAW_LIMIT_V265 = 256 * 1024;
+const DIRAC_RECOVERY_SECURITY_DB_PAGE_WIRE_LIMIT_V265 = 23 * 1024;
+const DIRAC_RECOVERY_SECURITY_DB_PAGE_COMPRESSED_LIMIT_V265 = 20 * 1024;
+
+function diracRecoverySecurityDbProxyDecodePageV265(value, cleanPath, method) {
+  const page = String(value || '');
+  const markerOffset = DIRAC_RECOVERY_SECURITY_DB_PAGE_SCAN_PREVIEW_CHARS_V265;
+  if (page.slice(markerOffset, markerOffset + DIRAC_RECOVERY_SECURITY_DB_PAGE_CODEC_MARKER_V265.length)
+      !== DIRAC_RECOVERY_SECURITY_DB_PAGE_CODEC_MARKER_V265) {
+    return { ok: true, bodyJson: page, compressed: false, bodyBytes: Buffer.byteLength(page, 'utf8'), compressedBytes: 0 };
+  }
+  if (!String(cleanPath || '').startsWith('/rest/v1/security_lost_passkey_recovery_requests')
+      || (String(method || '') !== 'POST' && String(method || '') !== 'PATCH')) {
+    return { ok: false, reason: 'recovery_security_db_proxy_compressed_path_forbidden' };
+  }
+  if (Buffer.byteLength(page, 'utf8') > DIRAC_RECOVERY_SECURITY_DB_PAGE_WIRE_LIMIT_V265) {
+    return { ok: false, reason: 'recovery_security_db_proxy_compressed_wire_size_invalid' };
+  }
+  const preview = page.slice(0, markerOffset);
+  const encoded = page.slice(markerOffset);
+  const match = encoded.match(/^~br256-v265\.([1-9][0-9]{0,5})\.([A-Za-z0-9_-]{86})\.([A-Za-z0-9_-]+)$/);
+  if (!match) return { ok: false, reason: 'recovery_security_db_proxy_compressed_format_invalid' };
+  const expectedBytes = Number(match[1]);
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 1 || expectedBytes > DIRAC_RECOVERY_SECURITY_DB_PAGE_RAW_LIMIT_V265) {
+    return { ok: false, reason: 'recovery_security_db_proxy_compressed_size_invalid' };
+  }
+  let compressed = null;
+  let raw = null;
+  try {
+    compressed = Buffer.from(match[3], 'base64url');
+    if (!compressed.byteLength
+        || compressed.byteLength > DIRAC_RECOVERY_SECURITY_DB_PAGE_COMPRESSED_LIMIT_V265
+        || compressed.toString('base64url') !== match[3]) {
+      return { ok: false, reason: 'recovery_security_db_proxy_compressed_encoding_invalid' };
+    }
+    const zlib = require('node:zlib');
+    raw = zlib.brotliDecompressSync(compressed, { maxOutputLength: DIRAC_RECOVERY_SECURITY_DB_PAGE_RAW_LIMIT_V265 });
+    if (raw.byteLength !== expectedBytes) {
+      return { ok: false, reason: 'recovery_security_db_proxy_compressed_length_mismatch' };
+    }
+    const actualDigest = crypto.createHash('sha512').update(raw).digest('base64url');
+    if (!safeEqual(actualDigest, match[2])) {
+      return { ok: false, reason: 'recovery_security_db_proxy_compressed_hash_invalid' };
+    }
+    let bodyJson;
+    try { bodyJson = new TextDecoder('utf-8', { fatal: true }).decode(raw); }
+    catch (_) { return { ok: false, reason: 'recovery_security_db_proxy_compressed_utf8_invalid' }; }
+    if (!safeEqual(bodyJson.slice(0, DIRAC_RECOVERY_SECURITY_DB_PAGE_SCAN_PREVIEW_CHARS_V265), preview)) {
+      return { ok: false, reason: 'recovery_security_db_proxy_compressed_preview_invalid' };
+    }
+    return { ok: true, bodyJson, compressed: true, bodyBytes: raw.byteLength, compressedBytes: compressed.byteLength };
+  } catch (_) {
+    return { ok: false, reason: 'recovery_security_db_proxy_decompression_failed' };
+  } finally {
+    if (compressed) compressed.fill(0);
+    if (raw) raw.fill(0);
+  }
+}
+
 function diracRecoverySecurityDbProxyScopeV252(parsedPath, method, prefer, requestBody) {
   const pathname = String(parsedPath && parsedPath.pathname || '');
   const search = parsedPath && parsedPath.searchParams;
@@ -39840,12 +39902,12 @@ function diracRecoverySecurityDbProxyScopeV252(parsedPath, method, prefer, reque
   if (table === 'security_lost_passkey_recovery_requests') {
     if (method === 'GET') return requestBody === null && requestId(search.get('request_id')) && search.get('limit') === '1' && prefer === '';
     if (method === 'PATCH') return requestId(search.get('request_id')) && oneObjectRow
-      && new Set(['', 'return=representation']).has(prefer);
+      && new Set(['', 'return=minimal', 'return=representation']).has(prefer);
     return method === 'POST' && oneObjectRow
       && /^[A-Za-z0-9_-]{16,120}$/.test(String(rows[0].request_id || ''))
       && uuid('eq.' + String(rows[0].customer_id || ''))
       && uuid('eq.' + String(rows[0].auth_user_id || ''))
-      && prefer === 'return=representation';
+      && new Set(['return=minimal', 'return=representation']).has(prefer);
   }
   if (table === 'security_lost_passkey_recovery_sessions') {
     if (method === 'PATCH') return requestId(search.get('request_id'))
@@ -39903,7 +39965,9 @@ function diracRecoverySecurityDbProxyRequestV234(ctx) {
   let parsedPath;
   try { parsedPath = new URL(path, 'https://dirac.invalid'); }
   catch (_) { return { ok: false, reason: 'recovery_security_db_proxy_path_invalid' }; }
-  const bodyJson = String(evidence.page || '');
+  const decodedPageV265 = diracRecoverySecurityDbProxyDecodePageV265(evidence.page, path, method);
+  if (!decodedPageV265.ok) return decodedPageV265;
+  const bodyJson = decodedPageV265.bodyJson;
   let requestBody;
   try { requestBody = JSON.parse(bodyJson); }
   catch (_) { return { ok: false, reason: 'recovery_security_db_proxy_body_invalid' }; }
@@ -39933,6 +39997,22 @@ function diracRecoverySecurityDbProxyRequestV234(ctx) {
       }));
     } catch (_) {}
     return { ok: false, reason: 'recovery_security_db_proxy_scope_invalid' };
+  }
+  if (decodedPageV265.compressed) {
+    try {
+      console.error('[dirac-recovery-security-db-page-codec-v265]', JSON.stringify({
+        patch: DIRAC_RECOVERY_SECURITY_DB_PAGE_CODEC_V265,
+        phase: 'decoded',
+        request_id: requestId,
+        route: 'security_lost_passkey_recovery_requests',
+        method,
+        compressed_bytes: decodedPageV265.compressedBytes,
+        body_bytes: decodedPageV265.bodyBytes,
+        integrity_verified: true,
+        seven_signatures_verified: ctx.__diracS2SSevenSignaturesVerifiedV206 === true,
+        secrets_logged: false
+      }));
+    } catch (_) {}
   }
   return { ok: true, requestId, nonce, sentAtMs, method, path, prefer, body: requestBody };
 }
