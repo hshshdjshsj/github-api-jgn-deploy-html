@@ -41434,25 +41434,27 @@ async function diracCentralCaptureRawRequestV230(req) {
     const method = String(req.method || 'GET').toUpperCase();
     const declared = String(req.headers && req.headers['content-length'] || '').trim();
     const bodyCapable = !['GET', 'HEAD', 'OPTIONS'].includes(method);
-    const vercelRawReplayV263 = Boolean(
-      diracV143NormalizeAction(String(new URLSearchParams(String(req.url || '').split('?').slice(1).join('?')).get('action') || '')) === 'security_report' &&
-      req.readableEnded === true &&
+    const rawQueryV264 = String(req.url || '').split('?').slice(1).join('?');
+    const rawActionV264 = diracV143NormalizeAction(String(new URLSearchParams(rawQueryV264).get('action') || ''));
+    const rawReplayAttemptV264 = Boolean(
+      rawActionV264 === 'security_report' &&
+      bodyCapable &&
+      /^(?:[1-9]\d{0,15})$/.test(declared) &&
+      Number.isSafeInteger(Number(declared)) &&
       bodyDescriptorV230 &&
       !bodyHasDataValueV230 &&
       bodyDescriptorV230.configurable === true &&
       bodyDescriptorV230.enumerable === true &&
       typeof bodyDescriptorV230.get === 'function' &&
       typeof bodyDescriptorV230.set === 'function' &&
-      Object.prototype.hasOwnProperty.call(req, 'read') &&
-      Object.prototype.hasOwnProperty.call(req, 'on') &&
-      Object.prototype.hasOwnProperty.call(req, 'addListener') &&
-      typeof req.read === 'function' &&
-      req.on === req.addListener
+      typeof req.on === 'function'
     );
     const streamReadable =
       typeof req.on === 'function' &&
-      (!req.readableEnded || vercelRawReplayV263) &&
-      req.destroyed !== true;
+      (
+        (!req.readableEnded && req.destroyed !== true) ||
+        rawReplayAttemptV264
+      );
     const bodyExpected = bodyCapable
       && (
         Number(declared || 0) > 0 ||
@@ -41460,8 +41462,7 @@ async function diracCentralCaptureRawRequestV230(req) {
         streamReadable
       );
     if (!buffer && bodyExpected && streamReadable) {
-      const rawQuery = String(req.url || '').split('?').slice(1).join('?');
-      const action = diracV143NormalizeAction(String(req.query && req.query.action || new URLSearchParams(rawQuery).get('action') || ''));
+      const action = rawActionV264;
       const contractLimit = Number(diracCentralContractForActionV146(action).maxBodyBytes || 0);
       const rawLimit = Math.max(1024, contractLimit || Number(diracUltraBodyLimitBytes(action, method) || 128 * 1024));
       if (declared && Number(declared) > rawLimit) return { ok: false, reason: 'raw_body_too_large' };
@@ -41469,9 +41470,15 @@ async function diracCentralCaptureRawRequestV230(req) {
         const chunks = [];
         let total = 0;
         let completed = false;
+        let replayWatchdogV264 = null;
+        const clearReplayWatchdogV264 = () => {
+          if (replayWatchdogV264) clearTimeout(replayWatchdogV264);
+          replayWatchdogV264 = null;
+        };
         const fail = (code) => {
           if (completed) return;
           completed = true;
+          clearReplayWatchdogV264();
           const error = new Error(code);
           error.code = code;
           reject(error);
@@ -41486,6 +41493,7 @@ async function diracCentralCaptureRawRequestV230(req) {
         req.on('end', () => {
           if (completed) return;
           completed = true;
+          clearReplayWatchdogV264();
           resolve(Buffer.concat(chunks, total));
         });
         req.on('error', () => fail('raw_body_stream_error'));
@@ -41493,6 +41501,9 @@ async function diracCentralCaptureRawRequestV230(req) {
         req.on('close', () => {
           if (!completed && !req.readableEnded) fail('raw_body_stream_closed');
         });
+        if (rawReplayAttemptV264 && !completed) {
+          replayWatchdogV264 = setTimeout(() => fail('raw_body_replay_unavailable'), 250);
+        }
       });
     }
     if (!buffer) return bodyExpected ? { ok: false, reason: 'raw_body_capture_required' } : { ok: true, empty: true };
@@ -51103,6 +51114,42 @@ module.exports = async function diracCentralArchitectureConsolidationV202(req, r
 
   const rawCaptureV230 = await diracCentralCaptureRawRequestV230(req);
   if (!rawCaptureV230.ok) {
+    if (/(?:^|[?&])action=security_report(?:&|$)/.test(String(req && req.url || ''))) {
+      try {
+        const bodyDescriptorV264 = Object.getOwnPropertyDescriptor(req, 'body');
+        const bodyDescriptorHasValueV264 = Boolean(
+          bodyDescriptorV264 &&
+          Object.prototype.hasOwnProperty.call(bodyDescriptorV264, 'value')
+        );
+        const declaredV264 = String(req && req.headers && req.headers['content-length'] || '').trim();
+        console.error('[dirac-security-report-raw-capture-v264]', JSON.stringify({
+          patch: 'dirac-security-report-raw-replay-watchdog-v264',
+          reason: String(rawCaptureV230.reason || 'DIRAC_RAW_BODY_CAPTURE_FAILED').slice(0, 120),
+          method: String(req && req.method || '').slice(0, 16),
+          content_length_present: Boolean(declaredV264),
+          content_length_valid: /^(?:0|[1-9]\d{0,15})$/.test(declaredV264) && Number.isSafeInteger(Number(declaredV264)),
+          content_length_bytes: /^(?:0|[1-9]\d{0,15})$/.test(declaredV264) && Number.isSafeInteger(Number(declaredV264)) ? Number(declaredV264) : 0,
+          body_descriptor: bodyDescriptorV264 ? (bodyDescriptorHasValueV264 ? 'data' : 'accessor') : 'absent',
+          body_data_type: bodyDescriptorHasValueV264
+            ? (Buffer.isBuffer(bodyDescriptorV264.value) ? 'buffer' : typeof bodyDescriptorV264.value)
+            : 'none',
+          body_descriptor_configurable: Boolean(bodyDescriptorV264 && bodyDescriptorV264.configurable),
+          body_descriptor_enumerable: Boolean(bodyDescriptorV264 && bodyDescriptorV264.enumerable),
+          body_getter_present: Boolean(bodyDescriptorV264 && typeof bodyDescriptorV264.get === 'function'),
+          body_setter_present: Boolean(bodyDescriptorV264 && typeof bodyDescriptorV264.set === 'function'),
+          stream_on_available: Boolean(req && typeof req.on === 'function'),
+          own_read: Boolean(req && Object.prototype.hasOwnProperty.call(req, 'read')),
+          own_on: Boolean(req && Object.prototype.hasOwnProperty.call(req, 'on')),
+          own_add_listener: Boolean(req && Object.prototype.hasOwnProperty.call(req, 'addListener')),
+          on_add_listener_equal: Boolean(req && req.on === req.addListener),
+          readable_ended: Boolean(req && req.readableEnded),
+          destroyed: Boolean(req && req.destroyed),
+          secrets_logged: false
+        }));
+      } catch (securityReportRawDiagnosticErrorV264) {
+        diracCentralRecordSuppressedExceptionV221(securityReportRawDiagnosticErrorV264);
+      }
+    }
     if (registerDiagnosticStateV233) {
       console.error('[dirac-register-raw-capture-diagnostic]', {
         reason: String(rawCaptureV230.reason || '').slice(0, 96),
