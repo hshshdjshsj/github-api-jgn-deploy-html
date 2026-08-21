@@ -9432,6 +9432,10 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
   const workerDebugEnabled = String(process.env.DIRAC_RECOVERY_WORKER_DEBUG || '').trim().toLowerCase() === 'true';
+  let workerUpstreamStatusV260 = 0;
+  let workerUpstreamContentTypeV260 = '';
+  let workerUpstreamResponseBytesV260 = 0;
+  let workerUpstreamEncryptedEnvelopeV260 = false;
 
   try {
     const response = await fetch(target.toString(), {
@@ -9453,27 +9457,47 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
       redirect: 'error',
       signal: controller ? controller.signal : undefined
     });
+    workerUpstreamStatusV260 = Number(response.status || 0);
+    workerUpstreamContentTypeV260 = String(response.headers && response.headers.get('content-type') || '').slice(0, 120);
     const workerResponseText = await customerSecurityRecoveryWorkerReadResponseTextV200(response);
+    workerUpstreamResponseBytesV260 = Buffer.byteLength(String(workerResponseText || ''), 'utf8');
     let data = {};
     try { data = workerResponseText ? JSON.parse(workerResponseText) : {}; } catch (_) { data = {}; }
+    workerUpstreamEncryptedEnvelopeV260 = Boolean(data && data.transport_encrypted === true);
     if (!data || data.transport_encrypted !== true) {
       throw customerSecurityRecoveryWorkerTransportFailV190('RECOVERY_WORKER_ENCRYPTED_RESPONSE_REQUIRED');
     }
     data = customerSecurityRecoveryWorkerOpenResponseV190(data, transportContext, response.status);
     if (!response.ok || !data || data.ok !== true) {
+      const workerFailureStageV260 = customerSecurityLostPasskeyDiagnosticCodeV210(data && data.stage || 'worker_application_response', 120);
+      const workerFailureDiagnosticIdV260 = /^[a-f0-9]{32}$/i.test(String(data && data.diagnostic_id || ''))
+        ? String(data.diagnostic_id).toLowerCase()
+        : '';
       const workerFailureBody = {
         ok: false,
         code: data && data.code || 'RECOVERY_WORKER_FAILED',
+        stage: workerFailureStageV260,
+        diagnostic_id: workerFailureDiagnosticIdV260,
         message: data && data.message || 'Recovery worker belum dapat memproses permintaan.'
       };
+      res.setHeader('X-Dirac-Recovery-Diagnostic-Patch', 'dirac-recovery-worker-proxy-diagnostic-v260');
+      res.setHeader('X-Dirac-Recovery-Failure-Stage', workerFailureStageV260);
+      res.setHeader('X-Dirac-Recovery-Upstream-Status', String(workerUpstreamStatusV260));
+      if (workerFailureDiagnosticIdV260) res.setHeader('X-Dirac-Recovery-Diagnostic-Id', workerFailureDiagnosticIdV260);
       try {
         console.error('[recovery-worker-response-failed]', JSON.stringify({
+          patch: 'dirac-recovery-worker-proxy-diagnostic-v260',
           status: response.status,
           statusText: response.statusText,
           code: workerFailureBody.code,
+          stage: workerFailureStageV260,
+          diagnostic_id: workerFailureDiagnosticIdV260,
+          response_bytes: workerUpstreamResponseBytesV260,
+          encrypted_response_authenticated: true,
           message: String(workerFailureBody.message || '').slice(0, 200),
           workerHost: target.hostname,
-          workerPath: target.pathname
+          workerPath: target.pathname,
+          secrets_logged: false
         }));
       } catch (_) {}
       if (workerDebugEnabled) {
@@ -9496,18 +9520,33 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
   } catch (error) {
     const workerErrorName = String(error && error.name || '').slice(0, 80);
     const workerErrorMessage = diracSecurityRedactDiagnosticV210(error, 240);
+    const workerFailureStageV260 = workerUpstreamStatusV260 > 0
+      ? 'worker_transport_response_validation'
+      : 'worker_fetch';
+    res.setHeader('X-Dirac-Recovery-Diagnostic-Patch', 'dirac-recovery-worker-proxy-diagnostic-v260');
+    res.setHeader('X-Dirac-Recovery-Failure-Stage', workerFailureStageV260);
+    res.setHeader('X-Dirac-Recovery-Upstream-Status', String(workerUpstreamStatusV260));
     try {
       console.error('[recovery-worker-unreachable]', JSON.stringify({
+        patch: 'dirac-recovery-worker-proxy-diagnostic-v260',
         name: workerErrorName,
         message: workerErrorMessage,
+        stage: workerFailureStageV260,
+        upstream_status: workerUpstreamStatusV260,
+        upstream_content_type: workerUpstreamContentTypeV260,
+        upstream_response_bytes: workerUpstreamResponseBytesV260,
+        upstream_encrypted_envelope: workerUpstreamEncryptedEnvelopeV260,
         workerHost: target.hostname,
         workerPath: target.pathname,
-        timeoutMs
+        timeoutMs,
+        secrets_logged: false
       }));
     } catch (_) {}
     const unreachableBody = {
       ok: false,
       code: 'RECOVERY_WORKER_UNREACHABLE',
+      stage: workerFailureStageV260,
+      upstream_status: workerUpstreamStatusV260,
       message: 'Recovery worker belum bisa dihubungi.'
     };
     if (workerDebugEnabled) {
