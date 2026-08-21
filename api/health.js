@@ -9469,7 +9469,7 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
     }
     data = customerSecurityRecoveryWorkerOpenResponseV190(data, transportContext, response.status);
     if (!response.ok || !data || data.ok !== true) {
-      const workerFailureStageV260 = customerSecurityLostPasskeyDiagnosticCodeV210(data && data.stage || 'worker_application_response', 120);
+      const workerFailureStageV260 = /^[A-Za-z0-9_.:-]{1,120}$/.test(String(data && data.stage || '')) ? String(data.stage) : 'worker_application_response';
       const workerFailureDiagnosticIdV260 = /^[a-f0-9]{32}$/i.test(String(data && data.diagnostic_id || ''))
         ? String(data.diagnostic_id).toLowerCase()
         : '';
