@@ -40020,12 +40020,51 @@ function diracRecoverySecurityDbProxyRequestV234(ctx) {
 async function diracRecoverySecurityDbProxyHandleV234(ctx) {
   const request = diracRecoverySecurityDbProxyRequestV234(ctx);
   if (!request.ok) return request;
+  let upstreamExceptionV269 = null;
   const upstream = await supabaseFetch(request.path, {
     method: request.method,
     auth: request.path.startsWith('/auth/v1/') ? 'anon' : 'service', db: request.path.startsWith('/rest/v1/security_lost_passkey_recovery_') ? 'security' : undefined,
     prefer: request.prefer || undefined,
     body: request.body === null ? undefined : request.body
-  }).catch(() => ({ ok: false, status: 503, data: { code: 'RECOVERY_SECURITY_DB_PROXY_UPSTREAM_FAILED' } }));
+  }).catch((errorV269) => {
+    const safeCodeV269 = (value) => /^[A-Za-z0-9_.:-]{1,120}$/.test(String(value || '')) ? String(value) : '';
+    upstreamExceptionV269 = {
+      name: safeCodeV269(errorV269 && errorV269.name),
+      code: safeCodeV269(errorV269 && errorV269.code),
+      cause_code: safeCodeV269(errorV269 && errorV269.cause && errorV269.cause.code)
+    };
+    return { ok: false, status: 503, data: { code: 'RECOVERY_SECURITY_DB_PROXY_UPSTREAM_FAILED' } };
+  });
+  if (request.path.startsWith('/rest/v1/security_lost_passkey_recovery_')) {
+    try {
+      const upstreamStatusV269 = Number(upstream && upstream.status || 0);
+      const upstreamCodeValueV269 = upstream && upstream.data && typeof upstream.data === 'object' && !Array.isArray(upstream.data)
+        ? String(upstream.data.code || '')
+        : '';
+      let resultClassV269 = 'unexpected_response';
+      if (upstream && upstream.ok === true) resultClassV269 = 'accepted';
+      else if (upstreamExceptionV269) resultClassV269 = 'exception';
+      else if ([401, 403].includes(upstreamStatusV269)) resultClassV269 = 'authorization_rejected';
+      else if (upstreamStatusV269 === 404) resultClassV269 = 'table_or_route_not_found';
+      else if ([400, 409, 422].includes(upstreamStatusV269)) resultClassV269 = 'database_request_rejected';
+      else if (upstreamStatusV269 >= 500 || upstreamStatusV269 === 0) resultClassV269 = 'upstream_unavailable';
+      console.error('[dirac-recovery-db-proxy-result-v269]', JSON.stringify({
+        patch: 'dirac-recovery-db-proxy-result-v269',
+        request_id: request.requestId,
+        table: request.path.startsWith('/rest/v1/security_lost_passkey_recovery_sessions')
+          ? 'security_lost_passkey_recovery_sessions'
+          : 'security_lost_passkey_recovery_requests',
+        method: request.method,
+        target_key: 'security',
+        upstream_ok: Boolean(upstream && upstream.ok === true),
+        upstream_status: Number.isFinite(upstreamStatusV269) ? upstreamStatusV269 : 0,
+        result_class: resultClassV269,
+        upstream_code: /^[A-Za-z0-9_.:-]{1,120}$/.test(upstreamCodeValueV269) ? upstreamCodeValueV269 : '',
+        exception: upstreamExceptionV269,
+        secrets_logged: false
+      }));
+    } catch (_) {}
+  }
   let data = null;
   try { data = upstream && upstream.data === undefined ? null : JSON.parse(JSON.stringify(upstream.data)); }
   catch (_) { data = { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_INVALID' }; }
