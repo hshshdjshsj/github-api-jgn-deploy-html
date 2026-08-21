@@ -40022,7 +40022,7 @@ async function diracRecoverySecurityDbProxyHandleV234(ctx) {
   if (!request.ok) return request;
   const upstream = await supabaseFetch(request.path, {
     method: request.method,
-    auth: request.path.startsWith('/auth/v1/') ? 'anon' : 'service', db: request.path.startsWith('/rest/v1/security_lost_passkey_recovery_') ? 'customerSecurity' : undefined,
+    auth: request.path.startsWith('/auth/v1/') ? 'anon' : 'service', db: request.path.startsWith('/rest/v1/security_lost_passkey_recovery_') ? 'security' : undefined,
     prefer: request.prefer || undefined,
     body: request.body === null ? undefined : request.body
   }).catch(() => ({ ok: false, status: 503, data: { code: 'RECOVERY_SECURITY_DB_PROXY_UPSTREAM_FAILED' } }));
