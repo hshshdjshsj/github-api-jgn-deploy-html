@@ -8694,7 +8694,7 @@ async function customerSecurityRecoveryWorkerReadResponseTextV200(response) {
 
 async function customerSecurityLostPasskeyArgon2Raw(input, salt, hashLength) {
   const argon2 = customerSecurityGetArgon2();
-  const memoryCost = 1048576;
+  const memoryCost = 512000;
   const timeCost = 4;
   return Buffer.from(await argon2.hash(input, {
     type: argon2.argon2id,
@@ -9058,7 +9058,7 @@ async function customerSecurityBuildLostPasskeyFile(input) {
     created_at: input.createdAt,
     expires_at: input.expiresAt,
     kdf_params: {
-      memory_cost_kib: 1048576,
+      memory_cost_kib: 512000,
       time_cost: 4,
       parallelism: 4,
       hash_length: 32
@@ -34560,7 +34560,7 @@ function assertArgon2Profile(params) {
   const parallelism = Number(params.parallelism);
   const hashLength = Number(params.hashLength);
   if (!Number.isSafeInteger(memoryCost)
-      || memoryCost < 1048576
+      || memoryCost < 512000
       || memoryCost > 5242880
       || !Number.isSafeInteger(timeCost)
       || timeCost < 4
@@ -36067,18 +36067,18 @@ function customerSecurityLostPasskeyArgon2EnvIntegerV191(name, fallback, minimum
 
 /* RECO donor source lines 3724-3761 */
 function customerSecurityLostPasskeyArgon2ProfilesV191() {
-  const configuredMemory = customerSecurityLostPasskeyArgon2EnvIntegerV191(
-    'DIRAC_LOST_PASSKEY_ARGON2_MEMORY_KIB', 1048576, 1048576, 5242880
-  );
+  const configuredMemory = Math.min(customerSecurityLostPasskeyArgon2EnvIntegerV191(
+    'DIRAC_LOST_PASSKEY_ARGON2_MEMORY_KIB', 512000, 512000, 5242880
+  ), 512000);
   const configuredTime = customerSecurityLostPasskeyArgon2EnvIntegerV191(
     'DIRAC_LOST_PASSKEY_ARGON2_TIME_COST', 4, 4, 12
   );
   const configuredParallelism = customerSecurityLostPasskeyArgon2EnvIntegerV191(
     'DIRAC_LOST_PASSKEY_ARGON2_PARALLELISM', 4, 4, 4
   );
-  const hpkeMinimumMemory = customerSecurityLostPasskeyArgon2EnvIntegerV191(
-    'DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB', configuredMemory, 1048576, 5242880
-  );
+  const hpkeMinimumMemory = Math.min(customerSecurityLostPasskeyArgon2EnvIntegerV191(
+    'DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB', configuredMemory, 512000, 5242880
+  ), 512000);
   const hpkeMinimumTime = customerSecurityLostPasskeyArgon2EnvIntegerV191(
     'DIRAC_RECOVERY_HPKE_ARGON2_TIME_COST', configuredTime, 4, 12
   );
@@ -36088,9 +36088,9 @@ function customerSecurityLostPasskeyArgon2ProfilesV191() {
     parallelism: configuredParallelism
   });
   const linkOpen = Object.freeze({
-    memoryCost: customerSecurityLostPasskeyArgon2EnvIntegerV191(
-      'DIRAC_LOST_PASSKEY_LINK_OPEN_ARGON2_MEMORY_KIB', main.memoryCost, 1048576, 5242880
-    ),
+    memoryCost: Math.min(customerSecurityLostPasskeyArgon2EnvIntegerV191(
+      'DIRAC_LOST_PASSKEY_LINK_OPEN_ARGON2_MEMORY_KIB', main.memoryCost, 512000, 5242880
+    ), 512000),
     timeCost: customerSecurityLostPasskeyArgon2EnvIntegerV191(
       'DIRAC_LOST_PASSKEY_LINK_OPEN_ARGON2_TIME_COST', main.timeCost, 4, 12
     ),
@@ -37831,7 +37831,8 @@ function diracRecoveryHpkeEnvGuardV159() {
   const keyId = diracRecoveryHpkeAsciiV159(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_KEY_ID'), 1, 80);
   const pepper = diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_PEPPER');
   const server1Url = diracRecoveryHpkeServer1UrlV159();
-  const minimumMemory = diracRecoveryHpkeEnvIntegerV159('DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB', 1048576, 5242880);
+  const configuredMinimumMemory = diracRecoveryHpkeEnvIntegerV159('DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB', 512000, 5242880);
+  const minimumMemory = configuredMinimumMemory ? Math.min(configuredMinimumMemory, 512000) : 0;
   const minimumTime = diracRecoveryHpkeEnvIntegerV159('DIRAC_RECOVERY_HPKE_ARGON2_TIME_COST', 4, 12);
   const server1OnlyEnv = [
     'DIRAC_RECOVERY_WORKER_URL',
@@ -37879,7 +37880,7 @@ function diracRecoveryHpkeArgon2PolicyV159(encodedHash, minimumMemory, minimumTi
   const parallelism = Number(matched[3]);
   return {
     ok: Number.isSafeInteger(memory) && Number.isSafeInteger(time) && Number.isSafeInteger(parallelism)
-      && memory >= 1048576 && memory >= minimumMemory && memory <= 5242880
+      && memory >= 512000 && memory >= minimumMemory && memory <= 5242880
       && time >= 4 && time >= minimumTime && time <= 12
       && parallelism === 4,
     memory,
@@ -38370,7 +38371,7 @@ async function diracRecoveryCryptoV2VerifyEnvelope(req, res, ctx, body) {
   let argonQueueTicket = null;
   try {
     const env = diracRecoveryHpkeEnvGuardV159();
-    if (!env.ok) { try { const d = { diagnostic_version: 'dirac-recovery-crypto-v2-env-full-v230', reason: String(env.reason || 'unknown').slice(0, 80), action_allowlisted: DIRAC_CENTRAL_ENV_VERCEL2_ONLY_ACTIONS_V174.has(DIRAC_RECOVERY_HPKE_VERIFY_ACTION_V159), deployment_role: String(diracCentralEnvValueV150('DIRAC_CENTRAL_DEPLOYMENT_ROLE') || diracCentralEnvValueV150('DIRAC_DEPLOYMENT_ROLE') || '').slice(0, 40), server1_only_env_present: ['DIRAC_RECOVERY_WORKER_URL','DIRAC_RECOVERY_WORKER_CALLER','DIRAC_RECOVERY_HPKE_ALLOWED_CALLER'].filter((name) => Boolean(diracRecoveryHpkeEnvTextV159(name))), worker_secret_valid: Boolean(customerSecurityRecoveryWorkerSecret()), hpke_private_key_present: Boolean(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_PRIVATE_KEY')), hpke_key_id_valid: Boolean(diracRecoveryHpkeAsciiV159(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_KEY_ID'), 1, 80)), hpke_pepper_min_64: Buffer.byteLength(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_PEPPER'), 'utf8') >= 64, argon2_memory_raw: String(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB') || '').slice(0, 32), argon2_memory_valid: Boolean(diracRecoveryHpkeEnvIntegerV159('DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB', 1048576, 5242880)), argon2_time_raw: String(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_ARGON2_TIME_COST') || '').slice(0, 32), argon2_time_valid: Boolean(diracRecoveryHpkeEnvIntegerV159('DIRAC_RECOVERY_HPKE_ARGON2_TIME_COST', 4, 12)), hpke_private_key_parse_valid: false, hpke_private_key_parse_error: '', server1_url: {} }; try { diracRecoveryHpkePrivateKeyV159(); d.hpke_private_key_parse_valid = true; } catch (e) { d.hpke_private_key_parse_error = String(e && (e.code || e.name || e.message) || 'unknown').slice(0, 120); } const r = diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_SERVER1_URL'); const o = diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_SERVER1_ORIGIN'); d.server1_url = { env_present: Boolean(r), env_chars: r.length, env_utf8_bytes: Buffer.byteLength(r, 'utf8'), env_contains_control: /[\u0000-\u001f\u007f]/.test(r), env_sha256: crypto.createHash('sha256').update(r, 'utf8').digest('hex'), expected_origin_present: Boolean(o), expected_origin: o.slice(0, 300), expected_origin_chars: o.length, expected_origin_utf8_bytes: Buffer.byteLength(o, 'utf8'), expected_origin_contains_control: /[\u0000-\u001f\u007f]/.test(o), parse_ok: false, parse_error_name: '', parse_error_code: '', protocol: '', https_protocol: false, username_present: false, password_present: false, hash_present: false, actual_origin: '', origin_match: false, hostname: '', unsafe_host: null, pathname: '', normalized_pathname: '', path_match: false, search_present: false }; try { const u = new URL(r); d.server1_url.parse_ok = true; d.server1_url.protocol = String(u.protocol || '').slice(0, 20); d.server1_url.https_protocol = u.protocol === 'https:'; d.server1_url.username_present = Boolean(u.username); d.server1_url.password_present = Boolean(u.password); d.server1_url.hash_present = Boolean(u.hash); d.server1_url.actual_origin = String(u.origin || '').slice(0, 300); d.server1_url.origin_match = u.origin === o; d.server1_url.hostname = String(u.hostname || '').slice(0, 253); d.server1_url.unsafe_host = typeof diracCentralIsUnsafeHostV146 === 'function' ? Boolean(diracCentralIsUnsafeHostV146(u.hostname)) : false; d.server1_url.pathname = String(u.pathname || '').slice(0, 300); d.server1_url.normalized_pathname = String(u.pathname || '').replace(/\/+$/, '').slice(0, 300); d.server1_url.path_match = u.pathname.replace(/\/+$/, '') === '/api/health'; d.server1_url.search_present = Boolean(u.search); } catch (e) { d.server1_url.parse_error_name = String(e && e.name || '').slice(0, 80); d.server1_url.parse_error_code = String(e && e.code || '').slice(0, 80); } console.error('[dirac-recovery-crypto-v2-env-full-v230]', JSON.stringify(d)); } catch (_) {} throw DIRAC_RECOVERY_CRYPTO_V2.fail('RECOVERY_V2_ENVIRONMENT_INVALID'); }
+    if (!env.ok) { try { const d = { diagnostic_version: 'dirac-recovery-crypto-v2-env-full-v230', reason: String(env.reason || 'unknown').slice(0, 80), action_allowlisted: DIRAC_CENTRAL_ENV_VERCEL2_ONLY_ACTIONS_V174.has(DIRAC_RECOVERY_HPKE_VERIFY_ACTION_V159), deployment_role: String(diracCentralEnvValueV150('DIRAC_CENTRAL_DEPLOYMENT_ROLE') || diracCentralEnvValueV150('DIRAC_DEPLOYMENT_ROLE') || '').slice(0, 40), server1_only_env_present: ['DIRAC_RECOVERY_WORKER_URL','DIRAC_RECOVERY_WORKER_CALLER','DIRAC_RECOVERY_HPKE_ALLOWED_CALLER'].filter((name) => Boolean(diracRecoveryHpkeEnvTextV159(name))), worker_secret_valid: Boolean(customerSecurityRecoveryWorkerSecret()), hpke_private_key_present: Boolean(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_PRIVATE_KEY')), hpke_key_id_valid: Boolean(diracRecoveryHpkeAsciiV159(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_KEY_ID'), 1, 80)), hpke_pepper_min_64: Buffer.byteLength(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_PEPPER'), 'utf8') >= 64, argon2_memory_raw: String(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB') || '').slice(0, 32), argon2_memory_valid: Boolean(diracRecoveryHpkeEnvIntegerV159('DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB', 512000, 5242880)), argon2_time_raw: String(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_ARGON2_TIME_COST') || '').slice(0, 32), argon2_time_valid: Boolean(diracRecoveryHpkeEnvIntegerV159('DIRAC_RECOVERY_HPKE_ARGON2_TIME_COST', 4, 12)), hpke_private_key_parse_valid: false, hpke_private_key_parse_error: '', server1_url: {} }; try { diracRecoveryHpkePrivateKeyV159(); d.hpke_private_key_parse_valid = true; } catch (e) { d.hpke_private_key_parse_error = String(e && (e.code || e.name || e.message) || 'unknown').slice(0, 120); } const r = diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_SERVER1_URL'); const o = diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_SERVER1_ORIGIN'); d.server1_url = { env_present: Boolean(r), env_chars: r.length, env_utf8_bytes: Buffer.byteLength(r, 'utf8'), env_contains_control: /[\u0000-\u001f\u007f]/.test(r), env_sha256: crypto.createHash('sha256').update(r, 'utf8').digest('hex'), expected_origin_present: Boolean(o), expected_origin: o.slice(0, 300), expected_origin_chars: o.length, expected_origin_utf8_bytes: Buffer.byteLength(o, 'utf8'), expected_origin_contains_control: /[\u0000-\u001f\u007f]/.test(o), parse_ok: false, parse_error_name: '', parse_error_code: '', protocol: '', https_protocol: false, username_present: false, password_present: false, hash_present: false, actual_origin: '', origin_match: false, hostname: '', unsafe_host: null, pathname: '', normalized_pathname: '', path_match: false, search_present: false }; try { const u = new URL(r); d.server1_url.parse_ok = true; d.server1_url.protocol = String(u.protocol || '').slice(0, 20); d.server1_url.https_protocol = u.protocol === 'https:'; d.server1_url.username_present = Boolean(u.username); d.server1_url.password_present = Boolean(u.password); d.server1_url.hash_present = Boolean(u.hash); d.server1_url.actual_origin = String(u.origin || '').slice(0, 300); d.server1_url.origin_match = u.origin === o; d.server1_url.hostname = String(u.hostname || '').slice(0, 253); d.server1_url.unsafe_host = typeof diracCentralIsUnsafeHostV146 === 'function' ? Boolean(diracCentralIsUnsafeHostV146(u.hostname)) : false; d.server1_url.pathname = String(u.pathname || '').slice(0, 300); d.server1_url.normalized_pathname = String(u.pathname || '').replace(/\/+$/, '').slice(0, 300); d.server1_url.path_match = u.pathname.replace(/\/+$/, '') === '/api/health'; d.server1_url.search_present = Boolean(u.search); } catch (e) { d.server1_url.parse_error_name = String(e && e.name || '').slice(0, 80); d.server1_url.parse_error_code = String(e && e.code || '').slice(0, 80); } console.error('[dirac-recovery-crypto-v2-env-full-v230]', JSON.stringify(d)); } catch (_) {} throw DIRAC_RECOVERY_CRYPTO_V2.fail('RECOVERY_V2_ENVIRONMENT_INVALID'); }
     DIRAC_RECOVERY_CRYPTO_V2.assertRuntimePolicy();
     if (String(body.action || '') !== DIRAC_RECOVERY_HPKE_VERIFY_ACTION_V159) throw DIRAC_RECOVERY_CRYPTO_V2.fail('RECOVERY_V2_ACTION_INVALID');
 
@@ -39026,7 +39027,7 @@ function diracRecoveryLinkOpenArgonPolicyV202(metadata) {
   try { required = customerSecurityLostPasskeyLinkOpenArgon2ParamsV171(64); }
   catch (_) { return { ok: false, encoded: '' }; }
   const strictProfile = Number.isSafeInteger(memoryCost)
-    && memoryCost >= 1048576
+    && memoryCost >= 512000
     && memoryCost >= Number(required.memoryCost || 0)
     && memoryCost <= 5242880
     && Number.isSafeInteger(timeCost)
@@ -39781,6 +39782,66 @@ const DIRAC_RECOVERY_SECURITY_DB_PAGE_WIRE_LIMIT_V265 = 30 * 1024;
 const DIRAC_RECOVERY_SECURITY_DB_PAGE_FIELD_CHUNK_CHARS_V273 = 23 * 1024;
 const DIRAC_RECOVERY_SECURITY_DB_PAGE_SEGMENT_CHARS_V273 = 128;
 const DIRAC_RECOVERY_SECURITY_DB_PAGE_COMPRESSED_LIMIT_V265 = 20 * 1024;
+const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_CODEC_V275 = 'dirac-recovery-security-db-response-br-v275';
+const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_RAW_LIMIT_V275 = 256 * 1024;
+const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_COMPRESSED_LIMIT_V275 = 20 * 1024;
+const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_WIRE_LIMIT_V275 = 30 * 1024;
+
+function diracRecoverySecurityDbProxyEncodeResultV275(result, cleanPath, method) {
+  const eligible = String(cleanPath || '').startsWith('/rest/v1/security_lost_passkey_recovery_requests')
+    && String(method || '') === 'GET'
+    && result && result.ok === true
+    && Number(result.status) === 200
+    && Array.isArray(result.data);
+  if (!eligible) return result;
+  let raw = null;
+  let compressed = null;
+  try {
+    raw = Buffer.from(JSON.stringify(result.data), 'utf8');
+    if (raw.byteLength > DIRAC_RECOVERY_SECURITY_DB_RESPONSE_RAW_LIMIT_V275) {
+      return { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_TOO_LARGE' } };
+    }
+    const zlib = require('node:zlib');
+    compressed = zlib.brotliCompressSync(raw, {
+      params: {
+        [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT,
+        [zlib.constants.BROTLI_PARAM_QUALITY]: 11,
+        [zlib.constants.BROTLI_PARAM_SIZE_HINT]: raw.byteLength
+      }
+    });
+    if (!compressed.byteLength || compressed.byteLength > DIRAC_RECOVERY_SECURITY_DB_RESPONSE_COMPRESSED_LIMIT_V275) {
+      return { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_CODEC_TOO_LARGE' } };
+    }
+    const encoded = {
+      codec: DIRAC_RECOVERY_SECURITY_DB_RESPONSE_CODEC_V275,
+      compressed_bytes: compressed.byteLength,
+      payload_b64url: compressed.toString('base64url'),
+      raw_bytes: raw.byteLength,
+      sha512: crypto.createHash('sha512').update(raw).digest('base64url')
+    };
+    const encodedResult = { ok: true, status: 200, data: encoded };
+    const wireBytes = Buffer.byteLength(JSON.stringify(encodedResult), 'utf8');
+    if (wireBytes > DIRAC_RECOVERY_SECURITY_DB_RESPONSE_WIRE_LIMIT_V275) {
+      return { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_CODEC_TOO_LARGE' } };
+    }
+    try {
+      console.error('[dirac-recovery-security-db-response-codec-v275]', JSON.stringify({
+        patch: DIRAC_RECOVERY_SECURITY_DB_RESPONSE_CODEC_V275,
+        phase: 'encoded',
+        raw_bytes: raw.byteLength,
+        compressed_bytes: compressed.byteLength,
+        wire_bytes: wireBytes,
+        secrets_logged: false
+      }));
+    } catch (_) {}
+    return encodedResult;
+  } catch (_) {
+    return { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_CODEC_FAILED' } };
+  } finally {
+    if (raw) raw.fill(0);
+    if (compressed) compressed.fill(0);
+  }
+}
 
 function diracRecoverySecurityDbProxyPreviewV273(serializedBody) {
   let structured = '';
@@ -40189,6 +40250,7 @@ async function diracRecoverySecurityDbProxyHandleV234(ctx) {
     data = upstream && upstream.ok === true ? null : { code: 'RECOVERY_ACCOUNT_PASSWORD_INVALID' };
   }
   let result = { ok: Boolean(upstream && upstream.ok === true), status: Number(upstream && upstream.status || 0), data };
+  result = diracRecoverySecurityDbProxyEncodeResultV275(result, request.path, request.method);
   const resultLimit = request.path.startsWith('/rest/v1/security_lost_passkey_recovery_requests')
     || request.path.startsWith('/rest/v1/domain_passkeys') ? 256 * 1024 : 24 * 1024;
   if (Buffer.byteLength(JSON.stringify(result), 'utf8') > resultLimit) {
