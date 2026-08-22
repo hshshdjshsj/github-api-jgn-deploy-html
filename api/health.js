@@ -39817,12 +39817,12 @@ function diracRecoverySecurityDbProxyEncodeResultV277(result, cleanPath, method)
     && String(method || '') === 'GET'
     && result && result.ok === true
     && Number(result.status) === 200
-    && Array.isArray(result.data);
+    && (Array.isArray(result.data) || (result.data && typeof result.data === 'object' && !Array.isArray(result.data)));
   if (!eligible) return result;
   let raw = null;
   let compressed = null;
   try {
-    raw = Buffer.from(JSON.stringify(result.data), 'utf8');
+    raw = Buffer.from(JSON.stringify(Array.isArray(result.data) ? result.data : [result.data]), 'utf8');
     if (raw.byteLength > DIRAC_RECOVERY_SECURITY_DB_RESPONSE_RAW_LIMIT_V275) {
       return { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_TOO_LARGE' } };
     }
