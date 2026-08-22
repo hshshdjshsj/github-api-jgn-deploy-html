@@ -39782,12 +39782,37 @@ const DIRAC_RECOVERY_SECURITY_DB_PAGE_WIRE_LIMIT_V265 = 30 * 1024;
 const DIRAC_RECOVERY_SECURITY_DB_PAGE_FIELD_CHUNK_CHARS_V273 = 23 * 1024;
 const DIRAC_RECOVERY_SECURITY_DB_PAGE_SEGMENT_CHARS_V273 = 128;
 const DIRAC_RECOVERY_SECURITY_DB_PAGE_COMPRESSED_LIMIT_V265 = 20 * 1024;
-const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_CODEC_V275 = 'dirac-recovery-security-db-response-br-v275';
+const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_CODEC_V277 = 'dirac-recovery-security-db-response-framed-br-v277';
 const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_RAW_LIMIT_V275 = 256 * 1024;
 const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_COMPRESSED_LIMIT_V275 = 20 * 1024;
 const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_WIRE_LIMIT_V275 = 30 * 1024;
+const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_FRAME_SEGMENT_CHARS_V277 = 11;
+const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_FRAME_CHUNK_CHARS_V277 = 4096;
+const DIRAC_RECOVERY_SECURITY_DB_RESPONSE_FRAME_MAX_CHUNKS_V277 = 8;
 
-function diracRecoverySecurityDbProxyEncodeResultV275(result, cleanPath, method) {
+function diracRecoverySecurityDbProxyFrameScalarV277(value) {
+  const canonical = String(value || '');
+  if (!canonical || !/^[A-Za-z0-9_-]+$/.test(canonical)) return null;
+  const segments = [];
+  for (let offset = 0; offset < canonical.length; offset += DIRAC_RECOVERY_SECURITY_DB_RESPONSE_FRAME_SEGMENT_CHARS_V277) {
+    segments.push(canonical.slice(offset, offset + DIRAC_RECOVERY_SECURITY_DB_RESPONSE_FRAME_SEGMENT_CHARS_V277));
+  }
+  return segments.join('~');
+}
+
+function diracRecoverySecurityDbProxyFramePayloadV277(payload) {
+  const framed = diracRecoverySecurityDbProxyFrameScalarV277(payload);
+  if (!framed) return null;
+  const chunks = [];
+  for (let offset = 0; offset < framed.length; offset += DIRAC_RECOVERY_SECURITY_DB_RESPONSE_FRAME_CHUNK_CHARS_V277) {
+    chunks.push(framed.slice(offset, offset + DIRAC_RECOVERY_SECURITY_DB_RESPONSE_FRAME_CHUNK_CHARS_V277));
+  }
+  return chunks.length >= 1 && chunks.length <= DIRAC_RECOVERY_SECURITY_DB_RESPONSE_FRAME_MAX_CHUNKS_V277
+    ? chunks
+    : null;
+}
+
+function diracRecoverySecurityDbProxyEncodeResultV277(result, cleanPath, method) {
   const eligible = String(cleanPath || '').startsWith('/rest/v1/security_lost_passkey_recovery_requests')
     && String(method || '') === 'GET'
     && result && result.ok === true
@@ -39812,12 +39837,21 @@ function diracRecoverySecurityDbProxyEncodeResultV275(result, cleanPath, method)
     if (!compressed.byteLength || compressed.byteLength > DIRAC_RECOVERY_SECURITY_DB_RESPONSE_COMPRESSED_LIMIT_V275) {
       return { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_CODEC_TOO_LARGE' } };
     }
+    const payloadChunks = diracRecoverySecurityDbProxyFramePayloadV277(compressed.toString('base64url'));
+    if (!payloadChunks) {
+      return { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_CODEC_FAILED' } };
+    }
+    const rawDigest = crypto.createHash('sha512').update(raw).digest('base64url');
+    const framedDigest = diracRecoverySecurityDbProxyFrameScalarV277(rawDigest);
+    if (!framedDigest) {
+      return { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_CODEC_FAILED' } };
+    }
     const encoded = {
-      codec: DIRAC_RECOVERY_SECURITY_DB_RESPONSE_CODEC_V275,
+      codec: DIRAC_RECOVERY_SECURITY_DB_RESPONSE_CODEC_V277,
       compressed_bytes: compressed.byteLength,
-      payload_b64url: compressed.toString('base64url'),
+      payload_b64url: payloadChunks,
       raw_bytes: raw.byteLength,
-      sha512: crypto.createHash('sha512').update(raw).digest('base64url')
+      sha512: framedDigest
     };
     const encodedResult = { ok: true, status: 200, data: encoded };
     const wireBytes = Buffer.byteLength(JSON.stringify(encodedResult), 'utf8');
@@ -39825,8 +39859,8 @@ function diracRecoverySecurityDbProxyEncodeResultV275(result, cleanPath, method)
       return { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_CODEC_TOO_LARGE' } };
     }
     try {
-      console.error('[dirac-recovery-security-db-response-codec-v275]', JSON.stringify({
-        patch: DIRAC_RECOVERY_SECURITY_DB_RESPONSE_CODEC_V275,
+      console.error('[dirac-recovery-security-db-response-codec-v277]', JSON.stringify({
+        patch: DIRAC_RECOVERY_SECURITY_DB_RESPONSE_CODEC_V277,
         phase: 'encoded',
         raw_bytes: raw.byteLength,
         compressed_bytes: compressed.byteLength,
@@ -40250,20 +40284,24 @@ async function diracRecoverySecurityDbProxyHandleV234(ctx) {
     data = upstream && upstream.ok === true ? null : { code: 'RECOVERY_ACCOUNT_PASSWORD_INVALID' };
   }
   let result = { ok: Boolean(upstream && upstream.ok === true), status: Number(upstream && upstream.status || 0), data };
-  result = diracRecoverySecurityDbProxyEncodeResultV275(result, request.path, request.method);
+  result = diracRecoverySecurityDbProxyEncodeResultV277(result, request.path, request.method);
   const resultLimit = request.path.startsWith('/rest/v1/security_lost_passkey_recovery_requests')
     || request.path.startsWith('/rest/v1/domain_passkeys') ? 256 * 1024 : 24 * 1024;
   if (Buffer.byteLength(JSON.stringify(result), 'utf8') > resultLimit) {
     result = { ok: false, status: 502, data: { code: 'RECOVERY_SECURITY_DB_PROXY_RESPONSE_TOO_LARGE' } };
   }
+  const framedRequestIdV277 = diracRecoverySecurityDbProxyFrameScalarV277(request.requestId);
+  if (!framedRequestIdV277) return { ok: false, reason: 'recovery_security_db_proxy_response_framing_invalid' };
   const response = {
     ok: true,
     event: DIRAC_RECOVERY_SECURITY_DB_PROXY_EVENT_V234,
     version: DIRAC_RECOVERY_SECURITY_DB_PROXY_V234,
-    request_id: request.requestId,
+    request_id: framedRequestIdV277,
     result
   };
-  return { ok: true, response: { ...response, response_mac: diracRecoverySecurityDbProxyMacV234(response) } };
+  const framedResponseMacV277 = diracRecoverySecurityDbProxyFrameScalarV277(diracRecoverySecurityDbProxyMacV234(response));
+  if (!framedResponseMacV277) return { ok: false, reason: 'recovery_security_db_proxy_response_framing_invalid' };
+  return { ok: true, response: { ...response, response_mac: framedResponseMacV277 } };
 }
 
 diracS2SProcessSecurityReportV206 = async function diracS2SProcessSecurityReportRecoveryDbProxyV234(ctx) {
