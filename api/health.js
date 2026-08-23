@@ -53158,6 +53158,40 @@ async function diracCentralBackendComplianceGateV230() {
   return Object.freeze({ ...dynamic, attestation: attestation.payload || null });
 }
 
+/* ============================================================
+   DIRAC DEVICE CREDENTIAL ORIGIN COOKIE NAMESPACE v283
+   - Keeps every Central Guard verification and rejection decision unchanged.
+   - Prevents one host-only API cookie from colliding across verified origins.
+   ============================================================ */
+const __diracCentralDeviceCookieNameBaseV283 = diracCentralDeviceCookieNameV221;
+diracCentralDeviceCookieNameV221 = function diracCentralDeviceCookieNameOriginScopedV283() {
+  const baseName = __diracCentralDeviceCookieNameBaseV283();
+  const ctx = typeof diracCentralCurrentContextV149 === 'function'
+    ? diracCentralCurrentContextV149()
+    : null;
+  const request = ctx && ctx.req && typeof ctx.req === 'object' ? ctx.req : null;
+  const headers = request && request.headers && typeof request.headers === 'object'
+    ? request.headers
+    : {};
+  const origin = diracCentralNormalizeOriginV146(
+    headers.origin || headers.referer || headers.referrer || ''
+  );
+  if (!origin) return baseName;
+  const originBinding = crypto.createHmac(
+    'sha256',
+    diracCentralDeriveSecretV146('central-device-cookie-origin-v283')
+  ).update(origin, 'utf8').digest('hex').slice(0, 24);
+  if (!/^[a-f0-9]{24}$/.test(originBinding)) {
+    throw new Error('DIRAC_DEVICE_COOKIE_ORIGIN_BINDING_INVALID_V283');
+  }
+  return baseName + '_' + originBinding;
+};
+Object.defineProperty(
+  diracCentralDeviceCookieNameV221,
+  '__diracDeviceCredentialOriginCookieNamespaceV283',
+  { value: true, enumerable: false, configurable: false, writable: false }
+);
+
 module.exports = async function diracCentralArchitectureConsolidationV202(req, res) {
   const registerDiagnosticStateV233 =
     /(?:^|[?&])action=domain_register(?:&|$)/.test(String(req && req.url || ''))
