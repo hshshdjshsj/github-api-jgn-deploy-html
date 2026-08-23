@@ -53192,6 +53192,128 @@ Object.defineProperty(
   { value: true, enumerable: false, configurable: false, writable: false }
 );
 
+/* ============================================================
+   DIRAC CUSTOMER MFA AUTH-TO-PAGE ORIGIN HANDOFF v284
+   - Central Guard and every MFA verification check stay unchanged.
+   - A completed auth-origin MFA session receives separately signed,
+     HttpOnly host-only cookies for the exact protected page origins.
+   - Every page reads only its own origin-bound cookie; no fallback,
+     wildcard origin, shared Domain cookie, client token, or bypass.
+   ============================================================ */
+const DIRAC_CUSTOMER_MFA_AUTH_ORIGIN_V284 = diracRoleOriginV250('auth');
+const DIRAC_CUSTOMER_MFA_PAGE_COOKIE_BY_ORIGIN_V284 = Object.freeze({
+  ['https://panel.' + diracBaseDomainV250()]: diracCentralIsProductionV146()
+    ? '__Host-dirac_customer_mfa_panel_v284'
+    : 'dirac_customer_mfa_panel_v284',
+  [diracRoleOriginV250('security')]: diracCentralIsProductionV146()
+    ? '__Host-dirac_customer_mfa_security_v284'
+    : 'dirac_customer_mfa_security_v284',
+  [diracRoleOriginV250('parfum')]: diracCentralIsProductionV146()
+    ? '__Host-dirac_customer_mfa_parfum_v284'
+    : 'dirac_customer_mfa_parfum_v284',
+  [diracRoleOriginV250('pesanan')]: diracCentralIsProductionV146()
+    ? '__Host-dirac_customer_mfa_pesanan_v284'
+    : 'dirac_customer_mfa_pesanan_v284'
+});
+
+function diracCustomerMfaCloneForPageOriginV284(sourceToken, targetOrigin) {
+  const target = diracCentralNormalizeOriginV146(targetOrigin);
+  const cookieName = DIRAC_CUSTOMER_MFA_PAGE_COOKIE_BY_ORIGIN_V284[target];
+  if (!cookieName) return { ok: false, eligible: false, reason: 'mfa_page_origin_not_allowed_v284' };
+
+  const payload = decodeCustomerDashboardMfaToken(sourceToken);
+  if (!payload || payload.type !== CUSTOMER_MFA_SESSION_TYPE) {
+    return { ok: false, eligible: false, reason: 'mfa_source_token_invalid_v284' };
+  }
+
+  const expectedAuthOriginHash = customerMfaBindingHash('origin', DIRAC_CUSTOMER_MFA_AUTH_ORIGIN_V284);
+  if (!expectedAuthOriginHash || !payload.originHash
+      || !safeEqual(String(payload.originHash), expectedAuthOriginHash)) {
+    return { ok: false, eligible: false, reason: 'mfa_source_not_auth_origin_v284' };
+  }
+
+  const expiresAtMs = Number(payload.expiresAtMs || 0);
+  const securityEpoch = Number(payload.securityEpoch || 0);
+  if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= Date.now()
+      || !Number.isSafeInteger(securityEpoch) || securityEpoch < 1
+      || !/^[a-f0-9]{64}$/.test(String(payload.sessionHash || ''))
+      || !/^[a-f0-9]{64}$/.test(String(payload.uaHash || ''))) {
+    return { ok: false, eligible: true, reason: 'mfa_source_binding_invalid_v284' };
+  }
+
+  const targetOriginHash = customerMfaBindingHash('origin', target);
+  if (!targetOriginHash) return { ok: false, eligible: true, reason: 'mfa_target_binding_invalid_v284' };
+  const targetPayload = {
+    ...payload,
+    jti: crypto.randomBytes(24).toString('base64url'),
+    originHash: targetOriginHash
+  };
+  const payloadBase64 = Buffer.from(JSON.stringify(targetPayload)).toString('base64url');
+  return {
+    ok: true,
+    eligible: true,
+    cookieName,
+    token: payloadBase64 + '.' + signDashboardMfa(payloadBase64, getCustomerMfaSecret()),
+    expiresAtMs
+  };
+}
+
+const __diracCustomerDashboardMfaTokenV284 = getCustomerDashboardMfaToken;
+getCustomerDashboardMfaToken = function getCustomerDashboardMfaTokenOriginScopedV284(req) {
+  const origin = diracCentralNormalizeOriginV146(requestOrigin(req));
+  const cookieName = DIRAC_CUSTOMER_MFA_PAGE_COOKIE_BY_ORIGIN_V284[origin];
+  if (!cookieName) return __diracCustomerDashboardMfaTokenV284(req);
+
+  const cookies = parseCookies(req);
+  const candidates = readCookieTokenCandidates(cookies, cookieName).slice(0, 8);
+  if (candidates.length === 1) {
+    return { token: candidates[0], source: 'origin_scoped_http_only_cookie_v284' };
+  }
+  if (candidates.length > 1) {
+    return { token: '', source: 'ambiguous_origin_scoped_http_only_cookie_v284', ambiguous: true };
+  }
+  return { token: '', source: 'missing_origin_scoped_http_only_cookie_v284' };
+};
+
+const __diracCustomerSecuritySetDashboardMfaCookieV284 = customerSecuritySetDashboardMfaCookie;
+customerSecuritySetDashboardMfaCookie = function customerSecuritySetDashboardMfaCookieOriginHandoffV284(res, proof) {
+  if (!__diracCustomerSecuritySetDashboardMfaCookieV284(res, proof)) return false;
+
+  const sourceToken = String(proof && proof.token || '');
+  const configuredMaxAge = Math.max(1, Math.floor(Number(proof && proof.maxAgeSeconds || 0)));
+  const sourcePayload = decodeCustomerDashboardMfaToken(sourceToken);
+  const expectedAuthOriginHash = customerMfaBindingHash('origin', DIRAC_CUSTOMER_MFA_AUTH_ORIGIN_V284);
+  if (!sourcePayload || !expectedAuthOriginHash || !sourcePayload.originHash
+      || !safeEqual(String(sourcePayload.originHash), expectedAuthOriginHash)) {
+    return true;
+  }
+
+  for (const targetOrigin of Object.keys(DIRAC_CUSTOMER_MFA_PAGE_COOKIE_BY_ORIGIN_V284)) {
+    const cloned = diracCustomerMfaCloneForPageOriginV284(sourceToken, targetOrigin);
+    if (!cloned.ok || !cloned.eligible) return false;
+    const remainingSeconds = Math.max(1, Math.floor((Number(cloned.expiresAtMs) - Date.now()) / 1000));
+    const maxAge = Math.min(configuredMaxAge, remainingSeconds);
+    const cookie = makeCookie(cloned.cookieName, cloned.token, { maxAge, domain: '' });
+    if (!replaceResponseCookieByNameV229(res, cloned.cookieName, cookie)) return false;
+  }
+  return true;
+};
+
+const __diracClearSessionCookiesV284 = clearSessionCookies;
+clearSessionCookies = function clearSessionCookiesOriginHandoffV284(res) {
+  __diracClearSessionCookiesV284(res);
+  appendSetCookie(res, Object.values(DIRAC_CUSTOMER_MFA_PAGE_COOKIE_BY_ORIGIN_V284)
+    .flatMap((name) => makeCompactClearCookie(name)));
+};
+
+const __diracClearCurrentRequestSessionCookiesV284 = clearCurrentRequestSessionCookiesV235;
+clearCurrentRequestSessionCookiesV235 = function clearCurrentRequestSessionCookiesOriginHandoffV284(req, res) {
+  const cleared = __diracClearCurrentRequestSessionCookiesV284(req, res);
+  appendSetCookie(res, Object.values(DIRAC_CUSTOMER_MFA_PAGE_COOKIE_BY_ORIGIN_V284)
+    .flatMap((name) => makeCompactClearCookie(name)));
+  return cleared;
+};
+
 module.exports = async function diracCentralArchitectureConsolidationV202(req, res) {
   const registerDiagnosticStateV233 =
     /(?:^|[?&])action=domain_register(?:&|$)/.test(String(req && req.url || ''))
