@@ -10504,7 +10504,7 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
   const activePasskeys = [];
   const bindings = customerSecurityLostPasskeyBindings(req, owner);
 
-  return DIRAC_MERGED_RECOVERY_V251.verifyRecoveryCode(req, res, action, { access, owner, bindings, requestId, recoveryCode: code });
+  return customerSecurityVerifyRecoveryCodeViaWorker(req, res, action, access, owner, activePasskeys, bindings, requestId, code);
 
 
 
