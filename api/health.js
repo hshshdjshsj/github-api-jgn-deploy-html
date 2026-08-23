@@ -16549,6 +16549,8 @@ async function diracPasskeyResolveRecoveryAuthorityV281(req, ctx, body) {
   }
   const token = diracPasskeyA2FLostRecoveryTokenFromBody(source);
   if (!token) return { ok: false, reason: 'passkey_recovery_token_invalid_v281' };
+  const claimedRequestIdV281 = customerSecurityNormalizeLostPasskeyRequestId(source.request_id || '');
+  if (!claimedRequestIdV281) return { ok: false, reason: 'passkey_recovery_request_id_invalid_v281' };
   const browser = diracPasskeyRecoveryBrowserBindingV281(req);
   if (!browser.ok) return browser;
   const sessionHashCandidatesV281 = customerSecurityLostPasskeyRecoverySessionHashCandidatesV281(token);
@@ -16560,6 +16562,7 @@ async function diracPasskeyResolveRecoveryAuthorityV281(req, ctx, body) {
   const sessionSelect = 'id,request_id,customer_id,auth_user_id,recovery_session_hash,purpose,status,created_at,expires_at,used_at,revoked_at,metadata';
   const sessionPath = '/rest/v1/' + LOST_PASSKEY_RECOVERY_SESSION_TABLE
     + '?select=' + encodeURIComponent(sessionSelect)
+    + '&request_id=eq.' + encodeURIComponent(claimedRequestIdV281)
     + '&or=' + encodeURIComponent('(' + sessionHashCandidatesV281
       .map((candidate) => 'recovery_session_hash.eq.' + candidate).join(',') + ')')
     + '&purpose=eq.' + encodeURIComponent(LOST_PASSKEY_RECOVERY_PURPOSE)
@@ -16591,6 +16594,7 @@ async function diracPasskeyResolveRecoveryAuthorityV281(req, ctx, body) {
   if (!sessionRow
       || !customerSecurityLooksLikeUuid(String(sessionRow.id || ''))
       || !requestId
+      || !safeEqual(requestId, claimedRequestIdV281)
       || !customerSecurityLooksLikeUuid(customerId)
       || !customerSecurityLooksLikeUuid(authUserId)
       || !sessionHashCandidatesV281.some((candidate) => safeEqual(candidate, sessionHash))
@@ -49917,7 +49921,7 @@ function diracCentralContractForActionV146(action) {
   const commonPost = ['action', 'email', 'password', 'fullName', 'full_name', 'name', 'phone', 'domain', 'domain_name', 'quantity', 'items', 'order_id', 'order_code', 'domain_order_id', 'payment_id', 'transaction_id', 'invoice_id', 'gateway_reference', 'session_id', 'recovery_code', 'recovery_code_id', 'credential_id', 'user_id', 'challenge', 'response', 'setupToken', 'mfaSetupToken', 'code', 'reason', 'csrf', 'nonce', 'idempotency_key'];
   const getOnly = { methods: ['GET', 'HEAD'], allowed: commonGet, required: [], maxBodyBytes: 1024, maxFieldBytes: 3000, mutation: false };
   const postOnly = { methods: ['POST'], allowed: commonPost, required: [], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
-  const passkeyPost = { methods: ['HEAD', 'POST'], allowed: ['action', '_dirac_a2f_body_hash', 'method', 'identifier', 'email', 'setupToken', 'mfaSetupToken', 'token', 'passkeyMode', 'credential', 'id', 'rawId', 'type', 'response', 'clientExtensionResults', 'credProps', 'rk', 'clientDataJSON', 'attestationObject', 'authenticatorData', 'signature', 'userHandle', 'transports', 'authenticatorAttachment', 'challenge', 'code', 'recovery_session_token', 'recoverySessionToken', 'lost_passkey_recovery_session_token', 'lostPasskeyRecoverySessionToken', 'dirac_lost_passkey_recovery_session', 'csrf', 'nonce', 'idempotency_key'], required: [], maxBodyBytes: 192 * 1024, maxFieldBytes: 80 * 1024, mutation: true, allowArrayItems: true };
+  const passkeyPost = { methods: ['HEAD', 'POST'], allowed: ['action', '_dirac_a2f_body_hash', 'method', 'identifier', 'email', 'setupToken', 'mfaSetupToken', 'token', 'passkeyMode', 'credential', 'id', 'rawId', 'type', 'response', 'clientExtensionResults', 'credProps', 'rk', 'clientDataJSON', 'attestationObject', 'authenticatorData', 'signature', 'userHandle', 'transports', 'authenticatorAttachment', 'challenge', 'code', 'request_id', 'recovery_session_token', 'recoverySessionToken', 'lost_passkey_recovery_session_token', 'lostPasskeyRecoverySessionToken', 'dirac_lost_passkey_recovery_session', 'csrf', 'nonce', 'idempotency_key'], required: [], maxBodyBytes: 192 * 1024, maxFieldBytes: 80 * 1024, mutation: true, allowArrayItems: true };
   const recoveryGeneratePost = { methods: ['POST'], allowed: ['action', 'csrf', 'nonce', 'idempotency_key', 'account_password', 'current_password', 'currentPassword'], required: [], maxBodyBytes: 2048, maxFieldBytes: 1024, mutation: true };
   const recoveryVerifyPost = { methods: ['POST'], allowed: ['action', 'request_id', 'recovery_code', 'code', 'csrf', 'nonce', 'idempotency_key'], required: ['request_id'], maxBodyBytes: 4096, maxFieldBytes: 1200, mutation: true };
   const recoveryWorkerPost = {
