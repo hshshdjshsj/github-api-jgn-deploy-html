@@ -8,7 +8,7 @@ const crypto = require('crypto');
    One health.js for every Dirac role. Domain/provider identity is ENV-driven.
    ============================================================ */
 const DIRAC_UNIVERSAL_APP_ROLES_V250 = Object.freeze(new Set([
-  'www', 'auth', 'dashboard', 'security', 'parfum', 'pesanan', 'recovery'
+  'main', 'www', 'auth', 'dashboard', 'security', 'parfum', 'pesanan', 'recovery'
 ]));
 
 function diracBaseDomainV250() {
@@ -35,7 +35,7 @@ function diracS2SServerIdV250() {
 function diracRoleHostnameV250(role) {
   const clean = String(role || '').trim().toLowerCase();
   if (!DIRAC_UNIVERSAL_APP_ROLES_V250.has(clean)) throw new Error('DIRAC_TARGET_ROLE_INVALID');
-  return (clean === 'recovery' ? 'secure' : clean) + '.' + diracBaseDomainV250();
+  return (clean === 'recovery' ? 'secure' : clean === 'main' ? 'api' : clean) + '.' + diracBaseDomainV250();
 }
 
 function diracRoleOriginV250(role) {
@@ -63,7 +63,7 @@ function diracRoleFromHostnameV250(hostname) {
   const suffix = '.' + diracBaseDomainV250();
   if (!host.endsWith(suffix)) return '';
   const label = host.slice(0, -suffix.length);
-  const role = label === 'secure' ? 'recovery' : label;
+  const role = label === 'secure' ? 'recovery' : label === 'api' ? 'main' : label;
   return DIRAC_UNIVERSAL_APP_ROLES_V250.has(role) ? role : '';
 }
 
@@ -11401,6 +11401,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
   const itemBodies = quoteItems.map((item) => {
     const row = {
       order_id: order.id,
+      customer_id: customerId,
       product_title: sessionOwnershipCheckoutCleanText(item.productTitle || backendQuote.productTitle || 'Item pesanan', 180),
       quantity: sessionOwnershipCheckoutPositiveInteger(item.quantity || 1, 1, 999),
       unit_price: sessionOwnershipCheckoutPositiveMoney(item.unitPrice || 0),
@@ -11463,7 +11464,6 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
       product_title: backendQuote.productTitle,
       quantity,
       unit_price: backendQuote.unitPrice,
-      cost_price: backendQuote.costPrice,
       subtotal: backendQuote.subtotal
     },
     items: itemBodies.map((item) => ({
@@ -11471,7 +11471,6 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
       product_title: item.product_title,
       quantity: item.quantity,
       unit_price: item.unit_price,
-      cost_price: item.cost_price,
       subtotal: item.unit_price * item.quantity
     }))
   });
@@ -12378,7 +12377,7 @@ async function myOrdersFetchOrderItems(orderIds, customerIds) {
   const owners = Array.from(new Set((customerIds || []).filter(customerSecurityLooksLikeUuid))).slice(0, 20);
   const map = {};
   if (!ids.length || !owners.length) return map;
-  const select = 'id,order_id,customer_id,product_title,quantity,created_at';
+  const select = 'id,order_id,customer_id,product_title,quantity,unit_price,created_at';
   const path = '/rest/v1/order_items?select=' + encodeURIComponent(select)
     + '&order_id=in.(' + ids.map(encodeURIComponent).join(',') + ')'
     + '&customer_id=in.(' + owners.map(encodeURIComponent).join(',') + ')'
@@ -12389,10 +12388,14 @@ async function myOrdersFetchOrderItems(orderIds, customerIds) {
     const orderId = String(item && item.order_id || '');
     if (!orderId) return;
     if (!map[orderId]) map[orderId] = [];
+    const quantity = myOrdersPositiveInteger(item.quantity || 1, 1, 999);
+    const unitPrice = myOrdersMoney(item.unit_price || 0);
     map[orderId].push({
       id: String(item.id || ''),
       title: myOrdersCleanText(item.product_title || 'Item pesanan', 180),
-      quantity: myOrdersPositiveInteger(item.quantity || 1, 1, 999),
+      quantity,
+      unit_price: unitPrice,
+      subtotal: unitPrice * quantity,
       created_at: item.created_at || ''
     });
   });
@@ -13363,9 +13366,17 @@ function midtransSnapBaseUrl() {
 
 function midtransNotificationUrl() {
   const explicit = String(process.env.MIDTRANS_NOTIFICATION_URL || process.env.PAYMENT_CALLBACK_URL || process.env.DOMAIN_PAYMENT_CALLBACK_URL || '').trim();
-  if (explicit) return explicit;
-  const site = String(process.env.DOMAIN_SITE_URL || process.env.SITE_URL || diracRoleOriginV250('pesanan')).trim().replace(/\/$/, '');
-  return site ? `${site}/api/health?action=midtrans_webhook` : '';
+  const expectedOrigin = diracRoleOriginV250('main');
+  const raw = explicit || `${expectedOrigin}/api/health?action=midtrans_webhook`;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.username || url.password || url.hash) return '';
+    if (url.origin !== expectedOrigin || url.pathname !== '/api/health') return '';
+    if (url.searchParams.get('action') !== 'midtrans_webhook' || Array.from(url.searchParams.keys()).some((key) => key !== 'action')) return '';
+    return `${expectedOrigin}/api/health?action=midtrans_webhook`;
+  } catch (_) {
+    return '';
+  }
 }
 
 function midtransBasicAuthHeader() {
@@ -13577,6 +13588,10 @@ async function midtransCreateSnapPayment(input) {
   if (!midtransWebhookBindingSecret()) {
     return { ok: false, status: 503, message: 'Secret binding Midtrans belum disetel.', error: 'midtrans_binding_secret_missing' };
   }
+  const notificationUrl = midtransNotificationUrl();
+  if (!notificationUrl) {
+    return { ok: false, status: 503, message: 'URL webhook Midtrans tidak valid.', error: 'midtrans_notification_url_invalid' };
+  }
 
   const bindingToken = midtransWebhookBindingBuildToken({
     transactionId,
@@ -13623,7 +13638,8 @@ async function midtransCreateSnapPayment(input) {
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
-        Authorization: midtransBasicAuthHeader()
+        Authorization: midtransBasicAuthHeader(),
+        'X-Override-Notification': notificationUrl
       },
       body: JSON.stringify(payload)
     });
@@ -13644,7 +13660,7 @@ async function midtransCreateSnapPayment(input) {
           gross_amount: payload.transaction_details.gross_amount,
           enabled_payments: payload.enabled_payments || null,
           return_url: returnUrl,
-          notification_url: midtransNotificationUrl(),
+          notification_url: notificationUrl,
           snap_base_url: midtransSnapBaseUrl()
         }
       }
@@ -13666,7 +13682,7 @@ async function midtransCreateSnapPayment(input) {
           gross_amount: payload.transaction_details.gross_amount,
           enabled_payments: payload.enabled_payments || null,
           return_url: returnUrl,
-          notification_url: midtransNotificationUrl(),
+          notification_url: notificationUrl,
           snap_base_url: midtransSnapBaseUrl(),
           debug_patch: DIRAC_MIDTRANS_DEBUG_PATCH
         }
@@ -13690,7 +13706,7 @@ async function midtransCreateSnapPayment(input) {
         order_id: payload.transaction_details.order_id,
         gross_amount: payload.transaction_details.gross_amount,
         return_url: returnUrl,
-        notification_url: midtransNotificationUrl(),
+        notification_url: notificationUrl,
         snap_base_url: midtransSnapBaseUrl(),
         debug_patch: DIRAC_MIDTRANS_DEBUG_PATCH
       }
@@ -44413,6 +44429,33 @@ function diracCentralSelfTestRunV221() {
     crypto.createHash('sha256').update(Function.prototype.toString.call(fn)).digest('hex') === DIRAC_CENTRAL_BAN_FUNCTION_HASHES_V221[name]), 'ban_functions_byte_locked');
   const descriptorHash = crypto.createHash('sha256').update(DIRAC_CENTRAL_PIPELINE_DESCRIPTOR_V221).digest('hex');
   expect(descriptorHash === DIRAC_CENTRAL_PIPELINE_HASH_V221, 'pipeline_hash_constant');
+  const mainManifestHashV282 = crypto.createHash('sha256').update(DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_V282.join('|'), 'utf8').digest('hex');
+  expect(Object.isFrozen(DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_V282), 'main_manifest_not_frozen_v282');
+  expect(DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_V282.length === 83 && new Set(DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_V282).size === 83, 'main_manifest_count_or_duplicate_v282');
+  expect(mainManifestHashV282 === DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_SHA256_V282, 'main_manifest_hash_invalid_v282');
+  expect(DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_V282.every((action) => DIRAC_CENTRAL_ACTIVE_ACTIONS_V146.has(action) && ACTION_POLICY[action]), 'main_manifest_action_or_policy_missing_v282');
+  expect(['customer_session_handoff_issue', 'dirac_session_handoff_prepare', 'customer_session_handoff_consume', String(DIRAC_RECOVERY_WORKER_ACTION || '').toLowerCase(), DIRAC_MERGED_RECOVERY_V251.linkAction, DIRAC_MERGED_RECOVERY_V251.hpkeVerifyAction].filter(Boolean).every((action) => !DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_V282.includes(action)), 'main_manifest_forbidden_action_present_v282');
+  expect(diracRoleHostnameV250('main') === 'api.' + diracBaseDomainV250() && diracRoleFromHostnameV250('api.' + diracBaseDomainV250()) === 'main', 'main_role_host_mapping_invalid_v282');
+  const mainBrowserActionsV282 = DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_V282.filter((action) => {
+    const classification = diracCentralClassifyActionV146(action);
+    return diracCentralNeedsBrowserAuthenticityV146({ action, classification });
+  });
+  const mainSourceMatrixCanonicalV282 = Object.keys(DIRAC_CENTRAL_MAIN_BROWSER_SOURCE_MATRIX_V282).sort()
+    .map((action) => action + '=' + DIRAC_CENTRAL_MAIN_BROWSER_SOURCE_MATRIX_V282[action].join(','))
+    .join('|');
+  expect(Object.isFrozen(DIRAC_CENTRAL_MAIN_BROWSER_SOURCE_MATRIX_V282), 'main_source_matrix_not_frozen_v282');
+  expect(Object.keys(DIRAC_CENTRAL_MAIN_BROWSER_SOURCE_MATRIX_V282).length === 66, 'main_source_matrix_count_invalid_v282');
+  expect(Object.values(DIRAC_CENTRAL_MAIN_BROWSER_SOURCE_MATRIX_V282).every((sources) => Object.isFrozen(sources) && sources.length > 0), 'main_source_matrix_entries_invalid_v282');
+  expect(mainBrowserActionsV282.length === 66 && mainBrowserActionsV282.every((action) => Object.prototype.hasOwnProperty.call(DIRAC_CENTRAL_MAIN_BROWSER_SOURCE_MATRIX_V282, action)), 'main_source_matrix_coverage_invalid_v282');
+  expect(Object.keys(DIRAC_CENTRAL_MAIN_BROWSER_SOURCE_MATRIX_V282).every((action) => mainBrowserActionsV282.includes(action)), 'main_source_matrix_extra_action_v282');
+  expect(crypto.createHash('sha256').update(mainSourceMatrixCanonicalV282, 'utf8').digest('hex') === DIRAC_CENTRAL_MAIN_BROWSER_SOURCE_MATRIX_SHA256_V282, 'main_source_matrix_hash_invalid_v282');
+  if (diracAppRoleV250() === 'main') {
+    expect(DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_V282.every((action) => diracCentralVercel2OnlyActionGuardV150(action).ok === true), 'main_role_manifest_rejected_v282');
+    expect(diracCentralVercel2OnlyActionGuardV150('__dirac_unknown_selftest__').ok === false, 'main_role_unknown_action_accepted_v282');
+    const panelOriginV282 = 'https://panel.' + diracBaseDomainV250();
+    expect(diracCentralMainBrowserSourceGuardV282({ headers: { origin: panelOriginV282 } }, { action: 'dashboard', classification: 'browser' }, panelOriginV282 + '/dashboard.html').ok === true, 'main_source_valid_dashboard_rejected_v282');
+    expect(diracCentralMainBrowserSourceGuardV282({ headers: { origin: panelOriginV282 } }, { action: 'dashboard', classification: 'browser' }, panelOriginV282 + '/keamanan.html').ok === false, 'main_source_cross_page_action_accepted_v282');
+  }
 
   // Preflight is validated as a protocol state; it does not remove checkpoints.
   const preflightBase = {
@@ -46257,6 +46300,94 @@ function diracCentralClassifyActionV146(action) {
   return 'browser';
 }
 
+const DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_V282 = Object.freeze([
+  'admin_security_blocks', 'admin_security_events', 'admin_security_overview', 'admin_security_unblock_user',
+  'catalog_products', 'checkout_order', 'create_payment', 'customer_domains', 'customer_invoices', 'customer_notifications', 'customer_orders', 'customer_projects',
+  'customer_security_account_request', 'customer_security_features_bundle', 'customer_security_features_bundle_v2', 'customer_security_features_bundle_v3', 'customer_security_guard_status', 'customer_security_login_history', 'customer_security_notifications', 'customer_security_overview', 'customer_security_prune_login_history', 'customer_security_recovery_code_verify', 'customer_security_recovery_codes_generate', 'customer_security_recovery_codes_status', 'customer_security_recovery_hpke_submit', 'customer_security_request_tracker', 'customer_security_revoke_other_sessions', 'customer_security_revoke_session', 'customer_security_score', 'customer_security_status', 'customer_security_trust_current_device', 'customer_security_trusted_devices', 'customer_security_untrust_device',
+  'customer_shipments', 'customer_tickets', 'dashboard', 'dirac_mfa_passkey_start', 'dirac_mfa_passkey_status', 'dirac_mfa_passkey_verify', 'dirac_passkey_status', 'domain_check', 'domain_checkout', 'domain_dashboard_me', 'domain_health', 'domain_login', 'domain_logout', 'domain_me', 'domain_mfa_passkey_start', 'domain_mfa_passkey_status', 'domain_mfa_passkey_verify', 'domain_mfa_status', 'domain_orders', 'domain_passkey_status', 'domain_register', 'hostinger_check', 'invoice_saya', 'invoices', 'katalog_parfum', 'katalog_produk', 'lihat_produk', 'midtrans_health', 'midtrans_webhook', 'my_bills', 'my_domains', 'my_invoices', 'my_notifications', 'my_orders', 'my_projects', 'my_shipments', 'my_tickets', 'notifications', 'notifikasi', 'parfum_catalog', 'parfum_products', 'pengiriman_saya', 'perfume_products', 'pesanan_saya', 'product_catalog', 'products_public', 'public_catalog', 'public_products', 'security_report', 'tiket_bantuan'
+]);
+const DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_SHA256_V282 = '6d769d14864ec8e2fedfb8f6dc654dcfa5b8bf733a3728e0b180425ab35717bd';
+
+const DIRAC_CENTRAL_MAIN_BROWSER_SOURCE_MATRIX_V282 = (() => {
+  const panelOrigin = 'https://panel.' + diracBaseDomainV250();
+  const page = Object.freeze({
+    login: diracRoleOriginV250('auth') + '/masuk.html',
+    loginSafariRoot: diracRoleOriginV250('auth') + '/',
+    lostPasskey: diracRoleOriginV250('recovery') + '/lost-passkey.html',
+    dashboard: panelOrigin + '/dashboard.html',
+    security: diracRoleOriginV250('security') + '/keamanan.html',
+    orders: diracRoleOriginV250('pesanan') + '/pesanan.html',
+    perfume: diracRoleOriginV250('parfum') + '/parfum.html'
+  });
+  const matrix = Object.create(null);
+  const grant = (actions, sources) => {
+    const exactSources = Array.from(new Set(sources)).sort();
+    for (const action of actions) {
+      const clean = String(action || '').trim().toLowerCase();
+      if (!clean) continue;
+      matrix[clean] = Object.freeze(Array.from(new Set([...(matrix[clean] || []), ...exactSources])).sort());
+    }
+  };
+
+  grant([
+    'domain_login', 'domain_register', 'domain_mfa_status', 'domain_mfa_passkey_start',
+    'domain_mfa_passkey_verify', 'domain_mfa_passkey_status', 'domain_passkey_status'
+  ], [page.login]);
+  grant(['domain_login'], [page.loginSafariRoot]);
+  grant([
+    'dirac_mfa_passkey_start', 'dirac_mfa_passkey_verify', 'dirac_mfa_passkey_status',
+    'dirac_passkey_status'
+  ], [page.login, page.lostPasskey]);
+  grant([
+    'domain_me', 'domain_dashboard_me', 'domain_logout'
+  ], [page.login, page.dashboard, page.security, page.orders, page.perfume]);
+  grant([
+    'dashboard', 'customer_domains', 'customer_invoices', 'customer_notifications',
+    'customer_orders', 'customer_projects', 'customer_shipments', 'customer_tickets',
+    'domain_orders', 'invoice_saya', 'invoices', 'my_bills', 'my_domains', 'my_invoices',
+    'my_notifications', 'my_orders', 'my_projects', 'my_shipments', 'my_tickets',
+    'notifications', 'notifikasi', 'pengiriman_saya', 'pesanan_saya', 'tiket_bantuan'
+  ], [page.dashboard]);
+  grant(['my_orders', 'customer_orders', 'pesanan_saya', 'my_invoices', 'customer_invoices',
+    'invoices', 'invoice_saya', 'my_bills'], [page.orders]);
+  grant(['domain_checkout', 'checkout_order'], [page.perfume]);
+  grant(['create_payment'], [page.orders]);
+  grant([
+    'admin_security_blocks', 'admin_security_events', 'admin_security_overview',
+    'admin_security_unblock_user', 'customer_security_account_request',
+    'customer_security_features_bundle', 'customer_security_features_bundle_v2',
+    'customer_security_features_bundle_v3', 'customer_security_guard_status',
+    'customer_security_login_history', 'customer_security_notifications',
+    'customer_security_overview', 'customer_security_prune_login_history',
+    'customer_security_recovery_code_verify', 'customer_security_recovery_codes_generate',
+    'customer_security_recovery_codes_status', 'customer_security_request_tracker',
+    'customer_security_revoke_other_sessions', 'customer_security_revoke_session',
+    'customer_security_score', 'customer_security_status',
+    'customer_security_trust_current_device', 'customer_security_trusted_devices',
+    'customer_security_untrust_device'
+  ], [page.security]);
+  grant(['customer_security_recovery_code_verify'], [page.lostPasskey]);
+  grant(['security_report'], [page.dashboard, page.security, page.orders, page.perfume]);
+
+  return Object.freeze(matrix);
+})();
+const DIRAC_CENTRAL_MAIN_BROWSER_SOURCE_MATRIX_SHA256_V282 = '1d25038c1dde9dcde445950dac16f66d8de283cba362024db25348ec591feda9';
+
+function diracCentralMainBrowserSourceGuardV282(req, ctx, refererValue) {
+  if (diracAppRoleV250() !== 'main' || !diracCentralNeedsBrowserAuthenticityV146(ctx)) return { ok: true };
+  const allowed = DIRAC_CENTRAL_MAIN_BROWSER_SOURCE_MATRIX_V282[String(ctx && ctx.action || '')];
+  if (!Array.isArray(allowed) || !allowed.length) return { ok: false, reason: 'main_browser_source_action_unmapped' };
+  let referer;
+  try { referer = new URL(String(refererValue || '').trim()); }
+  catch (_) { return { ok: false, reason: 'main_browser_source_invalid' }; }
+  if (referer.search || referer.hash || !allowed.includes(referer.origin + referer.pathname)) {
+    return { ok: false, reason: 'main_browser_source_invalid' };
+  }
+  const requestOrigin = diracCentralNormalizeOriginV146(req && req.headers && req.headers.origin || '');
+  if (requestOrigin && requestOrigin !== referer.origin) return { ok: false, reason: 'main_browser_source_origin_mismatch' };
+  return { ok: true };
+}
+
 function diracCentralVercel2OnlyActionGuardV150(action) {
   const clean = String(action || '').trim().toLowerCase();
   if (!clean) return { ok: false, reason: 'deployment_role_action_empty' };
@@ -46309,6 +46440,7 @@ function diracCentralVercel2OnlyActionGuardV150(action) {
   if (role === 'parfum' && parfum.has(clean)) return { ok: true };
   if (role === 'pesanan' && pesanan.has(clean)) return { ok: true };
   if (role === 'www' && www.has(clean)) return { ok: true };
+  if (role === 'main' && DIRAC_CENTRAL_MAIN_ACTION_MANIFEST_V282.includes(clean)) return { ok: true };
   if (role === 'recovery' && [String(DIRAC_RECOVERY_WORKER_ACTION || '').toLowerCase(), DIRAC_MERGED_RECOVERY_V251.linkAction, DIRAC_MERGED_RECOVERY_V251.hpkeVerifyAction].includes(clean)) return { ok: true };
 
   return { ok: false, reason: 'action_not_owned_by_app_role:' + role };
@@ -46443,6 +46575,8 @@ function diracCentralPageBrowserAuthenticityGuardV146(req, ctx) {
 
   const ref = diracCentralValidateRefererV146(headers.referer || headers.referrer || '');
   if (!ref.ok) return ref;
+  const mainSource = diracCentralMainBrowserSourceGuardV282(req, ctx, headers.referer || headers.referrer || '');
+  if (!mainSource.ok) return mainSource;
 
   const sec = diracCentralSecFetchGuardV146(req, ctx);
   if (!sec.ok) return sec;
@@ -48153,7 +48287,7 @@ function diracCentralIsCheckoutOrderCreateServiceRoleV146(ctx, table, path, opti
     return diracCentralCheckoutOrderRowsSafeV146(options.body);
   }
   if (cleanTable === 'order_items') {
-    return diracCentralCheckoutOrderItemRowsSafeV152(options.body);
+    return diracCentralCheckoutOrderItemRowsSafeV152(options.body, ctx.__diracCentralCheckoutOwnerCustomerIdV196);
   }
   return false;
 }
@@ -48303,22 +48437,25 @@ function diracCentralCheckoutOrderRowsSafeV146(body) {
 }
 
 
-function diracCentralCheckoutOrderItemRowsSafeV152(body) {
+function diracCentralCheckoutOrderItemRowsSafeV152(body, expectedCustomerId) {
   const rows = Array.isArray(body) ? body : [body];
   const allowed = new Set([
     'order_id',
+    'customer_id',
     'product_doc_id',
     'product_title',
     'quantity',
     'unit_price',
     'cost_price'
   ]);
-  if (!rows.length || rows.length > 50) return false;
+  const boundCustomerId = String(expectedCustomerId || '').trim();
+  if (!diracCentralLooksLikeUuidV146(boundCustomerId) || !rows.length || rows.length > 50) return false;
   return rows.every((row) => {
     if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
     const keys = Object.keys(row);
     if (!keys.length || keys.some((key) => !allowed.has(String(key || '').toLowerCase()))) return false;
     if (!diracCentralLooksLikeUuidV146(row.order_id)) return false;
+    if (!diracCentralLooksLikeUuidV146(row.customer_id) || String(row.customer_id).trim() !== boundCustomerId) return false;
     if (row.product_doc_id && !/^[A-Za-z0-9._:@-]{1,120}$/.test(String(row.product_doc_id || '').trim())) return false;
     const title = String(row.product_title || '').trim();
     if (!title || title.length > 180 || /[<>]/.test(title)) return false;
@@ -50267,7 +50404,7 @@ function diracRecoveryHpkeAssertS2SCallerBindingV226() {
   return true;
 }
 
-if (process.env.NODE_ENV === 'production' && diracAppRoleV250() === 'security') diracRecoveryHpkeAssertS2SCallerBindingV226();
+if (process.env.NODE_ENV === 'production' && ['security', 'main'].includes(diracAppRoleV250())) diracRecoveryHpkeAssertS2SCallerBindingV226();
 const DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159 = globalThis.__DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159__ || new Map();
 globalThis.__DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159__ = DIRAC_RECOVERY_HPKE_PROOF_REPLAY_V159;
 
