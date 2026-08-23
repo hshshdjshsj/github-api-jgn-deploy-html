@@ -16337,7 +16337,7 @@ function diracPasskeyRecoveryIdempotencyBindingV310(req, body) {
 }
 
 function diracPasskeyRecoveryBrowserBindingV281(req) {
-  const expectedOrigin = diracRoleOriginV250('recovery');
+  const expectedOrigin = diracRoleOriginV250('auth');
   const headers = req && req.headers && typeof req.headers === 'object' ? req.headers : {};
   const origin = String(headers.origin || '').trim();
   const referer = String(headers.referer || headers.referrer || '').trim();
@@ -16346,7 +16346,7 @@ function diracPasskeyRecoveryBrowserBindingV281(req) {
   if (origin !== expectedOrigin
       || !parsedReferer
       || parsedReferer.origin !== expectedOrigin
-      || parsedReferer.pathname !== '/lost-passkey.html'
+      || parsedReferer.pathname !== '/masuk.html'
       || parsedReferer.search
       || parsedReferer.hash) {
     return { ok: false, reason: 'passkey_recovery_browser_origin_invalid_v281' };
