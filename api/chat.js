@@ -95,11 +95,12 @@ async function __diracChatCentralGuardPrimeBodyActionV2(req) {
     if (Buffer.isBuffer(value) || value instanceof Uint8Array) { buffer = Buffer.from(value); break; }
     if (typeof value === 'string') { buffer = Buffer.from(value, 'utf8'); break; }
   }
-  if (!buffer && (Buffer.isBuffer(req.body) || req.body instanceof Uint8Array)) buffer = Buffer.from(req.body);
-  if (!buffer && typeof req.body === 'string') buffer = Buffer.from(req.body, 'utf8');
-  if (!buffer && req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
-    buffer = Buffer.from(JSON.stringify(req.body), 'utf8');
-  }
+  const bodyDescriptorV2 = Object.getOwnPropertyDescriptor(req, 'body');
+  const bodyValueV2 = bodyDescriptorV2 && Object.prototype.hasOwnProperty.call(bodyDescriptorV2, 'value')
+    ? bodyDescriptorV2.value
+    : undefined;
+  if (!buffer && (Buffer.isBuffer(bodyValueV2) || bodyValueV2 instanceof Uint8Array)) buffer = Buffer.from(bodyValueV2);
+  if (!buffer && typeof bodyValueV2 === 'string') buffer = Buffer.from(bodyValueV2, 'utf8');
   if (!buffer && typeof req.on === 'function' && !req.readableEnded && req.destroyed !== true) {
     buffer = await new Promise((resolve, reject) => {
       const chunks = [];
