@@ -50867,11 +50867,10 @@ async function diracRecoveryHpkeCreateOrReadSessionV282(row, validated, proofMet
   }
   const material = diracRecoverySessionMaterialV282(row, '');
   const sessionExpiresAt = new Date(expiresAtMs).toISOString();
-  const created = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_SESSION_TABLE
-    + '?on_conflict=recovery_session_hash', {
+  const created = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_SESSION_TABLE, {
     method: 'POST',
     auth: 'service',
-    prefer: 'resolution=ignore-duplicates,return=representation',
+    prefer: 'return=representation',
     body: [{
       request_id: validated.requestId,
       customer_id: row.customer_id,
@@ -50889,10 +50888,13 @@ async function diracRecoveryHpkeCreateOrReadSessionV282(row, validated, proofMet
     }]
   });
   if (!created || created.ok !== true) {
+    const existing = await diracRecoveryHpkeReadSessionV282(row);
+    if (existing && existing.ok === true && existing.found === true) return existing;
+    if (existing && existing.ok === false) return existing;
     return {
       ok: false,
       status: Number(created && created.status || 0) || 503,
-      code: 'RECOVERY_SESSION_HASH_UNIQUE_CONSTRAINT_REQUIRED_V282'
+      code: 'RECOVERY_SESSION_CREATE_FAILED_V287'
     };
   }
   return diracRecoveryHpkeReadSessionV282(row);
