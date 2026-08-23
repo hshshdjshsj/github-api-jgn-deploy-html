@@ -16486,6 +16486,7 @@ async function diracPasskeyResolveRecoveryAuthorityV281(req, ctx, body) {
     + '&or=' + encodeURIComponent('(' + sessionHashCandidatesV281
       .map((candidate) => 'recovery_session_hash.eq.' + candidate).join(',') + ')')
     + '&purpose=eq.' + encodeURIComponent(LOST_PASSKEY_RECOVERY_PURPOSE)
+    + '&revoked_at=is.null'
     + '&limit=2';
   const sessionResult = await supabaseFetch(sessionPath, { method: 'GET', auth: 'service' }).catch(() => null);
   const sessionRows = sessionResult && sessionResult.ok === true && Array.isArray(sessionResult.data)
@@ -46264,7 +46265,7 @@ function diracCentralVercel2OnlyActionGuardV150(action) {
   if (common.has(clean)) return { ok: true };
 
   const auth = new Set([
-    'domain_login', 'domain_register', 'domain_logout', 'domain_me', 'domain_mfa_status',
+    'domain_login', 'domain_register', 'domain_logout', 'domain_me', 'domain_dashboard_me', 'domain_mfa_status',
     'dirac_mfa_passkey_start', 'dirac_mfa_passkey_verify', 'domain_mfa_passkey_start',
     'domain_mfa_passkey_verify', 'dirac_mfa_passkey_status', 'domain_mfa_passkey_status',
     'dirac_passkey_status', 'domain_passkey_status', 'customer_session_handoff_issue', 'customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify', 'security_report', 'customer_security_recovery_hpke_submit'
@@ -50811,50 +50812,133 @@ async function diracRecoveryHpkeReadSessionV282(row) {
     + '&auth_user_id=eq.' + encodeURIComponent(authUserId)
     + '&purpose=eq.' + encodeURIComponent(LOST_PASSKEY_RECOVERY_PURPOSE)
     + '&status=eq.verified&used_at=is.null&revoked_at=is.null'
-    + '&limit=2', { method: 'GET', auth: 'service' });
+    + '&order=created_at.asc,id.asc&limit=16', { method: 'GET', auth: 'service' });
   if (!result || result.ok !== true || !Array.isArray(result.data)) {
     return { ok: false, status: Number(result && result.status || 0) || 503, code: 'RECOVERY_SESSION_READ_FAILED_V282' };
   }
   if (result.data.length === 0) return { ok: true, found: false };
-  if (result.data.length !== 1) {
-    return { ok: false, status: 503, code: 'RECOVERY_SESSION_REQUEST_ID_NOT_UNIQUE_V282' };
+  if (result.data.length >= 16) return { ok: false, status: 503, code: 'RECOVERY_SESSION_CARDINALITY_UNBOUNDED_V288' };
+  const nowMs = Date.now();
+  const candidates = [];
+  const expiredIds = [];
+  const legacyIds = [];
+  for (const candidate of result.data) {
+    const sessionRow = candidate || {};
+    const metadata = sessionRow.metadata && typeof sessionRow.metadata === 'object' && !Array.isArray(sessionRow.metadata)
+      ? sessionRow.metadata
+      : null;
+    const createdAtMs = Date.parse(String(sessionRow.created_at || ''));
+    const expiresAtMs = Date.parse(String(sessionRow.expires_at || ''));
+    if (!customerSecurityLooksLikeUuid(String(sessionRow.id || ''))
+        || String(sessionRow.request_id || '') !== requestId
+        || String(sessionRow.customer_id || '') !== customerId
+        || String(sessionRow.auth_user_id || '') !== authUserId
+        || String(sessionRow.purpose || '') !== LOST_PASSKEY_RECOVERY_PURPOSE
+        || String(sessionRow.status || '') !== 'verified'
+        || sessionRow.used_at
+        || sessionRow.revoked_at
+        || !Number.isFinite(createdAtMs)
+        || createdAtMs > nowMs + 30 * 1000
+        || !Number.isFinite(expiresAtMs)
+        || expiresAtMs <= createdAtMs
+        || expiresAtMs - createdAtMs > 31 * 60 * 1000
+        || expiresAtMs > nowMs + 31 * 60 * 1000) {
+      return { ok: false, status: 409, code: 'RECOVERY_SESSION_STATE_INVALID_V282' };
+    }
+    if (expiresAtMs <= nowMs) {
+      expiredIds.push(String(sessionRow.id));
+      continue;
+    }
+    const zeroSchemaProfile = metadata ? metadata.zero_schema_profile : undefined;
+    if (!metadata || zeroSchemaProfile === undefined || zeroSchemaProfile === null || zeroSchemaProfile === '') {
+      legacyIds.push(String(sessionRow.id));
+      continue;
+    }
+    if (zeroSchemaProfile !== DIRAC_RECOVERY_ZERO_SCHEMA_SESSION_V282) {
+      return { ok: false, status: 409, code: 'RECOVERY_SESSION_STATE_INVALID_V282' };
+    }
+    if (!/^[a-f0-9]{64}$/.test(String(metadata.session_secret_fingerprint || ''))) {
+      return { ok: false, status: 409, code: 'RECOVERY_SESSION_STATE_INVALID_V282' };
+    }
+    let material;
+    try {
+      material = diracRecoverySessionMaterialV282(row, String(metadata.session_secret_fingerprint));
+    } catch (_) {
+      return { ok: false, status: 503, code: 'RECOVERY_SESSION_KEY_UNAVAILABLE_V282' };
+    }
+    if (!safeEqual(String(sessionRow.recovery_session_hash || ''), material.hash)) {
+      return { ok: false, status: 409, code: 'RECOVERY_SESSION_HASH_MISMATCH_V282' };
+    }
+    candidates.push({ sessionRow, material, createdAtMs, expiresAtMs });
   }
-  const sessionRow = result.data[0] || {};
-  const metadata = sessionRow.metadata && typeof sessionRow.metadata === 'object' && !Array.isArray(sessionRow.metadata)
-    ? sessionRow.metadata
-    : null;
-  const expiresAtMs = Date.parse(String(sessionRow.expires_at || ''));
-  if (!customerSecurityLooksLikeUuid(String(sessionRow.id || ''))
-      || String(sessionRow.request_id || '') !== requestId
-      || String(sessionRow.customer_id || '') !== customerId
-      || String(sessionRow.auth_user_id || '') !== authUserId
-      || String(sessionRow.purpose || '') !== LOST_PASSKEY_RECOVERY_PURPOSE
-      || String(sessionRow.status || '') !== 'verified'
-      || sessionRow.used_at
-      || sessionRow.revoked_at
-      || !Number.isFinite(expiresAtMs)
-      || expiresAtMs <= Date.now()
-      || expiresAtMs > Date.now() + 31 * 60 * 1000
-      || !metadata
-      || metadata.zero_schema_profile !== DIRAC_RECOVERY_ZERO_SCHEMA_SESSION_V282
-      || !/^[a-f0-9]{64}$/.test(String(metadata.session_secret_fingerprint || ''))) {
-    return { ok: false, status: 409, code: 'RECOVERY_SESSION_STATE_INVALID_V282' };
+  candidates.sort((left, right) => {
+    if (left.createdAtMs !== right.createdAtMs) return left.createdAtMs - right.createdAtMs;
+    const leftId = String(left.sessionRow.id || '');
+    const rightId = String(right.sessionRow.id || '');
+    return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+  });
+  const selected = candidates[0] || null;
+  const duplicateIds = Array.from(new Set(expiredIds.concat(
+    legacyIds,
+    candidates.slice(1).map((candidate) => String(candidate.sessionRow.id || ''))
+  )));
+  if (duplicateIds.length > 0) {
+    const revokedAt = diracNowIso();
+    const reconciled = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_SESSION_TABLE
+      + '?request_id=eq.' + encodeURIComponent(requestId)
+      + '&customer_id=eq.' + encodeURIComponent(customerId)
+      + '&auth_user_id=eq.' + encodeURIComponent(authUserId)
+      + '&purpose=eq.' + encodeURIComponent(LOST_PASSKEY_RECOVERY_PURPOSE)
+      + '&status=eq.verified&used_at=is.null&revoked_at=is.null'
+      + '&id=in.(' + duplicateIds.map(encodeURIComponent).join(',') + ')', {
+      method: 'PATCH',
+      auth: 'service',
+      prefer: 'return=representation',
+      body: { status: 'revoked', revoked_at: revokedAt }
+    }).catch(() => null);
+    const confirmed = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_SESSION_TABLE
+      + '?select=' + encodeURIComponent(select)
+      + '&request_id=eq.' + encodeURIComponent(requestId)
+      + '&customer_id=eq.' + encodeURIComponent(customerId)
+      + '&auth_user_id=eq.' + encodeURIComponent(authUserId)
+      + '&purpose=eq.' + encodeURIComponent(LOST_PASSKEY_RECOVERY_PURPOSE)
+      + '&status=eq.verified&used_at=is.null&revoked_at=is.null'
+      + '&order=created_at.asc,id.asc&limit=2', { method: 'GET', auth: 'service' }).catch(() => null);
+    const confirmationReadOk = Boolean(confirmed && confirmed.ok === true && Array.isArray(confirmed.data));
+    const confirmedRows = confirmationReadOk ? confirmed.data : [];
+    const confirmedRow = confirmedRows.length === 1 ? confirmedRows[0] : null;
+    const confirmedMetadata = confirmedRow && confirmedRow.metadata && typeof confirmedRow.metadata === 'object' && !Array.isArray(confirmedRow.metadata)
+      ? confirmedRow.metadata
+      : null;
+    const confirmationValid = confirmationReadOk && (selected
+      ? Boolean(confirmedRow
+        && String(confirmedRow.id || '') === String(selected.sessionRow.id || '')
+        && String(confirmedRow.request_id || '') === requestId
+        && String(confirmedRow.customer_id || '') === customerId
+        && String(confirmedRow.auth_user_id || '') === authUserId
+        && String(confirmedRow.purpose || '') === LOST_PASSKEY_RECOVERY_PURPOSE
+        && String(confirmedRow.status || '') === 'verified'
+        && !confirmedRow.used_at
+        && !confirmedRow.revoked_at
+        && Date.parse(String(confirmedRow.expires_at || '')) > Date.now()
+        && String(confirmedRow.created_at || '') === String(selected.sessionRow.created_at || '')
+        && String(confirmedRow.expires_at || '') === String(selected.sessionRow.expires_at || '')
+        && safeEqual(String(confirmedRow.recovery_session_hash || ''), String(selected.sessionRow.recovery_session_hash || ''))
+        && confirmedMetadata
+        && confirmedMetadata.zero_schema_profile === DIRAC_RECOVERY_ZERO_SCHEMA_SESSION_V282
+        && safeEqual(String(confirmedMetadata.session_secret_fingerprint || ''), String(selected.material.fingerprint || '')))
+      : confirmedRows.length === 0);
+    if (!confirmationValid) {
+      return { ok: false, status: Number(confirmed && confirmed.status || reconciled && reconciled.status || 0) || 503, code: 'RECOVERY_SESSION_RECONCILE_FAILED_V288' };
+    }
   }
-  let material;
-  try {
-    material = diracRecoverySessionMaterialV282(row, String(metadata.session_secret_fingerprint));
-  } catch (_) {
-    return { ok: false, status: 503, code: 'RECOVERY_SESSION_KEY_UNAVAILABLE_V282' };
-  }
-  if (!safeEqual(String(sessionRow.recovery_session_hash || ''), material.hash)) {
-    return { ok: false, status: 409, code: 'RECOVERY_SESSION_HASH_MISMATCH_V282' };
-  }
+  if (!selected) return { ok: true, found: false };
   return {
     ok: true,
     found: true,
-    row: sessionRow,
-    token: material.token,
-    expiresAt: String(sessionRow.expires_at)
+    row: selected.sessionRow,
+    token: selected.material.token,
+    expiresAt: String(selected.sessionRow.expires_at)
   };
 }
 
@@ -50991,10 +51075,10 @@ async function diracRecoveryHpkeCommitProofV159(req, res) {
     };
 
     let sessionState = await diracRecoveryHpkeReadSessionV282(row);
-    if (!sessionState.ok && sessionState.code !== 'RECOVERY_SESSION_STATE_INVALID_V282') {
+    if (!sessionState.ok) {
       throw Object.assign(new Error(sessionState.code), { code: sessionState.code, status: sessionState.status });
     }
-    if (!sessionState.ok || !sessionState.found) {
+    if (!sessionState.found) {
       sessionState = await diracRecoveryHpkeCreateOrReadSessionV282(row, validated, proofMetadata, now);
     }
     if (!sessionState || sessionState.ok !== true || sessionState.found !== true) {
