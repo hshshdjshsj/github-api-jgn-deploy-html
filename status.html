@@ -8,7 +8,7 @@
 <meta name="theme-color" content="#ffffff">
 <meta name="robots" content="index,follow">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-zLvj/ARBUCDth7FA8w99c43659jdUduiidor0o8uNSQ='; script-src 'sha256-sblreIIrVp586GvLWT48RCPwfefJ3afJne1OAtv7JoQ='; img-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
 <title>DIRAC Status Center</title>
 <link rel="icon" type="image/webp" href="umroh.webp">
 <style>
@@ -79,7 +79,7 @@ img{max-width:100%}
 html[data-theme="dark"] .site-header{background:rgba(0,0,0,.92)}
 .header-inner{min-height:var(--header-h);display:flex;align-items:center;gap:14px}
 .brand{display:flex;align-items:center;gap:10px;min-width:max-content}
-.brand-logo{width:38px;height:38px;object-fit:contain;flex:0 0 38px;filter:grayscale(1)}
+.brand-logo{width:38px;height:38px;object-fit:contain;flex:0 0 38px;filter:none}
 .brand-copy{display:grid;line-height:1}
 .brand-copy strong{font-size:14px;letter-spacing:.09em}
 .brand-copy small{margin-top:5px;font-size:7.5px;font-weight:800;letter-spacing:.17em;color:var(--faint)}
@@ -363,7 +363,7 @@ html[data-theme="dark"] .site-header{background:rgba(0,0,0,.92)}
 html[data-theme="dark"] .drawer-header{background:rgba(0,0,0,.94)}
 .drawer-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .drawer-brand{display:flex;align-items:center;gap:10px}
-.drawer-logo{width:36px;height:36px;object-fit:contain;filter:grayscale(1)}
+.drawer-logo{width:36px;height:36px;object-fit:contain;filter:none}
 .drawer-title{margin:0;font-size:18px;letter-spacing:-.02em}
 .drawer-subtitle{margin-top:4px;color:var(--muted);font-size:8.5px}
 .drawer-close{width:40px;height:40px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft);cursor:pointer}
@@ -401,7 +401,7 @@ html[data-theme="dark"] .drawer-header{background:rgba(0,0,0,.94)}
 .footer-shell{overflow:hidden;border:1px solid var(--line);border-radius:20px;background:var(--surface);box-shadow:var(--shadow-soft)}
 .footer-main{display:grid;grid-template-columns:minmax(290px,1.35fr) .8fr 1.2fr;gap:34px;padding:28px}
 .footer-brand{display:flex;align-items:center;gap:11px}
-.footer-logo{width:42px;height:42px;object-fit:contain;filter:grayscale(1)}
+.footer-logo{width:42px;height:42px;object-fit:contain;filter:none}
 .footer-brand strong{display:block;color:var(--ink);font-size:12.5px}
 .footer-brand span{display:block;margin-top:4px;color:var(--muted);font-size:8.3px}
 .footer-about{max-width:470px;margin:14px 0 0;line-height:1.7}
@@ -577,11 +577,7 @@ body.is-regenerating .availability-cell{animation:softBlink .7s ease-in-out infi
 }
 .brand-logo{width:48px!important;height:30px!important}
 .drawer-logo{width:46px!important;height:28px!important}
-html[data-theme="dark"] .brand-logo,
-html[data-theme="dark"] .footer-logo,
-html[data-theme="dark"] .drawer-logo{
-  filter:grayscale(1) invert(1)!important;mix-blend-mode:screen
-}
+
 .brand{gap:9px}
 .brand-copy strong{font-size:13px}
 .brand-copy small{font-size:6.8px}
@@ -609,6 +605,18 @@ html[data-theme="dark"] .drawer-logo{
   .footer-meta{justify-content:flex-start;gap:8px}
   .brand-logo{width:46px!important;height:28px!important}
 }
+
+.brand-logo,.footer-logo,.drawer-logo{
+  filter:none!important;
+  mix-blend-mode:normal!important;
+}
+
+
+.brand-logo,.footer-logo,.drawer-logo{
+  filter:none!important;
+  mix-blend-mode:normal!important;
+}
+
 </style>
 </head>
 <body>
