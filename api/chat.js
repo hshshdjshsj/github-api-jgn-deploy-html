@@ -287,9 +287,27 @@ module.exports = async function diracChatServer2PasswordResetWorkerFinalV1(req, 
     }
     throw error;
   }
+  const __diracD2DActionV1 = String(bodyActionHint || req && req.query && req.query.action || '').trim().toLowerCase();
+  const __diracD2DOriginalJsonV1 = res && typeof res.json === 'function' ? res.json : null;
+  if (__diracD2DOriginalJsonV1 && (__diracD2DActionV1 === 'passkey_sync_push' || __diracD2DActionV1 === 'customer_binding_sync_push')) {
+    res.json = function diracD2DObserve5xxJsonV1(payload) {
+      try {
+        const status = Number(this && this.statusCode || res && res.statusCode || 0);
+        if (status >= 500) {
+          console.error('[dirac-d2d-5xx-root-cause]', JSON.stringify({
+            action: __diracD2DActionV1,
+            status,
+            code: String(payload && payload.code || 'D2D_5XX_CODE_MISSING').replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 120)
+          }));
+        }
+      } catch (_) {}
+      return __diracD2DOriginalJsonV1.call(this, payload);
+    };
+  }
   try {
     return await __diracChatCentralGuardHandlerV1(req, res);
   } finally {
+    if (__diracD2DOriginalJsonV1 && res && res.json !== __diracD2DOriginalJsonV1) res.json = __diracD2DOriginalJsonV1;
     __diracChatCentralGuardRestoreRequestV1(req);
   }
 };
