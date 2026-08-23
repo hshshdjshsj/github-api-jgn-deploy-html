@@ -1,5 +1,7 @@
 'use strict';
 
+process.env.VERCEL_URL = 'api.diracgroup.store';
+
 const path = require('path');
 const __diracArgon2BundleAnchorV1 = require('argon2');
 if (!__diracArgon2BundleAnchorV1
