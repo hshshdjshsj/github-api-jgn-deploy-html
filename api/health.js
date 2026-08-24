@@ -13961,7 +13961,7 @@ async function midtransHandleWebhook(req, res) {
     if (!orderPatch.ok) {
       return res.status(orderPatch.status || 500).json({ ok: false, message: 'Payment valid, tetapi gagal update status order.' });
     }
-    orderMailNotification = (duplicateEvent || Boolean(eventInsert && eventInsert.duplicate) || paymentAlreadyMatched || orderAlreadyPaid)
+    orderMailNotification = (duplicateEvent || paymentAlreadyMatched || orderAlreadyPaid)
       ? orderMailPaidWebhookSkipSummary('midtrans', duplicateEvent ? 'duplicate_event_reconciled' : 'already_paid')
       : await orderMailNotifyPaidOrderFromPaymentSafe({
         provider: 'midtrans',
@@ -53284,7 +53284,7 @@ __diracV202RegisterMiddleware(async function diracSessionHandoffV250Wrapper(req,
     const cors = setCors(req, res, { isDomainAction: true });
     return res.status(cors.allowed ? 200 : 403).end();
   }
-  if (action === 'customer_session_handoff_issue') { const cors = setCors(req, res, { isDomainAction: true }); if (!cors.allowed) return res.status(403).json({ ok: false, code: 'HANDOFF_ORIGIN_NOT_ALLOWED' }); return diracSessionHandoffIssueV250(req, res, ctx); }
+  if (action === 'customer_session_handoff_issue') return diracSessionHandoffIssueV250(req, res, ctx);
   if (action === 'dirac_session_handoff_prepare') return diracSessionHandoffPrepareV250(req, res, ctx);
   return diracSessionHandoffConsumeV250(req, res, ctx);
 }, 'diracSessionHandoffV250Wrapper');
