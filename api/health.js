@@ -10389,6 +10389,18 @@ function customerSecurityCreateDashboardMfaToken(req, user, method = 'recovery_c
       error: 'MFA_SIGNED_SESSION_ANCHOR_UNAVAILABLE'
     };
   }
+  const browserBindingReq = method === 'passkey'
+    ? diracPasskeyPanelBindingRequestV308(req)
+    : req;
+  if (!browserBindingReq) {
+    return {
+      token: '',
+      expiresAtMs: 0,
+      activeAtMs: 0,
+      maxAgeSeconds: 0,
+      error: 'MFA_PANEL_BINDING_UNAVAILABLE'
+    };
+  }
   const payload = {
     type: CUSTOMER_MFA_SESSION_TYPE,
     method,
@@ -10401,8 +10413,8 @@ function customerSecurityCreateDashboardMfaToken(req, user, method = 'recovery_c
     jti: crypto.randomBytes(24).toString('base64url'),
     activeAtMs: now,
     expiresAtMs: Number(anchor.expiresAtMs),
-    originHash: customerMfaBindingHash('origin', requestOrigin(req)),
-    uaHash: customerMfaBindingHash('ua', requestUserAgent(req)),
+    originHash: customerMfaBindingHash('origin', requestOrigin(browserBindingReq)),
+    uaHash: customerMfaBindingHash('ua', requestUserAgent(browserBindingReq)),
     recoveryVerified: method === 'recovery_code'
   };
   const payloadBase64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -17528,6 +17540,89 @@ function diracPasskeyRoundtripCanonicalRequestV243(req, selected, targetNames) {
   return { headers };
 }
 
+const DIRAC_PASSKEY_PANEL_BINDING_V308 = 'dirac-passkey-panel-binding-v308';
+const DIRAC_PASSKEY_PANEL_BINDING_SOURCE_V308 = Symbol('dirac-passkey-panel-binding-source-v308');
+
+function diracPasskeyPanelBindingRequestIsValidV308(sourceReq, bindingReq) {
+  if (!sourceReq || !bindingReq
+      || bindingReq[DIRAC_PASSKEY_PANEL_BINDING_SOURCE_V308] !== sourceReq
+      || !Object.isFrozen(bindingReq)
+      || !Object.isFrozen(bindingReq.headers)) return false;
+  const sourceHeaders = sourceReq.headers || {};
+  const bindingHeaders = bindingReq.headers || {};
+  const expectedPanelOrigin = 'https://panel.' + diracBaseDomainV250();
+  if (normalizeDashboardMfaOrigin(bindingHeaders.origin).toLowerCase() !== expectedPanelOrigin
+      || String(bindingHeaders.referer || '') !== expectedPanelOrigin + '/dashboard.html') return false;
+  return ['user-agent', 'sec-ch-ua', 'sec-ch-ua-platform', 'accept-language', 'cookie']
+    .every((name) => String(bindingHeaders[name] || '') === String(sourceHeaders[name] || ''));
+}
+
+function diracPasskeyPanelBindingRequestV308(req) {
+  try {
+    const ctx = typeof diracCentralCurrentContextV149 === 'function'
+      ? diracCentralCurrentContextV149()
+      : null;
+    if (!ctx || ctx.req !== req
+        || typeof diracCentralHandlerContextFullyPassedV211 !== 'function'
+        || diracCentralHandlerContextFullyPassedV211(ctx, req) !== true) return null;
+
+    const action = String(ctx.action || '').trim().toLowerCase();
+    const method = String(req && req.method || '').trim().toUpperCase();
+    const isPasskeyVerify = (action === 'dirac_mfa_passkey_verify'
+      || action === 'domain_mfa_passkey_verify') && method === 'POST';
+    const isCookieRoundtrip = action === 'domain_health' && method === 'GET';
+    if (!isPasskeyVerify && !isCookieRoundtrip) return null;
+
+    const headers = req && req.headers || {};
+    const expectedApiHost = 'api.' + diracBaseDomainV250();
+    const normalizeHost = (value) => String(value || '')
+      .split(',', 1)[0]
+      .trim()
+      .toLowerCase()
+      .replace(/\.$/, '')
+      .replace(/:\d+$/, '');
+    const host = normalizeHost(headers.host);
+    const forwardedHost = normalizeHost(headers['x-forwarded-host']);
+    if (host !== expectedApiHost || (forwardedHost && forwardedHost !== expectedApiHost)) return null;
+
+    const expectedAuthOrigin = diracRoleOriginV250('auth');
+    if (normalizeDashboardMfaOrigin(headers.origin).toLowerCase() !== expectedAuthOrigin) return null;
+    let refererUrl;
+    try { refererUrl = new URL(String(headers.referer || headers.referrer || '').trim()); }
+    catch (_) { return null; }
+    if (refererUrl.protocol !== 'https:'
+        || refererUrl.port !== ''
+        || refererUrl.username !== ''
+        || refererUrl.password !== ''
+        || refererUrl.origin.toLowerCase() !== expectedAuthOrigin
+        || refererUrl.pathname !== '/masuk.html') return null;
+
+    const fetchSite = String(headers['sec-fetch-site'] || '').trim().toLowerCase();
+    const fetchMode = String(headers['sec-fetch-mode'] || '').trim().toLowerCase();
+    if ((fetchSite && fetchSite !== 'same-site') || (fetchMode && fetchMode !== 'cors')) return null;
+
+    const panelOrigin = 'https://panel.' + diracBaseDomainV250();
+    if (!diracUniversalBrowserOriginsV250().has(panelOrigin)) return null;
+    const bindingHeaders = Object.assign({}, headers, {
+      origin: panelOrigin,
+      referer: panelOrigin + '/dashboard.html'
+    });
+    delete bindingHeaders.referrer;
+    Object.freeze(bindingHeaders);
+    const bindingReq = { headers: bindingHeaders };
+    Object.defineProperty(bindingReq, DIRAC_PASSKEY_PANEL_BINDING_SOURCE_V308, {
+      value: req,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    });
+    Object.freeze(bindingReq);
+    return diracPasskeyPanelBindingRequestIsValidV308(req, bindingReq) ? bindingReq : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 const DIRAC_PASSKEY_DEVICE_CHAIN_V245 = 'dirac-passkey-device-chain-v245';
 
 function diracPasskeyVerifyDeviceSessionValueV245(req, value, signedAnchor) {
@@ -17998,6 +18093,17 @@ async function diracPasskeyConfirmDashboardCookieRoundtripV241(req, res) {
       });
     }
 
+    const panelBindingReq = diracPasskeyPanelBindingRequestV308(req);
+    if (!panelBindingReq) {
+      return res.status(403).json({
+        ok: false,
+        ready: false,
+        patch: DIRAC_PASSKEY_PANEL_BINDING_V308,
+        code: 'PASSKEY_PANEL_BINDING_INVALID',
+        message: 'Target binding dashboard tidak valid. Dashboard tetap dikunci.'
+      });
+    }
+
     const cookies = parseCookies(req);
     const deviceSessionCookieName = diracCentralDeviceSessionCookieNameV223();
     const deviceCredentialCookieName = diracCentralDeviceCookieNameV221();
@@ -18057,7 +18163,7 @@ async function diracPasskeyConfirmDashboardCookieRoundtripV241(req, res) {
       signedValid = true;
 
       for (const mfaValue of mfaSet.values) {
-        const mfaReq = diracPasskeyRoundtripCanonicalRequestV243(req, {
+        const mfaReq = diracPasskeyRoundtripCanonicalRequestV243(panelBindingReq, {
           [DOMAIN_SIGNED_SESSION_COOKIE]: signedValue,
           [CUSTOMER_MFA_COOKIE]: mfaValue
         }, targetNames);
@@ -18070,7 +18176,7 @@ async function diracPasskeyConfirmDashboardCookieRoundtripV241(req, res) {
         mfaValid = true;
 
         for (const deviceSessionValue of deviceSessionSet.values) {
-          const deviceSessionReq = diracPasskeyRoundtripCanonicalRequestV243(req, {
+          const deviceSessionReq = diracPasskeyRoundtripCanonicalRequestV243(panelBindingReq, {
             [DOMAIN_SIGNED_SESSION_COOKIE]: signedValue,
             [CUSTOMER_MFA_COOKIE]: mfaValue,
             [deviceSessionCookieName]: deviceSessionValue
@@ -18082,7 +18188,7 @@ async function diracPasskeyConfirmDashboardCookieRoundtripV241(req, res) {
           deviceSessionValid = true;
 
           for (const deviceCredentialValue of deviceCredentialSet.values) {
-            const canonicalReq = diracPasskeyRoundtripCanonicalRequestV243(req, {
+            const canonicalReq = diracPasskeyRoundtripCanonicalRequestV243(panelBindingReq, {
               [DOMAIN_SIGNED_SESSION_COOKIE]: signedValue,
               [CUSTOMER_MFA_COOKIE]: mfaValue,
               [deviceSessionCookieName]: deviceSessionValue,
@@ -18145,7 +18251,7 @@ async function diracPasskeyConfirmDashboardCookieRoundtripV241(req, res) {
       return diracPasskeyCookieRoundtripFailureV241(res, code, failureDetails);
     }
 
-    const authority = await diracPasskeyStabilizeBrowserAuthorityV305(req, res, validChain);
+    const authority = await diracPasskeyStabilizeBrowserAuthorityV305(req, res, validChain, panelBindingReq);
     if (!authority || authority.ok !== true) {
       const retry = Boolean(authority && authority.retry === true);
       const status = retry ? 409 : Math.max(400, Math.min(599, Number(authority && authority.status || 409)));
@@ -18719,7 +18825,7 @@ function diracPasskeyAuthProvenanceV301(req) {
   return '';
 }
 
-async function diracPasskeyStrictSignedAuthorityV304(req, owner) {
+async function diracPasskeyStrictSignedAuthorityV304(req, owner, browserBindingReq = req) {
   const fail = (reason) => Object.freeze({
     ok: false,
     patch: DIRAC_PASSKEY_SIGNED_AUTHORITY_V304,
@@ -18743,6 +18849,12 @@ async function diracPasskeyStrictSignedAuthorityV304(req, owner) {
         || diracCentralHandlerContextFullyPassedV211(ctx, req) !== true) {
       return fail('passkey_v304_signed_central_guard_not_fully_passed');
     }
+    const bindingReq = browserBindingReq === req
+      ? req
+      : diracPasskeyPanelBindingRequestIsValidV308(req, browserBindingReq)
+        ? browserBindingReq
+        : null;
+    if (!bindingReq) return fail('passkey_v304_panel_binding_invalid');
 
     const cookies = parseCookies(req);
     const signedValues = readCookieTokenCandidates(cookies, DOMAIN_SIGNED_SESSION_COOKIE);
@@ -18776,15 +18888,15 @@ async function diracPasskeyStrictSignedAuthorityV304(req, owner) {
       return fail('passkey_v304_signed_authority_ttl_insufficient');
     }
 
-    const mfa = verifyCustomerDashboardMfaCookie(req, { id: authUserId, email });
+    const mfa = verifyCustomerDashboardMfaCookie(bindingReq, { id: authUserId, email });
     if (!mfa || mfa.ok !== true || mfa.method !== 'passkey'
         || Number(mfa.securityEpoch || 0) !== Number(strictSigned.securityEpoch || 0)
         || !safeEqual(String(mfa.sessionHash || ''), String(strictSigned.binding || ''))) {
       return fail('passkey_v304_signed_mfa_binding_invalid');
     }
 
-    const deviceSession = diracCentralVerifyDeviceSessionCookieV223(req);
-    const deviceCredential = diracCentralVerifyDeviceTokenV221(req, deviceCredentialValues[0]);
+    const deviceSession = diracCentralVerifyDeviceSessionCookieV223(bindingReq);
+    const deviceCredential = diracCentralVerifyDeviceTokenV221(bindingReq, deviceCredentialValues[0]);
     if (!deviceSession || !deviceSession.identity || !deviceSession.payload
         || String(deviceSession.identity.userId || '') !== authUserId
         || normalizeAuthEmail(deviceSession.identity.email || '') !== email
@@ -19062,7 +19174,7 @@ async function diracPasskeyRebindIssuedSessionToSignedAuthorityV306(req, owner, 
   }
 }
 
-async function diracPasskeyStabilizeBrowserAuthorityV305(req, res, chain) {
+async function diracPasskeyStabilizeBrowserAuthorityV305(req, res, chain, browserBindingReq = req) {
   const expectedIdentity = Object.freeze({
     userId: String(chain && chain.userId || '').trim(),
     email: normalizeAuthEmail(chain && chain.email || '')
@@ -19118,7 +19230,7 @@ async function diracPasskeyStabilizeBrowserAuthorityV305(req, res, chain) {
     email: expectedIdentity.email,
     customerId: ownerAuthority.customerId
   };
-  const strictSigned = await diracPasskeyStrictSignedAuthorityV304(req, owner);
+  const strictSigned = await diracPasskeyStrictSignedAuthorityV304(req, owner, browserBindingReq);
   if (!strictSigned || strictSigned.ok !== true) {
     return Object.freeze({
       ok: false,
@@ -20783,6 +20895,8 @@ async function diracPasskeyFinalizeDashboardCookieHandoffV239(req, res, owner, p
   });
 
   try {
+    const panelBindingReq = diracPasskeyPanelBindingRequestV308(req);
+    if (!panelBindingReq) return fail('passkey_panel_binding_invalid');
     const authUserId = String(owner && owner.authUserId || '').trim();
     const customerId = String(owner && owner.customerId || '').trim();
     const email = normalizeAuthEmail(owner && owner.email || '');
@@ -20813,8 +20927,8 @@ async function diracPasskeyFinalizeDashboardCookieHandoffV239(req, res, owner, p
     }
 
     const mfaPayload = decodeCustomerDashboardMfaToken(mfaToken);
-    const expectedOriginHash = customerMfaBindingHash('origin', requestOrigin(req));
-    const expectedUaHash = customerMfaBindingHash('ua', requestUserAgent(req));
+    const expectedOriginHash = customerMfaBindingHash('origin', requestOrigin(panelBindingReq));
+    const expectedUaHash = customerMfaBindingHash('ua', requestUserAgent(panelBindingReq));
     if (!mfaPayload
         || mfaPayload.type !== CUSTOMER_MFA_SESSION_TYPE
         || mfaPayload.method !== 'passkey'
@@ -20843,7 +20957,7 @@ async function diracPasskeyFinalizeDashboardCookieHandoffV239(req, res, owner, p
       domain: ''
     });
     const authenticatedReq = diracPasskeyCanonicalRequestFromSetCookiesV248(
-      req,
+      panelBindingReq,
       authCookies.concat([signedBootstrapCookie]),
       [ACCESS_COOKIE, REFRESH_COOKIE, DOMAIN_SIGNED_SESSION_COOKIE]
     );
@@ -20889,7 +21003,7 @@ async function diracPasskeyFinalizeDashboardCookieHandoffV239(req, res, owner, p
     const targetNameSet = new Set(targetNames);
     const legacyDomainClears = diracPasskeyLegacyDomainClearsV248(finalCookies);
 
-    const canonicalReq = diracPasskeyCanonicalRequestFromSetCookiesV248(req, finalCookies, targetNames);
+    const canonicalReq = diracPasskeyCanonicalRequestFromSetCookiesV248(panelBindingReq, finalCookies, targetNames);
     if (!canonicalReq) return fail('passkey_final_cookie_request_build_failed');
 
     const canonicalCookies = parseCookies(canonicalReq);
