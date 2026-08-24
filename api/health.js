@@ -17610,6 +17610,7 @@ function diracPasskeyPanelBindingRequestV308(req) {
     delete bindingHeaders.referrer;
     Object.freeze(bindingHeaders);
     const bindingReq = { headers: bindingHeaders };
+    parseCookies(bindingReq);
     Object.defineProperty(bindingReq, DIRAC_PASSKEY_PANEL_BINDING_SOURCE_V308, {
       value: req,
       enumerable: false,
