@@ -20882,7 +20882,7 @@ function diracPasskeyLegacyDomainClearsV248(finalCookies) {
     if (name.startsWith(ACCESS_COOKIE + '__') || name.startsWith(REFRESH_COOKIE + '__')) names.add(name);
   }
 
-  return getCompactCookieDomainsForSession()
+  return [diracBaseDomainV250()]
     .filter((domain) => Boolean(normalizeCookieDomain(domain)))
     .flatMap((domain) => Array.from(names).map((name) => makeCookie(name, '', { maxAge: 0, domain })));
 }
