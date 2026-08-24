@@ -78,7 +78,7 @@ function diracUniversalBrowserOriginsV250() {
     } catch (_) {}
   };
   for (const role of DIRAC_UNIVERSAL_APP_ROLES_V250) add(diracRoleOriginV250(role));
-  for (const item of ('api,panel,website,cs,' + String(process.env.DIRAC_OFFICIAL_SUBDOMAINS || '')).split(',')) {
+  for (const item of ('api,panel,website,cs,order,project,' + String(process.env.DIRAC_OFFICIAL_SUBDOMAINS || '')).split(',')) {
     const subdomain = String(item || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
     if (!subdomain) continue;
     if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(subdomain)) {
@@ -5034,8 +5034,7 @@ function clearCurrentRequestSessionCookiesV235(req, res) {
   ];
   const namesToClear = new Set(baseNames);
   if (typeof diracAppOriginScopedCookieNameV309 === 'function') {
-    namesToClear.add(diracAppOriginScopedCookieNameV309(CUSTOMER_MFA_COOKIE, 'parfum'));
-    namesToClear.add(diracAppOriginScopedCookieNameV309(diracCentralDeviceCookieNameV221(), 'parfum'));
+    for (const name of diracAppOriginScopedCookieNamesV310()) namesToClear.add(name);
   }
 
   baseNames.forEach((baseName) => {
@@ -13385,11 +13384,36 @@ function midtransSnapBaseUrl() {
   return midtransIsProduction() ? 'https://app.midtrans.com' : 'https://app.sandbox.midtrans.com';
 }
 
+function diracOrderPageUrlV310() {
+  return 'https://order.' + diracBaseDomainV250() + '/pesanan.html';
+}
+
+function diracProjectOriginV310() {
+  return 'https://project.' + diracBaseDomainV250();
+}
+
+function diracPaymentExactUrlV310(value, expected, code) {
+  const candidate = String(value || expected || '').trim();
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol === 'https:' && !parsed.username && !parsed.password
+        && !parsed.port && parsed.href === expected) return expected;
+  } catch (_) {}
+  const error = new Error(String(code || 'PAYMENT_URL_INVALID'));
+  error.code = String(code || 'PAYMENT_URL_INVALID');
+  error.statusCode = 503;
+  throw error;
+}
+
 function midtransNotificationUrl() {
   const explicit = String(process.env.MIDTRANS_NOTIFICATION_URL || process.env.PAYMENT_CALLBACK_URL || process.env.DOMAIN_PAYMENT_CALLBACK_URL || '').trim();
-  if (explicit) return explicit;
-  const site = String(process.env.DOMAIN_SITE_URL || process.env.SITE_URL || diracRoleOriginV250('pesanan')).trim().replace(/\/$/, '');
-  return site ? `${site}/api/health?action=midtrans_webhook` : '';
+  const expected = 'https://api.' + diracBaseDomainV250() + '/api/health?action=midtrans_webhook';
+  return diracPaymentExactUrlV310(explicit, expected, 'MIDTRANS_NOTIFICATION_URL_INVALID');
+}
+
+function midtransPaymentReturnUrlV310() {
+  const explicit = String(process.env.PAYMENT_RETURN_URL || process.env.DOMAIN_PAYMENT_RETURN_URL || '').trim();
+  return diracPaymentExactUrlV310(explicit, diracOrderPageUrlV310(), 'PAYMENT_RETURN_URL_INVALID');
 }
 
 function midtransBasicAuthHeader() {
@@ -13616,7 +13640,8 @@ async function midtransCreateSnapPayment(input) {
     return { ok: false, status: 503, message: 'Binding Midtrans tidak dapat dibuat.', error: 'midtrans_binding_unavailable' };
   }
 
-  const returnUrl = String(process.env.PAYMENT_RETURN_URL || process.env.DOMAIN_PAYMENT_RETURN_URL || process.env.DOMAIN_SITE_URL || (diracRoleOriginV250('pesanan') + '/pesanan.html')).trim();
+  const returnUrl = midtransPaymentReturnUrlV310();
+  const notificationUrl = midtransNotificationUrl();
   const payload = {
     transaction_details: {
       order_id: gatewayReference,
@@ -13668,7 +13693,7 @@ async function midtransCreateSnapPayment(input) {
           gross_amount: payload.transaction_details.gross_amount,
           enabled_payments: payload.enabled_payments || null,
           return_url: returnUrl,
-          notification_url: midtransNotificationUrl(),
+          notification_url: notificationUrl,
           snap_base_url: midtransSnapBaseUrl()
         }
       }
@@ -13690,7 +13715,7 @@ async function midtransCreateSnapPayment(input) {
           gross_amount: payload.transaction_details.gross_amount,
           enabled_payments: payload.enabled_payments || null,
           return_url: returnUrl,
-          notification_url: midtransNotificationUrl(),
+          notification_url: notificationUrl,
           snap_base_url: midtransSnapBaseUrl(),
           debug_patch: DIRAC_MIDTRANS_DEBUG_PATCH
         }
@@ -13714,7 +13739,7 @@ async function midtransCreateSnapPayment(input) {
         order_id: payload.transaction_details.order_id,
         gross_amount: payload.transaction_details.gross_amount,
         return_url: returnUrl,
-        notification_url: midtransNotificationUrl(),
+        notification_url: notificationUrl,
         snap_base_url: midtransSnapBaseUrl(),
         debug_patch: DIRAC_MIDTRANS_DEBUG_PATCH
       }
@@ -21007,10 +21032,7 @@ async function diracPasskeyFinalizeDashboardCookieHandoffV239(req, res, owner, p
       atomicDeviceChain.sessionCookie,
       atomicDeviceChain.credentialCookie
     ]);
-    const scopedTargetNames = [
-      diracAppOriginScopedCookieNameV309(CUSTOMER_MFA_COOKIE, 'parfum'),
-      diracAppOriginScopedCookieNameV309(deviceCredentialCookieName, 'parfum')
-    ];
+    const scopedTargetNames = diracAppOriginScopedCookieNamesV310();
     const scopedTargetClears = scopedTargetNames.map((name) => makeCookie(name, '', { maxAge: 0, domain: '' }));
     const targetNames = authTargetNames.concat([
       CUSTOMER_MFA_COOKIE,
@@ -22892,7 +22914,7 @@ async function orderMailNotifyNewOrderSafe(input) {
 }
 
 function orderMailCustomerEnabled() {
-  return orderMailEnvTrue(process.env.ORDER_CUSTOMER_EMAIL_ENABLED, false);
+  return orderMailEnvTrue(process.env.ORDER_CUSTOMER_EMAIL_ENABLED, true);
 }
 
 function orderMailOwnerEnabledLegacyV1() {
@@ -23061,7 +23083,7 @@ function orderMailBuildNewOrderMessages(data) {
     'Rincian:',
     itemsText,
     '',
-    'Lihat pesanan: ' + diracRoleOriginV250('pesanan') + '/pesanan.html',
+    'Lihat pesanan: ' + diracOrderPageUrlV310(),
     'Hubungi support: ' + diracSupportEmailV250(),
     'Butuh bantuan WhatsApp: https://wa.me/6287892523968',
     'Dirac Group'
@@ -23133,7 +23155,7 @@ function orderMailBuildNewOrderMessages(data) {
 }
 
 function orderMailAssetBaseUrl() {
-  return String(process.env.ORDER_EMAIL_ASSET_BASE_URL || process.env.DOMAIN_SITE_URL || process.env.SITE_URL || SITE_URL || diracRoleOriginV250('www')).trim().replace(/\/+$/, '');
+  return String(process.env.ORDER_EMAIL_ASSET_BASE_URL || process.env.DOMAIN_SITE_URL || process.env.SITE_URL || SITE_URL || diracProjectOriginV310()).trim().replace(/\/+$/, '');
 }
 function orderMailAssetUrl(value) {
   const raw = String(value || '').trim();
@@ -23150,15 +23172,15 @@ function orderMailDefaultProductImageUrl() {
 function orderMailOrderUrl(orderCode) {
   // EMAIL TEMPLATE ONLY: link "Lihat pesanan" wajib selalu ke halaman pesanan resmi.
   // Tidak memakai query, payment URL, localStorage, atau data frontend.
-  return diracRoleOriginV250('pesanan') + '/pesanan.html';
+  return diracOrderPageUrlV310();
 }
 function orderMailHtmlShell(title, body, options = {}) {
   const badge = orderMailEscapeHtml(options.badge || 'PAID');
   const total = orderMailEscapeHtml(options.total || '');
-  const orderUrl = diracRoleOriginV250('pesanan') + '/pesanan.html';
+  const orderUrl = diracOrderPageUrlV310();
   const supportEmail = diracSupportEmailV250();
   const whatsappUrl = 'https://wa.me/6287892523968';
-  const promoImage = diracRoleOriginV250('www') + '/email.webp';
+  const promoImage = diracProjectOriginV310() + '/email.webp';
   const showActions = options.showActions !== false;
   const showPromoImage = options.showPromoImage !== false;
   const actionsHtml = showActions ? `
@@ -44350,7 +44372,7 @@ async function diracCentralDeviceCredentialGuardV221(req, res, ctx) {
   const requestRole = typeof diracAppOriginRequestRoleV309 === 'function'
     ? diracAppOriginRequestRoleV309(req)
     : '';
-  if (requestRole === 'parfum') {
+  if (diracAppOriginIsScopedRoleV310(requestRole)) {
     const signedSet = diracPasskeyRoundtripCandidatesV243(cookies, DOMAIN_SIGNED_SESSION_COOKIE);
     if (signedSet.rawCount !== 1 || signedSet.values.length !== 1) {
       return { ok: false, reason: 'device_credential_signed_session_cookie_ambiguous' };
@@ -44429,8 +44451,7 @@ try {
       appendSetCookie(res, [
         created.cookie,
         makeCookie(diracCentralDeviceCookieNameV221(), '', { maxAge: 0, domain: '' }),
-        makeCookie(diracAppOriginScopedCookieNameV309(CUSTOMER_MFA_COOKIE, 'parfum'), '', { maxAge: 0, domain: '' }),
-        makeCookie(diracAppOriginScopedCookieNameV309(diracCentralDeviceCookieNameV221(), 'parfum'), '', { maxAge: 0, domain: '' })
+        ...diracAppOriginScopedCookieNamesV310().map((name) => makeCookie(name, '', { maxAge: 0, domain: '' }))
       ]);
       return true;
     };
@@ -44448,10 +44469,7 @@ try {
         makeCookie(diracCentralDeviceCookieNameV221(), '', { maxAge: 0, domain: '' })
       ];
       if (typeof diracAppOriginScopedCookieNameV309 === 'function') {
-        expiredCookies.push(
-          makeCookie(diracAppOriginScopedCookieNameV309(CUSTOMER_MFA_COOKIE, 'parfum'), '', { maxAge: 0, domain: '' }),
-          makeCookie(diracAppOriginScopedCookieNameV309(diracCentralDeviceCookieNameV221(), 'parfum'), '', { maxAge: 0, domain: '' })
-        );
+        expiredCookies.push(...diracAppOriginScopedCookieNamesV310().map((name) => makeCookie(name, '', { maxAge: 0, domain: '' })));
       }
       appendSetCookie(res, expiredCookies);
     };
@@ -52678,7 +52696,33 @@ function diracSessionHandoffBuildLocalCookiesV250(req, user, customerId, securit
 }
 
 
-const DIRAC_APP_ORIGIN_HANDOFF_V309 = 'dirac-app-origin-handoff-v309';
+const DIRAC_APP_ORIGIN_HANDOFF_V310 = 'dirac-app-origin-handoff-v310';
+const DIRAC_APP_ORIGIN_COOKIE_SUFFIX_V310 = Object.freeze({
+  parfum: '__parfum_v309',
+  pesanan: '__pesanan_v310',
+  security: '__security_v310'
+});
+
+function diracAppOriginIsScopedRoleV310(role) {
+  return Object.prototype.hasOwnProperty.call(
+    DIRAC_APP_ORIGIN_COOKIE_SUFFIX_V310,
+    String(role || '').trim().toLowerCase()
+  );
+}
+
+function diracAppOriginScopedCookieNamesV310(role = '') {
+  const cleanRole = String(role || '').trim().toLowerCase();
+  const roles = cleanRole ? [cleanRole] : Object.keys(DIRAC_APP_ORIGIN_COOKIE_SUFFIX_V310);
+  const names = [];
+  for (const targetRole of roles) {
+    if (!diracAppOriginIsScopedRoleV310(targetRole)) continue;
+    names.push(
+      diracAppOriginScopedCookieNameV309(CUSTOMER_MFA_COOKIE, targetRole),
+      diracAppOriginScopedCookieNameV309(diracCentralDeviceCookieNameV221(), targetRole)
+    );
+  }
+  return names;
+}
 
 function diracAppOriginRequestRoleV309(req) {
   try {
@@ -52696,7 +52740,8 @@ function diracAppOriginScopedCookieNameV309(baseName, role) {
   const name = String(baseName || '').trim();
   const cleanRole = String(role || '').trim().toLowerCase();
   if (!name) return '';
-  return cleanRole === 'parfum' ? name + '__parfum_v309' : name;
+  const suffix = DIRAC_APP_ORIGIN_COOKIE_SUFFIX_V310[cleanRole];
+  return suffix ? name + suffix : name;
 }
 
 function diracAppOriginDescriptorV309(role) {
@@ -52707,6 +52752,12 @@ function diracAppOriginDescriptorV309(role) {
   }
   if (cleanRole === 'parfum') {
     return Object.freeze({ role: cleanRole, origin: 'https://' + baseDomain, path: '/parfum.html' });
+  }
+  if (cleanRole === 'pesanan') {
+    return Object.freeze({ role: cleanRole, origin: 'https://order.' + baseDomain, path: '/pesanan.html' });
+  }
+  if (cleanRole === 'security') {
+    return Object.freeze({ role: cleanRole, origin: 'https://security.' + baseDomain, path: '/keamanan.html' });
   }
   return null;
 }
@@ -52780,13 +52831,10 @@ function diracAppOriginRetargetDeviceV309(sourcePayload, targetReq) {
   return Object.freeze({ payload: Object.freeze(payload), token: encoded + '.' + signature });
 }
 
-async function diracAppOriginHandoffBlockV309(req, res, ctx, reason) {
+async function diracAppOriginHandoffBlockV309(req, res, ctx, reason, targetRole = '') {
   const cleanReason = String(reason || 'app_origin_handoff_failed').slice(0, 100);
   try {
-    const targetNames = new Set([
-      diracAppOriginScopedCookieNameV309(CUSTOMER_MFA_COOKIE, 'parfum'),
-      diracAppOriginScopedCookieNameV309(diracCentralDeviceCookieNameV221(), 'parfum')
-    ]);
+    const targetNames = new Set(diracAppOriginScopedCookieNamesV310(targetRole));
     const current = typeof res.getHeader === 'function' ? res.getHeader('Set-Cookie') : null;
     const rows = Array.isArray(current) ? current.map(String) : current ? [String(current)] : [];
     res.setHeader('Set-Cookie', rows.filter((row) => {
@@ -52812,12 +52860,15 @@ async function diracAppOriginHandoffBlockV309(req, res, ctx, reason) {
 }
 
 async function diracAppOriginHandoffV309(req, res, ctx) {
-  const fail = (reason) => diracAppOriginHandoffBlockV309(req, res, ctx, reason);
+  const sourceRole = 'dashboard';
+  const targetRole = String(ctx && ctx.body && ctx.body.target_role || '').trim().toLowerCase();
+  const targetDescriptor = diracAppOriginDescriptorV309(targetRole);
+  const fail = (reason) => diracAppOriginHandoffBlockV309(req, res, ctx, reason, targetRole);
   try {
     if (!ctx || ctx.req !== req || ctx.action !== 'customer_session_handoff_issue'
         || ctx.method !== 'POST' || !diracCentralHandlerContextFullyPassedV211(ctx, req)
-        || !diracAppOriginExactSourceV309(req, 'dashboard')
-        || String(ctx.body && ctx.body.target_role || '').trim().toLowerCase() !== 'parfum') {
+        || !diracAppOriginExactSourceV309(req, sourceRole)
+        || !targetDescriptor || !diracAppOriginIsScopedRoleV310(targetRole)) {
       return fail('app_origin_handoff_exact_source_or_target_invalid');
     }
 
@@ -52842,8 +52893,8 @@ async function diracAppOriginHandoffV309(req, res, ctx) {
     }
 
     const cookies = parseCookies(req);
-    const sourceMfaName = diracAppOriginScopedCookieNameV309(CUSTOMER_MFA_COOKIE, 'dashboard');
-    const sourceDeviceName = diracAppOriginScopedCookieNameV309(diracCentralDeviceCookieNameV221(), 'dashboard');
+    const sourceMfaName = diracAppOriginScopedCookieNameV309(CUSTOMER_MFA_COOKIE, sourceRole);
+    const sourceDeviceName = diracAppOriginScopedCookieNameV309(diracCentralDeviceCookieNameV221(), sourceRole);
     const deviceSessionName = diracCentralDeviceSessionCookieNameV223();
     const signedSet = diracPasskeyRoundtripCandidatesV243(cookies, DOMAIN_SIGNED_SESSION_COOKIE);
     const sourceMfaSet = diracPasskeyRoundtripCandidatesV243(cookies, sourceMfaName);
@@ -52890,7 +52941,7 @@ async function diracAppOriginHandoffV309(req, res, ctx) {
       return fail('app_origin_handoff_source_chain_invalid');
     }
 
-    const targetReq = diracAppOriginTargetRequestV309(req, 'parfum');
+    const targetReq = diracAppOriginTargetRequestV309(req, targetRole);
     const targetMfa = targetReq ? diracAppOriginRetargetMfaV309(sourceMfaPayload, targetReq) : null;
     const targetDevice = targetReq ? diracAppOriginRetargetDeviceV309(sourceDevice.payload, targetReq) : null;
     if (!targetReq || !targetMfa || !targetDevice
@@ -52901,8 +52952,8 @@ async function diracAppOriginHandoffV309(req, res, ctx) {
       return fail('app_origin_handoff_target_issue_invalid');
     }
 
-    const targetMfaName = diracAppOriginScopedCookieNameV309(CUSTOMER_MFA_COOKIE, 'parfum');
-    const targetDeviceName = diracAppOriginScopedCookieNameV309(diracCentralDeviceCookieNameV221(), 'parfum');
+    const targetMfaName = diracAppOriginScopedCookieNameV309(CUSTOMER_MFA_COOKIE, targetRole);
+    const targetDeviceName = diracAppOriginScopedCookieNameV309(diracCentralDeviceCookieNameV221(), targetRole);
     const chainExpiresAtMs = Math.min(
       Number(targetMfa.payload.expiresAtMs),
       Number(targetDevice.payload.exp),
@@ -52977,8 +53028,8 @@ async function diracAppOriginHandoffV309(req, res, ctx) {
     }
 
     diracCentralEmitDebugV211(ctx, 'app_origin_handoff_ready', {
-      source_role: 'dashboard',
-      target_role: 'parfum',
+      source_role: sourceRole,
+      target_role: targetRole,
       signed_session_unchanged: true,
       device_session_unchanged: true,
       target_cookie_count: 2
@@ -52987,9 +53038,9 @@ async function diracAppOriginHandoffV309(req, res, ctx) {
     return res.status(200).json({
       ok: true,
       ready: true,
-      patch: DIRAC_APP_ORIGIN_HANDOFF_V309,
-      target_role: 'parfum',
-      redirect_url: diracAppOriginDescriptorV309('parfum').origin + '/parfum.html'
+      patch: DIRAC_APP_ORIGIN_HANDOFF_V310,
+      target_role: targetRole,
+      redirect_url: targetDescriptor.origin + targetDescriptor.path
     });
   } catch (_) {
     return fail('app_origin_handoff_exception');
@@ -52999,8 +53050,7 @@ async function diracAppOriginHandoffV309(req, res, ctx) {
 
 
 async function diracSessionHandoffIssueV250(req, res, ctx) {
-  if (diracAppOriginRequestRoleV309(req) === 'dashboard'
-      && String(ctx && ctx.body && ctx.body.target_role || '').trim().toLowerCase() === 'parfum') {
+  if (diracAppOriginRequestRoleV309(req) === 'dashboard') {
     return diracAppOriginHandoffV309(req, res, ctx);
   }
   if (diracAppRoleV250() !== 'auth') return res.status(404).json({ ok: false, code: 'HANDOFF_ROLE_INVALID' });
@@ -53229,6 +53279,10 @@ __diracV202RegisterMiddleware(async function diracSessionHandoffV250Wrapper(req,
   }
   if (!ctx || !diracCentralHandlerContextFullyPassedV211(ctx, req)) {
     return res.status(403).json({ ok: false, code: 'HANDOFF_FULL_CENTRAL_GUARD_REQUIRED' });
+  }
+  if (req.method === 'OPTIONS') {
+    const cors = setCors(req, res, { isDomainAction: true });
+    return res.status(cors.allowed ? 200 : 403).end();
   }
   if (action === 'customer_session_handoff_issue') return diracSessionHandoffIssueV250(req, res, ctx);
   if (action === 'dirac_session_handoff_prepare') return diracSessionHandoffPrepareV250(req, res, ctx);
