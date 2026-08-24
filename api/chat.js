@@ -1,6 +1,7 @@
 'use strict';
 
 process.env.VERCEL_URL = 'api.diracgroup.store';
+process.env.DIRAC_SERVICE_ROLE_EXTRA_TABLES = Array.from(new Set([...String(process.env.DIRAC_SERVICE_ROLE_EXTRA_TABLES || '').split(',').map((value) => value.trim()).filter(Boolean), 'passkey_sync_outbox'])).join(',');
 
 const path = require('path');
 const __diracArgon2BundleAnchorV1 = require('argon2');
