@@ -17993,6 +17993,7 @@ function diracDashboardStaleBindingPreflightV312(req, res) {
       });
     }
     if (binding.state !== 'stale_auth_origin') {
+      diracCsrfAppendCsvHeader(res, 'Access-Control-Expose-Headers', 'X-Dirac-Dashboard-Binding-Code');
       res.setHeader('X-Dirac-Dashboard-Binding-Code', 'DASHBOARD_BINDING_PREFLIGHT_READY');
       return res.status(200).json({
         ok: true,
