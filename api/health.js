@@ -53177,38 +53177,35 @@ async function diracAppOriginHandoffIssueV313(req, res, access, targetRole) {
       || Number(access.mfa.securityEpoch || 0) !== Number(securityEpoch)) {
     return res.status(409).json({ ok: false, code: 'HANDOFF_SECURITY_EPOCH_INVALID' });
   }
-  const authMaterial = diracSessionHandoffExtractSourceAuthMaterialV250(
-    req,
-    access.user,
-    sourceSession.sessionId,
-    securityEpoch
-  );
-  if (!authMaterial) return res.status(401).json({ ok: false, code: 'HANDOFF_SOURCE_AUTH_MATERIAL_INVALID' });
+  const sourceSignedCandidates = readCookieTokenCandidates(
+    parseCookies(req),
+    DOMAIN_SIGNED_SESSION_COOKIE
+  ).slice(0, 4);
+  const sourceSignedAnchor = sourceSignedCandidates.length === 1
+    ? customerSecurityDecodeSignedSessionAnchorV228(sourceSignedCandidates[0])
+    : null;
+  const sourceEmail = normalizeAuthEmail(access.user && access.user.email || '');
+  if (!sourceSignedAnchor
+      || sourceSignedAnchor.userId !== String(access.authUserId)
+      || sourceSignedAnchor.email !== sourceEmail
+      || sourceSignedAnchor.sessionId !== String(sourceSession.sessionId)
+      || Number(sourceSignedAnchor.securityEpoch || 0) !== Number(securityEpoch)
+      || !safeEqual(String(sourceSignedAnchor.binding || ''), String(access.mfa.sessionHash || ''))) {
+    return res.status(401).json({ ok: false, code: 'HANDOFF_SOURCE_SIGNED_SESSION_INVALID' });
+  }
   const sourceSessionBound = await diracSessionHandoffValidateSourceSessionV250(
     access.customerId,
     sourceSession.sessionId,
-    securityEpoch,
-    authMaterial.sessionTokenHash
+    securityEpoch
   );
   if (!sourceSessionBound) return res.status(401).json({ ok: false, code: 'HANDOFF_SOURCE_AUTH_SESSION_BINDING_INVALID' });
 
-  const currentStatePayload = {
-    auth_user_id: String(access.authUserId),
-    customer_id: String(access.customerId),
-    email: normalizeAuthEmail(access.user && access.user.email || ''),
-    source_session_id: String(sourceSession.sessionId),
-    security_epoch: Number(securityEpoch),
-    source_access_token: authMaterial.accessToken,
-    source_refresh_token: authMaterial.refreshToken,
-    source_signed_session: authMaterial.signedSession
-  };
   const authLinkOk = await diracSessionHandoffValidateAuthLinkV250(
-    currentStatePayload.auth_user_id,
-    currentStatePayload.customer_id,
-    currentStatePayload.email
+    String(access.authUserId),
+    String(access.customerId),
+    sourceEmail
   );
-  const transferredAuth = await diracSessionHandoffVerifyTransferredAuthV250(currentStatePayload);
-  if (!authLinkOk || !transferredAuth || transferredAuth.ok !== true) {
+  if (!authLinkOk) {
     return res.status(403).json({ ok: false, code: 'HANDOFF_SOURCE_STATE_INVALID' });
   }
 
