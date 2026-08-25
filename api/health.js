@@ -52944,6 +52944,85 @@ function diracAppOriginHandoffExactPanelSourceV313(req) {
   }
 }
 
+const DIRAC_APP_ORIGIN_HANDOFF_DEVICE_CONSISTENCY_V317 = 'dirac-app-origin-handoff-device-consistency-v317';
+
+function diracAppOriginHandoffDeviceConsistencyHashV317(req) {
+  try {
+    const headers = req && req.headers || {};
+    const stableOrigin = diracCentralNormalizeOriginV146(
+      headers.origin || headers.referer || headers.referrer || ''
+    );
+    const hash = diracCentralHashV146([
+      headers['user-agent'],
+      stableOrigin,
+      headers['sec-ch-ua'],
+      headers['sec-ch-ua-platform'],
+      headers['accept-language']
+    ].map((value) => String(value || '').slice(0, 160)).join('|'));
+    return /^[a-f0-9]{64}$/.test(String(hash || '')) ? String(hash) : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function diracAppOriginHandoffPrepareDeviceConsistencyV317(sourceReq, destinationReq) {
+  try {
+    const sourceSessionKey = String(diracCentralRequestSessionHashV146(sourceReq) || '');
+    const destinationSessionKey = String(diracCentralRequestSessionHashV146(destinationReq) || '');
+    const sourceHash = diracAppOriginHandoffDeviceConsistencyHashV317(sourceReq);
+    const destinationHash = diracAppOriginHandoffDeviceConsistencyHashV317(destinationReq);
+    const current = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sourceSessionKey);
+    const until = Number(current && current.until || 0);
+    if (!/^[a-f0-9]{64}$/.test(sourceSessionKey)
+        || !safeEqual(sourceSessionKey, destinationSessionKey)
+        || !sourceHash || !destinationHash || safeEqual(sourceHash, destinationHash)
+        || !current || until <= Date.now()
+        || !safeEqual(String(current.hash || ''), sourceHash)) return null;
+    return Object.freeze({
+      patch: DIRAC_APP_ORIGIN_HANDOFF_DEVICE_CONSISTENCY_V317,
+      sessionKey: sourceSessionKey,
+      sourceHash,
+      destinationHash,
+      until
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+function diracAppOriginHandoffCommitDeviceConsistencyV317(transition) {
+  try {
+    const sessionKey = String(transition && transition.sessionKey || '');
+    const sourceHash = String(transition && transition.sourceHash || '');
+    const destinationHash = String(transition && transition.destinationHash || '');
+    const until = Number(transition && transition.until || 0);
+    if (!transition || transition.patch !== DIRAC_APP_ORIGIN_HANDOFF_DEVICE_CONSISTENCY_V317
+        || !/^[a-f0-9]{64}$/.test(sessionKey)
+        || !/^[a-f0-9]{64}$/.test(sourceHash)
+        || !/^[a-f0-9]{64}$/.test(destinationHash)
+        || safeEqual(sourceHash, destinationHash)
+        || !Number.isSafeInteger(until) || until <= Date.now()) return false;
+
+    const current = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sessionKey);
+    if (!current || Number(current.until || 0) !== until
+        || !safeEqual(String(current.hash || ''), sourceHash)) return false;
+
+    DIRAC_CENTRAL_DEVICE_BINDINGS_V146.set(sessionKey, {
+      hash: destinationHash,
+      until
+    });
+    const committed = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sessionKey);
+    if (!committed || Number(committed.until || 0) !== until
+        || !safeEqual(String(committed.hash || ''), destinationHash)) {
+      DIRAC_CENTRAL_DEVICE_BINDINGS_V146.set(sessionKey, current);
+      return false;
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function diracAppOriginHandoffRotateProofsV313(req, res, access, target, securityEpoch) {
   const fail = (reason) => Object.freeze({
     ok: false,
@@ -53098,6 +53177,14 @@ function diracAppOriginHandoffRotateProofsV313(req, res, access, target, securit
       return fail('app_origin_handoff_postcondition_failed');
     }
 
+    const deviceConsistencyTransition = diracAppOriginHandoffPrepareDeviceConsistencyV317(
+      req,
+      destinationReq
+    );
+    if (!deviceConsistencyTransition) {
+      return fail('app_origin_handoff_device_consistency_precondition_failed');
+    }
+
     const mfaMaxAgeSeconds = Math.min(
       60 * 60,
       Math.floor((Number(sourceMfaPayload.expiresAtMs || 0) - Date.now()) / 1000)
@@ -53152,7 +53239,9 @@ function diracAppOriginHandoffRotateProofsV313(req, res, access, target, securit
       destinationOrigin: target.origin,
       expiresAtMs: Number(sourceMfaPayload.expiresAtMs),
       mfaRotated: true,
-      deviceCredentialRotated: true
+      deviceCredentialRotated: true,
+      deviceConsistencyTransition,
+      previousCookies: Object.freeze(previousCookies.slice())
     });
   } catch (_) {
     return fail('app_origin_handoff_exception');
@@ -53239,6 +53328,25 @@ async function diracAppOriginHandoffIssueV313(req, res, access, targetRole) {
     }
   } catch (_) {
     return res.status(503).json({ ok: false, code: 'HANDOFF_RESPONSE_PROOF_PUBLICATION_FAILED' });
+  }
+
+  if (!diracAppOriginHandoffCommitDeviceConsistencyV317(rotation.deviceConsistencyTransition)) {
+    try {
+      const previousCookies = Array.isArray(rotation.previousCookies)
+        ? rotation.previousCookies.map(String)
+        : [];
+      if (previousCookies.length) res.setHeader('Set-Cookie', previousCookies);
+      else if (typeof res.removeHeader === 'function') res.removeHeader('Set-Cookie');
+      else res.setHeader('Set-Cookie', []);
+    } catch (_) { void 0; }
+    try {
+      console.error('[dirac-app-origin-handoff-v317]', JSON.stringify({
+        patch: DIRAC_APP_ORIGIN_HANDOFF_DEVICE_CONSISTENCY_V317,
+        event: 'device_consistency_transition_failed',
+        target_role: target.role
+      }));
+    } catch (_) { void 0; }
+    return res.status(503).json({ ok: false, code: 'HANDOFF_DEVICE_CONSISTENCY_TRANSITION_FAILED' });
   }
 
   return res.status(200).json({
