@@ -52897,6 +52897,7 @@ function diracSessionHandoffBuildLocalCookiesV250(req, user, customerId, securit
 
 
 const DIRAC_APP_ORIGIN_HANDOFF_V313 = 'dirac-app-origin-handoff-v310';
+const DIRAC_APP_ORIGIN_HANDOFF_RESPONSE_PROOF_V316 = 'dirac-app-origin-handoff-response-proof-v316';
 const DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313 = Object.freeze(new Set(['parfum', 'pesanan', 'security']));
 
 function diracAppOriginHandoffTargetV313(targetRole) {
@@ -53220,6 +53221,24 @@ async function diracAppOriginHandoffIssueV313(req, res, access, targetRole) {
       }));
     } catch (_) { void 0; }
     return res.status(503).json({ ok: false, code: 'HANDOFF_ORIGIN_PROOF_ROTATION_FAILED' });
+  }
+
+  try {
+    diracCsrfAppendCsvHeader(res, 'Access-Control-Expose-Headers', [
+      'X-Dirac-App-Handoff-Proof',
+      'X-Dirac-App-Handoff-Role',
+      'X-Dirac-App-Handoff-Target'
+    ]);
+    res.setHeader('X-Dirac-App-Handoff-Proof', DIRAC_APP_ORIGIN_HANDOFF_RESPONSE_PROOF_V316);
+    res.setHeader('X-Dirac-App-Handoff-Role', target.role);
+    res.setHeader('X-Dirac-App-Handoff-Target', target.redirectUrl);
+    if (String(res.getHeader('X-Dirac-App-Handoff-Proof') || '') !== DIRAC_APP_ORIGIN_HANDOFF_RESPONSE_PROOF_V316
+        || String(res.getHeader('X-Dirac-App-Handoff-Role') || '') !== target.role
+        || String(res.getHeader('X-Dirac-App-Handoff-Target') || '') !== target.redirectUrl) {
+      return res.status(503).json({ ok: false, code: 'HANDOFF_RESPONSE_PROOF_PUBLICATION_FAILED' });
+    }
+  } catch (_) {
+    return res.status(503).json({ ok: false, code: 'HANDOFF_RESPONSE_PROOF_PUBLICATION_FAILED' });
   }
 
   return res.status(200).json({
