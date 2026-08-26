@@ -130,7 +130,10 @@ function securityHeaders(req, res, action) {
   setHeader(res, 'Referrer-Policy', 'no-referrer');
   setHeader(res, 'Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()');
   setHeader(res, 'Cross-Origin-Opener-Policy', 'same-origin');
-  setHeader(res, 'Cross-Origin-Resource-Policy', 'same-origin');
+  // The supported split deployment keeps the static frontend and this API on
+  // HTTPS sibling subdomains. CORS still restricts access to the exact origin
+  // allowlist; CORP additionally prevents use from unrelated sites.
+  setHeader(res, 'Cross-Origin-Resource-Policy', 'same-site');
   if (isProduction()) setHeader(res, 'Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
   if (action !== 'status_bootstrap') setHeader(res, 'Cache-Control', 'no-store, private, max-age=0');
 }
@@ -225,7 +228,8 @@ function verifyAuthenticatedReadOrigin(req) {
   const origin = requestOrigin(req);
   const fetchSite = String(req.headers && req.headers['sec-fetch-site'] || '').toLowerCase();
   if (origin && !allowedOrigins().has(origin)) throw new PublicError(403, 'ORIGIN_NOT_ALLOWED', 'Origin permintaan tidak diizinkan.');
-  if (fetchSite && !['same-origin', 'none'].includes(fetchSite)) throw new PublicError(403, 'FETCH_SITE_REJECTED', 'Pembacaan sesi hanya diizinkan dari origin aplikasi yang sama.');
+  if (fetchSite && !['same-origin', 'same-site', 'none'].includes(fetchSite)) throw new PublicError(403, 'FETCH_SITE_REJECTED', 'Pembacaan sesi hanya diizinkan dari situs aplikasi yang sama.');
+  if (fetchSite === 'same-site' && !origin) throw new PublicError(403, 'REQUEST_CONTEXT_REQUIRED', 'Origin wajib tersedia untuk pembacaan sesi lintas subdomain.');
   if (!origin && !fetchSite) throw new PublicError(403, 'REQUEST_CONTEXT_REQUIRED', 'Konteks origin permintaan tidak tersedia.');
 }
 
