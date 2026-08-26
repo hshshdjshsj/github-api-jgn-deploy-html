@@ -42840,7 +42840,7 @@ function guardWhitelistV202(ctx) {
 }
 function guardDeploymentRoleV202(ctx) {
   if (ctx.terminalResponse === 'disabled') return diracV202StageResult(true, { decision: 'not_applicable_by_policy' });
-  const result = diracCentralVercel2OnlyActionGuardV150(ctx.action);
+  const result = diracCentralVercel2OnlyActionGuardV150(ctx.action, ctx.req);
   return result.ok ? diracV202StageResult(true) : diracV202StageResult(false, { reason: result.reason });
 }
 function guardEnvironmentPartitionV202(ctx) {
@@ -47162,7 +47162,7 @@ function diracCentralClassifyActionV146(action) {
   return 'browser';
 }
 
-function diracCentralVercel2OnlyActionGuardV150(action) {
+function diracCentralVercel2OnlyActionGuardV150(action, req) {
   const clean = String(action || '').trim().toLowerCase();
   if (!clean) return { ok: false, reason: 'deployment_role_action_empty' };
   const role = diracAppRoleV250();
@@ -47207,6 +47207,30 @@ function diracCentralVercel2OnlyActionGuardV150(action) {
     'customer_shipments', 'pengiriman_saya'
   ]);
   const www = new Set(['hostinger_check', 'domain_check']);
+
+  if (role === 'auth' && (clean === 'my_orders' || clean === 'create_payment')) {
+    try {
+      const expectedOrigin = ('https://order.' + diracBaseDomainV250()).toLowerCase();
+      const headers = req && req.headers || {};
+      const origin = String(headers.origin || '').trim().toLowerCase();
+      const method = String(req && req.method || '').trim().toUpperCase();
+      if (origin !== expectedOrigin) return { ok: false, reason: 'order_gateway_origin_invalid' };
+      if (method === 'OPTIONS') return { ok: true };
+      if ((clean === 'my_orders' && method !== 'GET')
+          || (clean === 'create_payment' && method !== 'POST')) {
+        return { ok: false, reason: 'order_gateway_method_invalid' };
+      }
+      const referer = new URL(String(headers.referer || headers.referrer || '').trim());
+      if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
+          || referer.origin.toLowerCase() !== expectedOrigin || referer.pathname !== '/'
+          || referer.search || referer.hash) {
+        return { ok: false, reason: 'order_gateway_referer_invalid' };
+      }
+      return { ok: true };
+    } catch (_) {
+      return { ok: false, reason: 'order_gateway_context_invalid' };
+    }
+  }
 
   if (role === 'auth' && auth.has(clean)) return { ok: true };
   if (role === 'dashboard' && dashboard.has(clean)) return { ok: true };
