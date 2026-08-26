@@ -78,7 +78,7 @@ function diracUniversalBrowserOriginsV250() {
     } catch (_) {}
   };
   for (const role of DIRAC_UNIVERSAL_APP_ROLES_V250) add(diracRoleOriginV250(role));
-  for (const item of ('api,panel,website,cs,' + String(process.env.DIRAC_OFFICIAL_SUBDOMAINS || '')).split(',')) {
+  for (const item of ('api,panel,website,cs,order,' + String(process.env.DIRAC_OFFICIAL_SUBDOMAINS || '')).split(',')) {
     const subdomain = String(item || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
     if (!subdomain) continue;
     if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(subdomain)) {
@@ -53515,7 +53515,20 @@ async function diracAppOriginHandoffIssueV313(req, res, access, targetRole) {
     return res.status(401).json({ ok: false, code: 'HANDOFF_SOURCE_SESSION_INVALID' });
   }
   const sourceSession = Object.freeze({ ok: true, sessionId: sourceSessionProof.sessionId });
-  const securityEpoch = await diracPasskeyA2FReadSecurityEpoch({ customerId: access.customerId }).catch(() => 0);
+  const requestedSecurityEpoch = Number(access.mfa.securityEpoch || 0);
+  const sourceEmail = normalizeAuthEmail(access.user && access.user.email || '');
+  const securityEpochPromise = diracPasskeyA2FReadSecurityEpoch({ customerId: access.customerId }).catch(() => 0);
+  const sourceSessionBoundPromise = diracSessionHandoffValidateSourceSessionV250(
+    access.customerId,
+    sourceSession.sessionId,
+    requestedSecurityEpoch
+  );
+  const authLinkOkPromise = diracSessionHandoffValidateAuthLinkV250(
+    String(access.authUserId),
+    String(access.customerId),
+    sourceEmail
+  );
+  const securityEpoch = await securityEpochPromise;
   if (!Number.isSafeInteger(Number(securityEpoch)) || Number(securityEpoch) < 1
       || Number(access.mfa.securityEpoch || 0) !== Number(securityEpoch)) {
     return res.status(409).json({ ok: false, code: 'HANDOFF_SECURITY_EPOCH_INVALID' });
@@ -53527,7 +53540,6 @@ async function diracAppOriginHandoffIssueV313(req, res, access, targetRole) {
   const sourceSignedAnchor = sourceSignedCandidates.length === 1
     ? customerSecurityDecodeSignedSessionAnchorV228(sourceSignedCandidates[0])
     : null;
-  const sourceEmail = normalizeAuthEmail(access.user && access.user.email || '');
   if (!sourceSignedAnchor
       || sourceSignedAnchor.userId !== String(access.authUserId)
       || sourceSignedAnchor.email !== sourceEmail
@@ -53536,18 +53548,11 @@ async function diracAppOriginHandoffIssueV313(req, res, access, targetRole) {
       || !safeEqual(String(sourceSignedAnchor.binding || ''), String(access.mfa.sessionHash || ''))) {
     return res.status(401).json({ ok: false, code: 'HANDOFF_SOURCE_SIGNED_SESSION_INVALID' });
   }
-  const sourceSessionBound = await diracSessionHandoffValidateSourceSessionV250(
-    access.customerId,
-    sourceSession.sessionId,
-    securityEpoch
-  );
+  const [sourceSessionBound, authLinkOk] = await Promise.all([
+    sourceSessionBoundPromise,
+    authLinkOkPromise
+  ]);
   if (!sourceSessionBound) return res.status(401).json({ ok: false, code: 'HANDOFF_SOURCE_AUTH_SESSION_BINDING_INVALID' });
-
-  const authLinkOk = await diracSessionHandoffValidateAuthLinkV250(
-    String(access.authUserId),
-    String(access.customerId),
-    sourceEmail
-  );
   if (!authLinkOk) {
     return res.status(403).json({ ok: false, code: 'HANDOFF_SOURCE_STATE_INVALID' });
   }
