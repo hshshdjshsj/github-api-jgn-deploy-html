@@ -47208,6 +47208,27 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
   ]);
   const www = new Set(['hostinger_check', 'domain_check']);
 
+  if (role === 'auth' && clean === 'checkout_order') {
+    try {
+      const expectedOrigin = diracBaseOriginV250().toLowerCase();
+      const headers = req && req.headers || {};
+      const origin = String(headers.origin || '').trim().toLowerCase();
+      const method = String(req && req.method || '').trim().toUpperCase();
+      if (origin !== expectedOrigin) return { ok: false, reason: 'shop_checkout_gateway_origin_invalid' };
+      if (method === 'OPTIONS') return { ok: true };
+      if (method !== 'POST') return { ok: false, reason: 'shop_checkout_gateway_method_invalid' };
+      const referer = new URL(String(headers.referer || headers.referrer || '').trim());
+      if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
+          || referer.origin.toLowerCase() !== expectedOrigin || referer.pathname !== '/parfum.html'
+          || referer.search || referer.hash) {
+        return { ok: false, reason: 'shop_checkout_gateway_referer_invalid' };
+      }
+      return { ok: true };
+    } catch (_) {
+      return { ok: false, reason: 'shop_checkout_gateway_context_invalid' };
+    }
+  }
+
   if (role === 'auth' && (clean === 'my_orders' || clean === 'create_payment')) {
     try {
       const expectedOrigin = ('https://order.' + diracBaseDomainV250()).toLowerCase();
@@ -47222,7 +47243,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
       }
       const referer = new URL(String(headers.referer || headers.referrer || '').trim());
       if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
-          || referer.origin.toLowerCase() !== expectedOrigin || referer.pathname !== '/'
+          || referer.origin.toLowerCase() !== expectedOrigin || referer.pathname !== '/pesanan.html'
           || referer.search || referer.hash) {
         return { ok: false, reason: 'order_gateway_referer_invalid' };
       }
@@ -50351,7 +50372,8 @@ async function diracCentralResolveHostIpsV146(host) {
     }
   };
   try {
-    await Promise.race([walk(cleanHost, 0), new Promise((_, reject) => setTimeout(() => reject(new Error('DIRAC_DNS_TIMEOUT')), 2500))]);
+    const resolutionTimeoutMs = cleanHost === diracRoleHostnameV250('recovery') ? 10000 : 2500;
+    await Promise.race([walk(cleanHost, 0), new Promise((_, reject) => setTimeout(() => reject(new Error('DIRAC_DNS_TIMEOUT')), resolutionTimeoutMs))]);
     const result = Array.from(ips).slice(0, 32);
     DIRAC_CENTRAL_DNS_CACHE_V146.set(cleanHost, { until: Date.now() + 30 * 1000, ips: result });
     diracCentralCleanupMapV146(DIRAC_CENTRAL_DNS_CACHE_V146, 2000, 1000);
@@ -53159,7 +53181,7 @@ function diracSessionHandoffBuildLocalCookiesV250(req, user, customerId, securit
 
 const DIRAC_APP_ORIGIN_HANDOFF_V313 = 'dirac-app-origin-handoff-v310';
 const DIRAC_APP_ORIGIN_HANDOFF_RESPONSE_PROOF_V316 = 'dirac-app-origin-handoff-response-proof-v316';
-const DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313 = Object.freeze(new Set(['parfum', 'pesanan', 'security']));
+const DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313 = Object.freeze(new Set(['panel', 'parfum', 'pesanan', 'security']));
 const DIRAC_APP_ORIGIN_HANDOFF_ACCESS_PROOF_V318 = 'dirac-app-origin-handoff-access-proof-v318';
 const DIRAC_APP_ORIGIN_HANDOFF_ACCESS_PROOFS_V318 = new WeakMap();
 
@@ -53168,11 +53190,13 @@ function diracAppOriginHandoffTargetV313(targetRole) {
     const role = diracS2SIdV206(targetRole);
     const base = diracBaseDomainV250();
     const routes = {
+      panel: 'https://panel.' + base + '/dashboard.html',
       parfum: 'https://' + base + '/parfum.html',
       pesanan: 'https://order.' + base + '/pesanan.html',
       security: 'https://security.' + base + '/keamanan.html'
     };
     const expectedPath = {
+      panel: '/dashboard.html',
       parfum: '/parfum.html',
       pesanan: '/pesanan.html',
       security: '/keamanan.html'
@@ -53189,21 +53213,21 @@ function diracAppOriginHandoffTargetV313(targetRole) {
   }
 }
 
-function diracAppOriginHandoffExactPanelSourceV313(req) {
+function diracAppOriginHandoffExactSourceV320(req) {
   try {
-    if (!req || req.method !== 'POST') return false;
+    if (!req || req.method !== 'POST') return null;
     const headers = req.headers || {};
-    const expectedOrigin = ('https://panel.' + diracBaseDomainV250()).toLowerCase();
     const origin = String(headers.origin || '').trim().toLowerCase();
     const referer = new URL(String(headers.referer || headers.referrer || '').trim());
-    return origin === expectedOrigin
-      && referer.protocol === 'https:'
-      && !referer.port && !referer.username && !referer.password
-      && referer.origin.toLowerCase() === expectedOrigin
-      && referer.pathname === '/dashboard.html'
-      && !referer.search && !referer.hash;
+    if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
+        || referer.origin.toLowerCase() !== origin || referer.search || referer.hash) return null;
+    for (const role of DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313) {
+      const source = diracAppOriginHandoffTargetV313(role);
+      if (source && source.origin === origin && new URL(source.redirectUrl).pathname === referer.pathname) return source;
+    }
+    return null;
   } catch (_) {
-    return false;
+    return null;
   }
 }
 
@@ -53286,7 +53310,7 @@ function diracAppOriginHandoffCommitDeviceConsistencyV317(transition) {
   }
 }
 
-function diracAppOriginHandoffRotateProofsV313(req, res, access, target, securityEpoch) {
+function diracAppOriginHandoffRotateProofsV313(req, res, access, source, target, securityEpoch) {
   const fail = (reason) => Object.freeze({
     ok: false,
     patch: DIRAC_APP_ORIGIN_HANDOFF_V313,
@@ -53294,15 +53318,16 @@ function diracAppOriginHandoffRotateProofsV313(req, res, access, target, securit
   });
 
   try {
-    const sourceOrigin = ('https://panel.' + diracBaseDomainV250()).toLowerCase();
+    const sourceOrigin = String(source && source.origin || '').toLowerCase();
+    const exactSource = diracAppOriginHandoffExactSourceV320(req);
     const userId = String(access && access.authUserId || '').trim();
     const customerId = String(access && access.customerId || '').trim();
     const email = normalizeAuthEmail(access && access.user && access.user.email || '');
     const identity = { id: userId, email, customer_id: customerId };
     const epoch = Number(securityEpoch || 0);
-    if (!diracAppOriginHandoffExactPanelSourceV313(req)
+    if (!source || !exactSource || exactSource.role !== source.role || exactSource.origin !== source.origin
         || requestOrigin(req).toLowerCase() !== sourceOrigin
-        || !target || !DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313.has(target.role)
+        || !target || target.role === source.role || !DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313.has(target.role)
         || !diracUniversalBrowserOriginsV250().has(target.origin)
         || !customerSecurityLooksLikeUuid(userId)
         || !customerSecurityLooksLikeUuid(customerId)
@@ -53512,10 +53537,11 @@ function diracAppOriginHandoffRotateProofsV313(req, res, access, target, securit
 }
 
 async function diracAppOriginHandoffIssueV313(req, res, access, targetRole) {
+  const source = diracAppOriginHandoffExactSourceV320(req);
   const target = diracAppOriginHandoffTargetV313(targetRole);
   if (!target) return res.status(400).json({ ok: false, code: 'HANDOFF_TARGET_NOT_ALLOWED' });
-  if (!diracAppOriginHandoffExactPanelSourceV313(req)) {
-    return res.status(403).json({ ok: false, code: 'HANDOFF_PANEL_SOURCE_REQUIRED' });
+  if (!source || source.role === target.role) {
+    return res.status(403).json({ ok: false, code: 'HANDOFF_APP_SOURCE_REQUIRED' });
   }
   if (!access || !access.mfa || access.mfa.method !== 'passkey') {
     return res.status(403).json({ ok: false, code: 'HANDOFF_PASSKEY_MFA_REQUIRED' });
@@ -53581,7 +53607,7 @@ async function diracAppOriginHandoffIssueV313(req, res, access, targetRole) {
     return res.status(403).json({ ok: false, code: 'HANDOFF_SOURCE_STATE_INVALID' });
   }
 
-  const rotation = diracAppOriginHandoffRotateProofsV313(req, res, access, target, securityEpoch);
+  const rotation = diracAppOriginHandoffRotateProofsV313(req, res, access, source, target, securityEpoch);
   if (!rotation || rotation.ok !== true) {
     try {
       console.error('[dirac-app-origin-handoff-v313]', JSON.stringify({
