@@ -6,6 +6,7 @@ import net from 'node:net';
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_MESSAGE_CHARS = 2000;
 const MAX_MESSAGE_BYTES = 8 * 1024;
+const MAX_CONVERSATION_MESSAGES = 1000;
 const ADMIN_AUTH_RECHECK_MS = 5 * 60 * 1000;
 const CUSTOMER_COOKIE = '__Host-dirac_support_guest';
 const ADMIN_COOKIE = '__Host-dirac_support_admin';
@@ -220,6 +221,14 @@ function verifyCsrf(req) {
   if (!seed || !timingEqual(expected, match[2])) throw new PublicError(403, 'CSRF_INVALID', 'Token keamanan halaman tidak valid.');
 }
 
+function verifyAuthenticatedReadOrigin(req) {
+  const origin = requestOrigin(req);
+  const fetchSite = String(req.headers && req.headers['sec-fetch-site'] || '').toLowerCase();
+  if (origin && !allowedOrigins().has(origin)) throw new PublicError(403, 'ORIGIN_NOT_ALLOWED', 'Origin permintaan tidak diizinkan.');
+  if (fetchSite && !['same-origin', 'none'].includes(fetchSite)) throw new PublicError(403, 'FETCH_SITE_REJECTED', 'Pembacaan sesi hanya diizinkan dari origin aplikasi yang sama.');
+  if (!origin && !fetchSite) throw new PublicError(403, 'REQUEST_CONTEXT_REQUIRED', 'Konteks origin permintaan tidak tersedia.');
+}
+
 async function readJson(req) {
   const type = String(req.headers && req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
   if (type !== 'application/json') throw new PublicError(415, 'CONTENT_TYPE_INVALID', 'Content-Type wajib application/json.');
@@ -397,6 +406,17 @@ async function refreshAuth(refreshToken) {
   return result.data;
 }
 
+async function refreshCustomerAuth(res, session) {
+  try {
+    const refreshed = await refreshAuth(session && session.refreshToken);
+    if (!refreshed.user || String(refreshed.user.id || '') !== String(session && session.uid || '')) throw new PublicError(401, 'CUSTOMER_SESSION_MISMATCH', 'Sesi chat tidak cocok.');
+    return refreshed;
+  } catch (error) {
+    clearCookie(res, CUSTOMER_COOKIE, 'Lax');
+    throw error;
+  }
+}
+
 async function staffByUser(userId) {
   const result = await supabase('/rest/v1/support_staff?select=user_id,email,display_name,role,is_active,mfa_required,session_version&user_id=eq.' + encodeURIComponent(userId) + '&limit=2', {});
   const rows = Array.isArray(result.data) ? result.data : [];
@@ -459,6 +479,26 @@ async function rateLimit(req, scope, limit, windowSeconds, blockSeconds, suffix)
 async function accountRateLimit(scope, accountId, limit, windowSeconds, blockSeconds) {
   const key = hmac(config().ipSecret, scope + '|account|' + String(accountId || ''), 'hex');
   return takeRateLimit(scope, key, limit, windowSeconds, blockSeconds);
+}
+
+async function recordAdminAuth(req, actorUserId, action, emailValue, outcome, code) {
+  try {
+    const normalizedEmail = String(emailValue || '').trim().toLowerCase();
+    const targetId = normalizedEmail ? hmac(config().ipSecret, 'admin-auth-email|' + normalizedEmail, 'hex') : null;
+    await rpc('support_auth_audit', {
+      p_actor_user_id: actorUserId || null,
+      p_action: action,
+      p_target_id: targetId,
+      p_metadata: {
+        outcome: String(outcome || '').slice(0, 32),
+        code: String(code || '').slice(0, 80),
+        ip_hash: clientKey(req, 'admin-auth-audit'),
+        request_id: String(req && req.diracRequestId || '')
+      }
+    });
+  } catch (error) {
+    try { console.error('[dirac-auth-audit]', JSON.stringify({ requestId: String(req && req.diracRequestId || ''), action, code: String(error && (error.code || error.name) || 'AUDIT_FAILED').slice(0, 80) })); } catch (_) {}
+  }
 }
 
 async function verifyTurnstile(req, token) {
@@ -524,17 +564,22 @@ async function findActiveConversation(userId) {
 }
 
 async function messagesForConversation(conversationId, after, limit) {
-  let path = '/rest/v1/support_chat_messages?select=id,conversation_id,sequence,sender_kind,body,created_at,redacted_at&conversation_id=eq.' + encodeURIComponent(conversationId) + '&order=sequence.asc&limit=' + Math.min(100, Math.max(1, limit || 50));
+  const initial = !(after > 0);
+  let path = '/rest/v1/support_chat_messages?select=id,conversation_id,sequence,sender_kind,body,created_at,redacted_at&conversation_id=eq.' + encodeURIComponent(conversationId) + '&order=sequence.' + (initial ? 'desc' : 'asc') + '&limit=' + Math.min(100, Math.max(1, limit || 50));
   if (after > 0) path += '&sequence=gt.' + encodeURIComponent(after);
-  const result = await supabase(path, {}); return Array.isArray(result.data) ? result.data : [];
+  const result = await supabase(path, {});
+  const rows = Array.isArray(result.data) ? result.data.slice() : [];
+  if (initial) rows.reverse();
+  return rows.map((row) => row && row.redacted_at ? Object.assign({}, row, {
+    body: 'Pesan telah disunting oleh petugas sesuai kebijakan keamanan.'
+  }) : row);
 }
 
 async function actionChatBootstrap(req, res) {
   const session = readSession(req, CUSTOMER_COOKIE);
   if (!session || session.kind !== 'customer' || !session.uid || !session.refreshToken) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat belum tersedia.');
   await accountRateLimit('chat_bootstrap_account', session.uid, 60, 60, 60);
-  const refreshed = await refreshAuth(session.refreshToken);
-  if (String(refreshed.user.id) !== String(session.uid)) throw new PublicError(401, 'CUSTOMER_SESSION_MISMATCH', 'Sesi chat tidak cocok.');
+  const refreshed = await refreshCustomerAuth(res, session);
   const next = Object.assign({}, session, { refreshToken: refreshed.refresh_token, exp: Date.now() + 180 * 24 * 60 * 60 * 1000 });
   writeSession(res, CUSTOMER_COOKIE, next, 180 * 24 * 60 * 60, 'Lax');
   const conversation = await findActiveConversation(session.uid);
@@ -557,6 +602,7 @@ async function actionChatStart(req, res, body) {
   if (String(body.website || '').trim()) throw new PublicError(400, 'AUTOMATION_REJECTED', 'Permintaan tidak valid.');
   if (body.consent !== true) throw new PublicError(400, 'CONSENT_REQUIRED', 'Persetujuan pemrosesan percakapan wajib diberikan.');
   await rateLimit(req, 'chat_start', 3, 600, 900, 'burst'); await rateLimit(req, 'chat_start_daily', 10, 86400, 3600, 'daily');
+  await takeRateLimit('chat_start_global', hmac(config().ipSecret, 'chat|global|start', 'hex'), 5000, 86400, 3600);
   const name = text(body.name, 2, 80, 'Nama'); const customerEmail = email(body.email, false);
   const category = String(body.category || 'other'); if (!['technical', 'account', 'billing', 'domain', 'other'].includes(category)) throw new PublicError(400, 'CATEGORY_INVALID', 'Kategori chat tidak valid.');
   const subject = text(body.subject, 3, 120, 'Judul'); const initialMessage = messageText(body.message);
@@ -565,7 +611,7 @@ async function actionChatStart(req, res, body) {
   if (session && session.kind === 'customer' && session.uid && session.refreshToken) {
     // Existing sessions do not call Supabase /signup, so validate Turnstile here.
     await verifyTurnstile(req, body.turnstileToken);
-    authSession = await refreshAuth(session.refreshToken);
+    authSession = await refreshCustomerAuth(res, session);
   } else {
     // For a new anonymous user Supabase Auth validates this token. A Turnstile
     // token is single-use, so it must not be consumed by siteverify first.
@@ -586,10 +632,13 @@ async function actionChatStart(req, res, body) {
   return json(res, 201, { ok: true, code: 'CHAT_OPENED', csrfToken: csrfBundle(req, res), conversation: result.conversation, messages, realtime: chatRealtime(result.conversation.id, authSession.access_token) });
 }
 
-async function requireCustomer(req, conversationId) {
+async function requireCustomer(req, res, conversationId) {
   const session = readSession(req, CUSTOMER_COOKIE);
-  if (!session || session.kind !== 'customer' || !session.uid) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat tidak ditemukan.');
-  const path = '/rest/v1/support_chat_sessions?select=id,customer_user_id,status,expires_at,revision&id=eq.' + encodeURIComponent(conversationId) + '&customer_user_id=eq.' + encodeURIComponent(session.uid) + '&limit=2';
+  if (!session || session.kind !== 'customer' || !session.uid || !session.refreshToken) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat tidak ditemukan.');
+  const refreshed = await refreshCustomerAuth(res, session);
+  const next = Object.assign({}, session, { refreshToken: refreshed.refresh_token, exp: Date.now() + 180 * 24 * 60 * 60 * 1000 });
+  writeSession(res, CUSTOMER_COOKIE, next, 180 * 24 * 60 * 60, 'Lax');
+  const path = '/rest/v1/support_chat_sessions?select=id,customer_user_id,status,expires_at,message_count,revision&id=eq.' + encodeURIComponent(conversationId) + '&customer_user_id=eq.' + encodeURIComponent(session.uid) + '&limit=2';
   const result = await supabase(path, {}); const rows = Array.isArray(result.data) ? result.data : [];
   if (rows.length !== 1) throw new PublicError(404, 'CONVERSATION_NOT_FOUND', 'Percakapan tidak ditemukan.');
   if (rows[0].status === 'blocked') throw new PublicError(403, 'CONVERSATION_BLOCKED', 'Percakapan diblokir oleh sistem keamanan.');
@@ -599,8 +648,10 @@ async function requireCustomer(req, conversationId) {
 
 async function actionChatSend(req, res, body) {
   exactKeys(body, ['conversationId', 'clientMessageId', 'body']); const conversationId = id(body.conversationId, 'Conversation ID'); const clientMessageId = id(body.clientMessageId, 'Client message ID'); if (idempotencyKey(req, clientMessageId, 'Idempotency key') !== clientMessageId) throw new PublicError(400, 'IDEMPOTENCY_MISMATCH', 'Idempotency key tidak cocok.');
-  const owner = await requireCustomer(req, conversationId); if (!ACTIVE_CHAT_STATES.includes(owner.conversation.status)) throw new PublicError(409, 'CONVERSATION_CLOSED', 'Percakapan sudah ditutup.');
-  await rateLimit(req, 'chat_message_burst', 5, 10, 20, owner.session.uid); await accountRateLimit('chat_message_minute', owner.session.uid, 30, 60, 60); await accountRateLimit('chat_message_daily', owner.session.uid, 300, 86400, 3600);
+  const preliminary = readSession(req, CUSTOMER_COOKIE); if (!preliminary || preliminary.kind !== 'customer' || !preliminary.uid) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat tidak ditemukan.');
+  await rateLimit(req, 'chat_message_burst', 20, 10, 20, 'aggregate'); await rateLimit(req, 'chat_message_ip_daily', 1000, 86400, 3600, 'aggregate'); await accountRateLimit('chat_message_minute', preliminary.uid, 30, 60, 60); await accountRateLimit('chat_message_daily', preliminary.uid, 300, 86400, 3600); await takeRateLimit('chat_message_global', hmac(config().ipSecret, 'chat|global|message', 'hex'), 20000, 86400, 3600);
+  const owner = await requireCustomer(req, res, conversationId); if (!ACTIVE_CHAT_STATES.includes(owner.conversation.status)) throw new PublicError(409, 'CONVERSATION_CLOSED', 'Percakapan sudah ditutup.');
+  if (Number(owner.conversation.message_count || 0) >= MAX_CONVERSATION_MESSAGES) throw new PublicError(409, 'CONVERSATION_MESSAGE_LIMIT_REACHED', 'Batas pesan percakapan ini telah tercapai. Silakan buka tiket lanjutan.');
   let result = await rpc('support_chat_send', { p_conversation_id: conversationId, p_sender_kind: 'customer', p_sender_user_id: owner.session.uid, p_client_message_id: clientMessageId, p_body: messageText(body.body) });
   if (Array.isArray(result)) result = result[0];
   if (!result || !result.message) throw new PublicError(500, 'MESSAGE_SEND_FAILED', 'Pesan belum dapat disimpan.');
@@ -608,7 +659,10 @@ async function actionChatSend(req, res, body) {
 }
 
 async function actionChatClose(req, res, body) {
-  exactKeys(body, ['conversationId']); const conversationId = id(body.conversationId, 'Conversation ID'); const owner = await requireCustomer(req, conversationId);
+  exactKeys(body, ['conversationId']); const conversationId = id(body.conversationId, 'Conversation ID');
+  const preliminary = readSession(req, CUSTOMER_COOKIE); if (!preliminary || preliminary.kind !== 'customer' || !preliminary.uid) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat tidak ditemukan.');
+  await accountRateLimit('chat_close', preliminary.uid, 10, 600, 600);
+  const owner = await requireCustomer(req, res, conversationId);
   let result = await rpc('support_chat_close', { p_conversation_id: conversationId, p_customer_user_id: owner.session.uid }); if (Array.isArray(result)) result = result[0];
   return json(res, 200, { ok: true, code: 'CHAT_CLOSED', conversation: result && result.conversation || result || null });
 }
@@ -616,7 +670,7 @@ async function actionChatClose(req, res, body) {
 async function actionCustomerRefresh(req, res) {
   const session = readSession(req, CUSTOMER_COOKIE); if (!session || session.kind !== 'customer' || !session.refreshToken) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat sudah berakhir.');
   await accountRateLimit('customer_refresh', session.uid, 20, 600, 600);
-  const refreshed = await refreshAuth(session.refreshToken); if (String(refreshed.user.id) !== String(session.uid)) throw new PublicError(401, 'CUSTOMER_SESSION_MISMATCH', 'Sesi chat tidak cocok.'); const conversation = await findActiveConversation(session.uid);
+  const refreshed = await refreshCustomerAuth(res, session); const conversation = await findActiveConversation(session.uid);
   const next = Object.assign({}, session, { refreshToken: refreshed.refresh_token, exp: Date.now() + 180 * 24 * 60 * 60 * 1000 }); writeSession(res, CUSTOMER_COOKIE, next, 180 * 24 * 60 * 60, 'Lax');
   return json(res, 200, { ok: true, code: 'CUSTOMER_ACCESS_REFRESHED', realtime: conversation ? chatRealtime(conversation.id, refreshed.access_token) : null });
 }
@@ -637,6 +691,7 @@ async function actionAdminLogin(req, res, body) {
   exactKeys(body, ['email', 'password', 'turnstileToken', 'enrollmentSecret']); const adminEmail = email(body.email, true); const password = String(body.password || ''); const token = text(body.turnstileToken, config().turnstileRequired ? 10 : 0, 4096, 'Token Turnstile');
   if (password.length < 8 || password.length > 256) throw new PublicError(400, 'CREDENTIALS_INVALID', 'Email atau password belum sesuai.');
   await rateLimit(req, 'admin_login_ip', 5, 900, 1800, 'ip'); await accountRateLimit('admin_login_account', adminEmail, 5, 900, 1800);
+  req.diracAuthAuditEligible = true;
   const loginBody = { email: adminEmail, password }; if (token) loginBody.gotrue_meta_security = { captcha_token: token };
   const login = await auth('/token?grant_type=password', { body: loginBody });
   if (!login.ok || !login.data || !login.data.access_token || !login.data.refresh_token || !login.data.user) throw new PublicError(401, 'CREDENTIALS_INVALID', 'Email atau password belum sesuai.');
@@ -644,6 +699,7 @@ async function actionAdminLogin(req, res, body) {
   const claims = decodeJwt(login.data.access_token); const mustMfa = config().adminMfaRequired || staff.mfa_required === true;
   if (!mustMfa || claims.aal === 'aal2') {
     await issueAdminSession(res, login.data, staff, Date.now());
+    req.diracAuthOutcome = 'success'; await recordAdminAuth(req, staff.user_id, 'admin.auth.session_issued', adminEmail, 'success', 'ADMIN_LOGIN_OK');
     const queue = await adminQueue(staff, 'active', 50); const snapshot = await statusSnapshot(canManageStatus(staff));
     return json(res, 200, { ok: true, code: 'ADMIN_LOGIN_OK', admin: publicAdmin(staff), queue, status: snapshot, realtime: adminRealtime(login.data.access_token) });
   }
@@ -667,6 +723,7 @@ async function actionAdminLogin(req, res, body) {
   if (!challenge.ok || !challenge.data || !challenge.data.id) throw new PublicError(502, 'MFA_CHALLENGE_FAILED', 'Challenge MFA belum dapat dibuat.');
   const temp = { v: 1, kind: 'admin_mfa', uid: staff.user_id, accessToken: login.data.access_token, refreshToken: login.data.refresh_token, factorId: factor.id, challengeId: challenge.data.id, exp: Date.now() + 5 * 60 * 1000 };
   writeSession(res, MFA_COOKIE, temp, 5 * 60, 'Strict');
+  req.diracAuthOutcome = 'success'; await recordAdminAuth(req, staff.user_id, 'admin.auth.mfa_required', adminEmail, 'challenge_issued', enrollmentPayload ? 'MFA_ENROLLMENT_STARTED' : 'MFA_CHALLENGE_STARTED');
   return json(res, 200, { ok: true, code: 'ADMIN_MFA_REQUIRED', mfaRequired: true, mfaEnrollment: enrollmentPayload });
 }
 
@@ -674,10 +731,12 @@ async function actionAdminMfaVerify(req, res, body) {
   exactKeys(body, ['code']); const code = String(body.code || '').trim(); if (!/^\d{6}$/.test(code)) throw new PublicError(400, 'MFA_CODE_INVALID', 'Kode TOTP wajib enam digit.');
   const temp = readSession(req, MFA_COOKIE); if (!temp || temp.kind !== 'admin_mfa') throw new PublicError(401, 'MFA_CHALLENGE_EXPIRED', 'Challenge MFA sudah berakhir. Silakan login ulang.');
   await rateLimit(req, 'admin_mfa_ip', 8, 900, 1800, 'verify'); await accountRateLimit('admin_mfa_account', temp.uid, 5, 900, 1800);
+  req.diracAuthAuditEligible = true;
   const verified = await auth('/factors/' + encodeURIComponent(temp.factorId) + '/verify', { token: temp.accessToken, body: { challenge_id: temp.challengeId, code } });
   if (!verified.ok || !verified.data || !verified.data.access_token || !verified.data.refresh_token) throw new PublicError(401, 'MFA_CODE_REJECTED', 'Kode autentikator tidak valid.');
   const claims = decodeJwt(verified.data.access_token); if (claims.aal !== 'aal2' || String(claims.sub || '') !== String(temp.uid)) throw new PublicError(403, 'MFA_ASSURANCE_INVALID', 'Tingkat jaminan MFA belum terpenuhi.');
   const staff = await staffByUser(temp.uid); await issueAdminSession(res, verified.data, staff, Date.now());
+  req.diracAuthOutcome = 'success'; await recordAdminAuth(req, staff.user_id, 'admin.auth.session_issued', staff.email, 'success', 'ADMIN_MFA_OK');
   const queue = await adminQueue(staff, 'active', 50); const snapshot = await statusSnapshot(canManageStatus(staff));
   return json(res, 200, { ok: true, code: 'ADMIN_MFA_OK', admin: publicAdmin(staff), queue, status: snapshot, realtime: adminRealtime(verified.data.access_token) });
 }
@@ -709,6 +768,12 @@ async function actionAdminThread(req, res) {
 
 async function actionAdminSend(req, res, body) {
   exactKeys(body, ['conversationId', 'clientMessageId', 'body']); const owner = await requireAdmin(req, res, true); const conversationId = id(body.conversationId, 'Conversation ID'); const clientMessageId = id(body.clientMessageId, 'Client message ID'); if (idempotencyKey(req, clientMessageId, 'Idempotency key') !== clientMessageId) throw new PublicError(400, 'IDEMPOTENCY_MISMATCH', 'Idempotency key tidak cocok.');
+  if (String(owner.staff.role || '') === 'agent') {
+    const assignment = await supabase('/rest/v1/support_chat_sessions?select=id,assigned_to&id=eq.' + encodeURIComponent(conversationId) + '&limit=2', {});
+    const rows = Array.isArray(assignment.data) ? assignment.data : [];
+    if (rows.length !== 1) throw new PublicError(404, 'CONVERSATION_NOT_FOUND', 'Percakapan tidak ditemukan.');
+    if (String(rows[0].assigned_to || '') !== String(owner.staff.user_id)) throw new PublicError(403, 'CONVERSATION_ASSIGNMENT_REQUIRED', 'Percakapan wajib diklaim sebelum dibalas.');
+  }
   await accountRateLimit('admin_message', owner.staff.user_id, 120, 60, 60);
   let data = await rpc('support_chat_send', { p_conversation_id: conversationId, p_sender_kind: 'admin', p_sender_user_id: owner.staff.user_id, p_client_message_id: clientMessageId, p_body: messageText(body.body) }); if (Array.isArray(data)) data = data[0];
   if (!data || !data.message) throw new PublicError(500, 'MESSAGE_SEND_FAILED', 'Balasan belum dapat disimpan.');
@@ -803,31 +868,71 @@ async function actionAdminLogout(req, res) {
   if (session && session.refreshToken) {
     try { const refreshed = await refreshAuth(session.refreshToken); await auth('/logout?scope=local', { token: refreshed.access_token, body: {} }); } catch (_) {}
   }
+  if (session && session.uid) await recordAdminAuth(req, session.uid, 'admin.auth.logout', session.email, 'success', 'ADMIN_LOGGED_OUT');
   clearCookie(res, ADMIN_COOKIE, 'Strict'); clearCookie(res, MFA_COOKIE, 'Strict'); return json(res, 200, { ok: true, code: 'ADMIN_LOGGED_OUT' });
+}
+
+function ipv4Number(address) {
+  const parts = String(address || '').split('.').map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return (((parts[0] * 0x1000000) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0);
+}
+
+function ipv4InCidr(address, base, prefix) {
+  const value = ipv4Number(address); const network = ipv4Number(base);
+  if (value === null || network === null) return false;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return ((value & mask) >>> 0) === ((network & mask) >>> 0);
+}
+
+function ipv6Number(address) {
+  let source = String(address || '').toLowerCase();
+  if (!source || source.includes('%')) return null;
+  if (source.includes('.')) {
+    const separator = source.lastIndexOf(':');
+    const v4 = ipv4Number(source.slice(separator + 1));
+    if (separator < 0 || v4 === null) return null;
+    source = source.slice(0, separator) + ':' + ((v4 >>> 16) & 0xffff).toString(16) + ':' + (v4 & 0xffff).toString(16);
+  }
+  const halves = source.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return null;
+  const parts = left.concat(Array(Math.max(0, missing)).fill('0'), right);
+  if (parts.length !== 8 || parts.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null;
+  return parts.reduce((value, part) => (value << 16n) | BigInt(Number.parseInt(part, 16)), 0n);
+}
+
+function ipv6InCidr(addressValue, base, prefix) {
+  const network = ipv6Number(base);
+  if (addressValue === null || network === null) return false;
+  const shift = 128n - BigInt(prefix);
+  return (addressValue >> shift) === (network >> shift);
 }
 
 function isPrivateIp(address) {
   if (net.isIP(address) === 4) {
-    const parts = address.split('.').map(Number);
-    return parts[0] === 0 || parts[0] === 10 || parts[0] === 127 ||
-      (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) ||
-      (parts[0] === 169 && parts[1] === 254) ||
-      (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
-      (parts[0] === 192 && (parts[1] === 0 || parts[1] === 168)) ||
-      (parts[0] === 198 && (parts[1] === 18 || parts[1] === 19 || parts[1] === 51)) ||
-      (parts[0] === 203 && parts[1] === 0 && parts[2] === 113) || parts[0] >= 224;
+    const reserved = [
+      ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+      ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24],
+      ['192.31.196.0', 24], ['192.52.193.0', 24], ['192.88.99.0', 24], ['192.168.0.0', 16],
+      ['192.175.48.0', 24], ['198.18.0.0', 15], ['198.51.100.0', 24], ['203.0.113.0', 24],
+      ['224.0.0.0', 4], ['240.0.0.0', 4]
+    ];
+    return reserved.some(([base, prefix]) => ipv4InCidr(address, base, prefix));
   }
   if (net.isIP(address) === 6) {
-    const clean = address.toLowerCase();
-    if (clean.startsWith('::ffff:')) {
-      const tail = clean.slice(7);
-      if (net.isIP(tail) === 4) return isPrivateIp(tail);
-      return true;
-    }
-    // Permit ordinary global-unicast IPv6 only; reject loopback, ULA,
-    // link-local, multicast, documentation, transition, and mapped ranges.
-    const first = Number.parseInt(clean.split(':')[0] || '0', 16);
-    return !(first >= 0x2000 && first <= 0x3fff) || clean.startsWith('2001:db8:') || clean.startsWith('2001:0:') || clean.startsWith('2002:');
+    const value = ipv6Number(address);
+    if (value === null || !ipv6InCidr(value, '2000::', 3)) return true;
+    // Within global unicast, exclude IETF protocol assignments, benchmarks,
+    // documentation, transition mechanisms, and other special-use networks.
+    const reserved = [
+      ['2001::', 23], ['2001:db8::', 32], ['2002::', 16],
+      ['2620:4f:8000::', 48], ['3fff::', 20]
+    ];
+    return reserved.some(([base, prefix]) => ipv6InCidr(value, base, prefix));
   }
   return true;
 }
@@ -886,9 +991,10 @@ async function probeTarget(target) {
 }
 
 async function actionMonitorRun(req, res) {
-  const expected = env('CRON_SECRET'); const authorization = String(req.headers && req.headers.authorization || ''); const candidate = authorization.replace(/^Bearer\s+/i, '');
-  if (Buffer.byteLength(expected, 'utf8') < 32 || !timingEqual(expected, candidate)) throw new PublicError(401, 'MONITOR_AUTH_INVALID', 'Monitor tidak diizinkan.');
-  const leaseKey = hmac(config().ipSecret, 'monitor|global|lease', 'hex');
+  const cfg = config(); const expected = env('CRON_SECRET'); const authorization = String(req.headers && req.headers.authorization || ''); const candidate = authorization.replace(/^Bearer\s+/i, '');
+  const cronReused = [cfg.cookieSecret, cfg.csrfSecret, cfg.ipSecret, cfg.mfaEnrollmentSecret].some((secret) => timingEqual(expected, secret));
+  if (Buffer.byteLength(expected, 'utf8') < 32 || cronReused || !timingEqual(expected, candidate)) throw new PublicError(401, 'MONITOR_AUTH_INVALID', 'Monitor tidak diizinkan.');
+  const leaseKey = hmac(cfg.ipSecret, 'monitor|global|lease', 'hex');
   try {
     await takeRateLimit('monitor_run_lease', leaseKey, 1, 240, 240);
   } catch (error) {
@@ -950,20 +1056,22 @@ async function dispatch(req, res, action, body) {
 
 async function handler(req, res) {
   const requestId = uuid(); const rawAction = queryValue(req, 'action'); const action = rawAction.trim().toLowerCase();
+  req.diracRequestId = requestId;
   securityHeaders(req, res, action);
   if (req.method === 'OPTIONS') {
     if (!originAllowed(req)) return json(res, 403, { ok: false, code: 'ORIGIN_NOT_ALLOWED', message: 'Origin tidak diizinkan.', requestId });
     res.statusCode = 204; return res.end();
   }
+  let body = null;
   try {
     if (!/^[a-z0-9_]{1,64}$/.test(action)) throw new PublicError(400, 'ACTION_INVALID', 'Action support tidak valid.');
     if (rawAction !== action) throw new PublicError(400, 'ACTION_NON_CANONICAL', 'Nama action wajib menggunakan format kanonis.');
     verifyQueryShape(req, action);
+    if (CUSTOMER_GET_ACTIONS.has(action) || ADMIN_GET_ACTIONS.has(action)) verifyAuthenticatedReadOrigin(req);
     const method = String(req.method || 'GET').toUpperCase();
     const expectedMethod = PUBLIC_GET_ACTIONS.has(action) || CUSTOMER_GET_ACTIONS.has(action) || ADMIN_GET_ACTIONS.has(action) ? 'GET' : 'POST';
     const allowedMethods = action === 'monitor_run' ? ['GET', 'POST'] : [expectedMethod];
     if (!allowedMethods.includes(method)) { setHeader(res, 'Allow', allowedMethods.join(', ')); throw new PublicError(405, 'METHOD_NOT_ALLOWED', 'Method tidak diizinkan untuk action ini.'); }
-    let body = null;
     if (method === 'POST') {
       if (action !== 'monitor_run') verifyCsrf(req);
       body = await readJson(req);
@@ -971,6 +1079,11 @@ async function handler(req, res) {
     return await dispatch(req, res, action, body);
   } catch (error) {
     const safe = error instanceof PublicError ? error : new PublicError(500, 'SUPPORT_INTERNAL_ERROR', 'Sistem support sedang mengalami gangguan.');
+    if ((action === 'admin_login' || action === 'admin_mfa_verify') && req.diracAuthAuditEligible === true && req.diracAuthOutcome !== 'success') {
+      const pending = action === 'admin_mfa_verify' ? readSession(req, MFA_COOKIE) : null;
+      const attemptedEmail = action === 'admin_login' && body && typeof body === 'object' ? String(body.email || '').slice(0, 254) : '';
+      await recordAdminAuth(req, pending && pending.uid || null, 'admin.auth.rejected', attemptedEmail, 'rejected', safe.code);
+    }
     if (safe.retryAfter) setHeader(res, 'Retry-After', String(safe.retryAfter));
     if (!(error instanceof PublicError)) {
       try { console.error('[dirac-support]', JSON.stringify({ requestId, action, code: String(error && (error.code || error.name) || 'ERROR').slice(0, 80), message: String(error && error.message || '').slice(0, 160) })); } catch (_) {}
