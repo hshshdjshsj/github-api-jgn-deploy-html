@@ -9,6 +9,7 @@ const MAX_MESSAGE_BYTES = 8 * 1024;
 const MAX_CONVERSATION_MESSAGES = 1000;
 const ADMIN_AUTH_RECHECK_MS = 5 * 60 * 1000;
 const CUSTOMER_COOKIE = '__Host-dirac_support_guest';
+const CUSTOMER_IDENTITY_MARKER = 'dirac_main_session_v1';
 const ADMIN_COOKIE = '__Host-dirac_support_admin';
 const MFA_COOKIE = '__Host-dirac_support_mfa';
 const CSRF_COOKIE = '__Host-dirac_support_csrf_seed';
@@ -155,6 +156,131 @@ function parseCookies(req) {
     if (key && !Object.prototype.hasOwnProperty.call(out, key)) out[key] = value;
   });
   return out;
+}
+
+
+function safeCookieName(value) {
+  const clean = String(value || '').trim();
+  return /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/.test(clean) ? clean : '';
+}
+
+function escapeRegex(value) { return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function mainIdentityConfig() {
+  const frontend = Array.from(allowedOrigins()).map((value) => {
+    try { return new URL(value); } catch (_) { return null; }
+  }).find((value) => value && value.protocol === 'https:' && /^cs\./i.test(value.hostname));
+  if (!frontend) throw new PublicError(503, 'MAIN_IDENTITY_CONFIG_INVALID', 'Origin frontend support belum dapat dipetakan ke sesi akun Dirac.');
+  const endpoint = new URL(frontend.origin);
+  endpoint.hostname = endpoint.hostname.replace(/^cs\./i, 'api.');
+  endpoint.pathname = '/api/health';
+  endpoint.search = '?action=domain_me';
+  endpoint.hash = '';
+  const access = safeCookieName(env('DOMAIN_SESSION_COOKIE') || 'dirac_domain_session');
+  const refresh = safeCookieName(env('DOMAIN_REFRESH_COOKIE') || 'dirac_domain_refresh');
+  const signed = safeCookieName(env('DOMAIN_SIGNED_SESSION_COOKIE') || 'dirac_domain_signed_session');
+  if (!access || !refresh || !signed || new Set([access, refresh, signed]).size !== 3) {
+    throw new PublicError(503, 'MAIN_IDENTITY_COOKIE_CONFIG_INVALID', 'Konfigurasi cookie sesi akun Dirac tidak valid.');
+  }
+  return { endpoint: endpoint.toString(), frontendOrigin: frontend.origin, access, refresh, signed };
+}
+
+function rawCookiePairs(req) {
+  const raw = String(req && req.headers && req.headers.cookie || '');
+  if (!raw || Buffer.byteLength(raw, 'utf8') > 32 * 1024) return [];
+  return raw.split(';').slice(0, 160).map((part) => {
+    const clean = String(part || '').trim(); const index = clean.indexOf('=');
+    if (index < 1) return null;
+    const name = safeCookieName(clean.slice(0, index)); const value = clean.slice(index + 1);
+    if (!name || /[\r\n]/.test(value) || Buffer.byteLength(value, 'utf8') > 9 * 1024) return null;
+    return { name, value, raw: name + '=' + value };
+  }).filter(Boolean);
+}
+
+function mainCookieNameAllowed(name, identity) {
+  return [identity.access, identity.refresh, identity.signed].some((base) => {
+    return name === base || new RegExp('^' + escapeRegex(base) + '__(?:[0-9]|1[01])$').test(name);
+  });
+}
+
+function responseSetCookies(headers) {
+  if (headers && typeof headers.getSetCookie === 'function') return headers.getSetCookie().map(String);
+  return [];
+}
+
+function forwardMainIdentityCookies(res, headers, identity) {
+  for (const value of responseSetCookies(headers)) {
+    const clean = String(value || '');
+    if (!clean || /[\r\n]/.test(clean) || Buffer.byteLength(clean, 'utf8') > 16 * 1024) continue;
+    const first = clean.split(';', 1)[0]; const separator = first.indexOf('=');
+    const name = separator > 0 ? safeCookieName(first.slice(0, separator)) : '';
+    if (!name || !mainCookieNameAllowed(name, identity) || /;\s*Domain=/i.test(clean)) continue;
+    if (!/;\s*Path=\/(?:;|$)/i.test(clean) || !/;\s*HttpOnly(?:;|$)/i.test(clean)) continue;
+    if (isProduction() && (!/;\s*Secure(?:;|$)/i.test(clean) || !/;\s*SameSite=Strict(?:;|$)/i.test(clean))) continue;
+    appendCookie(res, clean);
+  }
+}
+
+function normalizeIdentityName(value, emailValue) {
+  const local = String(emailValue || '').split('@')[0].replace(/[._-]+/g, ' ');
+  const clean = String(value || local || 'Pelanggan Dirac').normalize('NFC').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+  return clean.length >= 2 ? clean : 'Pelanggan Dirac';
+}
+
+function deterministicBridgeUuid(sourceUserId) {
+  const namespace = Buffer.from('6ba7b8109dad11d180b400c04fd430c8', 'hex');
+  const digest = crypto.createHash('sha1').update(namespace).update('dirac-support-user:' + sourceUserId, 'utf8').digest();
+  const bytes = Buffer.from(digest.subarray(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const value = bytes.toString('hex');
+  return [value.slice(0, 8), value.slice(8, 12), value.slice(12, 16), value.slice(16, 20), value.slice(20)].join('-');
+}
+
+async function resolveMainIdentity(req, res, required) {
+  verifyAuthenticatedReadOrigin(req);
+  const identity = mainIdentityConfig();
+  const selectedPairs = rawCookiePairs(req).filter((item) => mainCookieNameAllowed(item.name, identity));
+  const cookieHeader = selectedPairs.map((item) => item.raw).join('; ');
+  if (!cookieHeader) {
+    if (required) throw new PublicError(401, 'DIRAC_LOGIN_REQUIRED', 'Silakan masuk ke akun Dirac terlebih dahulu.');
+    return null;
+  }
+  let result;
+  try {
+    result = await fetchJson(identity.endpoint, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        Cookie: cookieHeader,
+        Origin: identity.frontendOrigin,
+        'Sec-Fetch-Site': 'same-site',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Dest': 'empty',
+        'User-Agent': String(req && req.headers && req.headers['user-agent'] || 'Dirac Support Session Bridge').slice(0, 512)
+      }
+    }, 9000);
+  } catch (_) {
+    throw new PublicError(502, 'MAIN_IDENTITY_UNAVAILABLE', 'Sesi akun Dirac belum dapat diverifikasi.');
+  }
+  forwardMainIdentityCookies(res, result.headers, identity);
+  if (result.status === 401 || result.status === 403) {
+    clearCookie(res, CUSTOMER_COOKIE, 'Lax');
+    if (required) throw new PublicError(401, 'DIRAC_LOGIN_REQUIRED', 'Sesi akun Dirac tidak ditemukan atau sudah berakhir.');
+    return null;
+  }
+  if (!result.ok) throw new PublicError(502, 'MAIN_IDENTITY_REJECTED', 'Sesi akun Dirac belum dapat diverifikasi.');
+  const user = result.data && result.data.ok === true && result.data.user && typeof result.data.user === 'object' ? result.data.user : null;
+  const sourceUserId = String(user && user.id || '').trim().toLowerCase();
+  const customerEmail = String(user && user.email || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(sourceUserId)
+      || customerEmail.length > 254
+      || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
+    throw new PublicError(502, 'MAIN_IDENTITY_INVALID', 'Identitas akun Dirac tidak valid.');
+  }
+  const displayName = normalizeIdentityName(user.displayName || user.display_name || user.name, customerEmail);
+  const sourceHash = hash('dirac-main-user|' + sourceUserId);
+  return { sourceUserId, sourceHash, userId: deterministicBridgeUuid(sourceUserId), displayName, email: customerEmail };
 }
 
 function runtimeCookieName(productionName) {
@@ -400,6 +526,138 @@ async function auth(path, options) {
   return fetchJson(cfg.supabaseUrl + '/auth/v1' + path, { method: settings.method || 'POST', headers, body: JSON.stringify(settings.body || {}) }, 9000);
 }
 
+
+async function supportAuthAdmin(path, options) {
+  if (!/^\/admin\/users(?:\/[0-9a-f-]{36})?$/.test(String(path || ''))) throw new PublicError(500, 'SUPPORT_AUTH_ADMIN_PATH_INVALID', 'Path administrasi Auth tidak valid.');
+  const cfg = config(); const settings = options || {};
+  const headers = { apikey: cfg.secretKey, Accept: 'application/json' };
+  if (decodeJwt(cfg.secretKey).role === 'service_role') headers.Authorization = 'Bearer ' + cfg.secretKey;
+  if (settings.body !== undefined) headers['Content-Type'] = 'application/json';
+  return fetchJson(cfg.supabaseUrl + '/auth/v1' + path, {
+    method: settings.method || 'GET',
+    headers,
+    body: settings.body === undefined ? undefined : JSON.stringify(settings.body)
+  }, 9000);
+}
+
+function supportAuthUser(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const value = data.user && typeof data.user === 'object' ? data.user : data;
+  return value && value.id ? value : null;
+}
+
+function supportBridgeMaterial(identity) {
+  const cfg = config();
+  const alias = hmac(cfg.cookieSecret, 'support-bridge-email|' + identity.sourceUserId, 'hex').slice(0, 48);
+  return {
+    userId: identity.userId,
+    email: 'bridge-' + alias + '@identity.diracgroup.store',
+    password: 'Dg!9-' + hmac(cfg.cookieSecret, 'support-bridge-password|' + identity.sourceUserId),
+    sourceHash: identity.sourceHash
+  };
+}
+
+function bridgeMetadata(user) {
+  if (!user || typeof user !== 'object') return {};
+  if (user.app_metadata && typeof user.app_metadata === 'object') return user.app_metadata;
+  if (user.raw_app_meta_data && typeof user.raw_app_meta_data === 'object') return user.raw_app_meta_data;
+  return {};
+}
+
+function verifyBridgeOwner(user, material) {
+  const metadata = bridgeMetadata(user);
+  const confirmed = Boolean(user && (user.email_confirmed_at || user.confirmed_at));
+  if (!user
+      || String(user.id || '').toLowerCase() !== material.userId
+      || user.is_anonymous === true
+      || Boolean(user.deleted_at)
+      || !confirmed
+      || metadata.dirac_support_identity !== CUSTOMER_IDENTITY_MARKER
+      || !timingEqual(metadata.dirac_source_subject_hash, material.sourceHash)) {
+    throw new PublicError(409, 'SUPPORT_IDENTITY_COLLISION', 'Pemetaan akun support tidak aman untuk digunakan.');
+  }
+  return user;
+}
+
+function verifyBridgeUser(user, material) {
+  verifyBridgeOwner(user, material);
+  if (String(user.email || '').toLowerCase() !== material.email) {
+    throw new PublicError(409, 'SUPPORT_IDENTITY_COLLISION', 'Email internal akun support tidak cocok.');
+  }
+  return user;
+}
+
+async function bridgeUserById(userId) {
+  const result = await supportAuthAdmin('/admin/users/' + encodeURIComponent(userId), { method: 'GET' });
+  if (result.status === 404) return null;
+  if (!result.ok) throw new PublicError(503, 'SUPPORT_IDENTITY_LOOKUP_FAILED', 'Akun support terhubung belum dapat diperiksa.');
+  return supportAuthUser(result.data);
+}
+
+async function loginBridge(material) {
+  const result = await auth('/token?grant_type=password', { body: { email: material.email, password: material.password } });
+  if (!result.ok) {
+    if ([400, 401, 422].includes(result.status)) return null;
+    throw new PublicError(503, 'SUPPORT_IDENTITY_LOGIN_UNAVAILABLE', 'Layanan sesi support terhubung belum tersedia.');
+  }
+  if (!result.data || !result.data.access_token || !result.data.refresh_token || !result.data.user) {
+    throw new PublicError(503, 'SUPPORT_IDENTITY_LOGIN_INVALID', 'Respons sesi support terhubung tidak valid.');
+  }
+  verifyBridgeUser(result.data.user, material);
+  const claims = decodeJwt(result.data.access_token);
+  if (String(claims.sub || '').toLowerCase() !== material.userId) throw new PublicError(409, 'SUPPORT_IDENTITY_COLLISION', 'Token akun support tidak cocok.');
+  return result.data;
+}
+
+async function provisionCustomerAuth(identity) {
+  const material = supportBridgeMaterial(identity);
+  const existingLogin = await loginBridge(material);
+  if (existingLogin) return existingLogin;
+
+  let user = await bridgeUserById(material.userId);
+  if (!user) {
+    const created = await supportAuthAdmin('/admin/users', {
+      method: 'POST',
+      body: {
+        id: material.userId,
+        email: material.email,
+        password: material.password,
+        email_confirm: true,
+        user_metadata: { full_name: identity.displayName },
+        app_metadata: {
+          dirac_support_identity: CUSTOMER_IDENTITY_MARKER,
+          dirac_source_subject_hash: material.sourceHash
+        }
+      }
+    });
+    if (created.ok) user = supportAuthUser(created.data) || await bridgeUserById(material.userId);
+    else if ([409, 422].includes(created.status)) user = await bridgeUserById(material.userId);
+    else throw new PublicError(503, 'SUPPORT_IDENTITY_CREATE_FAILED', 'Akun support terhubung belum dapat dibuat.');
+  }
+
+  verifyBridgeOwner(user, material);
+  const metadata = bridgeMetadata(user);
+  const updated = await supportAuthAdmin('/admin/users/' + encodeURIComponent(material.userId), {
+    method: 'PUT',
+    body: {
+      email: material.email,
+      password: material.password,
+      email_confirm: true,
+      user_metadata: Object.assign({}, user.user_metadata && typeof user.user_metadata === 'object' ? user.user_metadata : {}, { full_name: identity.displayName }),
+      app_metadata: Object.assign({}, metadata, {
+        dirac_support_identity: CUSTOMER_IDENTITY_MARKER,
+        dirac_source_subject_hash: material.sourceHash
+      })
+    }
+  });
+  if (!updated.ok) throw new PublicError(503, 'SUPPORT_IDENTITY_UPDATE_FAILED', 'Akun support terhubung belum dapat disinkronkan.');
+  const updatedUser = supportAuthUser(updated.data);
+  if (updatedUser) verifyBridgeUser(updatedUser, material);
+  const login = await loginBridge(material);
+  if (!login) throw new PublicError(503, 'SUPPORT_IDENTITY_LOGIN_FAILED', 'Sesi support terhubung belum dapat diterbitkan.');
+  return login;
+}
+
 function decodeJwt(token) {
   try { return JSON.parse(Buffer.from(String(token || '').split('.')[1], 'base64url').toString('utf8')); } catch (_) { return {}; }
 }
@@ -410,10 +668,16 @@ async function refreshAuth(refreshToken) {
   return result.data;
 }
 
-async function refreshCustomerAuth(res, session) {
+async function refreshCustomerAuth(res, session, identity) {
   try {
-    const refreshed = await refreshAuth(session && session.refreshToken);
-    if (!refreshed.user || String(refreshed.user.id || '') !== String(session && session.uid || '')) throw new PublicError(401, 'CUSTOMER_SESSION_MISMATCH', 'Sesi chat tidak cocok.');
+    if (!session || !identity || !session.sourceHash || !timingEqual(session.sourceHash, identity.sourceHash) || String(session.uid || '') !== identity.userId) {
+      throw new PublicError(401, 'CUSTOMER_IDENTITY_MISMATCH', 'Sesi chat tidak sesuai dengan akun Dirac yang sedang masuk.');
+    }
+    const refreshed = await refreshAuth(session.refreshToken);
+    const material = supportBridgeMaterial(identity);
+    verifyBridgeUser(refreshed.user, material);
+    const claims = decodeJwt(refreshed.access_token);
+    if (String(claims.sub || '').toLowerCase() !== material.userId) throw new PublicError(401, 'CUSTOMER_SESSION_MISMATCH', 'Sesi chat tidak cocok.');
     return refreshed;
   } catch (error) {
     clearCookie(res, CUSTOMER_COOKIE, 'Lax');
@@ -553,8 +817,19 @@ async function actionStatusBootstrap(req, res) {
 }
 
 async function actionChatPublicConfig(req, res) {
-  const session = readSession(req, CUSTOMER_COOKIE); const cfg = config();
-  return json(res, 200, { ok: true, code: 'CHAT_CONFIG_OK', csrfToken: csrfBundle(req, res), hasSession: Boolean(session && session.kind === 'customer'), turnstileRequired: cfg.turnstileRequired, turnstileSiteKey: cfg.turnstileRequired ? cfg.turnstileSiteKey : '' });
+  const cfg = config(); const identity = await resolveMainIdentity(req, res, false); const session = readSession(req, CUSTOMER_COOKIE);
+  const hasSession = Boolean(identity && session && session.kind === 'customer' && session.uid === identity.userId && session.refreshToken && session.sourceHash && timingEqual(session.sourceHash, identity.sourceHash));
+  if (session && !hasSession) clearCookie(res, CUSTOMER_COOKIE, 'Lax');
+  return json(res, 200, {
+    ok: true,
+    code: 'CHAT_CONFIG_OK',
+    csrfToken: csrfBundle(req, res),
+    authenticated: Boolean(identity),
+    identity: identity ? { displayName: identity.displayName, email: identity.email } : null,
+    hasSession,
+    turnstileRequired: cfg.turnstileRequired,
+    turnstileSiteKey: cfg.turnstileRequired ? cfg.turnstileSiteKey : ''
+  });
 }
 
 async function actionAdminPublicConfig(req, res) {
@@ -580,74 +855,68 @@ async function messagesForConversation(conversationId, after, limit) {
 }
 
 async function actionChatBootstrap(req, res) {
-  const session = readSession(req, CUSTOMER_COOKIE);
-  if (!session || session.kind !== 'customer' || !session.uid || !session.refreshToken) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat belum tersedia.');
+  const identity = await resolveMainIdentity(req, res, true); const session = readSession(req, CUSTOMER_COOKIE);
+  if (!session || session.kind !== 'customer' || !session.uid || !session.refreshToken || session.uid !== identity.userId || !session.sourceHash || !timingEqual(session.sourceHash, identity.sourceHash)) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat belum tersedia untuk akun Dirac ini.');
   await accountRateLimit('chat_bootstrap_account', session.uid, 60, 60, 60);
-  const refreshed = await refreshCustomerAuth(res, session);
-  const next = Object.assign({}, session, { refreshToken: refreshed.refresh_token, exp: Date.now() + 180 * 24 * 60 * 60 * 1000 });
+  const refreshed = await refreshCustomerAuth(res, session, identity);
+  const next = Object.assign({}, session, { sourceHash: identity.sourceHash, refreshToken: refreshed.refresh_token, exp: Date.now() + 180 * 24 * 60 * 60 * 1000 });
   writeSession(res, CUSTOMER_COOKIE, next, 180 * 24 * 60 * 60, 'Lax');
-  const conversation = await findActiveConversation(session.uid);
+  const conversation = await findActiveConversation(next.uid);
   const after = Math.max(0, Number(queryValue(req, 'after_sequence') || 0));
   const messages = conversation ? await messagesForConversation(conversation.id, after, 50) : [];
-  return json(res, 200, { ok: true, code: 'CHAT_BOOTSTRAP_OK', csrfToken: csrfBundle(req, res), conversation, messages, realtime: conversation ? chatRealtime(conversation.id, refreshed.access_token) : null });
-}
-
-async function anonymousAuth(turnstileToken) {
-  const token = text(turnstileToken, config().turnstileRequired ? 10 : 0, 4096, 'Token Turnstile');
-  const body = { data: { source: 'dirac_support' } };
-  if (token) body.gotrue_meta_security = { captcha_token: token };
-  const result = await auth('/signup', { body });
-  if (!result.ok || !result.data || !result.data.access_token || !result.data.refresh_token || !result.data.user || !result.data.user.id) throw new PublicError(503, 'ANONYMOUS_AUTH_FAILED', 'Sesi anonim belum dapat dibuat. Pastikan Anonymous Sign-ins aktif.');
-  return result.data;
+  return json(res, 200, { ok: true, code: 'CHAT_BOOTSTRAP_OK', csrfToken: csrfBundle(req, res), identity: { displayName: identity.displayName, email: identity.email }, conversation, messages, realtime: conversation ? chatRealtime(conversation.id, refreshed.access_token) : null });
 }
 
 async function actionChatStart(req, res, body) {
-  exactKeys(body, ['name', 'email', 'category', 'subject', 'message', 'website', 'consent', 'turnstileToken']);
+  exactKeys(body, ['category', 'subject', 'message', 'website', 'consent', 'turnstileToken']);
   if (String(body.website || '').trim()) throw new PublicError(400, 'AUTOMATION_REJECTED', 'Permintaan tidak valid.');
   if (body.consent !== true) throw new PublicError(400, 'CONSENT_REQUIRED', 'Persetujuan pemrosesan percakapan wajib diberikan.');
   await rateLimit(req, 'chat_start', 3, 600, 900, 'burst'); await rateLimit(req, 'chat_start_daily', 10, 86400, 3600, 'daily');
   await takeRateLimit('chat_start_global', hmac(config().ipSecret, 'chat|global|start', 'hex'), 5000, 86400, 3600);
-  const name = text(body.name, 2, 80, 'Nama'); const customerEmail = email(body.email, false);
+  const identity = await resolveMainIdentity(req, res, true);
+  await verifyTurnstile(req, body.turnstileToken);
+  const name = text(identity.displayName, 2, 80, 'Nama'); const customerEmail = email(identity.email, true);
   const category = String(body.category || 'other'); if (!['technical', 'account', 'billing', 'domain', 'other'].includes(category)) throw new PublicError(400, 'CATEGORY_INVALID', 'Kategori chat tidak valid.');
   const subject = text(body.subject, 3, 120, 'Judul'); const initialMessage = messageText(body.message);
   const clientMessageId = idempotencyKey(req, '', 'Idempotency key chat');
-  let session = readSession(req, CUSTOMER_COOKIE); let authSession;
-  if (session && session.kind === 'customer' && session.uid && session.refreshToken) {
-    // Existing sessions do not call Supabase /signup, so validate Turnstile here.
-    await verifyTurnstile(req, body.turnstileToken);
-    authSession = await refreshCustomerAuth(res, session);
-  } else {
-    // For a new anonymous user Supabase Auth validates this token. A Turnstile
-    // token is single-use, so it must not be consumed by siteverify first.
-    authSession = await anonymousAuth(body.turnstileToken);
+  let session = readSession(req, CUSTOMER_COOKIE); let authSession = null;
+  if (session && session.kind === 'customer' && session.uid === identity.userId && session.refreshToken && session.sourceHash && timingEqual(session.sourceHash, identity.sourceHash)) {
+    try { authSession = await refreshCustomerAuth(res, session, identity); } catch (error) {
+      if (!(error instanceof PublicError) || error.status !== 401) throw error;
+      session = null;
+    }
+  } else if (session) {
+    clearCookie(res, CUSTOMER_COOKIE, 'Lax');
+    session = null;
   }
+  if (!authSession) authSession = await provisionCustomerAuth(identity);
   const userId = String(authSession.user.id); const existing = await findActiveConversation(userId);
   let result;
   if (existing) {
     result = { conversation: existing, messages: await messagesForConversation(existing.id, 0, 50) };
   } else {
-    result = await rpc('support_chat_open', { p_customer_user_id: userId, p_customer_name: name, p_customer_email: customerEmail || null, p_category: category, p_subject: subject, p_body: initialMessage, p_client_message_id: clientMessageId });
+    result = await rpc('support_chat_open', { p_customer_user_id: userId, p_customer_name: name, p_customer_email: customerEmail, p_category: category, p_subject: subject, p_body: initialMessage, p_client_message_id: clientMessageId });
     if (Array.isArray(result)) result = result[0];
   }
   if (!result || !result.conversation) throw new PublicError(500, 'CHAT_OPEN_FAILED', 'Percakapan belum dapat dibuka.');
-  session = { v: 1, kind: 'customer', uid: userId, refreshToken: authSession.refresh_token, iat: Date.now(), exp: Date.now() + 180 * 24 * 60 * 60 * 1000 };
+  session = { v: 1, kind: 'customer', uid: userId, sourceHash: identity.sourceHash, refreshToken: authSession.refresh_token, iat: Date.now(), exp: Date.now() + 180 * 24 * 60 * 60 * 1000 };
   writeSession(res, CUSTOMER_COOKIE, session, 180 * 24 * 60 * 60, 'Lax');
   const messages = Array.isArray(result.messages) ? result.messages : result.message ? [result.message] : await messagesForConversation(result.conversation.id, 0, 50);
-  return json(res, 201, { ok: true, code: 'CHAT_OPENED', csrfToken: csrfBundle(req, res), conversation: result.conversation, messages, realtime: chatRealtime(result.conversation.id, authSession.access_token) });
+  return json(res, 201, { ok: true, code: 'CHAT_OPENED', csrfToken: csrfBundle(req, res), identity: { displayName: identity.displayName, email: identity.email }, conversation: result.conversation, messages, realtime: chatRealtime(result.conversation.id, authSession.access_token) });
 }
 
 async function requireCustomer(req, res, conversationId) {
-  const session = readSession(req, CUSTOMER_COOKIE);
-  if (!session || session.kind !== 'customer' || !session.uid || !session.refreshToken) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat tidak ditemukan.');
-  const refreshed = await refreshCustomerAuth(res, session);
-  const next = Object.assign({}, session, { refreshToken: refreshed.refresh_token, exp: Date.now() + 180 * 24 * 60 * 60 * 1000 });
+  const identity = await resolveMainIdentity(req, res, true); const session = readSession(req, CUSTOMER_COOKIE);
+  if (!session || session.kind !== 'customer' || !session.uid || !session.refreshToken || session.uid !== identity.userId || !session.sourceHash || !timingEqual(session.sourceHash, identity.sourceHash)) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat tidak ditemukan untuk akun Dirac ini.');
+  const refreshed = await refreshCustomerAuth(res, session, identity);
+  const next = Object.assign({}, session, { sourceHash: identity.sourceHash, refreshToken: refreshed.refresh_token, exp: Date.now() + 180 * 24 * 60 * 60 * 1000 });
   writeSession(res, CUSTOMER_COOKIE, next, 180 * 24 * 60 * 60, 'Lax');
-  const path = '/rest/v1/support_chat_sessions?select=id,customer_user_id,status,expires_at,message_count,revision&id=eq.' + encodeURIComponent(conversationId) + '&customer_user_id=eq.' + encodeURIComponent(session.uid) + '&limit=2';
+  const path = '/rest/v1/support_chat_sessions?select=id,customer_user_id,status,expires_at,message_count,revision&id=eq.' + encodeURIComponent(conversationId) + '&customer_user_id=eq.' + encodeURIComponent(next.uid) + '&limit=2';
   const result = await supabase(path, {}); const rows = Array.isArray(result.data) ? result.data : [];
   if (rows.length !== 1) throw new PublicError(404, 'CONVERSATION_NOT_FOUND', 'Percakapan tidak ditemukan.');
   if (rows[0].status === 'blocked') throw new PublicError(403, 'CONVERSATION_BLOCKED', 'Percakapan diblokir oleh sistem keamanan.');
   if (!rows[0].expires_at || Date.parse(rows[0].expires_at) <= Date.now()) throw new PublicError(409, 'CONVERSATION_EXPIRED', 'Masa simpan percakapan telah berakhir. Silakan buka percakapan baru.');
-  return { session, conversation: rows[0] };
+  return { session: next, conversation: rows[0], identity };
 }
 
 async function actionChatSend(req, res, body) {
@@ -672,11 +941,12 @@ async function actionChatClose(req, res, body) {
 }
 
 async function actionCustomerRefresh(req, res) {
-  const session = readSession(req, CUSTOMER_COOKIE); if (!session || session.kind !== 'customer' || !session.refreshToken) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat sudah berakhir.');
+  const identity = await resolveMainIdentity(req, res, true); const session = readSession(req, CUSTOMER_COOKIE);
+  if (!session || session.kind !== 'customer' || !session.uid || !session.refreshToken || session.uid !== identity.userId || !session.sourceHash || !timingEqual(session.sourceHash, identity.sourceHash)) throw new PublicError(401, 'CUSTOMER_SESSION_REQUIRED', 'Sesi chat sudah berakhir untuk akun Dirac ini.');
   await accountRateLimit('customer_refresh', session.uid, 20, 600, 600);
-  const refreshed = await refreshCustomerAuth(res, session); const conversation = await findActiveConversation(session.uid);
-  const next = Object.assign({}, session, { refreshToken: refreshed.refresh_token, exp: Date.now() + 180 * 24 * 60 * 60 * 1000 }); writeSession(res, CUSTOMER_COOKIE, next, 180 * 24 * 60 * 60, 'Lax');
-  return json(res, 200, { ok: true, code: 'CUSTOMER_ACCESS_REFRESHED', realtime: conversation ? chatRealtime(conversation.id, refreshed.access_token) : null });
+  const refreshed = await refreshCustomerAuth(res, session, identity); const conversation = await findActiveConversation(session.uid);
+  const next = Object.assign({}, session, { sourceHash: identity.sourceHash, refreshToken: refreshed.refresh_token, exp: Date.now() + 180 * 24 * 60 * 60 * 1000 }); writeSession(res, CUSTOMER_COOKIE, next, 180 * 24 * 60 * 60, 'Lax');
+  return json(res, 200, { ok: true, code: 'CUSTOMER_ACCESS_REFRESHED', identity: { displayName: identity.displayName, email: identity.email }, realtime: conversation ? chatRealtime(conversation.id, refreshed.access_token) : null });
 }
 
 async function issueAdminSession(res, authSession, staff, mfaAt) {
@@ -1097,5 +1367,5 @@ async function handler(req, res) {
 }
 
 handler.config = { api: { bodyParser: false } };
-handler.__test = Object.freeze({ text, messageText, email, seal, unseal, isPrivateIp, normalizeMonitorUrl, resolveMonitorAddress, probeTarget, canManageStatus, decodeJwt, normalizeSnapshot, runtimeCookieName, clientIp, verifyQueryShape, fetchJson });
+handler.__test = Object.freeze({ text, messageText, email, seal, unseal, isPrivateIp, normalizeMonitorUrl, resolveMonitorAddress, probeTarget, canManageStatus, decodeJwt, normalizeSnapshot, runtimeCookieName, clientIp, verifyQueryShape, fetchJson, mainIdentityConfig, normalizeIdentityName, deterministicBridgeUuid, supportBridgeMaterial, verifyBridgeOwner, verifyBridgeUser });
 export default handler;
