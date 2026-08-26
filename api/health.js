@@ -23697,7 +23697,7 @@ function orderMailBuildNewOrderMessages(data) {
 }
 
 function orderMailAssetBaseUrl() {
-  return String(process.env.ORDER_EMAIL_ASSET_BASE_URL || process.env.DOMAIN_SITE_URL || process.env.SITE_URL || SITE_URL || diracRoleOriginV250('www')).trim().replace(/\/+$/, '');
+  return String(process.env.ORDER_EMAIL_ASSET_BASE_URL || process.env.DOMAIN_SITE_URL || process.env.SITE_URL || globalThis.SITE_URL || diracRoleOriginV250('www')).trim().replace(/\/+$/, '');
 }
 function orderMailAssetUrl(value) {
   const raw = String(value || '').trim();
@@ -50372,7 +50372,7 @@ async function diracCentralResolveHostIpsV146(host) {
     }
   };
   try {
-    await Promise.race([walk(cleanHost, 0), new Promise((_, reject) => setTimeout(() => reject(new Error('DIRAC_DNS_TIMEOUT')), 2500))]);
+    await Promise.race([walk(cleanHost, 0), new Promise((_, reject) => setTimeout(() => reject(new Error('DIRAC_DNS_TIMEOUT')), cleanHost === diracRoleHostnameV250('recovery') ? 10000 : 2500))]);
     const result = Array.from(ips).slice(0, 32);
     DIRAC_CENTRAL_DNS_CACHE_V146.set(cleanHost, { until: Date.now() + 30 * 1000, ips: result });
     diracCentralCleanupMapV146(DIRAC_CENTRAL_DNS_CACHE_V146, 2000, 1000);
