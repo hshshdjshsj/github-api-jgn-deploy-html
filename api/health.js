@@ -9460,10 +9460,14 @@ function customerSecurityRecoveryEgressRootCauseSnapshotV262(target, securityThr
     const cacheEntry = host && dnsCacheTypeValidV263 ? DIRAC_CENTRAL_DNS_CACHE_V146.get(host) : null;
     const queryEntries = target && target.searchParams ? Array.from(target.searchParams.entries()) : [];
     return {
-      patch: 'dirac-recovery-egress-root-cause-diagnostic-v263',
+      patch: 'dirac-recovery-egress-root-cause-diagnostic-v284',
       decision_blocked: Boolean(threat && threat.block),
       reason: threat && threat.reason ? diagnosticCodeV263(threat.reason, 120) : '',
       status: Math.max(0, Math.min(599, Number(threat && threat.status || 0))),
+      secret_env_name: diagnosticCodeV263(threat && threat.secret_env_name, 100),
+      secret_material_location: diagnosticCodeV263(threat && threat.secret_material_location, 40),
+      secret_material_field: diagnosticCodeV263(threat && threat.secret_material_field, 100),
+      secret_value_bytes: Math.max(0, Math.min(65536, Number(threat && threat.secret_value_bytes || 0))),
       source_role: diagnosticCodeV263(sourceRole, 40),
       source_server_id_matches_role: Boolean(sourceRole && sourceServerId === sourceRole),
       s2s_key_version_present: Boolean(String(process.env.DIRAC_S2S_KEY_VERSION || '').trim()),
@@ -9482,7 +9486,7 @@ function customerSecurityRecoveryEgressRootCauseSnapshotV262(target, securityThr
     };
   } catch (diagnosticErrorV263) {
     return {
-      patch: 'dirac-recovery-egress-root-cause-diagnostic-v263',
+      patch: 'dirac-recovery-egress-root-cause-diagnostic-v284',
       diagnostic_failed: true,
       diagnostic_error: diracSecurityRedactDiagnosticV210(diagnosticErrorV263, 120),
       addresses_logged: false,
@@ -9667,7 +9671,7 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
       workerEgressSnapshotV262 = customerSecurityRecoveryEgressRootCauseSnapshotV262(target, workerSecurityThreatV263);
     } catch (diagnosticErrorV263) {
       workerEgressSnapshotV262 = {
-        patch: 'dirac-recovery-egress-root-cause-diagnostic-v263',
+        patch: 'dirac-recovery-egress-root-cause-diagnostic-v284',
         diagnostic_failed: true,
         diagnostic_error: diracSecurityRedactDiagnosticV210(diagnosticErrorV263, 120),
         addresses_logged: false,
@@ -9683,12 +9687,19 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
     try {
       console.error('[recovery-worker-unreachable]', JSON.stringify({
         patch: 'dirac-recovery-worker-proxy-diagnostic-v260',
-        root_cause_patch: 'dirac-recovery-egress-root-cause-diagnostic-v263',
+        root_cause_patch: 'dirac-recovery-egress-root-cause-diagnostic-v284',
         name: workerErrorName,
         message: workerErrorMessage,
         error_code: workerErrorCodeV262,
         egress_reason: workerEgressReasonV263 || String(workerEgressSnapshotV262 && workerEgressSnapshotV262.reason || ''),
         egress_status: workerEgressStatusV263 || Number(workerEgressSnapshotV262 && workerEgressSnapshotV262.status || 0),
+        egress_secret_env_name: workerDiagnosticCodeV263(workerSecurityThreatV263 && workerSecurityThreatV263.secret_env_name, 100),
+        egress_secret_material_location: workerDiagnosticCodeV263(workerSecurityThreatV263 && workerSecurityThreatV263.secret_material_location, 40),
+        egress_secret_material_field: workerDiagnosticCodeV263(workerSecurityThreatV263 && workerSecurityThreatV263.secret_material_field, 100),
+        egress_secret_value_bytes: Math.max(0, Math.min(65536, Number(workerSecurityThreatV263 && workerSecurityThreatV263.secret_value_bytes || 0))),
+        upstream_gateway_classification: workerUpstreamStatusV260 === 429 && /^text\/html(?:;|$)/i.test(workerUpstreamContentTypeV260)
+          ? 'upstream_firewall_or_rate_limit_html'
+          : '',
         stage: workerFailureStageV260,
         fetch_elapsed_ms: Math.max(0, Date.now() - workerFetchStartedAtV262),
         controller_aborted: Boolean(controller && controller.signal && controller.signal.aborted),
@@ -43253,9 +43264,9 @@ const DIRAC_CENTRAL_PATCH_TARGETS_V221 = Object.freeze([
 ]);
 const DIRAC_CENTRAL_LEGACY_DUPLICATE_FUNCTIONS_V221 = Object.freeze({});
 const DIRAC_CENTRAL_BAN_FUNCTION_HASHES_V221 = Object.freeze({
-  diracCentralBanAndBlockV146: 'd48d5e80da632dfc04cc1e5ff7e8ef4d578cf5962fc61d670b7b3c7974554a87',
+  diracCentralBanAndBlockV146: '4501341da565c32a0f7566a48508b9608571e65fa80bfdce05146c6dd8ecaaa8',
   diracCentralWritePersistentBanV146: '39aff298cdaa263aeb6d6e4592ea7554d32f2e56006efdef7cffc88a4b8ee89a',
-  diracCentralCheckPersistentBanV146: '421fce951769abb72590b6bcd1a961978b962ef8e80575e0a515441f5b7ac111',
+  diracCentralCheckPersistentBanV146: 'fcd5ef64e03d9cb0d5a19ee76fd8a3fd0be2d9b87f39e8220df4d195765cee2a',
   diracCentralBlockMsV146: '15ba6d2ca1c5370c7d650b5f82b0e93169f7e9085426877664d962412f7dfce2',
   diracCentralSetMemoryBanV146: 'd9018b8a398fe4d0cc0b2343ff697307793051e85591471055b5883775d1d9b6'
 });
@@ -46842,6 +46853,9 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
         });
         if ((result && result.directCode === 'CENTRAL_RATE_LIMITED')
             || diracCentralIsRateControlRejectionV280(reason)) {
+          const transientRateBanV284 = await diracCentralWriteTransientFailureBanV284(ctx, ctx.action || 'central_guard_rate_limit', method, reason).catch(() => ({ ok: false }));
+          if (ctx) ctx.__diracCentralPersistentBanWrittenV194 = Boolean(transientRateBanV284 && transientRateBanV284.ok === true);
+          if (!transientRateBanV284 || transientRateBanV284.ok !== true) return diracCentralPersistenceUnavailableResponseV210(res);
           return diracCentralRateLimitedResponseV280(res, ctx, reason);
         }
         if (result && result.directCode) return diracCentralBlockedResponseV146(res, result.directCode);
@@ -47187,6 +47201,23 @@ async function diracCentralCheckPersistentBanV146(req, identity) {
     return { blocked: true, blockedUntilMs: now + diracCentralBlockMsV146(), failClosed: true };
   }
 
+  try {
+    const transientKeyV284 = diracCentralTransientPersistentBanKeyV284(key);
+    if (!transientKeyV284 || typeof readPersistentSecurityJsonStrictV194 !== 'function') {
+      return { blocked: true, blockedUntilMs: now + diracCentralBlockMsV146(), failClosed: true, reason: 'persistent_transient_ban_store_unavailable_v284' };
+    }
+    const transientLookupV284 = await readPersistentSecurityJsonStrictV194(transientKeyV284);
+    if (!transientLookupV284 || transientLookupV284.ok !== true) {
+      return { blocked: true, blockedUntilMs: now + diracCentralBlockMsV146(), failClosed: true, reason: 'persistent_transient_ban_lookup_failed_v284' };
+    }
+    storageChecked = true;
+    const transientRecordV284 = transientLookupV284.record;
+    const transientBlockedUntilMsV284 = Number(transientRecordV284 && (transientRecordV284.blocked_until_ms || transientRecordV284.blockedUntilMs) || 0);
+    if (transientBlockedUntilMsV284 > now) return { blocked: true, blockedUntilMs: transientBlockedUntilMsV284 };
+  } catch (_) {
+    return { blocked: true, blockedUntilMs: now + diracCentralBlockMsV146(), failClosed: true, reason: 'persistent_transient_ban_check_exception_v284' };
+  }
+
   if (!storageChecked || !LOGIN_SECURITY_PERSIST_TABLE) {
     return { blocked: true, blockedUntilMs: now + diracCentralBlockMsV146(), failClosed: true, reason: 'persistent_ban_storage_required' };
   }
@@ -47266,7 +47297,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
     'domain_login', 'domain_register', 'domain_logout', 'domain_me', 'domain_dashboard_me', 'domain_mfa_status',
     'dirac_mfa_passkey_start', 'dirac_mfa_passkey_verify', 'domain_mfa_passkey_start',
     'domain_mfa_passkey_verify', 'dirac_mfa_passkey_status', 'domain_mfa_passkey_status',
-    'dirac_passkey_status', 'domain_passkey_status', 'customer_session_handoff_issue', 'customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify', 'security_report', 'customer_security_recovery_hpke_submit'
+    'dirac_passkey_status', 'domain_passkey_status', 'customer_session_handoff_issue', 'customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify', 'security_report', 'customer_security_recovery_hpke_submit', 'midtrans_webhook'
   ]);
   const dashboard = new Set([
     'domain_dashboard_me', 'dashboard', 'my_orders', 'customer_orders', 'pesanan_saya',
@@ -50428,7 +50459,49 @@ async function diracCentralOutboundSecretLeakGuardV194(url, input, options) {
     if (!material.includes(entry.value)) continue;
     const serviceRole = /(?:SUPABASE_SERVICE_ROLE_KEY|SUPABASE_SERVICE_KEY)$/.test(entry.name);
     if (serviceRole && ctx && ctx.__diracCentralSafeServiceRoleFetchV146 && diracCentralConfiguredSupabaseHostsV194().has(host)) continue;
-    return { block: true, reason: 'egress_runtime_secret_blocked' };
+    let secretMaterialLocation = 'unknown';
+    let secretMaterialField = '';
+    try {
+      const targetText = String(url && url.toString ? url.toString() : url || '');
+      if (targetText.includes(entry.value)) secretMaterialLocation = 'url';
+      const headers = options && options.headers || input && input.headers || {};
+      const headerEntries = [];
+      if (headers && typeof headers.forEach === 'function') headers.forEach((value, key) => headerEntries.push([key, value]));
+      else headerEntries.push(...Object.entries(headers || {}));
+      for (const [key, value] of headerEntries) {
+        if (String(key).includes(entry.value)) {
+          secretMaterialLocation = 'header_name';
+          secretMaterialField = 'redacted_header_name';
+          break;
+        }
+        if (String(value).includes(entry.value)) {
+          secretMaterialLocation = 'header_value';
+          secretMaterialField = String(key).toLowerCase().replace(/[^a-z0-9-]/g, '_').slice(0, 100);
+          break;
+        }
+      }
+      if (secretMaterialLocation === 'unknown') {
+        const body = options && options.body;
+        const bodyText = typeof body === 'string'
+          ? body
+          : (Buffer.isBuffer(body) || body instanceof Uint8Array)
+            ? Buffer.from(body).toString('utf8')
+            : body && typeof body.toString === 'function' && body.constructor && body.constructor.name === 'URLSearchParams'
+              ? body.toString()
+              : body && typeof body === 'object' && Object.getPrototypeOf(body) === Object.prototype
+                ? JSON.stringify(body)
+                : '';
+        if (bodyText.includes(entry.value)) secretMaterialLocation = 'body';
+      }
+    } catch (suppressedErrorV284) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV284); }
+    return {
+      block: true,
+      reason: 'egress_runtime_secret_blocked',
+      secret_env_name: String(entry.name || '').replace(/[^A-Z0-9_]/gi, '_').slice(0, 100),
+      secret_material_location: secretMaterialLocation,
+      secret_material_field: secretMaterialField,
+      secret_value_bytes: Buffer.byteLength(String(entry.value || ''), 'utf8')
+    };
   }
   return { ok: true };
 }
@@ -50583,11 +50656,70 @@ function diracCentralCircuitBreakerV146(req, ctx, event) {
   return { ok: true };
 }
 
+const DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 = 60 * 1000;
+
+function diracCentralTransientPersistentBanKeyV284(identityKey) {
+  const clean = String(identityKey || '').trim();
+  if (!/^[A-Za-z0-9:._-]{1,450}$/.test(clean)) return '';
+  return clean + ':transient-v284';
+}
+
+async function diracCentralWriteTransientFailureBanV284(ctx, action, method, reason) {
+  const identityKey = String(ctx && ctx.identity && ctx.identity.key || '').trim();
+  const persistentKey = diracCentralTransientPersistentBanKeyV284(identityKey);
+  if (!persistentKey || typeof writePersistentSecurityJsonRequiredV194 !== 'function') return { ok: false };
+  const now = Date.now();
+  const blockedUntilMs = now + DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284;
+  const classification = ctx && ctx.failureClassificationV221 && typeof ctx.failureClassificationV221 === 'object'
+    ? ctx.failureClassificationV221
+    : {};
+  const record = {
+    type: 'central_guard_transient_persistent_ban_v284',
+    action: String(action || '').slice(0, 80),
+    method: String(method || '').slice(0, 12),
+    reason: String(reason || 'central_security_block').slice(0, 100),
+    failure_class: String(classification.failureClass || 'unclassified').slice(0, 80),
+    severity: String(classification.severity || 'high').slice(0, 20),
+    source: DIRAC_CENTRAL_SECURITY_GUARD_V146,
+    blocked_until_ms: blockedUntilMs,
+    created_at: new Date(now).toISOString()
+  };
+  const wrote = await writePersistentSecurityJsonRequiredV194(
+    persistentKey,
+    record,
+    blockedUntilMs,
+    Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000)
+  ).catch(() => false);
+  if (wrote !== true) {
+    try {
+      if (typeof diracCentralEmitDebugV211 === 'function') diracCentralEmitDebugV211(ctx, 'persistent_ban_write_failed', {
+        persistent_ban_written: false,
+        ban_type: record.type,
+        ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000)
+      });
+    } catch (suppressedErrorV284) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV284); }
+    return { ok: false };
+  }
+  DIRAC_CENTRAL_NEGATIVE_BAN_V146.delete(identityKey);
+  diracCentralSetMemoryBanV146(ctx.identity, blockedUntilMs, record.reason);
+  try {
+    if (typeof diracCentralEmitDebugV211 === 'function') diracCentralEmitDebugV211(ctx, 'persistent_ban_written', {
+      persistent_ban_written: true,
+      ban_type: record.type,
+      ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000),
+      blocked_until_ms: blockedUntilMs
+    });
+  } catch (suppressedErrorV284) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV284); }
+  return { ok: true, blockedUntilMs };
+}
+
 async function diracCentralBanAndBlockV146(req, res, ctx, action, method, reason) {
   try { await Promise.resolve(diracCentralCircuitBreakerV146(req, ctx, reason || 'block')); } catch (_) {}
   const permanentDecision = diracCentralPermanentBanDecisionV281(ctx, reason);
   if (!permanentDecision.permanent) {
-    if (ctx) ctx.__diracCentralPersistentBanWrittenV194 = false;
+    const transientBan = await diracCentralWriteTransientFailureBanV284(ctx, action, method, reason).catch(() => ({ ok: false }));
+    if (ctx) ctx.__diracCentralPersistentBanWrittenV194 = Boolean(transientBan && transientBan.ok === true);
+    if (!transientBan || transientBan.ok !== true) return diracCentralPersistenceUnavailableResponseV210(res);
     return diracCentralBlockedResponseV146(res, reason);
   }
   const now = Date.now();
