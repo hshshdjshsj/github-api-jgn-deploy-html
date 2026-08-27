@@ -16,6 +16,8 @@ const MAIN_COOKIE_MAX_CHUNKS = 12;
 const ADMIN_COOKIE = '__Host-dirac_support_admin';
 const MFA_COOKIE = '__Host-dirac_support_mfa';
 const CSRF_COOKIE = '__Host-dirac_support_csrf_seed';
+const ADMIN_BINDING_HEADER = 'x-dirac-admin-binding';
+const ADMIN_BINDING_VERSION = 'dirac-support-admin-binding-v1';
 const ACTIVE_CHAT_STATES = ['new', 'queued', 'active', 'waiting_customer', 'waiting_admin'];
 const SERVICE_STATES = new Set(['operational', 'degraded', 'partial_outage', 'major_outage', 'maintenance', 'unknown']);
 const INCIDENT_STAGES = new Set(['detected', 'investigating', 'identified', 'fixing', 'monitoring', 'resolved']);
@@ -64,6 +66,9 @@ function config() {
   const csrfSecret = env('DIRAC_SUPPORT_CSRF_SECRET');
   const ipSecret = env('DIRAC_SUPPORT_IP_HMAC_SECRET');
   const mfaEnrollmentSecret = env('DIRAC_SUPPORT_MFA_ENROLLMENT_SECRET');
+  const primaryAdminUserId = env('DIRAC_SUPPORT_PRIMARY_ADMIN_USER_ID').toLowerCase();
+  const primaryAdminEmail = env('DIRAC_SUPPORT_PRIMARY_ADMIN_EMAIL').toLowerCase();
+  const adminBindingSecret = env('DIRAC_SUPPORT_ADMIN_BINDING_SECRET');
   const turnstileSiteKey = env('DIRAC_SUPPORT_TURNSTILE_SITE_KEY'); const turnstileSecretKey = env('DIRAC_SUPPORT_TURNSTILE_SECRET_KEY');
   const turnstileRequired = envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', isProduction());
   if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(supabaseUrl)) throw new PublicError(503, 'SUPPORT_CONFIG_INVALID', 'Konfigurasi database support belum valid.');
@@ -71,7 +76,12 @@ function config() {
   const publishableValid = /^sb_publishable_[A-Za-z0-9_-]{10,}$/.test(publishableKey) || publishableRole === 'anon';
   const secretValid = /^sb_secret_[A-Za-z0-9_-]{10,}$/.test(secretKey) || secretRole === 'service_role';
   if (!publishableValid || !secretValid || timingEqual(publishableKey, secretKey)) throw new PublicError(503, 'SUPPORT_KEYS_INVALID', 'Kelas kunci Supabase support tidak valid atau tertukar.');
-  const securitySecrets = [cookieSecret, csrfSecret, ipSecret, mfaEnrollmentSecret];
+  const securitySecrets = [cookieSecret, csrfSecret, ipSecret, mfaEnrollmentSecret, adminBindingSecret];
+  if (isProduction() && (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(primaryAdminUserId)
+      || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(primaryAdminEmail)
+      || Buffer.byteLength(adminBindingSecret, 'utf8') < 32)) {
+    throw new PublicError(503, 'PRIMARY_ADMIN_BINDING_CONFIG_INVALID', 'Binding admin utama belum dikonfigurasi lengkap.');
+  }
   if (isProduction() && (securitySecrets.some((value) => Buffer.byteLength(value, 'utf8') < 32) || new Set(securitySecrets).size !== securitySecrets.length)) {
     throw new PublicError(503, 'SUPPORT_SECRETS_WEAK', 'Secret keamanan support wajib kuat dan berbeda satu sama lain.');
   }
@@ -84,6 +94,9 @@ function config() {
     csrfSecret: csrfSecret || 'development-csrf-secret-change-before-production',
     ipSecret: ipSecret || 'development-ip-secret-change-before-production',
     mfaEnrollmentSecret: mfaEnrollmentSecret || 'development-mfa-enrollment-secret-change-before-production',
+    primaryAdminUserId,
+    primaryAdminEmail,
+    adminBindingSecret: adminBindingSecret || 'development-admin-binding-secret-change-before-production',
     turnstileSiteKey,
     turnstileSecretKey,
     turnstileRequired,
@@ -91,6 +104,43 @@ function config() {
     // HTTP capability must never be weaker than the channel capability.
     adminMfaRequired: true
   };
+}
+
+function primaryAdminBindingCanonical(cfg) {
+  const current = cfg || config();
+  return ADMIN_BINDING_VERSION + '\n' + current.primaryAdminUserId + '\n' + current.primaryAdminEmail;
+}
+
+function expectedAdminBindingProof(cfg) {
+  const current = cfg || config();
+  return hmac(current.adminBindingSecret, primaryAdminBindingCanonical(current), 'base64url');
+}
+
+function requireAdminBuildBinding(req) {
+  const candidate = String(req && req.headers && req.headers[ADMIN_BINDING_HEADER] || '').trim();
+  if (!/^[A-Za-z0-9_-]{43}$/.test(candidate)) {
+    throw new PublicError(403, 'ADMIN_BUILD_BINDING_REQUIRED', 'Binding build admin tidak ditemukan.');
+  }
+  const expected = expectedAdminBindingProof(config());
+  if (!timingEqual(candidate, expected)) {
+    throw new PublicError(403, 'ADMIN_BUILD_BINDING_REJECTED', 'Binding build admin tidak valid.');
+  }
+  return true;
+}
+
+function requirePinnedPrimaryAdmin(staff) {
+  const cfg = config();
+  const staffId = String(staff && staff.user_id || '').toLowerCase();
+  const staffEmail = String(staff && staff.email || '').trim().toLowerCase();
+  if (!staff
+      || staffId !== cfg.primaryAdminUserId
+      || staffEmail !== cfg.primaryAdminEmail
+      || String(staff.role || '') !== 'admin'
+      || staff.is_active !== true
+      || staff.mfa_required !== true) {
+    throw new PublicError(403, 'PRIMARY_ADMIN_PIN_MISMATCH', 'Identitas admin tidak sesuai pin backend.');
+  }
+  return staff;
 }
 
 function allowedOrigins() {
@@ -126,7 +176,7 @@ function securityHeaders(req, res, action) {
   }
   setHeader(res, 'Vary', 'Origin');
   setHeader(res, 'Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  setHeader(res, 'Access-Control-Allow-Headers', 'Content-Type, Accept, X-Dirac-CSRF, Idempotency-Key, If-None-Match');
+  setHeader(res, 'Access-Control-Allow-Headers', 'Content-Type, Accept, X-Dirac-CSRF, X-Dirac-Admin-Binding, Idempotency-Key, If-None-Match');
   setHeader(res, 'Access-Control-Expose-Headers', 'ETag, Retry-After, X-Dirac-Request-ID, X-Dirac-Central-Security-Guard');
   setHeader(res, 'Access-Control-Max-Age', '600');
   setHeader(res, 'X-Content-Type-Options', 'nosniff');
@@ -761,7 +811,7 @@ async function staffByUser(userId) {
   const result = await supabase('/rest/v1/support_staff?select=user_id,email,display_name,role,is_active,mfa_required,session_version&user_id=eq.' + encodeURIComponent(userId) + '&limit=2', {});
   const rows = Array.isArray(result.data) ? result.data : [];
   if (rows.length !== 1 || rows[0].is_active !== true) throw new PublicError(403, 'STAFF_NOT_ALLOWED', 'Akun ini tidak memiliki akses staff aktif.');
-  return rows[0];
+  return requirePinnedPrimaryAdmin(rows[0]);
 }
 
 function publicAdmin(staff) {
@@ -1041,6 +1091,7 @@ async function issueAdminSession(res, authSession, staff, mfaAt) {
 
 async function actionAdminLogin(req, res, body) {
   exactKeys(body, ['email', 'password', 'turnstileToken', 'enrollmentSecret']); const adminEmail = email(body.email, true); const password = String(body.password || ''); const token = text(body.turnstileToken, config().turnstileRequired ? 10 : 0, 4096, 'Token Turnstile');
+  if (adminEmail !== config().primaryAdminEmail) throw new PublicError(401, 'CREDENTIALS_INVALID', 'Email atau password belum sesuai.');
   if (password.length < 8 || password.length > 256) throw new PublicError(400, 'CREDENTIALS_INVALID', 'Email atau password belum sesuai.');
   await rateLimit(req, 'admin_login_ip', 5, 900, 1800, 'ip'); await accountRateLimit('admin_login_account', adminEmail, 5, 900, 1800);
   req.diracAuthAuditEligible = true;
@@ -1531,7 +1582,7 @@ const DIRAC_SUPPORT_CENTRAL_ALLOWED_REFERER_PATHS_V146 = new Set([
   '/chat.html', '/chat-admin.html', '/status.html'
 ]);
 const DIRAC_SUPPORT_CENTRAL_PREFLIGHT_HEADERS_V146 = new Set([
-  'accept', 'content-type', 'x-dirac-csrf', 'idempotency-key', 'if-none-match'
+  'accept', 'content-type', 'x-dirac-csrf', 'x-dirac-admin-binding', 'idempotency-key', 'if-none-match'
 ]);
 const DIRAC_SUPPORT_CENTRAL_SCANNER_UA_REGEX_V146 = /\b(?:curl|wget|httpie|fetch-cli|python|python-requests|aiohttp|urllib|requests|mechanize|scrapy|node-fetch|axios|got|undici|go-http-client|java|okhttp|apache-httpclient|libwww-perl|lwp|ruby|php|powershell|httpclient|postman|postmanruntime|insomnia|paw|hoppscotch|burp|burp\s*suite|owasp\s*zap|zap|mitmproxy|fiddler|charles|caido|sqlmap|nuclei|nikto|acunetix|netsparker|invicti|nessus|openvas|qualys|appscan|webinspect|w3af|arachni|skipfish|jaeles|xray|x-ray|whatweb|wpscan|joomscan|droopescan|ffuf|gobuster|dirb|dirbuster|feroxbuster|wfuzz|dirsearch|hydra|medusa|patator|nmap|masscan|zgrab|zmap|shodan|censys|binaryedge|commix|havij|xsser|dalfox|tplmap|ysoserial|metasploit|msfconsole|headlesschrome|phantomjs|selenium|playwright|puppeteer|chromedriver|geckodriver)\b/i;
 const DIRAC_SUPPORT_CENTRAL_STRUCTURAL_THREATS_V146 = Object.freeze([
@@ -2084,6 +2135,7 @@ const DIRAC_SUPPORT_ACTION_HANDLERS_V146 = Object.freeze({
 });
 
 async function dispatch(req, res, action, body) {
+  if (String(action || '').startsWith('admin_')) requireAdminBuildBinding(req);
   const actionHandler = DIRAC_SUPPORT_ACTION_HANDLERS_V146[action];
   if (typeof actionHandler !== 'function') throw new PublicError(404, 'ACTION_NOT_FOUND', 'Action support tidak ditemukan.');
   return actionHandler(req, res, body);
