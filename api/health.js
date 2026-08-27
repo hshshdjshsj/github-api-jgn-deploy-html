@@ -9902,7 +9902,7 @@ const DIRAC_RECOVERY_BROWSER_TRANSPORT_VERSION_V287 = 'dirac-recovery-browser-tr
 const DIRAC_RECOVERY_BROWSER_RESPONSE_VERSION_V287 = 'dirac-recovery-browser-response-v287';
 const DIRAC_RECOVERY_BROWSER_TRANSPORT_SUITE_V287 = 'ECDH-P256+HKDF-SHA256+AES-256-GCM';
 const DIRAC_RECOVERY_BROWSER_TRANSPORT_TTL_MS_V287 = 60 * 1000;
-const DIRAC_RECOVERY_BROWSER_ORIGIN_V287 = 'https://auth.diracgroup.store';
+const DIRAC_RECOVERY_BROWSER_ORIGIN_V287 = diracRoleOriginV250('auth');
 
 function diracRecoveryBrowserTransportKeyMaterialV287() {
   const seed = Buffer.from(diracCentralDeriveSecretV146('recovery-browser-transport-p256-v287'));
@@ -15058,7 +15058,7 @@ function diracPasskeyA2FOriginHostname(origin) {
   try { return new URL(String(origin || '')).hostname.toLowerCase(); } catch (_) { return ''; }
 }
 
-const DIRAC_PASSKEY_CANONICAL_RP_ID_V310 = 'diracgroup.store';
+const DIRAC_PASSKEY_CANONICAL_RP_ID_V310 = diracBaseDomainV250();
 
 function diracPasskeyA2FRpId(req) {
   const requestHost = diracPasskeyA2FOriginHostname(requestOrigin(req)) || diracRoleHostnameV250(diracAppRoleV250());
@@ -47767,6 +47767,49 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
   ]);
   const www = new Set(['hostinger_check', 'domain_check']);
 
+  if (role === 'auth' && [
+    'customer_security_status',
+    'customer_security_overview',
+    'customer_security_revoke_session',
+    'customer_security_revoke_other_sessions',
+    'customer_security_account_request',
+    'customer_security_trust_current_device',
+    'customer_security_untrust_device'
+  ].includes(clean)) {
+    try {
+      const expectedOrigin = diracRoleOriginV250('security').toLowerCase();
+      const expectedMethods = Object.freeze({
+        customer_security_status: 'GET',
+        customer_security_overview: 'GET',
+        customer_security_revoke_session: 'POST',
+        customer_security_revoke_other_sessions: 'POST',
+        customer_security_account_request: 'POST',
+        customer_security_trust_current_device: 'POST',
+        customer_security_untrust_device: 'POST'
+      });
+      const headers = req && req.headers || {};
+      const origin = String(headers.origin || '').trim().toLowerCase();
+      const method = String(req && req.method || '').trim().toUpperCase();
+      const expectedMethod = expectedMethods[clean];
+      if (origin !== expectedOrigin) return { ok: false, reason: 'security_gateway_origin_invalid' };
+      if (method === 'OPTIONS') {
+        const requestedMethod = String(headers['access-control-request-method'] || '').trim().toUpperCase();
+        if (requestedMethod !== expectedMethod) return { ok: false, reason: 'security_gateway_preflight_method_invalid' };
+        return { ok: true };
+      }
+      if (method !== expectedMethod) return { ok: false, reason: 'security_gateway_method_invalid' };
+      const referer = new URL(String(headers.referer || headers.referrer || '').trim());
+      if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
+          || referer.origin.toLowerCase() !== expectedOrigin || referer.pathname !== '/keamanan.html'
+          || referer.search || referer.hash) {
+        return { ok: false, reason: 'security_gateway_referer_invalid' };
+      }
+      return { ok: true };
+    } catch (_) {
+      return { ok: false, reason: 'security_gateway_context_invalid' };
+    }
+  }
+
   if (role === 'auth' && clean === 'checkout_order') {
     try {
       const expectedOrigin = diracBaseOriginV250().toLowerCase();
@@ -47968,7 +48011,7 @@ function diracCentralValidateRefererV146(value) {
   let url;
   try { url = new URL(raw); } catch (_) { return { ok: false, reason: 'referer_invalid_url' }; }
   if (!DIRAC_CENTRAL_ALLOWED_ORIGINS_V146.has(url.origin)) return { ok: false, reason: 'referer_origin_invalid' };
-  if (!DIRAC_CENTRAL_ALLOWED_REFERER_PATHS_V146.has(url.pathname)) return (() => { const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null; const req = ctx && ctx.req && typeof ctx.req === 'object' ? ctx.req : null; const headers = req && req.headers && typeof req.headers === 'object' ? req.headers : {}; const csrfPrimary = String(headers['x-dirac-csrf-token'] || '').trim(); const csrfCompat = String(headers['x-csrf-token'] || '').trim(); const pageNonce = String(headers['x-dirac-page-nonce'] || '').trim(); const exactSafariOriginOnlyLogin = Boolean(req && ctx && ctx.action === 'domain_login' && ctx.method === 'POST' && raw === 'https://auth.diracgroup.store/' && url.origin === 'https://auth.diracgroup.store' && url.pathname === '/' && !url.search && !url.hash && String(headers.origin || '').trim() === 'https://auth.diracgroup.store' && String(headers['sec-fetch-site'] || '').toLowerCase() === 'same-site' && String(headers['sec-fetch-mode'] || '').toLowerCase() === 'cors' && ['', 'empty'].includes(String(headers['sec-fetch-dest'] || '').toLowerCase()) && /AppleWebKit/i.test(String(headers['user-agent'] || '')) && /Safari\//i.test(String(headers['user-agent'] || '')) && !/(?:CriOS|FxiOS|EdgiOS|OPiOS|Chrome|Chromium|Firefox|Edg|OPR)/i.test(String(headers['user-agent'] || '')) && csrfPrimary && csrfCompat && (typeof safeEqual === 'function' ? safeEqual(csrfPrimary, csrfCompat) : csrfPrimary === csrfCompat) && pageNonce); if (!exactSafariOriginOnlyLogin) return { ok: false, reason: 'referer_path_invalid' }; const sec = diracCentralSecFetchGuardV146(req, ctx); if (!sec || sec.ok !== true) return { ok: false, reason: 'referer_path_invalid' }; const csrf = typeof diracV138CsrfForceVerify === 'function' ? diracV138CsrfForceVerify(req, ctx.action) : { ok: false }; if (!csrf || csrf.ok !== true) return { ok: false, reason: 'referer_path_invalid' }; const nonce = typeof diracCentralVerifyPageNonceV146 === 'function' ? diracCentralVerifyPageNonceV146(req, pageNonce, ctx.action) : { ok: false }; if (!nonce || nonce.ok !== true || !nonce.payload || !/^[a-f0-9]{64}$/.test(String(nonce.payload.sid || '')) || !/^[a-f0-9]{64}$/.test(String(nonce.payload.oh || ''))) return { ok: false, reason: 'referer_path_invalid' }; return { ok: true }; })();
+  if (!DIRAC_CENTRAL_ALLOWED_REFERER_PATHS_V146.has(url.pathname)) return (() => { const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null; const req = ctx && ctx.req && typeof ctx.req === 'object' ? ctx.req : null; const headers = req && req.headers && typeof req.headers === 'object' ? req.headers : {}; const csrfPrimary = String(headers['x-dirac-csrf-token'] || '').trim(); const csrfCompat = String(headers['x-csrf-token'] || '').trim(); const pageNonce = String(headers['x-dirac-page-nonce'] || '').trim(); const exactSafariOriginOnlyLogin = Boolean(req && ctx && ctx.action === 'domain_login' && ctx.method === 'POST' && raw === diracRoleOriginV250('auth') + '/' && url.origin === diracRoleOriginV250('auth') && url.pathname === '/' && !url.search && !url.hash && String(headers.origin || '').trim() === diracRoleOriginV250('auth') && String(headers['sec-fetch-site'] || '').toLowerCase() === 'same-site' && String(headers['sec-fetch-mode'] || '').toLowerCase() === 'cors' && ['', 'empty'].includes(String(headers['sec-fetch-dest'] || '').toLowerCase()) && /AppleWebKit/i.test(String(headers['user-agent'] || '')) && /Safari\//i.test(String(headers['user-agent'] || '')) && !/(?:CriOS|FxiOS|EdgiOS|OPiOS|Chrome|Chromium|Firefox|Edg|OPR)/i.test(String(headers['user-agent'] || '')) && csrfPrimary && csrfCompat && (typeof safeEqual === 'function' ? safeEqual(csrfPrimary, csrfCompat) : csrfPrimary === csrfCompat) && pageNonce); if (!exactSafariOriginOnlyLogin) return { ok: false, reason: 'referer_path_invalid' }; const sec = diracCentralSecFetchGuardV146(req, ctx); if (!sec || sec.ok !== true) return { ok: false, reason: 'referer_path_invalid' }; const csrf = typeof diracV138CsrfForceVerify === 'function' ? diracV138CsrfForceVerify(req, ctx.action) : { ok: false }; if (!csrf || csrf.ok !== true) return { ok: false, reason: 'referer_path_invalid' }; const nonce = typeof diracCentralVerifyPageNonceV146 === 'function' ? diracCentralVerifyPageNonceV146(req, pageNonce, ctx.action) : { ok: false }; if (!nonce || nonce.ok !== true || !nonce.payload || !/^[a-f0-9]{64}$/.test(String(nonce.payload.sid || '')) || !/^[a-f0-9]{64}$/.test(String(nonce.payload.oh || ''))) return { ok: false, reason: 'referer_path_invalid' }; return { ok: true }; })();
   if (url.search || url.hash) return { ok: false, reason: 'referer_has_suffix_after_html' };
   const afterOrigin = raw.slice(url.origin.length);
   if (!DIRAC_CENTRAL_ALLOWED_REFERER_PATHS_V146.has(afterOrigin)) return { ok: false, reason: 'referer_not_exact_html' };
