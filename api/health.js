@@ -45686,7 +45686,7 @@ function diracCentralRecoveryGenerateEgressTimeoutMsV225(input, options) {
     const expectedTargetServerId = diracS2SIdV206('recovery');
     if (s2sVersion !== DIRAC_S2S_VERSION_V206
         || s2sPolicy !== DIRAC_S2S_POLICY_V206
-        || networkId !== diracS2STextV206('DIRAC_S2S_NETWORK_ID')
+        || networkId !== diracS2SNetworkIdForActionV287(DIRAC_RECOVERY_WORKER_ACTION, serverId)
         || serverId !== diracS2SIdV206(diracS2STextV206('DIRAC_S2S_SERVER_ID'))
         || targetServerId !== expectedTargetServerId
         || keyVersion !== diracS2SKeyVersionV206(diracS2STextV206('DIRAC_S2S_KEY_VERSION'))
