@@ -9898,20 +9898,20 @@ async function customerSecurityVerifyRecoveryCodeViaWorker(req, res, action, acc
   }
 }
 
-const DIRAC_RECOVERY_BROWSER_TRANSPORT_VERSION_V287 = 'dirac-recovery-browser-transport-v288';
-const DIRAC_RECOVERY_BROWSER_RESPONSE_VERSION_V287 = 'dirac-recovery-browser-response-v288';
+const DIRAC_RECOVERY_BROWSER_TRANSPORT_VERSION_V287 = 'dirac-recovery-browser-transport-v287';
+const DIRAC_RECOVERY_BROWSER_RESPONSE_VERSION_V287 = 'dirac-recovery-browser-response-v287';
 const DIRAC_RECOVERY_BROWSER_TRANSPORT_SUITE_V287 = 'ECDH-P256+HKDF-SHA256+AES-256-GCM';
 const DIRAC_RECOVERY_BROWSER_TRANSPORT_TTL_MS_V287 = 60 * 1000;
 const DIRAC_RECOVERY_BROWSER_ORIGIN_V287 = diracRoleOriginV250('auth');
 
 function diracRecoveryBrowserTransportKeyMaterialV287() {
-  const seed = Buffer.from(diracCentralDeriveSecretV146('recovery-browser-transport-p256-v288'));
+  const seed = Buffer.from(diracCentralDeriveSecretV146('recovery-browser-transport-p256-v287'));
   try {
     for (let counter = 0; counter < 256; counter += 1) {
       const counterBytes = Buffer.alloc(4);
       counterBytes.writeUInt32BE(counter >>> 0, 0);
       const candidate = crypto.createHmac('sha256', seed)
-        .update('dirac/recovery-browser/p256/private/v288\n', 'utf8')
+        .update('dirac/recovery-browser/p256/private/v287\n', 'utf8')
         .update(counterBytes)
         .digest();
       counterBytes.fill(0);
@@ -9995,20 +9995,11 @@ function diracRecoveryBrowserBindingDigestV287(req, body, origin) {
     error.code = 'RECOVERY_BROWSER_TRANSPORT_ACTION_INVALID';
     throw error;
   }
-  const pageNonce = diracRecoveryBrowserHeaderV287(req, 'x-dirac-page-nonce');
-  const pageNonceProof = pageNonce && pageNonce.length <= 4096 && typeof diracCentralVerifyPageNonceV146 === 'function'
-    ? diracCentralVerifyPageNonceV146(req, pageNonce, action)
-    : { ok: false };
-  if (!pageNonceProof || pageNonceProof.ok !== true) {
-    const error = new Error('RECOVERY_BROWSER_TRANSPORT_PAGE_NONCE_BINDING_INVALID');
-    error.code = 'RECOVERY_BROWSER_TRANSPORT_PAGE_NONCE_BINDING_INVALID';
-    throw error;
-  }
   const material = [
-    'dirac/recovery-browser/binding/v288',
+    'dirac/recovery-browser/binding/v287',
     action,
     String(origin || ''),
-    pageNonce,
+    csrfPrimary,
     String(body && body.transport_request_id || ''),
     String(body && body.transport_sent_at_ms || ''),
     String(body && body.transport_expires_at_ms || ''),
@@ -10035,7 +10026,7 @@ function diracRecoveryBrowserAadV287(body, origin, bindingDigest) {
 
 function diracRecoveryBrowserHkdfInfoV287(kind, requestId, keyId, bindingDigest) {
   return Buffer.from([
-    'dirac/recovery-browser/v288/' + String(kind || ''),
+    'dirac/recovery-browser/v287/' + String(kind || ''),
     String(requestId || ''),
     String(keyId || ''),
     String(bindingDigest || '')
@@ -10201,14 +10192,14 @@ async function diracRecoveryBrowserOpenV287(req, body) {
       error.code = 'RECOVERY_BROWSER_TRANSPORT_REPLAY_STORE_UNAVAILABLE';
       throw error;
     }
-    const replayDigest = crypto.createHmac('sha256', diracCentralDeriveSecretV146('recovery-browser-replay-v288'))
+    const replayDigest = crypto.createHmac('sha256', diracCentralDeriveSecretV146('recovery-browser-replay-v287'))
       .update(requestId, 'utf8')
       .update('\n', 'utf8')
       .update(bindingDigest, 'utf8')
       .digest('hex');
     const claimed = await claimPersistentSecurityKeyOnceV194(
-      's2s-recovery-browser-v288:' + replayDigest,
-      { type: 'recovery_browser_transport_replay_claim_v288', request_id_hash: replayDigest, created_at: new Date().toISOString() },
+      's2s-recovery-browser-v287:' + replayDigest,
+      { type: 'recovery_browser_transport_replay_claim_v287', request_id_hash: replayDigest, created_at: new Date().toISOString() },
       180
     ).catch(() => false);
     if (!claimed) {
@@ -10331,7 +10322,7 @@ async function customerSecurityGenerateRecoveryCodes(req, res, action, override 
       const code = /^[A-Z0-9_]{1,120}$/.test(String(error && error.code || ''))
         ? String(error.code)
         : 'RECOVERY_BROWSER_TRANSPORT_REJECTED';
-      try { console.error('[dirac-recovery-browser-transport-v288]', JSON.stringify({ event: 'request_rejected', code, secrets_logged: false })); } catch (_) {}
+      try { console.error('[dirac-recovery-browser-transport-v287]', JSON.stringify({ event: 'request_rejected', code, secrets_logged: false })); } catch (_) {}
       return res.status(403).json({ ok: false, code, message: 'Permintaan recovery terenkripsi ditolak.' });
     }
   }
@@ -11021,7 +11012,7 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
     const code = /^[A-Z0-9_]{1,120}$/.test(String(error && error.code || ''))
       ? String(error.code)
       : 'RECOVERY_BROWSER_TRANSPORT_REJECTED';
-    try { console.error('[dirac-recovery-browser-transport-v288]', JSON.stringify({ event: 'verify_request_rejected', code, secrets_logged: false })); } catch (_) {}
+    try { console.error('[dirac-recovery-browser-transport-v287]', JSON.stringify({ event: 'verify_request_rejected', code, secrets_logged: false })); } catch (_) {}
     return res.status(403).json({ ok: false, code, message: 'Permintaan verifikasi recovery terenkripsi ditolak.' });
   }
   const requestId = customerSecurityNormalizeLostPasskeyRequestId(body.request_id || '');
@@ -47776,49 +47767,6 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
   ]);
   const www = new Set(['hostinger_check', 'domain_check']);
 
-  if (role === 'auth' && [
-    'customer_security_status',
-    'customer_security_overview',
-    'customer_security_revoke_session',
-    'customer_security_revoke_other_sessions',
-    'customer_security_account_request',
-    'customer_security_trust_current_device',
-    'customer_security_untrust_device'
-  ].includes(clean)) {
-    try {
-      const expectedOrigin = diracRoleOriginV250('security').toLowerCase();
-      const expectedMethods = Object.freeze({
-        customer_security_status: 'GET',
-        customer_security_overview: 'GET',
-        customer_security_revoke_session: 'POST',
-        customer_security_revoke_other_sessions: 'POST',
-        customer_security_account_request: 'POST',
-        customer_security_trust_current_device: 'POST',
-        customer_security_untrust_device: 'POST'
-      });
-      const headers = req && req.headers || {};
-      const origin = String(headers.origin || '').trim().toLowerCase();
-      const method = String(req && req.method || '').trim().toUpperCase();
-      const expectedMethod = expectedMethods[clean];
-      if (origin !== expectedOrigin) return { ok: false, reason: 'security_gateway_origin_invalid' };
-      if (method === 'OPTIONS') {
-        const requestedMethod = String(headers['access-control-request-method'] || '').trim().toUpperCase();
-        if (requestedMethod !== expectedMethod) return { ok: false, reason: 'security_gateway_preflight_method_invalid' };
-        return { ok: true };
-      }
-      if (method !== expectedMethod) return { ok: false, reason: 'security_gateway_method_invalid' };
-      const referer = new URL(String(headers.referer || headers.referrer || '').trim());
-      if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
-          || referer.origin.toLowerCase() !== expectedOrigin || referer.pathname !== '/keamanan.html'
-          || referer.search || referer.hash) {
-        return { ok: false, reason: 'security_gateway_referer_invalid' };
-      }
-      return { ok: true };
-    } catch (_) {
-      return { ok: false, reason: 'security_gateway_context_invalid' };
-    }
-  }
-
   if (role === 'auth' && clean === 'checkout_order') {
     try {
       const expectedOrigin = diracBaseOriginV250().toLowerCase();
@@ -47861,6 +47809,39 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
       return { ok: true };
     } catch (_) {
       return { ok: false, reason: 'order_gateway_context_invalid' };
+    }
+  }
+
+  if (role === 'auth' && security.has(clean) && clean.startsWith('customer_security_')) {
+    try {
+      const expectedOrigin = diracRoleOriginV250('security').toLowerCase();
+      const headers = req && req.headers || {};
+      const origin = String(headers.origin || '').trim().toLowerCase();
+      if (origin === expectedOrigin) {
+        const method = String(req && req.method || '').trim().toUpperCase();
+        const contract = diracCentralContractForActionV146(clean);
+        const allowedMethods = Array.isArray(contract && contract.methods)
+          ? contract.methods.map((item) => String(item || '').trim().toUpperCase()).filter(Boolean)
+          : [];
+        if (!allowedMethods.length) return { ok: false, reason: 'security_customer_gateway_contract_invalid' };
+        if (method === 'OPTIONS') {
+          const requestedMethod = String(headers['access-control-request-method'] || '').trim().toUpperCase();
+          if (!requestedMethod || !allowedMethods.includes(requestedMethod)) {
+            return { ok: false, reason: 'security_customer_gateway_preflight_method_invalid' };
+          }
+        } else if (!allowedMethods.includes(method)) {
+          return { ok: false, reason: 'security_customer_gateway_method_invalid' };
+        }
+        const referer = new URL(String(headers.referer || headers.referrer || '').trim());
+        if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
+            || referer.origin.toLowerCase() !== expectedOrigin || referer.pathname !== '/keamanan.html'
+            || referer.search || referer.hash) {
+          return { ok: false, reason: 'security_customer_gateway_referer_invalid' };
+        }
+        return { ok: true };
+      }
+    } catch (_) {
+      return { ok: false, reason: 'security_customer_gateway_context_invalid' };
     }
   }
 
