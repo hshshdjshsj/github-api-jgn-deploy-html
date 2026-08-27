@@ -43699,7 +43699,7 @@ const DIRAC_CENTRAL_LEGACY_DUPLICATE_FUNCTIONS_V221 = Object.freeze({});
 const DIRAC_CENTRAL_BAN_FUNCTION_HASHES_V221 = Object.freeze({
   diracCentralBanAndBlockV146: '4501341da565c32a0f7566a48508b9608571e65fa80bfdce05146c6dd8ecaaa8',
   diracCentralWritePersistentBanV146: '39aff298cdaa263aeb6d6e4592ea7554d32f2e56006efdef7cffc88a4b8ee89a',
-  diracCentralCheckPersistentBanV146: 'fcd5ef64e03d9cb0d5a19ee76fd8a3fd0be2d9b87f39e8220df4d195765cee2a',
+  diracCentralCheckPersistentBanV146: '9fd057185aacb54d7f4499aeed7b56480004216dc9b32b2ff2a85d02400985c7',
   diracCentralBlockMsV146: '15ba6d2ca1c5370c7d650b5f82b0e93169f7e9085426877664d962412f7dfce2',
   diracCentralSetMemoryBanV146: 'd9018b8a398fe4d0cc0b2343ff697307793051e85591471055b5883775d1d9b6'
 });
