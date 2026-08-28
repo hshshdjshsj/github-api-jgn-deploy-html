@@ -51231,7 +51231,7 @@ function diracCentralIsAuthenticatedBanLookupV320(ctx, table, path, options = {}
 
 function diracCentralIsRegisterBootstrapServiceRoleV146(ctx, table, path, options = {}, method) {
   const action = String(ctx && ctx.action || '').toLowerCase();
-  if (action !== 'domain_register') return false;
+  if (action !== 'domain_register' && action !== 'domain_login') return false;
   const cleanTable = String(table || '').toLowerCase();
   const cleanMethod = String(method || options.method || 'GET').toUpperCase();
   const rawPath = String(path || '').toLowerCase();
@@ -52377,11 +52377,39 @@ async function diracCentralOpenSmtpSocketV230(host, port, secure, timeoutMs) {
   const ips = await diracCentralResolveHostIpsV146(cleanHost);
   const pinnedIp = ips.find((ip) => net.isIP(ip) && !diracCentralIsUnsafeIpV146(ip));
   if (!pinnedIp) throw Object.assign(new Error('DIRAC_SMTP_PINNED_IP_REQUIRED'), { code: 'DIRAC_SMTP_PINNED_IP_REQUIRED' });
-  const socket = secure
+  const socket = diracCentralInstallSmtpSocketErrorBridgeV323(secure
     ? DIRAC_CENTRAL_NATIVE_TLS_CONNECT_V230({ host: pinnedIp, port: cleanPort, servername: cleanHost, rejectUnauthorized: true, minVersion: 'TLSv1.2', timeout: timeoutMs })
-    : DIRAC_CENTRAL_NATIVE_NET_CONNECT_V230({ host: pinnedIp, port: cleanPort, timeout: timeoutMs });
+    : DIRAC_CENTRAL_NATIVE_NET_CONNECT_V230({ host: pinnedIp, port: cleanPort, timeout: timeoutMs }));
   Object.defineProperty(socket, '__diracSmtpPinnedHostV230', { value: cleanHost, enumerable: false, writable: false, configurable: false });
   Object.defineProperty(socket, '__diracSmtpPinnedIpV230', { value: pinnedIp, enumerable: false, writable: false, configurable: false });
+  return socket;
+}
+
+function diracCentralInstallSmtpSocketErrorBridgeV323(socket) {
+  if (!socket || typeof socket.on !== 'function') {
+    throw Object.assign(new Error('DIRAC_SMTP_SOCKET_INVALID'), { code: 'DIRAC_SMTP_SOCKET_INVALID' });
+  }
+  if (socket.__diracSmtpSocketErrorBridgeV323) return socket;
+  let firstErrorV323 = null;
+  socket.on('error', (error) => {
+    if (!firstErrorV323) {
+      firstErrorV323 = error instanceof Error
+        ? error
+        : Object.assign(new Error('DIRAC_SMTP_SOCKET_ERROR'), { code: 'DIRAC_SMTP_SOCKET_ERROR' });
+    }
+  });
+  Object.defineProperty(socket, '__diracSmtpSocketErrorBridgeV323', {
+    value: Object.freeze({
+      take() {
+        const error = firstErrorV323;
+        firstErrorV323 = null;
+        return error;
+      }
+    }),
+    enumerable: false,
+    writable: false,
+    configurable: false
+  });
   return socket;
 }
 
@@ -52391,7 +52419,9 @@ function diracCentralUpgradeSmtpTlsV230(socket, host) {
   if (!socket || !cleanHost || socket.__diracSmtpPinnedHostV230 !== cleanHost || !socket.__diracSmtpPinnedIpV230 || diracCentralIsUnsafeHostV146(cleanHost)) {
     throw Object.assign(new Error('DIRAC_SMTP_TLS_UPGRADE_INVALID'), { code: 'DIRAC_SMTP_TLS_UPGRADE_INVALID' });
   }
-  return DIRAC_CENTRAL_NATIVE_TLS_CONNECT_V230({ socket, servername: cleanHost, rejectUnauthorized: true, minVersion: 'TLSv1.2' });
+  return diracCentralInstallSmtpSocketErrorBridgeV323(
+    DIRAC_CENTRAL_NATIVE_TLS_CONNECT_V230({ socket, servername: cleanHost, rejectUnauthorized: true, minVersion: 'TLSv1.2' })
+  );
 }
 
 const DIRAC_SECURITY_ALERT_STATE_V320 = {
@@ -52850,6 +52880,11 @@ function diracSecurityAlertSmtpReaderV321(socket) {
   socket.on('timeout', onTimeout);
   socket.on('end', onEnd);
   socket.on('close', onClose);
+  const bridgedErrorV323 = socket.__diracSmtpSocketErrorBridgeV323
+    && typeof socket.__diracSmtpSocketErrorBridgeV323.take === 'function'
+    ? socket.__diracSmtpSocketErrorBridgeV323.take()
+    : null;
+  if (bridgedErrorV323) fail(bridgedErrorV323);
 
   return Object.freeze({
     next(deadlineMs) {
