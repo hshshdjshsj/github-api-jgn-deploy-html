@@ -2,6 +2,314 @@
 
 const crypto = require('crypto');
 
+/* ============================================================
+   DIRAC LOGIN FATAL DIAGNOSTIC v324
+   Production-safe breadcrumbs for POST domain_login only.
+   No request body, credential, token, cookie, IP, email, UUID,
+   database query, SMTP address, or ENV value is logged.
+   ============================================================ */
+const DIRAC_LOGIN_FATAL_DIAGNOSTIC_V324 = 'dirac-login-fatal-diagnostic-v324';
+const DIRAC_LOGIN_FATAL_STATE_V324 = globalThis.__DIRAC_LOGIN_FATAL_STATE_V324__ || {
+  requestIds: new WeakMap(),
+  traces: new Map(),
+  monitorInstalled: false,
+  buildSha256: '',
+  admissionWindowStartedAt: 0,
+  admissionCount: 0
+};
+globalThis.__DIRAC_LOGIN_FATAL_STATE_V324__ = DIRAC_LOGIN_FATAL_STATE_V324;
+
+function diracLoginFatalIsRequestV324(req) {
+  const action = String(req && req.query && req.query.action || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  return String(req && req.method || '').toUpperCase() === 'POST'
+    && (action === 'domain_login' || action === 'login_domain');
+}
+
+function diracLoginFatalSafeTokenV324(value, fallback, maximum) {
+  const clean = String(value || '').replace(/[^A-Za-z0-9_.:-]+/g, '_').slice(0, Math.max(1, Number(maximum || 96)));
+  return clean || String(fallback || 'unknown');
+}
+
+function diracLoginFatalBuildShaV324() {
+  if (DIRAC_LOGIN_FATAL_STATE_V324.buildSha256) return DIRAC_LOGIN_FATAL_STATE_V324.buildSha256;
+  try {
+    DIRAC_LOGIN_FATAL_STATE_V324.buildSha256 = crypto.createHash('sha256')
+      .update(require('fs').readFileSync(__filename))
+      .digest('hex');
+  } catch (_) {
+    DIRAC_LOGIN_FATAL_STATE_V324.buildSha256 = 'unavailable';
+  }
+  return DIRAC_LOGIN_FATAL_STATE_V324.buildSha256;
+}
+
+function diracLoginFatalMemoryV324() {
+  try {
+    const memory = process.memoryUsage();
+    const mib = (value) => Math.max(0, Math.round(Number(value || 0) / 1048576));
+    return {
+      rss_mib: mib(memory.rss),
+      heap_used_mib: mib(memory.heapUsed),
+      external_mib: mib(memory.external),
+      array_buffers_mib: mib(memory.arrayBuffers)
+    };
+  } catch (_) {
+    return { rss_mib: -1, heap_used_mib: -1, external_mib: -1, array_buffers_mib: -1 };
+  }
+}
+
+function diracLoginFatalResponseV324(res) {
+  const summary = {
+    status_code: Number(res && res.statusCode || 0),
+    headers_sent: Boolean(res && res.headersSent),
+    writable_ended: Boolean(res && res.writableEnded),
+    destroyed: Boolean(res && res.destroyed),
+    header_count: 0,
+    set_cookie_count: 0,
+    estimated_header_bytes: 0
+  };
+  try {
+    const headers = res && typeof res.getHeaders === 'function' ? res.getHeaders() : null;
+    if (!headers || typeof headers !== 'object') return summary;
+    const entries = Object.entries(headers);
+    summary.header_count = entries.length;
+    for (const [name, value] of entries) {
+      const values = Array.isArray(value) ? value : [value];
+      if (String(name).toLowerCase() === 'set-cookie') summary.set_cookie_count += values.length;
+      for (const item of values) {
+        summary.estimated_header_bytes += Buffer.byteLength(String(name), 'utf8')
+          + Buffer.byteLength(String(item === undefined ? '' : item), 'utf8') + 4;
+      }
+    }
+  } catch (_) {}
+  return summary;
+}
+
+function diracLoginFatalSafeErrorV324(error, origin) {
+  const rawMessage = String(error && error.message || error || 'unknown');
+  const frame = String(error && error.stack || '')
+    .split('\n')
+    .map((line) => /(?:\(|\s)(?:file:\/\/)?[^\s()]*health\.js:(\d+):(\d+)\)?/.exec(line))
+    .find(Boolean);
+  return {
+    origin: diracLoginFatalSafeTokenV324(origin, 'unknown', 40),
+    error_name: diracLoginFatalSafeTokenV324(error && error.name, 'Error', 60),
+    error_code: diracLoginFatalSafeTokenV324(error && error.code, 'unavailable', 80),
+    message_sha256: crypto.createHash('sha256').update(rawMessage, 'utf8').digest('hex'),
+    health_line: frame ? Number(frame[1]) : 0,
+    health_column: frame ? Number(frame[2]) : 0
+  };
+}
+
+function diracLoginFatalSafeMetaV324(meta) {
+  const source = meta && typeof meta === 'object' ? meta : {};
+  const out = {};
+  const textKeys = new Set(['route', 'method', 'result', 'reason_code', 'error_name', 'error_code', 'origin', 'alert_event', 'guard_stage', 'message_sha256']);
+  const numberKeys = new Set(['status', 'row_count', 'db_ordinal', 'guard_stage_index', 'duration_ms', 'attempt', 'smtp_code', 'health_line', 'health_column']);
+  const booleanKeys = new Set(['ok', 'blocked', 'scheduled', 'finished', 'wait_until_attached']);
+  for (const [key, value] of Object.entries(source)) {
+    if (textKeys.has(key)) out[key] = diracLoginFatalSafeTokenV324(value, 'unknown', 120);
+    else if (numberKeys.has(key) && Number.isFinite(Number(value))) out[key] = Number(value);
+    else if (booleanKeys.has(key)) out[key] = Boolean(value);
+  }
+  return out;
+}
+
+function diracLoginFatalWriteV324(payload, fatal) {
+  try {
+    const line = '[dirac-login-fatal-v324] ' + JSON.stringify(payload).slice(0, fatal ? 4096 : 2048) + '\n';
+    require('fs').writeSync(2, line);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function diracLoginFatalTrimV324(now) {
+  for (const [traceId, trace] of DIRAC_LOGIN_FATAL_STATE_V324.traces) {
+    if (now - Number(trace && trace.lastAt || 0) > 120000) DIRAC_LOGIN_FATAL_STATE_V324.traces.delete(traceId);
+  }
+  while (DIRAC_LOGIN_FATAL_STATE_V324.traces.size > 64) {
+    const oldest = DIRAC_LOGIN_FATAL_STATE_V324.traces.keys().next();
+    if (oldest.done) break;
+    DIRAC_LOGIN_FATAL_STATE_V324.traces.delete(oldest.value);
+  }
+}
+
+function diracLoginFatalBeginV324(req, res) {
+  if (!diracLoginFatalIsRequestV324(req)) return null;
+  const existingId = DIRAC_LOGIN_FATAL_STATE_V324.requestIds.get(req);
+  if (existingId) return DIRAC_LOGIN_FATAL_STATE_V324.traces.get(existingId) || null;
+  const now = Date.now();
+  if (!Number(DIRAC_LOGIN_FATAL_STATE_V324.admissionWindowStartedAt)
+      || now - Number(DIRAC_LOGIN_FATAL_STATE_V324.admissionWindowStartedAt) >= 60000) {
+    DIRAC_LOGIN_FATAL_STATE_V324.admissionWindowStartedAt = now;
+    DIRAC_LOGIN_FATAL_STATE_V324.admissionCount = 0;
+  }
+  if (Number(DIRAC_LOGIN_FATAL_STATE_V324.admissionCount || 0) >= 16) return null;
+  DIRAC_LOGIN_FATAL_STATE_V324.admissionCount = Number(DIRAC_LOGIN_FATAL_STATE_V324.admissionCount || 0) + 1;
+  diracLoginFatalTrimV324(now);
+  const traceId = crypto.randomBytes(16).toString('hex');
+  const trace = {
+    traceId,
+    startedAt: now,
+    lastAt: now,
+    sequence: 0,
+    phase: 'request.enter',
+    dbOrdinal: 0,
+    finished: false,
+    vercelRequestId: diracLoginFatalSafeTokenV324(req && req.headers && req.headers['x-vercel-id'], 'unavailable', 120),
+    buildSha256: diracLoginFatalBuildShaV324()
+  };
+  DIRAC_LOGIN_FATAL_STATE_V324.requestIds.set(req, traceId);
+  DIRAC_LOGIN_FATAL_STATE_V324.traces.set(traceId, trace);
+  try { if (res && typeof res.setHeader === 'function') res.setHeader('X-Dirac-Login-Diagnostic', DIRAC_LOGIN_FATAL_DIAGNOSTIC_V324 + ':' + traceId); } catch (_) {}
+  if (res && typeof res.once === 'function') {
+    res.once('finish', () => {
+      trace.finished = true;
+      diracLoginFatalMarkIdV324(traceId, 'response.finish', 'done', {
+        status: Number(res.statusCode || 0), finished: true
+      }, res);
+    });
+    res.once('close', () => {
+      diracLoginFatalMarkIdV324(traceId, 'response.close', trace.finished ? 'after_finish' : 'before_finish', {
+        status: Number(res.statusCode || 0), finished: trace.finished
+      }, res);
+    });
+  }
+  diracLoginFatalMarkIdV324(traceId, 'request.enter', 'begin', {}, res);
+  return trace;
+}
+
+function diracLoginFatalTraceV324(req) {
+  const traceId = req && DIRAC_LOGIN_FATAL_STATE_V324.requestIds.get(req);
+  return traceId ? DIRAC_LOGIN_FATAL_STATE_V324.traces.get(traceId) || null : null;
+}
+
+function diracLoginFatalMarkIdV324(traceId, phase, state, meta, res) {
+  const trace = DIRAC_LOGIN_FATAL_STATE_V324.traces.get(String(traceId || ''));
+  if (!trace) return false;
+  const now = Date.now();
+  trace.lastAt = now;
+  trace.sequence += 1;
+  trace.phase = diracLoginFatalSafeTokenV324(phase, 'unknown', 140);
+  const payload = {
+    version: DIRAC_LOGIN_FATAL_DIAGNOSTIC_V324,
+    event: 'phase',
+    trace_id: trace.traceId,
+    vercel_request_id: trace.vercelRequestId,
+    build_sha256: trace.buildSha256,
+    action: 'domain_login',
+    method: 'POST',
+    sequence: trace.sequence,
+    phase: trace.phase,
+    state: diracLoginFatalSafeTokenV324(state, 'checkpoint', 60),
+    elapsed_ms: Math.max(0, now - trace.startedAt),
+    memory: diracLoginFatalMemoryV324(),
+    response: diracLoginFatalResponseV324(res),
+    meta: diracLoginFatalSafeMetaV324(meta)
+  };
+  return diracLoginFatalWriteV324(payload, false);
+}
+
+function diracLoginFatalMarkV324(req, phase, state, meta, res) {
+  const trace = diracLoginFatalTraceV324(req) || diracLoginFatalBeginV324(req, res);
+  return trace ? diracLoginFatalMarkIdV324(trace.traceId, phase, state, meta, res) : false;
+}
+
+function diracLoginFatalDatabaseRouteV324(path) {
+  const clean = String(path || '').split('?')[0];
+  if (clean === '/auth/v1/token') return 'auth:token';
+  if (clean === '/auth/v1/user') return 'auth:user';
+  if (/^\/auth\/v1\/admin\/users\//.test(clean)) return 'auth:admin_user';
+  const rpc = /^\/rest\/v1\/rpc\/([a-z0-9_]{1,100})$/.exec(clean);
+  if (rpc) return 'rpc:' + rpc[1];
+  const table = /^\/rest\/v1\/([a-z0-9_]{1,100})$/.exec(clean);
+  if (table) return 'table:' + table[1];
+  return 'unknown';
+}
+
+function diracLoginFatalDatabaseStartV324(ctx, path, options) {
+  if (!ctx || String(ctx.action || '') !== 'domain_login' || !ctx.req) return null;
+  const trace = diracLoginFatalTraceV324(ctx.req);
+  if (!trace) return null;
+  trace.dbOrdinal += 1;
+  const marker = {
+    traceId: trace.traceId,
+    ordinal: trace.dbOrdinal,
+    startedAt: Date.now(),
+    route: diracLoginFatalDatabaseRouteV324(path),
+    method: String(options && options.method || 'GET').toUpperCase()
+  };
+  diracLoginFatalMarkIdV324(marker.traceId, 'database.call', 'begin', {
+    route: marker.route,
+    method: marker.method,
+    db_ordinal: marker.ordinal,
+    guard_stage: ctx.currentStageV211,
+    guard_stage_index: ctx.currentStageIndexV211
+  }, ctx.res);
+  return marker;
+}
+
+function diracLoginFatalDatabaseEndV324(marker, result, error, res) {
+  if (!marker) return false;
+  const rows = result && Array.isArray(result.data) ? result.data.length : -1;
+  const safeError = error ? diracLoginFatalSafeErrorV324(error, 'database') : null;
+  return diracLoginFatalMarkIdV324(marker.traceId, 'database.call', error ? 'throw' : 'done', {
+    route: marker.route,
+    method: marker.method,
+    db_ordinal: marker.ordinal,
+    duration_ms: Date.now() - marker.startedAt,
+    status: result && Number(result.status || 0),
+    ok: Boolean(result && result.ok === true),
+    row_count: rows,
+    error_name: safeError && safeError.error_name,
+    error_code: safeError && safeError.error_code
+  }, res);
+}
+
+async function diracLoginFatalRunV324(req, res, operation) {
+  const trace = diracLoginFatalBeginV324(req, res);
+  if (!trace) return operation();
+  try {
+    const result = await operation();
+    diracLoginFatalMarkIdV324(trace.traceId, 'export.handler', 'resolved', {
+      status: Number(res && res.statusCode || 0)
+    }, res);
+    return result;
+  } catch (error) {
+    const safe = diracLoginFatalSafeErrorV324(error, 'export_handler');
+    diracLoginFatalMarkIdV324(trace.traceId, 'export.handler', 'rejected', safe, res);
+    throw error;
+  }
+}
+
+if (!DIRAC_LOGIN_FATAL_STATE_V324.monitorInstalled) {
+  DIRAC_LOGIN_FATAL_STATE_V324.monitorInstalled = true;
+  process.on('uncaughtExceptionMonitor', (error, origin) => {
+    const now = Date.now();
+    diracLoginFatalTrimV324(now);
+    const recent = Array.from(DIRAC_LOGIN_FATAL_STATE_V324.traces.values())
+      .sort((left, right) => Number(right.lastAt || 0) - Number(left.lastAt || 0))
+      .slice(0, 5)
+      .map((trace) => ({
+        trace_id: trace.traceId,
+        phase: trace.phase,
+        sequence: trace.sequence,
+        elapsed_ms: Math.max(0, now - trace.startedAt),
+        finished: Boolean(trace.finished),
+        build_sha256: trace.buildSha256
+      }));
+    diracLoginFatalWriteV324({
+      version: DIRAC_LOGIN_FATAL_DIAGNOSTIC_V324,
+      event: 'fatal_runtime',
+      at_utc: new Date(now).toISOString(),
+      fatal: diracLoginFatalSafeErrorV324(error, origin),
+      memory: diracLoginFatalMemoryV324(),
+      recent_login_traces: recent
+    }, true);
+  });
+}
+
 
 /* ============================================================
    DIRAC UNIVERSAL DEPLOYMENT ROOT v250
@@ -510,7 +818,7 @@ async function handleDomainAction(action, req, res) {
   try {
     if (action === 'domain_health') return domainHealth(req, res);
     if (action === 'hostinger_check') return hostingerCheckDomain(req, res);
-    if (action === 'domain_login') return domainLogin(req, res);
+    if (action === 'domain_login') return await domainLogin(req, res);
     if (action === 'domain_register') return domainRegister(req, res);
     if (action === 'domain_me') return domainMe(req, res);
     if (action === 'domain_dashboard_me') return domainDashboardMe(req, res);
@@ -819,22 +1127,28 @@ async function hostingerCheckDomain(req, res) {
 }
 
 async function domainLogin(req, res, preloadedBody) {
+  diracLoginFatalMarkV324(req, 'login.handler', 'begin', {}, res);
   if (req.method !== 'POST') return res.status(405).json({ ok: false, message: 'Gunakan POST.' });
 
   let body;
+  diracLoginFatalMarkV324(req, 'login.body', 'begin', {}, res);
   try {
     body = preloadedBody || await readLimitedJsonBody(req, LOGIN_SECURITY_BODY_LIMIT_BYTES);
   } catch (error) {
+    const safeDiagnosticV324 = diracLoginFatalSafeErrorV324(error, 'login_body');
+    diracLoginFatalMarkV324(req, 'login.body', 'throw', safeDiagnosticV324, res);
     return res.status(error.statusCode || 400).json({
       ok: false,
       code: error.code || 'LOGIN_REQUEST_INVALID',
       message: error.publicMessage || 'Request login tidak valid.'
     });
   }
+  diracLoginFatalMarkV324(req, 'login.body', 'done', {}, res);
   const rawEmail = String(body.email || body.identifier || body.customer_email || '');
   const email = normalizeAuthEmail(rawEmail);
   const password = String(body.password || '');
 
+  diracLoginFatalMarkV324(req, 'login.input_guard', 'begin', {}, res);
   const loginGuard = await guardDomainLoginInput(req, res, {
     rawEmail,
     email,
@@ -843,11 +1157,19 @@ async function domainLogin(req, res, preloadedBody) {
     form: 'Login',
     endpoint: '/api/health?action=domain_login'
   });
+  diracLoginFatalMarkV324(req, 'login.input_guard', 'done', {
+    ok: Boolean(loginGuard && loginGuard.ok),
+    status: Number(loginGuard && loginGuard.status || 0)
+  }, res);
   if (!loginGuard.ok) {
     return res.status(loginGuard.status).json(loginGuard.body);
   }
 
+  diracLoginFatalMarkV324(req, 'login.rate_check', 'begin', {}, res);
   const loginRate = await checkDomainLoginRateLimit(req, loginGuard.email);
+  diracLoginFatalMarkV324(req, 'login.rate_check', 'done', {
+    ok: Boolean(loginRate && loginRate.ok)
+  }, res);
   if (!loginRate.ok) {
     res.setHeader('Retry-After', String(loginRate.retryAfterSeconds));
     return res.status(429).json({
@@ -858,11 +1180,16 @@ async function domainLogin(req, res, preloadedBody) {
     });
   }
 
+  diracLoginFatalMarkV324(req, 'login.auth_token', 'begin', {}, res);
   const result = await supabaseFetch('/auth/v1/token?grant_type=password', {
     method: 'POST',
     auth: 'anon',
     body: { email: loginGuard.email, password }
   });
+  diracLoginFatalMarkV324(req, 'login.auth_token', 'done', {
+    ok: Boolean(result && result.ok),
+    status: Number(result && result.status || 0)
+  }, res);
 
   if (!result.ok) {
     if (shouldCountDomainLoginFailure(result)) {
@@ -894,11 +1221,16 @@ async function domainLogin(req, res, preloadedBody) {
     });
   }
 
+  diracLoginFatalMarkV324(req, 'login.canonical_user', 'begin', {}, res);
   const canonicalLoginUserResultV321 = await supabaseFetch('/auth/v1/user', {
     method: 'GET',
     auth: 'anon',
     bearer: result.data.access_token
   });
+  diracLoginFatalMarkV324(req, 'login.canonical_user', 'done', {
+    ok: Boolean(canonicalLoginUserResultV321 && canonicalLoginUserResultV321.ok),
+    status: Number(canonicalLoginUserResultV321 && canonicalLoginUserResultV321.status || 0)
+  }, res);
   const canonicalLoginUserV321 = canonicalLoginUserResultV321 && canonicalLoginUserResultV321.ok === true
     && canonicalLoginUserResultV321.data && typeof canonicalLoginUserResultV321.data === 'object'
     ? canonicalLoginUserResultV321.data
@@ -925,40 +1257,78 @@ async function domainLogin(req, res, preloadedBody) {
   }
   const canonicalLoginSessionV321 = { ...result.data, user: canonicalLoginUserV321 };
 
+  diracLoginFatalMarkV324(req, 'login.ban_check_1', 'begin', {}, res);
   const effectiveLoginBlockV320 = await domainLoginEffectiveAccessBlockV320(req, canonicalLoginSessionV321);
+  diracLoginFatalMarkV324(req, 'login.ban_check_1', 'done', {
+    ok: Boolean(effectiveLoginBlockV320 && effectiveLoginBlockV320.ok),
+    blocked: Boolean(effectiveLoginBlockV320 && effectiveLoginBlockV320.blocked),
+    reason_code: effectiveLoginBlockV320 && effectiveLoginBlockV320.reason
+  }, res);
   if (!effectiveLoginBlockV320.ok) {
     clearSessionCookies(res);
-    return res.status(503).json({
+    diracLoginFatalMarkV324(req, 'login.response_503', 'begin', {
+      reason_code: 'LOGIN_BAN_CHECK_UNAVAILABLE'
+    }, res);
+    const unavailableResponseV324 = await res.status(503).json({
       ok: false,
       code: 'LOGIN_BAN_CHECK_UNAVAILABLE',
       message: 'Login belum dapat diterbitkan karena status keamanan akun tidak tersedia.'
     });
+    diracLoginFatalMarkV324(req, 'login.response_503', 'done', {
+      status: 503,
+      reason_code: 'LOGIN_BAN_CHECK_UNAVAILABLE'
+    }, res);
+    return unavailableResponseV324;
   }
   if (effectiveLoginBlockV320.blocked) {
     clearSessionCookies(res);
     try {
       res.setHeader('Retry-After', String(effectiveLoginBlockV320.retry_after_seconds || 300));
     } catch (_) {}
+    let alertScheduledV324 = false;
+    diracLoginFatalMarkV324(req, 'login.ban_alert', 'begin', {
+      alert_event: 'account_or_device_ban_enforced'
+    }, res);
     try {
-      diracSecurityAlertScheduleV320(diracCentralCurrentContextV149(), 'account_or_device_ban_enforced', {
+      alertScheduledV324 = diracSecurityAlertScheduleV320(diracCentralCurrentContextV149(), 'account_or_device_ban_enforced', {
         reason: 'active_customer_access_block',
         matched_scope: effectiveLoginBlockV320.matched_scope,
         blocked_until: effectiveLoginBlockV320.blocked_until
       });
     } catch (_) {}
-    return res.status(403).json({
+    diracLoginFatalMarkV324(req, 'login.ban_alert', alertScheduledV324 ? 'scheduled' : 'skipped', {
+      scheduled: alertScheduledV324,
+      alert_event: 'account_or_device_ban_enforced'
+    }, res);
+    diracLoginFatalMarkV324(req, 'login.response_403', 'begin', {
+      reason_code: 'LOGIN_ACCESS_BLOCKED'
+    }, res);
+    const blockedResponseV324 = await res.status(403).json({
       ok: false,
       code: 'LOGIN_ACCESS_BLOCKED',
       message: 'Akses masuk ditolak oleh kebijakan keamanan.',
       blocked_until: effectiveLoginBlockV320.blocked_until,
       retry_after_seconds: effectiveLoginBlockV320.retry_after_seconds || 300
     });
+    diracLoginFatalMarkV324(req, 'login.response_403', 'done', {
+      status: 403,
+      reason_code: 'LOGIN_ACCESS_BLOCKED'
+    }, res);
+    return blockedResponseV324;
   }
 
+  diracLoginFatalMarkV324(req, 'login.rate_clear', 'begin', {}, res);
   await clearDomainLoginRateLimit(req, loginGuard.email);
+  diracLoginFatalMarkV324(req, 'login.rate_clear', 'done', {}, res);
 
+  diracLoginFatalMarkV324(req, 'login.ban_check_2', 'begin', {}, res);
   const publicationLoginBlockV321 = await domainLoginEffectiveAccessBlockV320(req, canonicalLoginSessionV321)
     .catch(() => ({ ok: false }));
+  diracLoginFatalMarkV324(req, 'login.ban_check_2', 'done', {
+    ok: Boolean(publicationLoginBlockV321 && publicationLoginBlockV321.ok),
+    blocked: Boolean(publicationLoginBlockV321 && publicationLoginBlockV321.blocked),
+    reason_code: publicationLoginBlockV321 && publicationLoginBlockV321.reason
+  }, res);
   if (!publicationLoginBlockV321 || publicationLoginBlockV321.ok !== true) {
     clearSessionCookies(res);
     return res.status(503).json({
@@ -978,7 +1348,11 @@ async function domainLogin(req, res, preloadedBody) {
     });
   }
 
+  diracLoginFatalMarkV324(req, 'login.cookie_publication', 'begin', {}, res);
   const sessionCookiesPublished = setSessionCookies(res, canonicalLoginSessionV321);
+  diracLoginFatalMarkV324(req, 'login.cookie_publication', 'done', {
+    ok: sessionCookiesPublished === true
+  }, res);
   if (sessionCookiesPublished !== true) {
     return res.status(502).json({
       ok: false,
@@ -987,7 +1361,8 @@ async function domainLogin(req, res, preloadedBody) {
     });
   }
 
-  return res.status(200).json({
+  diracLoginFatalMarkV324(req, 'login.response_200', 'begin', {}, res);
+  const successfulResponseV324 = await res.status(200).json({
     ok: true,
     message: 'Login berhasil. Silakan lanjutkan verifikasi keamanan.',
     twoFactorRequired: true,
@@ -996,6 +1371,8 @@ async function domainLogin(req, res, preloadedBody) {
     user: sanitizeUser(canonicalLoginUserV321),
     session: buildDomainAuthSessionPayload(canonicalLoginSessionV321)
   });
+  diracLoginFatalMarkV324(req, 'login.response_200', 'done', { status: 200 }, res);
+  return successfulResponseV324;
 }
 
 async function domainLoginEffectiveAccessBlockV320(req, authData) {
@@ -6735,23 +7112,48 @@ async function customerSecurityBootstrapWrapRegisterResponse(req, res, runPrevio
     const httpStatus = Number(capturedStatus || res.statusCode || 200);
 
     if (httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true) {
+      diracLoginFatalMarkV324(req, 'response.bootstrap', 'begin', { status: httpStatus }, res);
       if (!payload.user || !payload.user.id) {
         const reason = await customerSecurityBootstrapHardFail(req, null, 'missing_user_id');
         clearSessionCookies(res);
         if (originalStatus) originalStatus(403); else res.statusCode = 403;
-        return originalJson(customerSecurityBootstrapBlockedPayload(reason));
+        diracLoginFatalMarkV324(req, 'response.bootstrap', 'blocked', {
+          status: 403,
+          reason_code: reason
+        }, res);
+        return await originalJson(customerSecurityBootstrapBlockedPayload(reason));
       }
-      const bootstrap = await customerSecurityBootstrapRegisteredUser(req, payload.user);
+      let bootstrap;
+      try {
+        bootstrap = await customerSecurityBootstrapRegisteredUser(req, payload.user);
+      } catch (errorV324) {
+        diracLoginFatalMarkV324(req, 'response.bootstrap', 'throw', diracLoginFatalSafeErrorV324(errorV324, 'response_bootstrap'), res);
+        throw errorV324;
+      }
       if (!customerSecurityBootstrapReady(bootstrap)) {
         const reason = await customerSecurityBootstrapHardFail(req, bootstrap, 'not_ready');
         clearSessionCookies(res);
         if (originalStatus) originalStatus(403); else res.statusCode = 403;
-        return originalJson(customerSecurityBootstrapBlockedPayload(reason));
+        diracLoginFatalMarkV324(req, 'response.bootstrap', 'blocked', {
+          status: 403,
+          reason_code: reason
+        }, res);
+        return await originalJson(customerSecurityBootstrapBlockedPayload(reason));
       }
       finalPayload = customerSecurityAttachBootstrapSummary(payload, bootstrap);
+      diracLoginFatalMarkV324(req, 'response.bootstrap', 'done', {
+        ok: true,
+        status: httpStatus
+      }, res);
     }
 
-    return originalJson(finalPayload);
+    const forwardedResponseV324 = await originalJson(finalPayload);
+    if (httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true) {
+      diracLoginFatalMarkV324(req, 'response.bootstrap_forward', 'done', {
+        status: Number(res.statusCode || httpStatus)
+      }, res);
+    }
+    return forwardedResponseV324;
   };
 
   return runPreviousHandler();
@@ -25285,7 +25687,13 @@ async function orderMailSendViaSmtp(config, message) {
     const cleanup = () => {
       clearTimeout(timer);
       if (socket) {
-        socket.removeAllListeners();
+        // Remove only listeners owned by this sender. The permanent SMTP
+        // error bridge must survive end/destroy so a late native error cannot
+        // become an uncaught EventEmitter exception.
+        socket.off('data', onSocketData);
+        socket.off('error', fail);
+        socket.removeAllListeners('connect');
+        socket.removeAllListeners('secureConnect');
         try { socket.end(); } catch (_) {}
         try { socket.destroy(); } catch (_) {}
       }
@@ -25350,8 +25758,8 @@ async function orderMailSendViaSmtp(config, message) {
       await command('EHLO ' + diracBaseDomainV250(), 250);
       if (!config.secure) {
         await command('STARTTLS', 220);
-        socket.removeAllListeners('data');
-        socket.removeAllListeners('error');
+        socket.off('data', onSocketData);
+        socket.off('error', fail);
         buffer = '';
         socket = diracCentralUpgradeSmtpTlsV230(socket, host);
         socket.setEncoding('utf8');
@@ -28599,11 +29007,23 @@ __diracV202RegisterMiddleware(async function diracPasswordArgon2VerifiedShadowWr
   res.json = async function diracPasswordArgon2V4Json(payload) {
     const httpStatus = Number(capturedStatus || res.statusCode || 200);
     if (httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true) {
-      await diracPasswordArgon2V4PersistAfterVerifiedAuth(req, payload, action).catch((error) => {
+      diracLoginFatalMarkV324(req, 'response.argon_shadow', 'begin', { status: httpStatus }, res);
+      try {
+        const argonResultV324 = await diracPasswordArgon2V4PersistAfterVerifiedAuth(req, payload, action);
+        diracLoginFatalMarkV324(req, 'response.argon_shadow', 'done', {
+          ok: Boolean(argonResultV324 && argonResultV324.ok)
+        }, res);
+      } catch (error) {
+        diracLoginFatalMarkV324(req, 'response.argon_shadow', 'throw', diracLoginFatalSafeErrorV324(error, 'response_argon_shadow'), res);
         console.error('[password-argon2id-shadow-v4]', diracPasswordArgon2V4SafeError(error));
-      });
+      }
     }
-    return originalJson(payload);
+    diracLoginFatalMarkV324(req, 'response.argon_forward', 'begin', { status: httpStatus }, res);
+    const forwardedResponseV324 = await originalJson(payload);
+    diracLoginFatalMarkV324(req, 'response.argon_forward', 'done', {
+      status: Number(res.statusCode || httpStatus)
+    }, res);
+    return forwardedResponseV324;
   };
 
   return nextHandlerV202(req, res);
@@ -28775,7 +29195,14 @@ async function diracPasswordArgon2V4Hash(password, meta = {}) {
     error.code = 'DIRAC_PASSWORD_PEPPER_SECRET_MISSING';
     throw error;
   }
+  const diagnosticContextV324 = typeof diracCentralCurrentContextV149 === 'function'
+    ? diracCentralCurrentContextV149()
+    : null;
+  const diagnosticReqV324 = diagnosticContextV324 && diagnosticContextV324.req;
+  const diagnosticResV324 = diagnosticContextV324 && diagnosticContextV324.res;
+  diracLoginFatalMarkV324(diagnosticReqV324, 'response.argon_module', 'begin', {}, diagnosticResV324);
   const argon2 = customerSecurityGetArgon2();
+  diracLoginFatalMarkV324(diagnosticReqV324, 'response.argon_module', 'done', {}, diagnosticResV324);
   const params = diracPasswordArgon2V4Params();
   const input = [
     'dirac-customer-password-v4-argon2id',
@@ -28786,8 +29213,19 @@ async function diracPasswordArgon2V4Hash(password, meta = {}) {
     pepper
   ].join(':');
   const salt = crypto.randomBytes(64);
+  let diagnosticHeartbeatV324 = null;
   try {
-    return await argon2.hash(input, {
+    const hashStartedAtV324 = Date.now();
+    diracLoginFatalMarkV324(diagnosticReqV324, 'response.argon_hash', 'begin', {}, diagnosticResV324);
+    if (diracLoginFatalTraceV324(diagnosticReqV324)) {
+      diagnosticHeartbeatV324 = setInterval(() => {
+        diracLoginFatalMarkV324(diagnosticReqV324, 'response.argon_hash', 'heartbeat', {
+          duration_ms: Date.now() - hashStartedAtV324
+        }, diagnosticResV324);
+      }, 500);
+      if (diagnosticHeartbeatV324 && typeof diagnosticHeartbeatV324.unref === 'function') diagnosticHeartbeatV324.unref();
+    }
+    const hashV324 = await argon2.hash(input, {
       type: argon2.argon2id,
       memoryCost: params.memoryCost,
       timeCost: params.timeCost,
@@ -28795,7 +29233,15 @@ async function diracPasswordArgon2V4Hash(password, meta = {}) {
       hashLength: params.hashLength,
       salt
     });
+    diracLoginFatalMarkV324(diagnosticReqV324, 'response.argon_hash', 'done', {
+      duration_ms: Date.now() - hashStartedAtV324
+    }, diagnosticResV324);
+    return hashV324;
+  } catch (errorV324) {
+    diracLoginFatalMarkV324(diagnosticReqV324, 'response.argon_hash', 'throw', diracLoginFatalSafeErrorV324(errorV324, 'argon_hash'), diagnosticResV324);
+    throw errorV324;
   } finally {
+    if (diagnosticHeartbeatV324) clearInterval(diagnosticHeartbeatV324);
     salt.fill(0);
   }
 }
@@ -28966,11 +29412,23 @@ __diracV202RegisterMiddleware(async function diracAuthHardeningSafeWrapperV110(r
   res.json = async function diracV110Json(payload) {
     const httpStatus = Number(capturedStatus || res.statusCode || 200);
     if (httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true) {
-      await diracV110WriteAuthAudit(req, payload, action, httpStatus).catch((error) => {
+      diracLoginFatalMarkV324(req, 'response.auth_audit', 'begin', { status: httpStatus }, res);
+      try {
+        const auditResultV324 = await diracV110WriteAuthAudit(req, payload, action, httpStatus);
+        diracLoginFatalMarkV324(req, 'response.auth_audit', 'done', {
+          ok: Boolean(auditResultV324 && auditResultV324.ok)
+        }, res);
+      } catch (error) {
+        diracLoginFatalMarkV324(req, 'response.auth_audit', 'throw', diracLoginFatalSafeErrorV324(error, 'response_auth_audit'), res);
         console.error('[dirac-auth-audit-v110]', diracV110SafeError(error));
-      });
+      }
     }
-    return originalJson(payload);
+    diracLoginFatalMarkV324(req, 'response.auth_audit_forward', 'begin', { status: httpStatus }, res);
+    const forwardedResponseV324 = await originalJson(payload);
+    diracLoginFatalMarkV324(req, 'response.auth_audit_forward', 'done', {
+      status: Number(res.statusCode || httpStatus)
+    }, res);
+    return forwardedResponseV324;
   };
 
   return nextHandlerV202(req, res);
@@ -48736,6 +49194,10 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
       const stage = SECURITY_PIPELINE[stageIndex];
       ctx.currentStageV211 = String(stage && stage.name || 'unknown_stage');
       ctx.currentStageIndexV211 = stageIndex;
+      diracLoginFatalMarkV324(req, 'central_guard.stage', 'begin', {
+        guard_stage: ctx.currentStageV211,
+        guard_stage_index: stageIndex
+      }, res);
       const stageStartedAt = Date.now();
       const elapsedBeforeStageV221 = stageStartedAt - Number(ctx.startedAt || stageStartedAt);
       if (elapsedBeforeStageV221 > diracCentralGuardBudgetMsV221(ctx)) {
@@ -48757,6 +49219,11 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
       }
       const stageResult = result && result.ok === true ? 'passed' : 'blocked';
       ctx.stageTraceV211.push(Object.freeze({ index: stageIndex, stage: ctx.currentStageV211, result: stageResult, duration_ms: Date.now() - stageStartedAt }));
+      diracLoginFatalMarkV324(req, 'central_guard.stage', stageResult, {
+        guard_stage: ctx.currentStageV211,
+        guard_stage_index: stageIndex,
+        duration_ms: Date.now() - stageStartedAt
+      }, res);
       if (!result || result.ok !== true) {
         const reason = String(result && result.reason || result && result.directCode || 'central_guard_stage_failed');
         ctx.failedStageV211 = ctx.currentStageV211;
@@ -48794,6 +49261,10 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
     ctx.currentStageIndexV211 = SECURITY_PIPELINE.length;
     ctx.centralGuardFullyPassedV211 = true;
     ctx.executionPhaseV211 = 'handler';
+    diracLoginFatalMarkV324(req, 'central_guard.dispatch', 'begin', {
+      guard_stage: 'dispatch',
+      guard_stage_index: SECURITY_PIPELINE.length
+    }, res);
     req.__diracCentralSecurityGuardPassedV146 = true;
     try { Object.defineProperty(req, '__diracCentralSecurityGuardPassedV146', { value: true, writable: false, enumerable: false, configurable: false }); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
     try { Object.defineProperty(req, '__diracCentralRequestIdV211', { value: ctx.requestId, writable: false, enumerable: false, configurable: false }); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
@@ -48837,8 +49308,13 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
     if (ctx.__diracS2SSecurityReportResultV206) {
       return res.status(200).json(ctx.__diracS2SSecurityReportResultV206);
     }
-    return await nextHandler(req, res);
+    const dispatchResultV324 = await nextHandler(req, res);
+    diracLoginFatalMarkV324(req, 'central_guard.dispatch', 'done', {
+      status: Number(res && res.statusCode || 0)
+    }, res);
+    return dispatchResultV324;
   } catch (error) {
+    diracLoginFatalMarkV324(req, 'central_guard.catch', 'throw', diracLoginFatalSafeErrorV324(error, 'central_guard'), res);
     if (ctx && !ctx.failedStageV211) ctx.failedStageV211 = String(error && error.diracStage || ctx.currentStageV211 || 'central_guard');
     if (ctx && !ctx.failureReasonV211) ctx.failureReasonV211 = String(error && error.code || error && error.message || 'central_guard_error').slice(0, 120);
     if (ctx) ctx.failureClassificationV221 = diracCentralClassifyFailureV221(ctx.failureReasonV211, ctx.failedStageV211, '');
@@ -48852,6 +49328,9 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
     if (ctx) return await diracCentralBanAndBlockV146(req, res, ctx, ctx.action || 'central_guard_error', method, 'central_guard_error');
     return diracCentralBlockedResponseV146(res, 'CENTRAL_GUARD_ERROR');
   } finally {
+    diracLoginFatalMarkV324(req, 'central_guard.finally', 'begin', {
+      status: Number(res && res.statusCode || 0)
+    }, res);
     if (ctx) {
       try { diracCentralReleaseRateLeaseV221(ctx); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
       try { if (ctx.__diracCentralSupabaseRequestCacheV151 instanceof Map) ctx.__diracCentralSupabaseRequestCacheV151.clear(); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
@@ -48932,14 +49411,32 @@ function diracCentralWrapJsonResponseV146(res) {
   if (!res || typeof res.json !== 'function' || res.__diracCentralJsonWrappedV146) return;
   const originalJson = res.json.bind(res);
   res.json = function diracCentralJsonResponseGuardV146(payload) {
+    const diagnosticContextV324 = typeof diracCentralCurrentContextV149 === 'function'
+      ? diracCentralCurrentContextV149()
+      : null;
+    const diagnosticReqV324 = diagnosticContextV324 && diagnosticContextV324.req;
     diracCentralApplyHeadersV146(res);
     try { res.setHeader('Content-Type', 'application/json; charset=utf-8'); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
     try {
-      return originalJson(diracCentralSecureJsonSerializeV230(payload));
+      diracLoginFatalMarkV324(diagnosticReqV324, 'response.serialize', 'begin', {}, res);
+      const securedPayloadV324 = diracCentralSecureJsonSerializeV230(payload);
+      diracLoginFatalMarkV324(diagnosticReqV324, 'response.serialize', 'done', {}, res);
+      diracLoginFatalMarkV324(diagnosticReqV324, 'response.write', 'begin', {}, res);
+      const writtenV324 = originalJson(securedPayloadV324);
+      diracLoginFatalMarkV324(diagnosticReqV324, 'response.write', 'returned', {
+        status: Number(res.statusCode || 0)
+      }, res);
+      return writtenV324;
     } catch (error) {
+      diracLoginFatalMarkV324(diagnosticReqV324, 'response.serialize_write', 'throw', diracLoginFatalSafeErrorV324(error, 'response_serialize_write'), res);
       diracCentralRecordSuppressedExceptionV221(error);
       try { if (typeof res.status === 'function') res.status(500); else res.statusCode = 500; } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
-      return originalJson({ ok: false, code: String(error && error.code || 'CENTRAL_OUTPUT_BLOCKED'), message: 'Respons ditolak oleh sistem keamanan.' });
+      diracLoginFatalMarkV324(diagnosticReqV324, 'response.error_write', 'begin', {}, res);
+      const blockedWriteV324 = originalJson({ ok: false, code: String(error && error.code || 'CENTRAL_OUTPUT_BLOCKED'), message: 'Respons ditolak oleh sistem keamanan.' });
+      diracLoginFatalMarkV324(diagnosticReqV324, 'response.error_write', 'returned', {
+        status: Number(res.statusCode || 500)
+      }, res);
+      return blockedWriteV324;
     }
   };
   res.__diracCentralJsonWrappedV146 = true;
@@ -52226,7 +52723,14 @@ function diracCentralGuardEgressResponseV228(response, host) {
   const max = diracCentralEgressResponseMaxBytesV228(host);
   const declared = Number(response.headers.get('content-length') || 0);
   if (Number.isFinite(declared) && declared > max) {
-    try { if (response.body && typeof response.body.cancel === 'function') response.body.cancel(); } catch (errorV228) { diracCentralRecordSuppressedExceptionV221(errorV228); }
+    try {
+      if (response.body && typeof response.body.cancel === 'function') {
+        const cancellationV324 = response.body.cancel();
+        if (cancellationV324 && typeof cancellationV324.catch === 'function') {
+          cancellationV324.catch((errorV324) => diracCentralRecordSuppressedExceptionV221(errorV324));
+        }
+      }
+    } catch (errorV228) { diracCentralRecordSuppressedExceptionV221(errorV228); }
     const error = new Error('DIRAC_EGRESS_RESPONSE_TOO_LARGE');
     error.code = 'DIRAC_EGRESS_RESPONSE_TOO_LARGE';
     throw error;
@@ -52287,6 +52791,10 @@ function diracCentralBoundedReadableStreamV230(incoming, request, maximumBytes) 
       callback(null, chunk);
     }
   });
+  // A permanent listener prevents a native stream error from becoming an
+  // uncaught EventEmitter exception before Readable.toWeb installs its bridge.
+  // Other consumers still receive the same stream error and fail closed.
+  limiter.on('error', () => {});
   incoming.on('error', (error) => limiter.destroy(error));
   incoming.pipe(limiter);
   return limiter;
@@ -52337,24 +52845,41 @@ async function diracCentralPinnedHttpsFetchV230(
         callback(null, pinnedIp, pinnedFamily);
       }
     }, (incoming) => {
-      const limiter = diracCentralBoundedReadableStreamV230(incoming, request, maximumBytes);
-      incoming.setTimeout(streamTimeoutMs, () => {
-        const error = Object.assign(new Error('DIRAC_EGRESS_STREAM_TIMEOUT'), { code: 'DIRAC_EGRESS_STREAM_TIMEOUT' });
-        incoming.destroy(error);
-        request.destroy(error);
-      });
-      const responseHeaders = new Headers();
-      for (const [name, value] of Object.entries(incoming.headers || {})) {
-        if (Array.isArray(value)) value.forEach((item) => responseHeaders.append(name, String(item)));
-        else if (value !== undefined) responseHeaders.set(name, String(value));
+      try {
+        const limiter = diracCentralBoundedReadableStreamV230(incoming, request, maximumBytes);
+        incoming.setTimeout(streamTimeoutMs, () => {
+          const error = Object.assign(new Error('DIRAC_EGRESS_STREAM_TIMEOUT'), { code: 'DIRAC_EGRESS_STREAM_TIMEOUT' });
+          incoming.destroy(error);
+          request.destroy(error);
+        });
+        const responseHeaders = new Headers();
+        for (const [name, value] of Object.entries(incoming.headers || {})) {
+          if (Array.isArray(value)) value.forEach((item) => responseHeaders.append(name, String(item)));
+          else if (value !== undefined) responseHeaders.set(name, String(value));
+        }
+        const noBody = method === 'HEAD' || [204, 205, 304].includes(Number(incoming.statusCode || 0));
+        const webBody = noBody ? null : Readable.toWeb(limiter);
+        const responseV324 = new Response(webBody, { status: Number(incoming.statusCode || 502), statusText: String(incoming.statusMessage || ''), headers: responseHeaders });
+        settled = true;
+        resolve(responseV324);
+      } catch (errorV324) {
+        if (!settled) {
+          settled = true;
+          try { incoming.destroy(errorV324); } catch (destroyErrorV324) { diracCentralRecordSuppressedExceptionV221(destroyErrorV324); }
+          try { request.destroy(errorV324); } catch (destroyErrorV324) { diracCentralRecordSuppressedExceptionV221(destroyErrorV324); }
+          reject(errorV324);
+        } else {
+          diracCentralRecordSuppressedExceptionV221(errorV324);
+        }
       }
-      const noBody = method === 'HEAD' || [204, 205, 304].includes(Number(incoming.statusCode || 0));
-      const webBody = noBody ? null : Readable.toWeb(limiter);
-      settled = true;
-      resolve(new Response(webBody, { status: Number(incoming.statusCode || 502), statusText: String(incoming.statusMessage || ''), headers: responseHeaders }));
     });
     request.setTimeout(streamTimeoutMs, () => request.destroy(Object.assign(new Error('DIRAC_EGRESS_STREAM_TIMEOUT'), { code: 'DIRAC_EGRESS_STREAM_TIMEOUT' })));
-    request.on('error', (error) => { if (!settled) reject(error); });
+    request.on('error', (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
     if (signal) {
       if (signal.aborted) request.destroy(signal.reason instanceof Error ? signal.reason : new Error('AbortError'));
       else signal.addEventListener('abort', () => request.destroy(signal.reason instanceof Error ? signal.reason : Object.assign(new Error('AbortError'), { name: 'AbortError' })), { once: true });
@@ -52950,27 +53475,46 @@ function diracSecurityAlertDotStuffV320(message) {
   return String(message || '').replace(/(^|\r\n)\./g, '$1..');
 }
 
-async function diracSecurityAlertSendV320(snapshot, config) {
+async function diracSecurityAlertSendV320(snapshot, config, loginDiagnosticTraceIdV324) {
   let socket = null;
   let reader = null;
   let authBytes = null;
   let dataSubmittedV321 = false;
   const deadlineV321 = Date.now() + Number(config.timeoutMs || 12000);
+  const smtpDiagnosticV324 = (phase, state, meta) => {
+    if (!loginDiagnosticTraceIdV324) return false;
+    return diracLoginFatalMarkIdV324(loginDiagnosticTraceIdV324, 'alert.smtp.' + phase, state, meta || {}, null);
+  };
   try {
+    smtpDiagnosticV324('dns_connect', 'begin');
     socket = await diracCentralOpenSmtpSocketV230(config.host, config.port, true, config.timeoutMs);
+    smtpDiagnosticV324('dns_connect', 'done');
     reader = diracSecurityAlertSmtpReaderV321(socket);
     if (typeof socket.setTimeout === 'function') socket.setTimeout(Math.max(1, deadlineV321 - Date.now()));
+    smtpDiagnosticV324('greeting', 'begin');
     await diracSecurityAlertSmtpCommandV320(socket, reader, null, 220, deadlineV321);
+    smtpDiagnosticV324('greeting', 'done');
+    smtpDiagnosticV324('ehlo', 'begin');
     await diracSecurityAlertSmtpCommandV320(socket, reader, 'EHLO ' + diracBaseDomainV250(), 250, deadlineV321);
+    smtpDiagnosticV324('ehlo', 'done');
     authBytes = Buffer.from('\u0000' + config.user + '\u0000' + config.appPassword, 'utf8');
+    smtpDiagnosticV324('auth', 'begin');
     await diracSecurityAlertSmtpCommandV320(socket, reader, 'AUTH PLAIN ' + authBytes.toString('base64'), 235, deadlineV321);
+    smtpDiagnosticV324('auth', 'done');
+    smtpDiagnosticV324('mail_from', 'begin');
     await diracSecurityAlertSmtpCommandV320(socket, reader, 'MAIL FROM:<' + config.fromEmail + '>', 250, deadlineV321);
+    smtpDiagnosticV324('mail_from', 'done');
     for (const recipient of config.recipients) {
+      smtpDiagnosticV324('recipient', 'begin');
       await diracSecurityAlertSmtpCommandV320(socket, reader, 'RCPT TO:<' + recipient + '>', [250, 251], deadlineV321);
+      smtpDiagnosticV324('recipient', 'done');
     }
+    smtpDiagnosticV324('data', 'begin');
     await diracSecurityAlertSmtpCommandV320(socket, reader, 'DATA', 354, deadlineV321);
+    smtpDiagnosticV324('data', 'done');
     const mime = diracSecurityAlertMessageV320(snapshot, config);
     dataSubmittedV321 = true;
+    smtpDiagnosticV324('submit', 'begin');
     try {
       await diracSecurityAlertSmtpCommandV320(socket, reader, diracSecurityAlertDotStuffV320(mime) + '\r\n.', 250, deadlineV321);
     } catch (error) {
@@ -52979,16 +53523,23 @@ async function diracSecurityAlertSendV320(snapshot, config) {
       }
       throw error;
     }
+    smtpDiagnosticV324('submit', 'done');
     try { socket.write('QUIT\r\n'); }
     catch (alertQuitWriteErrorV321) { diracSecurityAlertLocalLogV321('quit_write_failed', alertQuitWriteErrorV321); }
     return true;
+  } catch (errorV324) {
+    const safeErrorV324 = diracLoginFatalSafeErrorV324(errorV324, 'security_alert_smtp');
+    smtpDiagnosticV324('send', 'throw', safeErrorV324);
+    throw errorV324;
   } finally {
+    smtpDiagnosticV324('cleanup', 'begin', { ok: dataSubmittedV321 });
     if (authBytes) authBytes.fill(0);
     if (reader) reader.close();
     try { if (socket) socket.end(); }
     catch (alertSocketEndErrorV320) { diracSecurityAlertLocalLogV321('socket_end_failed', alertSocketEndErrorV320); }
     try { if (socket) socket.destroy(); }
     catch (alertSocketDestroyErrorV320) { diracSecurityAlertLocalLogV321('socket_destroy_failed', alertSocketDestroyErrorV320); }
+    smtpDiagnosticV324('cleanup', 'done', { ok: dataSubmittedV321 });
   }
 }
 
@@ -53024,7 +53575,7 @@ function diracSecurityAlertDrainV320() {
       let delivered = false;
       for (let attempt = 0; attempt <= config.maxRetries && !delivered; attempt += 1) {
         try {
-          delivered = await diracSecurityAlertSendV320(snapshot, config);
+          delivered = await diracSecurityAlertSendV320(snapshot, config, item && item.loginDiagnosticTraceIdV324);
         } catch (error) {
           const smtpCode = Number(error && error.smtpCode || 0);
           const retryable = !error.deliveryAmbiguous && (!smtpCode || (smtpCode >= 400 && smtpCode <= 499));
@@ -53053,18 +53604,28 @@ function diracSecurityAlertKeepAliveV320(req, promise) {
   let attached = false;
   try {
     if (req && typeof req.waitUntil === 'function') {
-      req.waitUntil(tracked);
+      const waitUntilResultV324 = req.waitUntil(tracked);
+      if (waitUntilResultV324 && typeof waitUntilResultV324.catch === 'function') {
+        waitUntilResultV324.catch((errorV324) => diracSecurityAlertLocalLogV321('request_wait_until_rejected', errorV324));
+      }
       attached = true;
     }
   } catch (alertRequestWaitUntilErrorV320) { diracSecurityAlertLocalLogV321('request_wait_until_failed', alertRequestWaitUntilErrorV320); }
   try {
     if (!attached && typeof globalThis.waitUntil === 'function') {
-      globalThis.waitUntil(tracked);
+      const globalWaitUntilResultV324 = globalThis.waitUntil(tracked);
+      if (globalWaitUntilResultV324 && typeof globalWaitUntilResultV324.catch === 'function') {
+        globalWaitUntilResultV324.catch((errorV324) => diracSecurityAlertLocalLogV321('global_wait_until_rejected', errorV324));
+      }
       attached = true;
     }
   } catch (alertGlobalWaitUntilErrorV320) { diracSecurityAlertLocalLogV321('global_wait_until_failed', alertGlobalWaitUntilErrorV320); }
   DIRAC_SECURITY_ALERT_STATE_V320.pending.add(tracked);
-  tracked.finally(() => DIRAC_SECURITY_ALERT_STATE_V320.pending.delete(tracked));
+  tracked.then(
+    () => DIRAC_SECURITY_ALERT_STATE_V320.pending.delete(tracked),
+    () => DIRAC_SECURITY_ALERT_STATE_V320.pending.delete(tracked)
+  );
+  return attached;
 }
 
 function diracSecurityAlertScheduleV320(ctx, event, extra) {
@@ -53076,6 +53637,7 @@ function diracSecurityAlertScheduleV320(ctx, event, extra) {
   const config = diracSecurityAlertConfigV320();
   if (!config) return false;
   const snapshot = diracSecurityAlertSnapshotV320(ctx, event, extra && typeof extra === 'object' ? extra : {});
+  const loginDiagnosticTraceV324 = ctx && ctx.req ? diracLoginFatalTraceV324(ctx.req) : null;
   const now = Date.now();
   diracBoundedMapSweepV321(
     DIRAC_SECURITY_ALERT_STATE_V320.dedupe,
@@ -53136,9 +53698,21 @@ function diracSecurityAlertScheduleV320(ctx, event, extra) {
     (value) => Number(value || 0)
   );
   if (!dedupeStoredV321) return false;
-  DIRAC_SECURITY_ALERT_STATE_V320.queue.push(Object.freeze({ snapshot, dedupeKey, dedupeUntil: dedupeUntilV321, priority: priorityV321 }));
+  DIRAC_SECURITY_ALERT_STATE_V320.queue.push(Object.freeze({
+    snapshot,
+    dedupeKey,
+    dedupeUntil: dedupeUntilV321,
+    priority: priorityV321,
+    loginDiagnosticTraceIdV324: loginDiagnosticTraceV324 && loginDiagnosticTraceV324.traceId || ''
+  }));
   const drainPromise = diracSecurityAlertDrainV320();
-  diracSecurityAlertKeepAliveV320(ctx && ctx.req, drainPromise);
+  const waitUntilAttachedV324 = diracSecurityAlertKeepAliveV320(ctx && ctx.req, drainPromise);
+  if (loginDiagnosticTraceV324) {
+    diracLoginFatalMarkIdV324(loginDiagnosticTraceV324.traceId, 'alert.schedule', 'queued', {
+      alert_event: event,
+      wait_until_attached: waitUntilAttachedV324
+    }, ctx && ctx.res);
+  }
   return true;
 }
 
@@ -56713,12 +57287,12 @@ async function diracAppOriginHandoffIssueV313(req, res, access, targetRole) {
     access.customerId,
     sourceSession.sessionId,
     requestedSecurityEpoch
-  );
+  ).catch(() => false);
   const authLinkOkPromise = diracSessionHandoffValidateAuthLinkV250(
     String(access.authUserId),
     String(access.customerId),
     sourceEmail
-  );
+  ).catch(() => false);
   const securityEpoch = await securityEpochPromise;
   if (!Number.isSafeInteger(Number(securityEpoch)) || Number(securityEpoch) < 1
       || Number(access.mfa.securityEpoch || 0) !== Number(securityEpoch)) {
@@ -57149,9 +57723,15 @@ async function secureDatabaseGateway(ctx, operation) {
   if (!permit || !DIRAC_CENTRAL_DATABASE_EGRESS_CONTEXT_V230) {
     return { ok: false, status: 403, data: { code: 'DIRAC_DATABASE_EGRESS_PERMIT_REJECTED' } };
   }
+  const loginDatabaseDiagnosticV324 = diracLoginFatalDatabaseStartV324(ctx, op.path, op.options);
   ctx.__diracCentralDatabaseGatewayDepthV211 = Number(ctx.__diracCentralDatabaseGatewayDepthV211 || 0) + 1;
   try {
-    return await DIRAC_CENTRAL_DATABASE_EGRESS_CONTEXT_V230.run(permit, () => __diracV202DatabaseGatewayDelegate(op.path, op.options));
+    const resultV324 = await DIRAC_CENTRAL_DATABASE_EGRESS_CONTEXT_V230.run(permit, () => __diracV202DatabaseGatewayDelegate(op.path, op.options));
+    diracLoginFatalDatabaseEndV324(loginDatabaseDiagnosticV324, resultV324, null, ctx.res);
+    return resultV324;
+  } catch (errorV324) {
+    diracLoginFatalDatabaseEndV324(loginDatabaseDiagnosticV324, null, errorV324, ctx.res);
+    throw errorV324;
   } finally {
     ctx.__diracCentralDatabaseGatewayDepthV211 = Math.max(0, Number(ctx.__diracCentralDatabaseGatewayDepthV211 || 1) - 1);
   }
@@ -57696,6 +58276,7 @@ async function diracCentralBackendComplianceGateV230() {
 }
 
 module.exports = async function diracCentralArchitectureConsolidationV202(req, res) {
+  return diracLoginFatalRunV324(req, res, async () => {
   const registerDiagnosticStateV233 =
     /(?:^|[?&])action=domain_register(?:&|$)/.test(String(req && req.url || ''))
       ? { stage: 'raw_capture' }
@@ -57716,7 +58297,12 @@ module.exports = async function diracCentralArchitectureConsolidationV202(req, r
     });
   }
 
+  diracLoginFatalMarkV324(req, 'entry.raw_capture', 'begin', {}, res);
   const rawCaptureV230 = await diracCentralCaptureRawRequestV230(req);
+  diracLoginFatalMarkV324(req, 'entry.raw_capture', 'done', {
+    ok: Boolean(rawCaptureV230 && rawCaptureV230.ok),
+    reason_code: rawCaptureV230 && rawCaptureV230.reason
+  }, res);
   if (!rawCaptureV230.ok) {
     if (/(?:^|[?&])action=security_report(?:&|$)/.test(String(req && req.url || ''))) {
       try {
@@ -57774,8 +58360,11 @@ module.exports = async function diracCentralArchitectureConsolidationV202(req, r
   }
   if (registerDiagnosticStateV233) registerDiagnosticStateV233.stage = 'compliance_gate';
   try {
+    diracLoginFatalMarkV324(req, 'entry.compliance_gate', 'begin', {}, res);
     await diracCentralBackendComplianceGateV230();
+    diracLoginFatalMarkV324(req, 'entry.compliance_gate', 'done', { ok: true }, res);
   } catch (error) {
+    diracLoginFatalMarkV324(req, 'entry.compliance_gate', 'throw', diracLoginFatalSafeErrorV324(error, 'compliance_gate'), res);
     try {
       console.error('[dirac-v230-compliance-gate]', {
         code: String(error?.code || ''),
@@ -57789,9 +58378,11 @@ module.exports = async function diracCentralArchitectureConsolidationV202(req, r
     return res.status(503).json({ ok: false, code: 'DIRAC_BACKEND_COMPLIANCE_GATE_FAILED', message: 'Backend security compliance gate belum lulus.' });
   }
   if (registerDiagnosticStateV233) registerDiagnosticStateV233.stage = 'central_guard';
+  diracLoginFatalMarkV324(req, 'entry.central_guard', 'begin', {}, res);
   return __diracV202CentralGuardHandler(req, res, () => {
     if (registerDiagnosticStateV233) registerDiagnosticStateV233.stage = 'dispatcher';
     return diracV202Dispatcher(req, res);
+  });
   });
 };
 Object.defineProperty(module.exports, 'config', { value: Object.freeze({ api: Object.freeze({ bodyParser: false }) }), enumerable: true, writable: false, configurable: false });
