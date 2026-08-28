@@ -463,10 +463,8 @@ function verifyAuthenticatedReadOrigin(req) {
 async function readJson(req) {
   const type = String(req.headers && req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
   if (type !== 'application/json') throw new PublicError(415, 'CONTENT_TYPE_INVALID', 'Content-Type wajib application/json.');
-  const declaredText = String(req.headers && req.headers['content-length'] || '').trim();
-  if (declaredText && !/^(?:0|[1-9]\d{0,15})$/.test(declaredText)) throw new PublicError(400, 'CONTENT_LENGTH_INVALID', 'Content-Length request tidak valid.');
-  const declared = declaredText ? Number(declaredText) : 0;
-  if (!Number.isSafeInteger(declared) || declared > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
+  const declared = Number(req.headers && req.headers['content-length'] || 0);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
   if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
     const raw = JSON.stringify(req.body);
     if (Buffer.byteLength(raw, 'utf8') > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
@@ -477,65 +475,13 @@ async function readJson(req) {
     if (Buffer.byteLength(raw, 'utf8') > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
     try { return JSON.parse(raw || '{}'); } catch (_) { throw new PublicError(400, 'JSON_INVALID', 'JSON request tidak valid.'); }
   }
-  if (!req || typeof req.on !== 'function' || (typeof req.removeListener !== 'function' && typeof req.off !== 'function')) {
-    throw new PublicError(400, 'BODY_STREAM_INVALID', 'Stream request tidak valid.');
+  const chunks = []; let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
+    chunks.push(chunk);
   }
-  const rawBuffer = await new Promise((resolve, reject) => {
-    const chunks = [];
-    let total = 0;
-    let completed = false;
-    let idleTimer = null;
-    let absoluteTimer = null;
-    const remove = typeof req.removeListener === 'function' ? req.removeListener.bind(req) : req.off.bind(req);
-    const cleanup = () => {
-      if (idleTimer) clearTimeout(idleTimer);
-      if (absoluteTimer) clearTimeout(absoluteTimer);
-      remove('data', onData);
-      remove('end', onEnd);
-      remove('error', onError);
-      remove('aborted', onAborted);
-      remove('close', onClose);
-    };
-    const fail = (error) => {
-      if (completed) return;
-      completed = true;
-      cleanup();
-      try { if (typeof req.pause === 'function') req.pause(); } catch (_) {}
-      reject(error);
-    };
-    const armIdle = () => {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => fail(new PublicError(408, 'BODY_IDLE_TIMEOUT', 'Request body terlalu lambat.')), 1500);
-    };
-    const onData = (chunk) => {
-      if (completed) return;
-      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      total += bytes.length;
-      if (total > MAX_BODY_BYTES) return fail(new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.'));
-      chunks.push(bytes);
-      armIdle();
-    };
-    const onEnd = () => {
-      if (completed) return;
-      completed = true;
-      cleanup();
-      resolve(Buffer.concat(chunks, total));
-    };
-    const onError = () => fail(new PublicError(400, 'BODY_STREAM_ERROR', 'Stream request tidak valid.'));
-    const onAborted = () => fail(new PublicError(400, 'BODY_STREAM_ABORTED', 'Stream request dibatalkan.'));
-    const onClose = () => {
-      if (!completed && !req.readableEnded) fail(new PublicError(400, 'BODY_STREAM_CLOSED', 'Stream request terputus.'));
-    };
-    req.on('data', onData);
-    req.on('end', onEnd);
-    req.on('error', onError);
-    req.on('aborted', onAborted);
-    req.on('close', onClose);
-    absoluteTimer = setTimeout(() => fail(new PublicError(408, 'BODY_ABSOLUTE_TIMEOUT', 'Request body melewati batas waktu.')), 4000);
-    armIdle();
-  });
-  if (declaredText && rawBuffer.length !== declared) throw new PublicError(400, 'CONTENT_LENGTH_MISMATCH', 'Panjang request tidak sesuai.');
-  try { return JSON.parse(rawBuffer.toString('utf8') || '{}'); } catch (_) { throw new PublicError(400, 'JSON_INVALID', 'JSON request tidak valid.'); }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch (_) { throw new PublicError(400, 'JSON_INVALID', 'JSON request tidak valid.'); }
 }
 
 function exactKeys(body, allowed) {
@@ -1498,7 +1444,6 @@ const DIRAC_SUPPORT_CENTRAL_CONTEXT_V146 = new AsyncLocalStorage();
 const DIRAC_SUPPORT_CENTRAL_MEMORY_BAN_V146 = globalThis.__DIRAC_SUPPORT_CENTRAL_MEMORY_BAN_V146__ || new Map();
 const DIRAC_SUPPORT_CENTRAL_RATE_V146 = globalThis.__DIRAC_SUPPORT_CENTRAL_RATE_V146__ || new Map();
 const DIRAC_SUPPORT_CENTRAL_CIRCUIT_V146 = globalThis.__DIRAC_SUPPORT_CENTRAL_CIRCUIT_V146__ || new Map();
-let DIRAC_SUPPORT_CENTRAL_RATE_CLEANUP_AT_V322 = 0;
 globalThis.__DIRAC_SUPPORT_CENTRAL_MEMORY_BAN_V146__ = DIRAC_SUPPORT_CENTRAL_MEMORY_BAN_V146;
 globalThis.__DIRAC_SUPPORT_CENTRAL_RATE_V146__ = DIRAC_SUPPORT_CENTRAL_RATE_V146;
 globalThis.__DIRAC_SUPPORT_CENTRAL_CIRCUIT_V146__ = DIRAC_SUPPORT_CENTRAL_CIRCUIT_V146;
@@ -1892,25 +1837,6 @@ function supportCentralMemoryRateV146(ctx) {
   const key = ctx.fingerprint + '|' + ctx.action;
   const policyLimit = ctx.policy.principal === 'cron' ? 30 : ctx.policy.principal === 'public' ? 180 : 360;
   let state = DIRAC_SUPPORT_CENTRAL_RATE_V146.get(key);
-  if (!state && DIRAC_SUPPORT_CENTRAL_RATE_V146.size >= 4096) {
-    if (now - DIRAC_SUPPORT_CENTRAL_RATE_CLEANUP_AT_V322 >= 1000) {
-      DIRAC_SUPPORT_CENTRAL_RATE_CLEANUP_AT_V322 = now;
-      for (const [entryKey, entry] of DIRAC_SUPPORT_CENTRAL_RATE_V146) {
-        const startedAt = Number(entry && entry.startedAt || 0);
-        const blockedUntil = Number(entry && entry.blockedUntil || 0);
-        if (Number.isFinite(startedAt) && startedAt + 60_000 <= now
-            && Number.isFinite(blockedUntil) && blockedUntil <= now) {
-          DIRAC_SUPPORT_CENTRAL_RATE_V146.delete(entryKey);
-        }
-        if (DIRAC_SUPPORT_CENTRAL_RATE_V146.size <= 3072) break;
-      }
-    }
-    if (DIRAC_SUPPORT_CENTRAL_RATE_V146.size >= 4096) {
-      const error = new PublicError(429, 'CENTRAL_RATE_CAPACITY_REJECTED', 'Kapasitas rate guard sedang penuh. Coba kembali sesaat lagi.');
-      error.retryAfter = 1;
-      throw error;
-    }
-  }
   if (!state || now - state.startedAt >= 60_000) state = { startedAt: now, count: 0, blockedUntil: 0 };
   if (state.blockedUntil > now) {
     const error = new PublicError(429, 'CENTRAL_RATE_LIMITED', 'Terlalu banyak permintaan. Coba kembali beberapa saat lagi.');
@@ -1926,6 +1852,12 @@ function supportCentralMemoryRateV146(ctx) {
     throw error;
   }
   DIRAC_SUPPORT_CENTRAL_RATE_V146.set(key, state);
+  if (DIRAC_SUPPORT_CENTRAL_RATE_V146.size > 4096) {
+    for (const [entryKey, entry] of DIRAC_SUPPORT_CENTRAL_RATE_V146) {
+      if (now - Number(entry && entry.startedAt || 0) > 10 * 60_000) DIRAC_SUPPORT_CENTRAL_RATE_V146.delete(entryKey);
+      if (DIRAC_SUPPORT_CENTRAL_RATE_V146.size <= 3072) break;
+    }
+  }
 }
 
 function supportCentralCircuitCheckV146(ctx) {
