@@ -1265,7 +1265,7 @@ async function domainLogin(req, res, preloadedBody) {
     reason_code: effectiveLoginBlockV320 && effectiveLoginBlockV320.reason
   }, res);
   if (!effectiveLoginBlockV320.ok) {
-    clearSessionCookies(res);
+    if (!diracDashboardClearProvenStaleBindingV312(req, res)) clearSessionCookies(res);
     diracLoginFatalMarkV324(req, 'login.response_503', 'begin', {
       reason_code: 'LOGIN_BAN_CHECK_UNAVAILABLE'
     }, res);
