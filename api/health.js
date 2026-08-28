@@ -1265,7 +1265,7 @@ async function domainLogin(req, res, preloadedBody) {
     reason_code: effectiveLoginBlockV320 && effectiveLoginBlockV320.reason
   }, res);
   if (!effectiveLoginBlockV320.ok) {
-    if (!diracDashboardClearProvenStaleBindingV312(req, res)) clearSessionCookies(res);
+    clearSessionCookies(res);
     diracLoginFatalMarkV324(req, 'login.response_503', 'begin', {
       reason_code: 'LOGIN_BAN_CHECK_UNAVAILABLE'
     }, res);
@@ -1601,34 +1601,21 @@ async function domainLoginEffectiveAccessBlockV320(req, authData) {
       }
     }
 
-    const blockedAfter = new Date().toISOString();
+    const blockedAfterMs = Date.now();
     domainLoginBanSetLookupMarkerV320(req, {
       action: centralActionV320,
       stage: 'access_block',
       auth_user_id: authUserId,
       customer_id: customerId,
-      blocked_after: blockedAfter
+      blocked_after_ms: blockedAfterMs
     });
-    const select = 'id,customer_id,ip_hash,device_hash,blocked_until,reason,action';
-    const path = '/rest/v1/security_customer_access_blocks?select=' + encodeURIComponent(select)
-      + '&customer_id=eq.' + encodeURIComponent(customerId)
-      + '&blocked_until=gt.' + encodeURIComponent(blockedAfter)
-      + '&order=blocked_until.desc&limit=1';
-    const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
-    if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > 1) {
+    const result = await customerSecurityReadPersistentAccessBlocksV325('account', customerId, blockedAfterMs);
+    if (!result || result.ok !== true) {
       return { ok: false, reason: 'login_ban_store_unavailable' };
     }
-    if (result.data.length === 0) return { ok: true, blocked: false };
-    const row = result.data[0];
-    if (!row || typeof row !== 'object' || Array.isArray(row)) {
-      return { ok: false, reason: 'login_ban_row_invariant_invalid' };
-    }
-    const blockedUntilMs = Date.parse(String(row.blocked_until || ''));
-    if (!safeEqual(String(row.customer_id || ''), customerId)
-        || !Number.isFinite(blockedUntilMs)
-        || blockedUntilMs <= Date.now()) {
-      return { ok: false, reason: 'login_ban_row_invariant_invalid' };
-    }
+    if (!result.rows.length) return { ok: true, blocked: false };
+    const row = result.rows[0];
+    const blockedUntilMs = Number(row.blocked_until_ms || 0);
     return {
       ok: true,
       blocked: true,
@@ -5261,7 +5248,6 @@ const DIRAC_TABLE_DB_MAP = Object.freeze({
   security_login_guard_blocks: 'adminGuard',
   security_customer_login_logs: 'adminGuard',
 
-  security_customer_access_blocks: 'customerSecurity',
   security_customer_auth_links: 'customerSecurity',
   security_customer_password_hashes: 'customerSecurity',
   security_customer_recovery_codes: 'customerSecurity',
@@ -5408,13 +5394,15 @@ async function supabaseFetch(path, options = {}) {
     ? domainLoginBanGetLookupMarkerV321(banContextV320.req)
     : null;
   if (banMarkerV320) {
-    const expectedTargetV320 = shouldUseDiracMultiDbRouter()
-      ? banMarkerV320.stage === 'customer_by_email'
-        ? 'core'
-        : banMarkerV320.stage === 'provider_user'
-          ? 'legacy'
-          : 'customerSecurity'
-      : 'legacy';
+    const expectedTargetV320 = banMarkerV320.stage === 'access_block'
+      ? 'security'
+      : shouldUseDiracMultiDbRouter()
+        ? banMarkerV320.stage === 'customer_by_email'
+          ? 'core'
+          : banMarkerV320.stage === 'provider_user'
+            ? 'legacy'
+            : 'customerSecurity'
+        : 'legacy';
     if (String(targetKey || '') !== expectedTargetV320
         || !target
         || String(target.targetKey || '') !== expectedTargetV320
@@ -9010,6 +8998,742 @@ function diracNowIso() {
 const CUSTOMER_SECURITY_ACCESS_BLOCK_MEMORY = globalThis.__DIRAC_CUSTOMER_SECURITY_ACCESS_BLOCK_MEMORY__ || new Map();
 globalThis.__DIRAC_CUSTOMER_SECURITY_ACCESS_BLOCK_MEMORY__ = CUSTOMER_SECURITY_ACCESS_BLOCK_MEMORY;
 const CUSTOMER_SECURITY_ACCESS_BLOCK_SECONDS = 300;
+const CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_PREFIX_V325 = 'customer-access-block-v325';
+const CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SCHEMA_V325 = 'dirac.customer_access_block';
+const CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_VERSION_V325 = 325;
+const CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_MAX_ROWS_V325 = 40;
+const CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SELECT_V325 = 'security_key,record_json,blocked_until_ms,expires_at';
+const CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_RECORD_KEYS_V325 = Object.freeze([
+  'action', 'block_id', 'blocked_until_ms', 'created_at_ms', 'customer_id', 'device_hash',
+  'fail_count', 'ip_hash', 'metadata', 'reason', 'revocation', 'schema', 'state',
+  'storage_keys', 'updated_at_ms', 'version'
+].sort());
+const CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_FETCH_MARKERS_V325 = new WeakMap();
+
+function customerSecurityPersistentAccessBlockFilterMayMatchV325(value) {
+  const prefix = CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_PREFIX_V325 + ':';
+  const raw = String(value || '').trim();
+  const lower = raw.toLowerCase();
+  if (lower.startsWith('eq.')) {
+    const item = lower.slice(3);
+    return !/^[a-z0-9_.:-]{1,512}$/.test(item) || item.startsWith(prefix);
+  }
+  if (lower.startsWith('in.(') && lower.endsWith(')')) {
+    const values = lower.slice(4, -1).split(',').map((item) => item.trim()).filter(Boolean);
+    return !values.length || values.some((item) => !/^[a-z0-9_.:-]{1,512}$/.test(item) || item.startsWith(prefix));
+  }
+  if (lower.startsWith('like.') || lower.startsWith('ilike.')) {
+    const pattern = lower.slice(lower.indexOf('.') + 1);
+    if (!/^[a-z0-9.:-]+[\*%]?$/.test(pattern)) return true;
+    const wildcardAt = pattern.search(/[\*%]/);
+    const literalPrefix = wildcardAt >= 0 ? pattern.slice(0, wildcardAt) : pattern;
+    return !literalPrefix || prefix.startsWith(literalPrefix) || literalPrefix.startsWith(prefix);
+  }
+  return true;
+}
+
+function customerSecurityPersistentAccessBlockRequestMayTouchV325(path, options = {}) {
+  try {
+    const parsed = path instanceof URL ? path : new URL(String(path || ''), 'https://dirac-access-block.invalid');
+    if (getDiracRestTableFromPath(parsed.pathname) !== DIRAC_PERSISTENT_BAN_TABLE) return false;
+    if (parsed.pathname !== '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE) return true;
+    const method = String(options && options.method || 'GET').toUpperCase();
+    const bodyRows = Array.isArray(options && options.body) ? options.body : [options && options.body];
+    const bodyTouchesNamespace = bodyRows.some((row) => row && typeof row === 'object' && !Array.isArray(row)
+      && Object.prototype.hasOwnProperty.call(row, 'security_key')
+      && String(row.security_key || '').toLowerCase().startsWith(CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_PREFIX_V325 + ':'));
+    if (bodyTouchesNamespace) return true;
+    if (method === 'POST') return false;
+    const filters = parsed.searchParams.getAll('security_key');
+    return filters.length !== 1 || customerSecurityPersistentAccessBlockFilterMayMatchV325(filters[0]);
+  } catch (_) {
+    return true;
+  }
+}
+
+function customerSecurityPersistentAccessBlockCapabilityDigestV325(path, options) {
+  try {
+    return crypto.createHash('sha512').update(JSON.stringify({
+      path: String(path || ''),
+      method: String(options && options.method || 'GET').toUpperCase(),
+      auth: String(options && options.auth || ''),
+      prefer: String(options && options.prefer || ''),
+      body: options && options.body === undefined ? null : options && options.body
+    })).digest('hex');
+  } catch (_) {
+    return '';
+  }
+}
+
+async function customerSecurityPersistentAccessBlockFetchV325(operation, path, options) {
+  const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
+  if (!ctx || typeof ctx !== 'object' || !options || typeof options !== 'object') return supabaseFetch(path, options);
+  const marker = Object.freeze({
+    operation: String(operation || ''),
+    path: String(path || ''),
+    action: String(ctx.action || ''),
+    request_id: String(ctx.requestId || ''),
+    digest: customerSecurityPersistentAccessBlockCapabilityDigestV325(path, options),
+    ctx
+  });
+  CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_FETCH_MARKERS_V325.set(options, marker);
+  try {
+    return await supabaseFetch(path, options);
+  } finally {
+    CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_FETCH_MARKERS_V325.delete(options);
+  }
+}
+
+function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, options, method) {
+  try {
+    const marker = options && typeof options === 'object'
+      ? CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_FETCH_MARKERS_V325.get(options)
+      : null;
+    if (marker) CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_FETCH_MARKERS_V325.delete(options);
+    const handlerGuardPassed = Boolean(ctx && ctx.req && ctx.req.__diracCentralSecurityGuardPassedV146 === true);
+    const recoveryGuardPassed = Boolean(ctx
+      && ctx.__diracCustomerAccessBlockRecoveryProxyV325 === true
+      && ctx.__diracCustomerAccessBlockRecoveryProxyPriorPassportV325 === true
+      && ctx.__diracS2SSevenSignaturesVerifiedV206 === true
+      && ctx.classification === 'server'
+      && ctx.authentication === 'server'
+      && ctx.currentStageV211 === 'security report'
+      && ctx.currentStageIndexV211 === SECURITY_PIPELINE.findIndex((stage) => stage && stage.name === 'security report')
+      && diracCentralGuardPhaseValidV211(ctx));
+    if (!marker || marker.ctx !== ctx || marker.path !== String(path || '')
+        || marker.action !== String(ctx && ctx.action || '')
+        || marker.request_id !== String(ctx && ctx.requestId || '')
+        || !marker.digest
+        || !safeEqual(marker.digest, customerSecurityPersistentAccessBlockCapabilityDigestV325(path, options))
+        || !ctx || !ctx.req || (!handlerGuardPassed && !recoveryGuardPassed)
+        || !options || options.auth !== 'service'
+        || String(options.method || 'GET').toUpperCase() !== String(method || '').toUpperCase()) return false;
+
+    const operation = String(marker.operation || '');
+    const parsed = new URL(String(path || ''), 'https://dirac-access-block.invalid');
+    if (parsed.origin !== 'https://dirac-access-block.invalid'
+        || parsed.pathname !== '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
+        || parsed.hash) return false;
+    const params = parsed.searchParams;
+    const exactQueryKeys = (keys) => {
+      const actual = Array.from(params.keys()).sort();
+      const expected = keys.slice().sort();
+      return actual.length === expected.length
+        && actual.every((key, index) => key === expected[index])
+        && expected.every((key) => params.getAll(key).length === 1);
+    };
+    const exactOptionKeys = (keys) => Object.keys(options).sort().join(',') === keys.slice().sort().join(',');
+    const select = CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SELECT_V325;
+    const now = Date.now();
+
+    if (operation === 'scope_read') {
+      if (String(method || '').toUpperCase() !== 'GET' || !exactOptionKeys(['auth', 'method'])
+          || !exactQueryKeys(['blocked_until_ms', 'limit', 'order', 'security_key', 'select'])
+          || params.get('select') !== select
+          || params.get('order') !== 'blocked_until_ms.desc,security_key.asc'
+          || params.get('limit') !== String(CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_MAX_ROWS_V325 + 1)) return false;
+      const filter = String(params.get('security_key') || '');
+      const match = filter.match(/^like\.customer-access-block-v325:(account|ip|device):([a-f0-9]{64}):\*$/);
+      const afterMatch = String(params.get('blocked_until_ms') || '').match(/^gt\.([0-9]{1,16})$/);
+      const afterMs = afterMatch ? Number(afterMatch[1]) : NaN;
+      return Boolean(match && Number.isSafeInteger(afterMs) && afterMs >= now - 120_000 && afterMs <= now);
+    }
+
+    if (operation === 'event_read' || operation === 'create_verify') {
+      if (String(method || '').toUpperCase() !== 'GET' || !exactOptionKeys(['auth', 'method'])
+          || !exactQueryKeys(['limit', 'security_key', 'select'])
+          || params.get('select') !== select || params.get('limit') !== '2'
+          || !/^eq\.customer-access-block-v325:event:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(params.get('security_key') || ''))) return false;
+      return operation === 'create_verify'
+        || String(ctx.action || '') === 'admin_security_unblock_user';
+    }
+
+    if (operation === 'event_list') {
+      if (String(method || '').toUpperCase() !== 'GET' || !exactOptionKeys(['auth', 'method'])
+          || !['admin_security_overview', 'admin_security_blocks'].includes(String(ctx.action || ''))
+          || params.get('select') !== select
+          || params.get('security_key') !== 'like.customer-access-block-v325:event:*'
+          || params.get('order') !== 'blocked_until_ms.desc,security_key.asc') return false;
+      const active = params.has('blocked_until_ms');
+      if (!exactQueryKeys(active
+        ? ['blocked_until_ms', 'limit', 'order', 'security_key', 'select']
+        : ['limit', 'order', 'security_key', 'select'])) return false;
+      const limit = Number(params.get('limit'));
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || String(limit) !== params.get('limit')) return false;
+      if (!active) return true;
+      const activeMatch = String(params.get('blocked_until_ms') || '').match(/^gt\.([0-9]{1,16})$/);
+      const activeAfterMs = activeMatch ? Number(activeMatch[1]) : NaN;
+      return Number.isSafeInteger(activeAfterMs) && activeAfterMs >= now - 120_000 && activeAfterMs <= now;
+    }
+
+    if (operation === 'create') {
+      if (String(method || '').toUpperCase() !== 'POST' || !exactOptionKeys(['auth', 'body', 'method', 'prefer'])
+          || options.prefer !== 'return=representation' || !exactQueryKeys(['select'])
+          || params.get('select') !== select || !Array.isArray(options.body)
+          || ![3, 4].includes(options.body.length)) return false;
+      const rows = [];
+      for (const rawRow of options.body) {
+        const row = customerSecurityValidatePersistentAccessBlockRowV325(rawRow);
+        if (!row || row.state !== 'active') return false;
+        rows.push(row);
+      }
+      const first = rows[0];
+      const fingerprint = customerSecurityPersistentAccessBlockRecordFingerprintV325(first.record);
+      const returnedKeys = rows.map((row) => row.security_key).sort();
+      const expectedExpiresAtMs = Math.max(
+        first.created_at_ms + LOGIN_SECURITY_PERSIST_TTL_SECONDS * 1000,
+        first.blocked_until_ms + 60_000
+      );
+      const identity = customerSecurityAccessBlockIdentity(ctx.req);
+      const recoveryProxyBound = ctx.__diracCustomerAccessBlockRecoveryProxyV325 === true
+        && ctx.__diracS2SSevenSignaturesVerifiedV206 === true
+        && customerSecurityPersistentAccessBlockRecoveryProxyDecisionV325(
+          parsed,
+          method,
+          options.prefer,
+          options.body
+        ).ok === true;
+      const identityBound = recoveryProxyBound
+        ? customerSecurityLooksLikeUuid(first.customer_id) && first.record.metadata.origin === null
+        : first.ip_hash === identity.ip_hash
+          && first.device_hash === identity.device_hash
+          && first.record.metadata.origin === (identity.origin ? String(identity.origin).slice(0, 320) : null)
+          && first.record.metadata.user_agent_hash === customerSecuritySha256('ua:' + identity.ua);
+      return returnedKeys.length === first.storage_keys.length
+        && returnedKeys.every((key, index) => key === first.storage_keys[index])
+        && rows.every((row) => row.block_id === first.block_id
+          && customerSecurityPersistentAccessBlockRecordFingerprintV325(row.record) === fingerprint)
+        && options.body.every((row) => Date.parse(String(row.expires_at || '')) === expectedExpiresAtMs)
+        && identityBound
+        && first.action === String(ctx.action || '').trim().toLowerCase()
+        && first.updated_at_ms === first.created_at_ms
+        && first.created_at_ms >= now - 30_000 && first.created_at_ms <= now
+        && first.blocked_until_ms - first.created_at_ms >= 240_000
+        && first.blocked_until_ms - first.created_at_ms <= CUSTOMER_SECURITY_ACCESS_BLOCK_SECONDS * 1000;
+    }
+
+    if (operation === 'revoke') {
+      if (String(method || '').toUpperCase() !== 'PATCH' || String(ctx.action || '') !== 'admin_security_unblock_user'
+          || !exactOptionKeys(['auth', 'body', 'method', 'prefer'])
+          || options.prefer !== 'return=representation'
+          || !exactQueryKeys(['blocked_until_ms', 'security_key', 'select'])
+          || params.get('select') !== select || !options.body || typeof options.body !== 'object'
+          || Array.isArray(options.body)
+          || Object.keys(options.body).sort().join(',') !== 'blocked_until_ms,record_json') return false;
+      const filter = String(params.get('security_key') || '');
+      if (!filter.startsWith('in.(') || !filter.endsWith(')')) return false;
+      const storageKeys = filter.slice(4, -1).split(',').map((key) => key.trim()).sort();
+      const blockedUntilMs = Number(options.body.blocked_until_ms);
+      if (![3, 4].includes(storageKeys.length) || new Set(storageKeys).size !== storageKeys.length
+          || !Number.isSafeInteger(blockedUntilMs) || blockedUntilMs < now - 30_000 || blockedUntilMs > now
+          || params.get('blocked_until_ms') !== 'gt.' + String(blockedUntilMs)) return false;
+      const syntheticExpiresAt = new Date(blockedUntilMs).toISOString();
+      const validated = storageKeys.map((securityKey) => customerSecurityValidatePersistentAccessBlockRowV325({
+        security_key: securityKey,
+        record_json: options.body.record_json,
+        blocked_until_ms: blockedUntilMs,
+        expires_at: syntheticExpiresAt
+      }));
+      return validated.every(Boolean)
+        && validated.every((row) => row.state === 'revoked'
+          && row.updated_at_ms === blockedUntilMs
+          && row.storage_keys.length === storageKeys.length
+          && row.storage_keys.every((key, index) => key === storageKeys[index]));
+    }
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+function customerSecurityPersistentAccessBlockRecoveryProxyDecisionV325(parsedPath, method, prefer, requestBody) {
+  const options = { method, body: requestBody };
+  if (!customerSecurityPersistentAccessBlockRequestMayTouchV325(parsedPath, options)) {
+    return { relevant: false, ok: true, operation: '' };
+  }
+  try {
+    const parsed = parsedPath instanceof URL
+      ? parsedPath
+      : new URL(String(parsedPath || ''), 'https://dirac-access-block.invalid');
+    const params = parsed.searchParams;
+    if (parsed.pathname !== '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE || parsed.hash
+        || String(method || '').toUpperCase() !== 'POST'
+        || String(prefer || '') !== 'return=representation'
+        || Array.from(params.keys()).join(',') !== 'select'
+        || params.getAll('select').length !== 1
+        || params.get('select') !== CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SELECT_V325
+        || !Array.isArray(requestBody) || requestBody.length !== 4) {
+      return { relevant: true, ok: false, operation: '' };
+    }
+    const rows = requestBody.map((row) => customerSecurityValidatePersistentAccessBlockRowV325(row));
+    if (rows.some((row) => !row || row.state !== 'active')) return { relevant: true, ok: false, operation: '' };
+    const first = rows[0];
+    const fingerprint = customerSecurityPersistentAccessBlockRecordFingerprintV325(first.record);
+    const keys = rows.map((row) => row.security_key).sort();
+    const now = Date.now();
+    const expectedExpiresAtMs = Math.max(
+      first.created_at_ms + LOGIN_SECURITY_PERSIST_TTL_SECONDS * 1000,
+      first.blocked_until_ms + 60_000
+    );
+    const ok = customerSecurityLooksLikeUuid(first.customer_id)
+      && first.action === 'customer_security_recovery_codes_generate'
+      && first.reason === 'recovery_account_password_invalid'
+      && first.record.metadata.origin === null
+      && first.updated_at_ms === first.created_at_ms
+      && first.created_at_ms >= now - 30_000 && first.created_at_ms <= now
+      && first.blocked_until_ms - first.created_at_ms >= 240_000
+      && first.blocked_until_ms - first.created_at_ms <= CUSTOMER_SECURITY_ACCESS_BLOCK_SECONDS * 1000
+      && keys.length === first.storage_keys.length
+      && keys.every((key, index) => key === first.storage_keys[index])
+      && rows.every((row) => row.block_id === first.block_id
+        && customerSecurityPersistentAccessBlockRecordFingerprintV325(row.record) === fingerprint)
+      && requestBody.every((row) => Date.parse(String(row.expires_at || '')) === expectedExpiresAtMs);
+    return { relevant: true, ok, operation: ok ? 'create' : '' };
+  } catch (_) {
+    return { relevant: true, ok: false, operation: '' };
+  }
+}
+
+function customerSecurityPersistentAccessBlockCanonicalValueV325(scope, value) {
+  const cleanScope = String(scope || '').trim().toLowerCase();
+  const cleanValue = String(value || '').trim().toLowerCase();
+  if (cleanScope === 'account') return customerSecurityLooksLikeUuid(cleanValue) ? cleanValue : '';
+  if (cleanScope === 'ip' || cleanScope === 'device') return /^[a-f0-9]{64}$/.test(cleanValue) ? cleanValue : '';
+  return '';
+}
+
+function customerSecurityPersistentAccessBlockDigestV325(scope, value) {
+  const cleanScope = String(scope || '').trim().toLowerCase();
+  const canonical = customerSecurityPersistentAccessBlockCanonicalValueV325(cleanScope, value);
+  if (!canonical) return '';
+  const key = diracCentralDeriveSecretV146('customer-access-block-v325-key');
+  return crypto.createHmac('sha256', key).update(['v325', cleanScope, canonical].join('\0')).digest('hex');
+}
+
+function customerSecurityPersistentAccessBlockScopePrefixV325(scope, value) {
+  const cleanScope = String(scope || '').trim().toLowerCase();
+  const digest = customerSecurityPersistentAccessBlockDigestV325(cleanScope, value);
+  return digest ? CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_PREFIX_V325 + ':' + cleanScope + ':' + digest + ':' : '';
+}
+
+function customerSecurityPersistentAccessBlockEventKeyV325(blockId) {
+  const cleanId = String(blockId || '').trim().toLowerCase();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(cleanId)
+    ? CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_PREFIX_V325 + ':event:' + cleanId
+    : '';
+}
+
+function customerSecurityPersistentAccessBlockScopeKeyV325(scope, value, blockId) {
+  const prefix = customerSecurityPersistentAccessBlockScopePrefixV325(scope, value);
+  const eventKey = customerSecurityPersistentAccessBlockEventKeyV325(blockId);
+  return prefix && eventKey ? prefix + String(blockId || '').trim().toLowerCase() : '';
+}
+
+function customerSecurityPersistentAccessBlockStorageKeysV325(blockId, customerId, ipHash, deviceHash) {
+  const eventKey = customerSecurityPersistentAccessBlockEventKeyV325(blockId);
+  const ipKey = customerSecurityPersistentAccessBlockScopeKeyV325('ip', ipHash, blockId);
+  const deviceKey = customerSecurityPersistentAccessBlockScopeKeyV325('device', deviceHash, blockId);
+  const accountKey = customerId
+    ? customerSecurityPersistentAccessBlockScopeKeyV325('account', customerId, blockId)
+    : '';
+  const keys = [eventKey, accountKey, ipKey, deviceKey].filter(Boolean).sort();
+  return eventKey && ipKey && deviceKey && keys.length === (customerId ? 4 : 3) ? keys : [];
+}
+
+function customerSecurityPersistentAccessBlockScopeReadPathV325(scope, value, afterMs) {
+  const prefix = customerSecurityPersistentAccessBlockScopePrefixV325(scope, value);
+  const safeAfterMs = Number(afterMs);
+  if (!prefix || !Number.isSafeInteger(safeAfterMs) || safeAfterMs < 0) return '';
+  return '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
+    + '?select=' + encodeURIComponent(CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SELECT_V325)
+    + '&security_key=like.' + encodeURIComponent(prefix + '*')
+    + '&blocked_until_ms=gt.' + encodeURIComponent(String(safeAfterMs))
+    + '&order=' + encodeURIComponent('blocked_until_ms.desc,security_key.asc')
+    + '&limit=' + String(CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_MAX_ROWS_V325 + 1);
+}
+
+function customerSecurityPersistentAccessBlockRecordFingerprintV325(record) {
+  const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
+  const metadata = source.metadata && typeof source.metadata === 'object' && !Array.isArray(source.metadata) ? source.metadata : {};
+  const revocation = source.revocation && typeof source.revocation === 'object' && !Array.isArray(source.revocation)
+    ? source.revocation
+    : null;
+  return crypto.createHash('sha256').update(JSON.stringify({
+    action: source.action,
+    block_id: source.block_id,
+    blocked_until_ms: source.blocked_until_ms,
+    created_at_ms: source.created_at_ms,
+    customer_id: source.customer_id,
+    device_hash: source.device_hash,
+    fail_count: source.fail_count,
+    ip_hash: source.ip_hash,
+    metadata: {
+      origin: metadata.origin,
+      source: metadata.source,
+      user_agent_hash: metadata.user_agent_hash
+    },
+    reason: source.reason,
+    revocation: revocation ? {
+      admin_email: revocation.admin_email,
+      admin_role: revocation.admin_role,
+      admin_user_id: revocation.admin_user_id,
+      revoked_at_ms: revocation.revoked_at_ms,
+      source: revocation.source
+    } : null,
+    schema: source.schema,
+    state: source.state,
+    storage_keys: Array.isArray(source.storage_keys) ? source.storage_keys : [],
+    updated_at_ms: source.updated_at_ms,
+    version: source.version
+  })).digest('hex');
+}
+
+function customerSecurityValidatePersistentAccessBlockRowV325(row, options = {}) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)
+      || Object.keys(row).sort().join(',') !== 'blocked_until_ms,expires_at,record_json,security_key') {
+    return null;
+  }
+  const record = row.record_json;
+  if (!record || typeof record !== 'object' || Array.isArray(record)
+      || Object.keys(record).sort().join(',') !== CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_RECORD_KEYS_V325.join(',')) {
+    return null;
+  }
+  const blockId = String(record.block_id || '').trim().toLowerCase();
+  const customerId = record.customer_id === null ? null : String(record.customer_id || '').trim().toLowerCase();
+  const ipHash = String(record.ip_hash || '').trim().toLowerCase();
+  const deviceHash = String(record.device_hash || '').trim().toLowerCase();
+  const securityKey = String(row.security_key || '').trim();
+  const blockedUntilMs = Number(row.blocked_until_ms);
+  const nestedBlockedUntilMs = Number(record.blocked_until_ms);
+  const createdAtMs = Number(record.created_at_ms);
+  const updatedAtMs = Number(record.updated_at_ms);
+  const expiresAtMs = Date.parse(String(row.expires_at || ''));
+  if (record.schema !== CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SCHEMA_V325
+      || record.version !== CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_VERSION_V325
+      || !customerSecurityPersistentAccessBlockEventKeyV325(blockId)
+      || typeof record.block_id !== 'string' || record.block_id !== blockId
+      || (customerId !== null
+        && (typeof record.customer_id !== 'string' || record.customer_id !== customerId || !customerSecurityLooksLikeUuid(customerId)))
+      || typeof record.ip_hash !== 'string' || record.ip_hash !== ipHash
+      || typeof record.device_hash !== 'string' || record.device_hash !== deviceHash
+      || !/^[a-f0-9]{64}$/.test(ipHash)
+      || !/^[a-f0-9]{64}$/.test(deviceHash)
+      || !Number.isSafeInteger(blockedUntilMs) || blockedUntilMs < 0
+      || typeof record.blocked_until_ms !== 'number'
+      || !Number.isSafeInteger(nestedBlockedUntilMs) || nestedBlockedUntilMs !== blockedUntilMs
+      || typeof record.created_at_ms !== 'number' || typeof record.updated_at_ms !== 'number'
+      || !Number.isSafeInteger(createdAtMs) || !Number.isSafeInteger(updatedAtMs)
+      || createdAtMs <= 0 || updatedAtMs < createdAtMs
+      || !Number.isFinite(expiresAtMs) || expiresAtMs < blockedUntilMs || expiresAtMs < updatedAtMs
+      || record.fail_count !== 1
+      || typeof record.action !== 'string'
+      || !/^[a-z0-9_:-]{1,120}$/i.test(String(record.action || ''))
+      || typeof record.reason !== 'string'
+      || !String(record.reason || '').trim() || String(record.reason).length > 500
+      || /[\u0000-\u001f\u007f]/.test(String(record.reason))
+      || typeof record.state !== 'string'
+      || !['active', 'revoked'].includes(String(record.state || ''))) {
+    return null;
+  }
+  const metadata = record.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
+      || Object.keys(metadata).sort().join(',') !== 'origin,source,user_agent_hash'
+      || metadata.source !== 'customer_security_gate'
+      || typeof metadata.user_agent_hash !== 'string'
+      || !/^[a-f0-9]{64}$/.test(String(metadata.user_agent_hash || ''))
+      || (metadata.origin !== null
+        && (typeof metadata.origin !== 'string' || metadata.origin.length > 320 || /[\u0000-\u001f\u007f]/.test(metadata.origin)))) {
+    return null;
+  }
+  if (record.state === 'active' && record.revocation !== null) return null;
+  if (record.state === 'revoked') {
+    const revocation = record.revocation;
+    if (!revocation || typeof revocation !== 'object' || Array.isArray(revocation)
+        || Object.keys(revocation).sort().join(',') !== 'admin_email,admin_role,admin_user_id,revoked_at_ms,source'
+        || revocation.source !== 'admin_security_center_supabase'
+        || !isValidAuthEmail(String(revocation.admin_email || ''))
+        || !/^[A-Za-z0-9._:@-]{1,160}$/.test(String(revocation.admin_user_id || ''))
+        || !/^[A-Za-z0-9._:@-]{1,80}$/.test(String(revocation.admin_role || ''))
+        || typeof revocation.revoked_at_ms !== 'number'
+        || !Number.isSafeInteger(Number(revocation.revoked_at_ms))
+        || Number(revocation.revoked_at_ms) !== blockedUntilMs
+        || updatedAtMs !== blockedUntilMs) return null;
+  }
+  const storageKeys = Array.isArray(record.storage_keys) && record.storage_keys.every((key) => typeof key === 'string')
+    ? record.storage_keys.slice()
+    : [];
+  const expectedKeys = customerSecurityPersistentAccessBlockStorageKeysV325(blockId, customerId, ipHash, deviceHash);
+  if (!expectedKeys.length
+      || storageKeys.length !== expectedKeys.length
+      || new Set(storageKeys).size !== storageKeys.length
+      || storageKeys.some((key, index) => key !== expectedKeys[index])
+      || !expectedKeys.includes(securityKey)) return null;
+  if (options.expected_key && securityKey !== String(options.expected_key)) return null;
+  if (options.canonical_only && securityKey !== customerSecurityPersistentAccessBlockEventKeyV325(blockId)) return null;
+  if (options.expected_scope) {
+    const expectedScopeKey = customerSecurityPersistentAccessBlockScopeKeyV325(
+      options.expected_scope,
+      options.expected_value,
+      blockId
+    );
+    if (!expectedScopeKey || securityKey !== expectedScopeKey) return null;
+  }
+  const activeAfterMs = Number(options.active_after_ms);
+  if (options.require_active === true
+      && (record.state !== 'active' || !Number.isSafeInteger(activeAfterMs) || blockedUntilMs <= activeAfterMs)) return null;
+  return {
+    security_key: securityKey,
+    block_id: blockId,
+    customer_id: customerId,
+    ip_hash: ipHash,
+    device_hash: deviceHash,
+    reason: String(record.reason),
+    action: String(record.action),
+    fail_count: 1,
+    blocked_until_ms: blockedUntilMs,
+    created_at_ms: createdAtMs,
+    updated_at_ms: updatedAtMs,
+    state: String(record.state),
+    storage_keys: expectedKeys,
+    record
+  };
+}
+
+async function customerSecurityReadPersistentAccessBlocksV325(scope, value, afterMs) {
+  const path = customerSecurityPersistentAccessBlockScopeReadPathV325(scope, value, afterMs);
+  if (!path) return { ok: false, rows: [] };
+  try {
+    const result = await customerSecurityPersistentAccessBlockFetchV325('scope_read', path, { method: 'GET', auth: 'service' });
+    if (!result || result.ok !== true || !Array.isArray(result.data)
+        || result.data.length > CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_MAX_ROWS_V325) {
+      return { ok: false, rows: [] };
+    }
+    const rows = [];
+    const keys = new Set();
+    const blockIds = new Set();
+    for (const rawRow of result.data) {
+      const row = customerSecurityValidatePersistentAccessBlockRowV325(rawRow, {
+        expected_scope: scope,
+        expected_value: value,
+        require_active: true,
+        active_after_ms: afterMs
+      });
+      if (!row || keys.has(row.security_key) || blockIds.has(row.block_id)) return { ok: false, rows: [] };
+      keys.add(row.security_key);
+      blockIds.add(row.block_id);
+      rows.push(row);
+    }
+    rows.sort((left, right) => right.blocked_until_ms - left.blocked_until_ms || left.security_key.localeCompare(right.security_key));
+    return { ok: true, rows };
+  } catch (_) {
+    return { ok: false, rows: [] };
+  }
+}
+
+async function customerSecurityReadPersistentAccessBlockEventV325(blockId, operation = 'event_read') {
+  const securityKey = customerSecurityPersistentAccessBlockEventKeyV325(blockId);
+  if (!securityKey) return { ok: false, found: false, row: null };
+  const path = '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
+    + '?select=' + encodeURIComponent(CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SELECT_V325)
+    + '&security_key=eq.' + encodeURIComponent(securityKey)
+    + '&limit=2';
+  try {
+    const result = await customerSecurityPersistentAccessBlockFetchV325(operation, path, { method: 'GET', auth: 'service' });
+    if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > 1) {
+      return { ok: false, found: false, row: null };
+    }
+    if (!result.data.length) return { ok: true, found: false, row: null };
+    const row = customerSecurityValidatePersistentAccessBlockRowV325(result.data[0], {
+      expected_key: securityKey,
+      canonical_only: true
+    });
+    return row ? { ok: true, found: true, row } : { ok: false, found: false, row: null };
+  } catch (_) {
+    return { ok: false, found: false, row: null };
+  }
+}
+
+async function customerSecurityListPersistentAccessBlockEventsV325(limit, activeAfterMs = null) {
+  const safeLimit = Math.max(1, Math.min(100, Number(limit || 50)));
+  const canonicalPrefix = CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_PREFIX_V325 + ':event:';
+  let path = '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
+    + '?select=' + encodeURIComponent(CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SELECT_V325)
+    + '&security_key=like.' + encodeURIComponent(canonicalPrefix + '*');
+  if (activeAfterMs !== null) {
+    if (!Number.isSafeInteger(Number(activeAfterMs)) || Number(activeAfterMs) < 0) return { ok: false, rows: [] };
+    path += '&blocked_until_ms=gt.' + encodeURIComponent(String(Number(activeAfterMs)));
+  }
+  path += '&order=' + encodeURIComponent('blocked_until_ms.desc,security_key.asc') + '&limit=' + encodeURIComponent(String(safeLimit));
+  try {
+    const result = await customerSecurityPersistentAccessBlockFetchV325('event_list', path, { method: 'GET', auth: 'service' });
+    if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > safeLimit) {
+      return { ok: false, rows: [] };
+    }
+    const rows = [];
+    const ids = new Set();
+    for (const rawRow of result.data) {
+      const row = customerSecurityValidatePersistentAccessBlockRowV325(rawRow, {
+        canonical_only: true,
+        require_active: activeAfterMs !== null,
+        active_after_ms: activeAfterMs === null ? 0 : Number(activeAfterMs)
+      });
+      if (!row || ids.has(row.block_id)) return { ok: false, rows: [] };
+      ids.add(row.block_id);
+      rows.push(row);
+    }
+    return { ok: true, rows };
+  } catch (_) {
+    return { ok: false, rows: [] };
+  }
+}
+
+function customerSecurityPersistentAccessBlockAdminRowV325(row) {
+  return {
+    id: row.block_id,
+    customer_id: row.customer_id,
+    ip_hash: row.ip_hash,
+    device_hash: row.device_hash,
+    reason: row.reason,
+    action: row.action,
+    fail_count: row.fail_count,
+    blocked_until: new Date(row.blocked_until_ms).toISOString(),
+    created_at: new Date(row.created_at_ms).toISOString(),
+    updated_at: new Date(row.updated_at_ms).toISOString()
+  };
+}
+
+async function customerSecurityCreatePersistentAccessBlockV325(identity, action, reason, customerId, blockedUntilMs) {
+  const canonicalCustomerId = customerSecurityLooksLikeUuid(customerId) ? String(customerId).trim().toLowerCase() : null;
+  const ipHash = String(identity && identity.ip_hash || '').trim().toLowerCase();
+  const deviceHash = String(identity && identity.device_hash || '').trim().toLowerCase();
+  const safeAction = String(action || 'customer_security').trim().toLowerCase().slice(0, 120);
+  const safeReason = customerSecuritySanitizeReason(reason || 'security_gate_failed');
+  const safeBlockedUntilMs = Number(blockedUntilMs);
+  if (!/^[a-f0-9]{64}$/.test(ipHash) || !/^[a-f0-9]{64}$/.test(deviceHash)
+      || !/^[a-z0-9_:-]{1,120}$/i.test(safeAction)
+      || !Number.isSafeInteger(safeBlockedUntilMs) || safeBlockedUntilMs <= Date.now()) return false;
+  const blockId = crypto.randomUUID().toLowerCase();
+  const nowMs = Date.now();
+  const storageKeys = customerSecurityPersistentAccessBlockStorageKeysV325(
+    blockId,
+    canonicalCustomerId,
+    ipHash,
+    deviceHash
+  );
+  if (!storageKeys.length) return false;
+  const record = {
+    schema: CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SCHEMA_V325,
+    version: CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_VERSION_V325,
+    block_id: blockId,
+    customer_id: canonicalCustomerId,
+    ip_hash: ipHash,
+    device_hash: deviceHash,
+    reason: safeReason,
+    action: safeAction,
+    fail_count: 1,
+    blocked_until_ms: safeBlockedUntilMs,
+    created_at_ms: nowMs,
+    updated_at_ms: nowMs,
+    state: 'active',
+    storage_keys: storageKeys,
+    metadata: {
+      source: 'customer_security_gate',
+      origin: identity && identity.origin ? String(identity.origin).slice(0, 320) : null,
+      user_agent_hash: customerSecuritySha256('ua:' + String(identity && identity.ua || ''))
+    },
+    revocation: null
+  };
+  const expiresAtMs = Math.max(
+    nowMs + LOGIN_SECURITY_PERSIST_TTL_SECONDS * 1000,
+    safeBlockedUntilMs + 60 * 1000
+  );
+  const body = storageKeys.map((securityKey) => ({
+    security_key: securityKey,
+    record_json: record,
+    blocked_until_ms: safeBlockedUntilMs,
+    expires_at: new Date(expiresAtMs).toISOString()
+  }));
+  const expectedFingerprint = customerSecurityPersistentAccessBlockRecordFingerprintV325(record);
+  const path = '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
+    + '?select=' + encodeURIComponent(CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SELECT_V325);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = await customerSecurityPersistentAccessBlockFetchV325('create', path, {
+      method: 'POST',
+      auth: 'service',
+      prefer: 'return=representation',
+      body
+    }).catch(() => null);
+    if (result && result.ok === true && Array.isArray(result.data)) {
+      const returned = [];
+      for (const rawRow of result.data) {
+        const row = customerSecurityValidatePersistentAccessBlockRowV325(rawRow);
+        if (!row || customerSecurityPersistentAccessBlockRecordFingerprintV325(row.record) !== expectedFingerprint) {
+          returned.length = 0;
+          break;
+        }
+        returned.push(row.security_key);
+      }
+      returned.sort();
+      if (returned.length === storageKeys.length
+          && returned.every((key, index) => key === storageKeys[index])) return true;
+    }
+    const observed = await customerSecurityReadPersistentAccessBlockEventV325(blockId, 'create_verify');
+    if (observed.ok && observed.found) {
+      return observed.row.state === 'active'
+        && customerSecurityPersistentAccessBlockRecordFingerprintV325(observed.row.record) === expectedFingerprint;
+    }
+  }
+  return false;
+}
+
+async function customerSecurityRevokePersistentAccessBlockEventV325(row, admin) {
+  if (!row || row.state !== 'active' || row.blocked_until_ms <= Date.now()) return { ok: true, affected: 0 };
+  const nowMs = Date.now();
+  const revocation = {
+    source: 'admin_security_center_supabase',
+    admin_user_id: String(admin && admin.user_id || '').trim().slice(0, 160),
+    admin_email: normalizeAuthEmail(admin && admin.email || ''),
+    admin_role: String(admin && admin.role || '').trim().slice(0, 80),
+    revoked_at_ms: nowMs
+  };
+  const nextRecord = {
+    ...row.record,
+    reason: 'manual_unblock_from_admin_security_center',
+    blocked_until_ms: nowMs,
+    updated_at_ms: nowMs,
+    state: 'revoked',
+    revocation
+  };
+  const path = '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
+    + '?security_key=in.(' + row.storage_keys.map(encodeURIComponent).join(',') + ')'
+    + '&blocked_until_ms=gt.' + encodeURIComponent(String(nowMs))
+    + '&select=' + encodeURIComponent(CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SELECT_V325);
+  const patched = await customerSecurityPersistentAccessBlockFetchV325('revoke', path, {
+    method: 'PATCH',
+    auth: 'service',
+    prefer: 'return=representation',
+    body: {
+      record_json: nextRecord,
+      blocked_until_ms: nowMs
+    }
+  }).catch(() => null);
+  if (!patched || patched.ok !== true || !Array.isArray(patched.data)
+      || patched.data.length !== row.storage_keys.length) return { ok: false, affected: 0 };
+  const returnedKeys = [];
+  const expectedFingerprint = customerSecurityPersistentAccessBlockRecordFingerprintV325(nextRecord);
+  for (const rawRow of patched.data) {
+    const returned = customerSecurityValidatePersistentAccessBlockRowV325(rawRow);
+    if (!returned || returned.block_id !== row.block_id
+        || customerSecurityPersistentAccessBlockRecordFingerprintV325(returned.record) !== expectedFingerprint) {
+      return { ok: false, affected: 0 };
+    }
+    returnedKeys.push(returned.security_key);
+  }
+  returnedKeys.sort();
+  if (!returnedKeys.every((key, index) => key === row.storage_keys[index])) return { ok: false, affected: 0 };
+  CUSTOMER_SECURITY_ACCESS_BLOCK_MEMORY.delete(row.ip_hash + ':' + row.device_hash);
+  return { ok: true, affected: 1 };
+}
 
 function customerSecurityAccessBlockIdentity(req) {
   const ip = customerSecurityRequestIp(req) || 'no-ip';
@@ -9037,23 +9761,16 @@ async function customerSecurityCheckAccessBlock(req, action) {
   if (memUntil && memUntil <= now) CUSTOMER_SECURITY_ACCESS_BLOCK_MEMORY.delete(memKey);
 
   try {
-    const path = '/rest/v1/security_customer_access_blocks?select=' +
-      encodeURIComponent('id,blocked_until,reason') +
-      '&or=(' +
-      'ip_hash.eq.' + encodeURIComponent(identity.ip_hash) + ',' +
-      'device_hash.eq.' + encodeURIComponent(identity.device_hash) +
-      ')' +
-      '&blocked_until=gt.' + encodeURIComponent(new Date().toISOString()) +
-      '&order=blocked_until.desc&limit=1';
-    const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
-    if (!result || result.ok !== true || !Array.isArray(result.data)) {
+    const ipResult = await customerSecurityReadPersistentAccessBlocksV325('ip', identity.ip_hash, now);
+    const deviceResult = await customerSecurityReadPersistentAccessBlocksV325('device', identity.device_hash, now);
+    if (!ipResult || ipResult.ok !== true || !deviceResult || deviceResult.ok !== true) {
       return { blocked: false, unavailable: true, source: 'database' };
     }
-    if (result.data.length) {
-      const until = Date.parse(String(result.data[0].blocked_until || ''));
-      if (!Number.isFinite(until) || until <= now) {
-        return { blocked: false, unavailable: true, source: 'database' };
-      }
+    const merged = [...ipResult.rows, ...deviceResult.rows]
+      .filter((row, index, rows) => rows.findIndex((candidate) => candidate.block_id === row.block_id) === index)
+      .sort((left, right) => right.blocked_until_ms - left.blocked_until_ms);
+    if (merged.length) {
+      const until = Number(merged[0].blocked_until_ms || 0);
       diracBoundedMapSetV321(
         CUSTOMER_SECURITY_ACCESS_BLOCK_MEMORY,
         memKey,
@@ -9084,23 +9801,12 @@ async function customerSecurityRegisterFailedVerification(req, action, reason, c
     (value) => Number(value || 0)
   );
 
+  let persistenceOk = false;
   try {
-    await supabaseFetch('/rest/v1/security_customer_access_blocks', {
-      method: 'POST',
-      auth: 'service',
-      prefer: 'return=representation',
-      body: [{
-        customer_id: customerSecurityLooksLikeUuid(customerId) ? customerId : null,
-        ip_hash: identity.ip_hash,
-        device_hash: identity.device_hash,
-        reason: customerSecuritySanitizeReason(reason || 'security_gate_failed'),
-        action: String(action || 'customer_security').slice(0, 120),
-        fail_count: 1,
-        blocked_until: blockedUntil,
-        metadata: { source: 'customer_security_gate', origin: identity.origin || null, user_agent_hash: customerSecuritySha256('ua:' + identity.ua) }
-      }]
-    });
-  } catch (_) {}
+    persistenceOk = await customerSecurityCreatePersistentAccessBlockV325(identity, action, reason, customerId, untilMs) === true;
+  } catch (_) {
+    persistenceOk = false;
+  }
 
   try {
     if (customerSecurityLooksLikeUuid(customerId)) {
@@ -9115,7 +9821,11 @@ async function customerSecurityRegisterFailedVerification(req, action, reason, c
     }
   } catch (_) {}
 
-  return { blocked_until: blockedUntil, retry_after_seconds: CUSTOMER_SECURITY_ACCESS_BLOCK_SECONDS };
+  return {
+    blocked_until: blockedUntil,
+    retry_after_seconds: CUSTOMER_SECURITY_ACCESS_BLOCK_SECONDS,
+    persistence_ok: persistenceOk
+  };
 }
 
 function customerSecurityRecoveryCodeSecret() {
@@ -12586,12 +13296,18 @@ async function adminSecurityOverviewSupabase(req, res, admin) {
       '&order=created_at.desc&limit=50'
   );
 
-  const blocks = await adminSecurityFetchTableSafeSupabase(
-    '/rest/v1/security_customer_access_blocks?select=' +
-      encodeURIComponent('id,customer_id,reason,action,blocked_until,created_at') +
-      '&blocked_until=gt.' + encodeURIComponent(new Date().toISOString()) +
-      '&order=created_at.desc&limit=50'
-  );
+  const persistentBlocks = await customerSecurityListPersistentAccessBlockEventsV325(50, Date.now());
+  if (!persistentBlocks.ok) {
+    return res.status(503).json({
+      ok: false,
+      code: 'SECURITY_BLOCK_STORE_UNAVAILABLE',
+      message: 'Status blokir customer belum dapat diverifikasi.'
+    });
+  }
+  const blocks = {
+    ok: true,
+    data: persistentBlocks.rows.map(customerSecurityPersistentAccessBlockAdminRowV325)
+  };
 
   const recovery = await adminSecurityFetchTableSafeSupabase(
     '/rest/v1/security_customer_recovery_codes?select=' +
@@ -12645,18 +13361,23 @@ async function adminSecurityEventsSupabase(req, res, admin) {
 async function adminSecurityBlocksSupabase(req, res, admin) {
   const limit = adminSecurityLimitSupabase(req, 80);
   const includeExpired = String(req.query && req.query.include_expired || '').toLowerCase() === 'true';
-  let path = '/rest/v1/security_customer_access_blocks?select=' +
-    encodeURIComponent('id,customer_id,ip_hash,device_hash,reason,action,fail_count,blocked_until,created_at,updated_at') +
-    '&order=created_at.desc&limit=' + encodeURIComponent(String(limit));
-  if (!includeExpired) path += '&blocked_until=gt.' + encodeURIComponent(new Date().toISOString());
-
-  const result = await adminSecurityFetchTableSafeSupabase(path);
-  const rows = Array.isArray(result.data) ? result.data : [];
+  const persistentBlocks = await customerSecurityListPersistentAccessBlockEventsV325(
+    limit,
+    includeExpired ? null : Date.now()
+  );
+  if (!persistentBlocks.ok) {
+    return res.status(503).json({
+      ok: false,
+      code: 'SECURITY_BLOCK_STORE_UNAVAILABLE',
+      message: 'Status blokir customer belum dapat diverifikasi.'
+    });
+  }
+  const rows = persistentBlocks.rows.map(customerSecurityPersistentAccessBlockAdminRowV325);
 
   return res.status(200).json({
     ok: true,
     admin: adminSecuritySanitizeAdminSupabase(admin),
-    storage_ready: result.ok,
+    storage_ready: true,
     blocks: await adminSecurityDecorateBlocksSupabase(rows),
     time: diracNowIso()
   });
@@ -12676,11 +13397,30 @@ async function adminSecurityUnblockUserSupabase(req, res, admin) {
     if (rows[0] && customerSecurityLooksLikeUuid(rows[0].id)) customerId = rows[0].id;
   }
 
-  let path = '';
+  let blockRows = [];
   if (customerSecurityLooksLikeUuid(blockId)) {
-    path = '/rest/v1/security_customer_access_blocks?id=eq.' + encodeURIComponent(blockId) + '&blocked_until=gt.' + encodeURIComponent(new Date().toISOString());
+    const event = await customerSecurityReadPersistentAccessBlockEventV325(blockId);
+    if (!event.ok) {
+      return res.status(503).json({
+        ok: false,
+        code: 'SECURITY_BLOCK_STORE_UNAVAILABLE',
+        message: 'Status blokir customer belum dapat diverifikasi.'
+      });
+    }
+    if (event.found && event.row && event.row.state === 'active' && event.row.blocked_until_ms > Date.now()) {
+      blockRows = [event.row];
+      if (!customerId && customerSecurityLooksLikeUuid(event.row.customer_id)) customerId = event.row.customer_id;
+    }
   } else if (customerSecurityLooksLikeUuid(customerId)) {
-    path = '/rest/v1/security_customer_access_blocks?customer_id=eq.' + encodeURIComponent(customerId) + '&blocked_until=gt.' + encodeURIComponent(new Date().toISOString());
+    const active = await customerSecurityReadPersistentAccessBlocksV325('account', customerId, Date.now());
+    if (!active.ok) {
+      return res.status(503).json({
+        ok: false,
+        code: 'SECURITY_BLOCK_STORE_UNAVAILABLE',
+        message: 'Status blokir customer belum dapat diverifikasi.'
+      });
+    }
+    blockRows = active.rows;
   } else {
     return res.status(400).json({
       ok: false,
@@ -12688,31 +13428,17 @@ async function adminSecurityUnblockUserSupabase(req, res, admin) {
     });
   }
 
-  const patched = await supabaseFetch(path, {
-    method: 'PATCH',
-    auth: 'service',
-    prefer: 'return=representation',
-    body: {
-      blocked_until: new Date().toISOString(),
-      reason: 'manual_unblock_from_admin_security_center',
-      metadata: {
-        source: 'admin_security_center_supabase',
-        admin_user_id: admin.user_id,
-        admin_email: admin.email,
-        admin_role: admin.role,
-        unblocked_at: diracNowIso()
-      }
+  let affectedRows = 0;
+  for (const blockRow of blockRows) {
+    const revoked = await customerSecurityRevokePersistentAccessBlockEventV325(blockRow, admin);
+    if (!revoked.ok) {
+      return res.status(500).json({
+        ok: false,
+        message: 'Gagal membuka blokir customer.'
+      });
     }
-  });
-
-  if (!patched.ok) {
-    return res.status(500).json({
-      ok: false,
-      message: 'Gagal membuka blokir customer.'
-    });
+    affectedRows += Number(revoked.affected || 0);
   }
-
-  const rows = Array.isArray(patched.data) ? patched.data : [];
 
   if (customerSecurityLooksLikeUuid(customerId)) {
     await customerSecurityWriteGuardEvent(customerId, {
@@ -12725,15 +13451,15 @@ async function adminSecurityUnblockUserSupabase(req, res, admin) {
         admin_user_id: admin.user_id,
         admin_email: admin.email,
         admin_role: admin.role,
-        affected_rows: rows.length
+        affected_rows: affectedRows
       }
     }).catch(() => null);
   }
 
   return res.status(200).json({
     ok: true,
-    message: rows.length ? 'Blokir berhasil dibuka.' : 'Tidak ada blokir aktif untuk target ini.',
-    affected_rows: rows.length,
+    message: affectedRows ? 'Blokir berhasil dibuka.' : 'Tidak ada blokir aktif untuk target ini.',
+    affected_rows: affectedRows,
     time: diracNowIso()
   });
 }
@@ -28496,7 +29222,6 @@ function diracV101ServiceRoleAllowedTables() {
     'products',
     'vouchers',
     'voucher_tiers',
-    'security_customer_access_blocks',
     'security_customer_account_requests',
     'security_customer_auth_links',
     'security_customer_events',
@@ -35685,7 +36410,7 @@ function diracBolaIdorV133NeverTouchAction(action) {
 }
 
 function diracBolaIdorV133IsOwnedTable(table) {
-  return /^(orders|order_items|domain_orders|domain_order_items|payment_transactions|security_customer_sessions|security_customer_settings|security_customer_recovery_codes|security_customer_auth_links|security_customer_password_hashes|security_customer_events|security_customer_login_logs|security_customer_access_blocks|customers|website_projects)$/i.test(String(table || ''));
+  return /^(orders|order_items|domain_orders|domain_order_items|payment_transactions|security_customer_sessions|security_customer_settings|security_customer_recovery_codes|security_customer_auth_links|security_customer_password_hashes|security_customer_events|security_customer_login_logs|customers|website_projects)$/i.test(String(table || ''));
 }
 
 function diracBolaIdorV133OwnerColumnsForTable(table) {
@@ -42992,7 +43717,6 @@ function diracRecoverySupabaseAllowedTableV201(table) {
     configuredGuard,
     DIRAC_S2S_SECURITY_TABLE,
     'dirac_security_rate_limits',
-    'security_customer_access_blocks',
     'security_customer_auth_links',
     'security_customer_settings',
     'security_customer_password_hashes',
@@ -44263,6 +44987,15 @@ function diracRecoverySecurityDbProxyScopeV252(parsedPath, method, prefer, reque
 
   if (!table || pathname !== '/rest/v1/' + table || !search) return false;
   if (['dirac_persistent_bans', 'dirac_s2s_security'].includes(table)) {
+    if (table === DIRAC_PERSISTENT_BAN_TABLE) {
+      const accessBlockDecisionV325 = customerSecurityPersistentAccessBlockRecoveryProxyDecisionV325(
+        parsedPath,
+        method,
+        prefer,
+        requestBody
+      );
+      if (accessBlockDecisionV325.relevant) return accessBlockDecisionV325.ok === true;
+    }
     if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(method)
         || (method !== 'POST' && !search.has('security_key'))
         || !new Set(['', 'return=minimal', 'return=representation', 'resolution=merge-duplicates', 'resolution=ignore-duplicates,return=representation']).has(prefer)) return false;
@@ -44285,24 +45018,6 @@ function diracRecoverySecurityDbProxyScopeV252(parsedPath, method, prefer, reque
     return method === 'GET' && requestBody === null && uuid(search.get('user_id'))
       && search.get('is_active') === 'eq.true' && Number(search.get('limit')) >= 1
       && Number(search.get('limit')) <= 20 && prefer === '';
-  }
-  if (table === 'security_customer_access_blocks') {
-    const row = oneObjectRow ? rows[0] : null;
-    const metadata = row && row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : null;
-    const blockedUntilMs = Date.parse(String(row && row.blocked_until || ''));
-    return method === 'POST' && search.size === 0 && prefer === 'return=representation' && Boolean(row)
-      && Object.keys(row).sort().join(',') === 'action,blocked_until,customer_id,device_hash,fail_count,ip_hash,metadata,reason'
-      && uuid('eq.' + String(row.customer_id || ''))
-      && /^[a-f0-9]{64}$/.test(String(row.ip_hash || ''))
-      && /^[a-f0-9]{64}$/.test(String(row.device_hash || ''))
-      && row.action === 'customer_security_recovery_codes_generate'
-      && row.reason === 'recovery_account_password_invalid'
-      && row.fail_count === 1
-      && Number.isFinite(blockedUntilMs) && blockedUntilMs > Date.now() - 30_000 && blockedUntilMs <= Date.now() + 10 * 60_000
-      && metadata && Object.keys(metadata).sort().join(',') === 'origin,source,user_agent_hash'
-      && metadata.source === 'customer_security_gate'
-      && metadata.origin === null
-      && /^[a-f0-9]{64}$/.test(String(metadata.user_agent_hash || ''));
   }
   if (table === 'security_lost_passkey_recovery_requests') {
     if (method === 'GET') return requestBody === null && requestId(search.get('request_id')) && search.get('limit') === '1' && prefer === '';
@@ -44427,6 +45142,20 @@ function diracRecoverySecurityDbProxyRequestV234(ctx) {
 async function diracRecoverySecurityDbProxyHandleV234(ctx) {
   const request = diracRecoverySecurityDbProxyRequestV234(ctx);
   if (!request.ok) return request;
+  let accessBlockProxyDecisionV325;
+  try {
+    accessBlockProxyDecisionV325 = customerSecurityPersistentAccessBlockRecoveryProxyDecisionV325(
+      new URL(request.path, 'https://dirac.invalid'),
+      request.method,
+      request.prefer,
+      request.body
+    );
+  } catch (_) {
+    accessBlockProxyDecisionV325 = { relevant: true, ok: false, operation: '' };
+  }
+  if (accessBlockProxyDecisionV325.relevant && accessBlockProxyDecisionV325.ok !== true) {
+    return { ok: false, reason: 'recovery_security_db_proxy_access_block_contract_invalid_v325' };
+  }
   const recoveryRequestPathV274 = '/rest/v1/security_lost_passkey_recovery_requests';
   const recoverySessionPathV274 = '/rest/v1/security_lost_passkey_recovery_sessions';
   const recoveryRequestRouteV274 = request.path === recoveryRequestPathV274
@@ -44435,8 +45164,10 @@ async function diracRecoverySecurityDbProxyHandleV234(ctx) {
     || request.path.startsWith(recoverySessionPathV274 + '?');
   const recoveryVerificationRouteV274 = (recoveryRequestRouteV274 && (request.method === 'GET' || request.method === 'PATCH'))
     || (recoverySessionRouteV274 && (request.method === 'POST' || request.method === 'PATCH'));
-  const semanticActionV274 = recoveryRequestRouteV274 && request.method === 'POST'
+  const semanticActionV274 = accessBlockProxyDecisionV325.operation === 'create'
     ? 'customer_security_recovery_codes_generate'
+    : recoveryRequestRouteV274 && request.method === 'POST'
+      ? 'customer_security_recovery_codes_generate'
     : recoveryVerificationRouteV274
       ? 'customer_security_recovery_code_verify'
       : '';
@@ -44482,17 +45213,27 @@ async function diracRecoverySecurityDbProxyHandleV234(ctx) {
       action: semanticActionV274,
       rawAction: semanticActionV274,
       policy: semanticPolicyV274,
-      __diracRecoveryDbSemanticActionV281: internalSemanticActionV281 ? semanticActionV274 : undefined
+      __diracRecoveryDbSemanticActionV281: internalSemanticActionV281 ? semanticActionV274 : undefined,
+      __diracCustomerAccessBlockRecoveryProxyV325: accessBlockProxyDecisionV325.operation === 'create',
+      __diracCustomerAccessBlockRecoveryProxyPriorPassportV325: accessBlockProxyDecisionV325.operation === 'create'
+        && priorSecurityReportPassportValidV274 === true
     };
   }
   let upstreamExceptionV269 = null;
-  const invokeUpstreamV274 = () => supabaseFetch(request.path, {
-    method: request.method,
-    auth: request.path.startsWith('/auth/v1/') ? 'anon' : 'service',
-    db: request.path.startsWith('/rest/v1/security_lost_passkey_recovery_') ? 'legacy' : undefined,
-    prefer: request.prefer || undefined,
-    body: request.body === null ? undefined : request.body
-  });
+  const invokeUpstreamV274 = () => accessBlockProxyDecisionV325.operation === 'create'
+    ? customerSecurityPersistentAccessBlockFetchV325('create', request.path, {
+        method: 'POST',
+        auth: 'service',
+        prefer: 'return=representation',
+        body: request.body
+      })
+    : supabaseFetch(request.path, {
+        method: request.method,
+        auth: request.path.startsWith('/auth/v1/') ? 'anon' : 'service',
+        db: request.path.startsWith('/rest/v1/security_lost_passkey_recovery_') ? 'legacy' : undefined,
+        prefer: request.prefer || undefined,
+        body: request.body === null ? undefined : request.body
+      });
   const upstream = await (upstreamContextV274 === ctx
     ? invokeUpstreamV274()
     : DIRAC_CENTRAL_ASYNC_CONTEXT_V149.run({ ctx: upstreamContextV274 }, invokeUpstreamV274)).catch((errorV269) => {
@@ -51400,12 +52141,18 @@ function diracCentralIsExactParfumProductsPublicReadV318(ctx, table, path, optio
 }
 
 async function diracCentralInspectServiceRoleAccessV146(path, options = {}) {
-  if (!options || options.auth !== 'service') return { ok: true };
+  if (!options || options.auth !== 'service') {
+    if (customerSecurityPersistentAccessBlockRequestMayTouchV325(path, options || {})) {
+      return { block: true, reason: 'customer_access_block_service_role_required_v325', status: 403 };
+    }
+    return { ok: true };
+  }
   const ctx = diracCentralCurrentContextV149();
   if (!ctx) return { block: true, reason: 'service_role_central_context_required', status: 503 };
   const requestedMethodV212 = String(options.method || 'GET').toUpperCase();
   const requestedTableV212 = diracCentralExtractRestTableV146(path);
-  if (!ctx.__serviceGuardActive && ctx.action === 'midtrans_webhook') return { ok: true };
+  if (!ctx.__serviceGuardActive && ctx.action === 'midtrans_webhook'
+      && !customerSecurityPersistentAccessBlockRequestMayTouchV325(path, options)) return { ok: true };
   const table = requestedTableV212;
   const method = requestedMethodV212;
   const authenticatedBanMarkerV320 = ctx.req && domainLoginBanGetLookupMarkerV321(ctx.req);
@@ -51414,6 +52161,18 @@ async function diracCentralInspectServiceRoleAccessV146(path, options = {}) {
       return { ok: true, guarded: 'authenticated_ban_lookup_v320' };
     }
     return { block: true, reason: 'authenticated_ban_lookup_contract_mismatch', status: 403 };
+  }
+  if (String(table || '').toLowerCase() === DIRAC_PERSISTENT_BAN_TABLE
+      && customerSecurityPersistentAccessBlockRequestMayTouchV325(path, options)) {
+    if (customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, options, method)) {
+      return { ok: true, guarded: 'customer_access_block_exact_contract_v325' };
+    }
+    diracCentralEmitServiceRoleBlockV212(ctx, 'customer_access_block_contract_mismatch_v325', {
+      diagnostic_code: 'CUSTOMER_ACCESS_BLOCK_EXACT_CONTRACT_REJECTED_V325',
+      failure_point: 'diracCentralInspectServiceRoleAccessV146.customer_access_block_v325'
+    });
+    await diracCentralBanCurrentContextV146('customer_access_block_contract_mismatch_v325').catch(() => null);
+    return { block: true, reason: 'customer_access_block_contract_mismatch_v325', status: 403 };
   }
   if (!diracCentralOwnedTableV146(table)) return { ok: true };
   const requestShapeV212 = diracCentralSafeRestShapeV212(path, options, table, method);
@@ -51709,16 +52468,18 @@ function diracCentralIsAuthenticatedBanLookupV320(ctx, table, path, options = {}
         && params.get('limit') === '2';
     }
 
-    if (marker.stage === 'access_block' && cleanTable === 'security_customer_access_blocks') {
-      const select = 'id,customer_id,ip_hash,device_hash,blocked_until,reason,action';
+    if (marker.stage === 'access_block' && cleanTable === DIRAC_PERSISTENT_BAN_TABLE) {
+      const blockedAfterMs = Number(marker.blocked_after_ms);
       return customerSecurityLooksLikeUuid(marker.customer_id)
-        && parsed.pathname === '/rest/v1/security_customer_access_blocks'
-        && exactKeys(['blocked_until', 'customer_id', 'limit', 'order', 'select'])
-        && params.get('select') === select
-        && params.get('customer_id') === 'eq.' + marker.customer_id
-        && params.get('blocked_until') === 'gt.' + marker.blocked_after
-        && params.get('order') === 'blocked_until.desc'
-        && params.get('limit') === '1';
+        && Number.isSafeInteger(blockedAfterMs)
+        && blockedAfterMs > 0
+        && blockedAfterMs <= Date.now()
+        && blockedAfterMs >= Date.now() - 2 * 60 * 1000
+        && String(path || '') === customerSecurityPersistentAccessBlockScopeReadPathV325(
+          'account',
+          marker.customer_id,
+          blockedAfterMs
+        );
     }
     return false;
   } catch (_) {
@@ -52295,7 +53056,6 @@ const DIRAC_CENTRAL_DATABASE_TABLES_V230 = Object.freeze(new Set([
   'payment_gateway_events',
   'payment_transactions',
   'products',
-  'security_customer_access_blocks',
   'security_customer_account_requests',
   'security_customer_auth_links',
   'security_customer_events',
@@ -58113,7 +58873,7 @@ function diracCentralBackendComplianceStaticGateV230() {
   expect(globalThis.fetch === DIRAC_V228_FINAL_FETCH_GATEWAY, 'fetch_gateway_mutated');
   const routeSource = Function.prototype.toString.call(diracCentralEgressRouteAllowedV228);
   expect(!routeSource.includes("'/storage/v1/'") && !routeSource.includes("'/functions/v1/'"), 'broad_supabase_route_present');
-  expect(DIRAC_CENTRAL_DATABASE_TABLES_V230.size === 25 && DIRAC_CENTRAL_DATABASE_RPCS_V230.size === 8, 'database_exact_registry_invalid');
+  expect(DIRAC_CENTRAL_DATABASE_TABLES_V230.size === 24 && DIRAC_CENTRAL_DATABASE_RPCS_V230.size === 8, 'database_exact_registry_invalid');
   const expectedRpcBindingsV281 = [
     'dirac_passkey_create_pending_v237=>dirac_mfa_passkey_verify',
     'dirac_passkey_finalize_rotation_v237=>dirac_mfa_passkey_verify',
