@@ -20,9 +20,7 @@ const DIRAC_LOGIN_FATAL_STATE_V324 = globalThis.__DIRAC_LOGIN_FATAL_STATE_V324__
 globalThis.__DIRAC_LOGIN_FATAL_STATE_V324__ = DIRAC_LOGIN_FATAL_STATE_V324;
 
 function diracLoginFatalIsRequestV324(req) {
-  const action = String(req && req.query && req.query.action || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-  return String(req && req.method || '').toUpperCase() === 'POST'
-    && (action === 'domain_login' || action === 'login_domain');
+  return false;
 }
 
 function diracLoginFatalSafeTokenV324(value, fallback, maximum) {
@@ -2057,6 +2055,26 @@ function normalizeLoginSecurityRecord(record, now = Date.now()) {
   };
 }
 
+function diracPersistentSecurityParseRecordJsonV326(value) {
+  let parsed = value;
+  if (typeof value === 'string') {
+    if (!value || Buffer.byteLength(value, 'utf8') > 512 * 1024) return null;
+    try { parsed = JSON.parse(value); } catch (_) { return null; }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+      || Object.getPrototypeOf(parsed) !== Object.prototype
+      || Object.prototype.hasOwnProperty.call(parsed, '__proto__')
+      || Object.prototype.hasOwnProperty.call(parsed, 'prototype')
+      || Object.prototype.hasOwnProperty.call(parsed, 'constructor')) return null;
+  return parsed;
+}
+
+function diracPersistentSecurityStoreRecordJsonV326(table, value) {
+  const record = diracPersistentSecurityParseRecordJsonV326(value);
+  if (!record) throw new Error('DIRAC_PERSISTENT_SECURITY_RECORD_JSON_INVALID_V326');
+  return String(table || '') === DIRAC_PERSISTENT_BAN_TABLE ? JSON.stringify(record) : record;
+}
+
 
 async function readPersistentSecurityJson(securityKey) {
   const key = String(securityKey || '').trim();
@@ -2071,7 +2089,7 @@ async function readPersistentSecurityJson(securityKey) {
     const row = result.data[0] || {};
     const expiresAtMs = Date.parse(row.expires_at || '');
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return null;
-    return row.record_json && typeof row.record_json === 'object' ? row.record_json : null;
+    return diracPersistentSecurityParseRecordJsonV326(row.record_json);
   } catch (_) {
     return null;
   }
@@ -2088,7 +2106,7 @@ async function writePersistentSecurityJson(securityKey, record, blockedUntilMs =
     const expiresAt = new Date(now + Math.max(60, Number(ttlSeconds || 60)) * 1000).toISOString();
     const payload = [{
       security_key: key,
-      record_json: safeRecord,
+      record_json: diracPersistentSecurityStoreRecordJsonV326(table, safeRecord),
       blocked_until_ms: Number(blockedUntilMs || 0),
       updated_at: new Date(now).toISOString(),
       expires_at: expiresAt
@@ -2125,9 +2143,12 @@ async function readPersistentSecurityJsonStrictV194(securityKey) {
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
       return { ok: true, found: false, record: null };
     }
-    const record = row.record_json && typeof row.record_json === 'object'
-      ? { ...row.record_json, blocked_until_ms: Number(row.blocked_until_ms || row.record_json.blocked_until_ms || 0) }
-      : { blocked_until_ms: Number(row.blocked_until_ms || 0) };
+    const parsedRecord = diracPersistentSecurityParseRecordJsonV326(row.record_json);
+    if (!parsedRecord) return { ok: false, found: false, record: null };
+    const record = {
+      ...parsedRecord,
+      blocked_until_ms: Number(row.blocked_until_ms || parsedRecord.blocked_until_ms || 0)
+    };
     return { ok: true, found: true, record };
   } catch (_) {
     return { ok: false, found: false, record: null };
@@ -2144,14 +2165,21 @@ async function readPersistentSecurityJsonManyStrictV194(securityKeys) {
     const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
     if (!result || result.ok !== true || !Array.isArray(result.data)) return { ok: false, records: [] };
     const now = Date.now();
-    const records = result.data.filter((row) => {
+    const activeRows = result.data.filter((row) => {
       const expiresAtMs = Date.parse(String(row && row.expires_at || ''));
       return row && (!Number.isFinite(expiresAtMs) || expiresAtMs > now);
-    }).map((row) => ({
-      security_key: String(row.security_key || ''),
-      record: row.record_json && typeof row.record_json === 'object' ? row.record_json : {},
-      blocked_until_ms: Number(row.blocked_until_ms || row.record_json && row.record_json.blocked_until_ms || 0)
-    }));
+    });
+    if (activeRows.some((row) => !diracPersistentSecurityParseRecordJsonV326(row.record_json))) {
+      return { ok: false, records: [] };
+    }
+    const records = activeRows.map((row) => {
+      const record = diracPersistentSecurityParseRecordJsonV326(row.record_json);
+      return {
+        security_key: String(row.security_key || ''),
+        record,
+        blocked_until_ms: Number(row.blocked_until_ms || record.blocked_until_ms || 0)
+      };
+    });
     return { ok: true, records };
   } catch (_) {
     return { ok: false, records: [] };
@@ -2197,8 +2225,9 @@ async function readPersistentLoginSecurityRecord(identity) {
     const expiresAtMs = Date.parse(row.expires_at || '');
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return null;
 
-    if (row.record_json && typeof row.record_json === 'object') {
-      const record = { ...row.record_json };
+    const parsedRecord = diracPersistentSecurityParseRecordJsonV326(row.record_json);
+    if (parsedRecord) {
+      const record = { ...parsedRecord };
       const topLevelBlockedUntilMs = Number(row.blocked_until_ms || 0);
       const nestedBlockedUntilMs = Number(record.blockedUntilMs || record.blocked_until_ms || 0);
       if (Number.isFinite(topLevelBlockedUntilMs) && topLevelBlockedUntilMs > nestedBlockedUntilMs) {
@@ -2237,10 +2266,11 @@ async function readPersistentLoginSecurityRecordStrictV320(identity) {
     if (Number.isFinite(expiresAtMs) && expiresAtMs > 0 && expiresAtMs <= Date.now()) {
       return { ok: true, found: false, record: null };
     }
-    if (!row.record_json || typeof row.record_json !== 'object' || Array.isArray(row.record_json)) {
+    const parsedRecord = diracPersistentSecurityParseRecordJsonV326(row.record_json);
+    if (!parsedRecord) {
       return { ok: false, found: false, record: null, reason: 'login_security_store_record_invalid' };
     }
-    const record = { ...row.record_json };
+    const record = { ...parsedRecord };
     const topLevelBlockedUntilMs = Number(row.blocked_until_ms || 0);
     const nestedBlockedUntilMs = Number(record.blockedUntilMs || record.blocked_until_ms || 0);
     if (!Number.isFinite(topLevelBlockedUntilMs) || topLevelBlockedUntilMs < 0
@@ -2265,7 +2295,10 @@ async function writePersistentLoginSecurityRecord(identity, record) {
     const expiresAt = new Date(now + LOGIN_SECURITY_PERSIST_TTL_SECONDS * 1000).toISOString();
     const payload = {
       security_key: identity.key,
-      record_json: normalizeLoginSecurityRecord(record, now),
+      record_json: diracPersistentSecurityStoreRecordJsonV326(
+        LOGIN_SECURITY_PERSIST_TABLE,
+        normalizeLoginSecurityRecord(record, now)
+      ),
       blocked_until_ms: Number(record && record.blockedUntilMs || 0),
       updated_at: new Date(now).toISOString(),
       expires_at: expiresAt
@@ -2364,7 +2397,18 @@ async function readDomainLoginRateRecord(identity) {
     const expiresAtMs = Date.parse(row.expires_at || '');
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return null;
 
-    const record = normalizeDomainLoginRateRecord(row.record_json || {});
+    const parsedRecord = diracPersistentSecurityParseRecordJsonV326(row.record_json);
+    if (!parsedRecord) {
+      const failClosedNow = Date.now();
+      return normalizeDomainLoginRateRecord({
+        count: DOMAIN_LOGIN_RATE_MAX,
+        windowStartMs: failClosedNow,
+        resetAtMs: failClosedNow + DOMAIN_LOGIN_RATE_WINDOW_MS,
+        blockedUntilMs: failClosedNow + DOMAIN_LOGIN_RATE_BLOCK_MS,
+        lastFailedAtMs: failClosedNow
+      }, failClosedNow);
+    }
+    const record = normalizeDomainLoginRateRecord(parsedRecord);
     diracBoundedMapSetV321(
       DOMAIN_LOGIN_RATE_STORE,
       key,
@@ -2400,7 +2444,7 @@ async function writeDomainLoginRateRecord(identity, record) {
     const ttlMs = Math.max(DOMAIN_LOGIN_RATE_WINDOW_MS, DOMAIN_LOGIN_RATE_BLOCK_MS, 60 * 1000) + 60 * 1000;
     const payload = [{
       security_key: key,
-      record_json: normalized,
+      record_json: diracPersistentSecurityStoreRecordJsonV326(DOMAIN_LOGIN_RATE_TABLE, normalized),
       blocked_until_ms: Number(normalized.blockedUntilMs || 0),
       updated_at: new Date(now).toISOString(),
       expires_at: new Date(now + ttlMs).toISOString()
@@ -9393,7 +9437,7 @@ function customerSecurityValidatePersistentAccessBlockRowV325(row, options = {})
       || Object.keys(row).sort().join(',') !== 'blocked_until_ms,expires_at,record_json,security_key') {
     return null;
   }
-  const record = row.record_json;
+  const record = diracPersistentSecurityParseRecordJsonV326(row.record_json);
   if (!record || typeof record !== 'object' || Array.isArray(record)
       || Object.keys(record).sort().join(',') !== CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_RECORD_KEYS_V325.join(',')) {
     return null;
@@ -9649,7 +9693,7 @@ async function customerSecurityCreatePersistentAccessBlockV325(identity, action,
   );
   const body = storageKeys.map((securityKey) => ({
     security_key: securityKey,
-    record_json: record,
+    record_json: diracPersistentSecurityStoreRecordJsonV326(DIRAC_PERSISTENT_BAN_TABLE, record),
     blocked_until_ms: safeBlockedUntilMs,
     expires_at: new Date(expiresAtMs).toISOString()
   }));
@@ -9713,7 +9757,7 @@ async function customerSecurityRevokePersistentAccessBlockEventV325(row, admin) 
     auth: 'service',
     prefer: 'return=representation',
     body: {
-      record_json: nextRecord,
+      record_json: diracPersistentSecurityStoreRecordJsonV326(DIRAC_PERSISTENT_BAN_TABLE, nextRecord),
       blocked_until_ms: nowMs
     }
   }).catch(() => null);
@@ -10767,10 +10811,10 @@ function customerSecurityBuildEncryptedRecoveryPdfV156(input) {
   const userValue = customerSecurityRecoveryPdfComputeUV156(fileKey, documentId);
 
   let content = '';
-  content += customerSecurityRecoveryPdfTextLineV156('DIRACGROUP SECURE RECOVERY', 72, 760, 16, 'F1');
+  content += customerSecurityRecoveryPdfTextLineV156('DIRAC GROUP BY CV MULTI USAHA MANDIRI', 72, 760, 16, 'F1');
   content += customerSecurityRecoveryPdfTextLineV156('Dokumen Pemulihan Passkey Terenkripsi', 72, 738, 12, 'F1');
   content += customerSecurityRecoveryPdfTextLineV156('Request ID: ' + String(input.requestId || ''), 72, 704, 9, 'F2');
-  content += customerSecurityRecoveryPdfTextLineV156('Berlaku sampai: ' + String(input.expiresAt || ''), 72, 690, 9, 'F2');
+  content += customerSecurityRecoveryPdfTextLineV156('Berlaku sampai: ' + diracDisplayWibV326(input.expiresAt), 72, 690, 9, 'F2');
   content += customerSecurityRecoveryPdfTextLineV156('Tujuan: register_new_passkey', 72, 676, 9, 'F2');
   content += customerSecurityRecoveryPdfTextLineV156('Kode recovery di bawah ini hanya dapat digunakan satu kali.', 72, 650, 9, 'F2');
   content += customerSecurityRecoveryPdfTextLineV156('Recovery Code:', 72, 622, 10, 'F1');
@@ -10780,7 +10824,7 @@ function customerSecurityBuildEncryptedRecoveryPdfV156(input) {
     y -= 11;
     if (y < 70) break;
   }
-  content += customerSecurityRecoveryPdfTextLineV156('Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan DiracGroup.', 72, 48, 8, 'F2');
+  content += customerSecurityRecoveryPdfTextLineV156('Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan Dirac Group By CV Multi Usaha Mandiri.', 72, 48, 8, 'F2');
 
   const encryptedContent = customerSecurityRecoveryPdfEncryptObjectV156(fileKey, 4, 0, Buffer.from(content, 'binary'));
   const objects = [];
@@ -11019,13 +11063,135 @@ function customerSecurityRecoveryDotStuff(value) {
   return String(value || '').replace(/\r?\n/g, '\r\n').replace(/^\./gm, '..');
 }
 
+function diracDisplayWibV326(value) {
+  const date = value instanceof Date
+    ? new Date(value.getTime())
+    : typeof value === 'number' && Number.isFinite(value)
+      ? new Date(value)
+      : new Date(String(value || ''));
+  if (!Number.isFinite(date.getTime())) return 'Waktu tidak tersedia';
+  const shifted = new Date(date.getTime() + (7 * 60 * 60 * 1000));
+  const months = Object.freeze([
+    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+  ]);
+  const two = (number) => String(number).padStart(2, '0');
+  return two(shifted.getUTCDate()) + ' ' + months[shifted.getUTCMonth()] + ' '
+    + shifted.getUTCFullYear() + ', ' + two(shifted.getUTCHours()) + '.'
+    + two(shifted.getUTCMinutes()) + '.' + two(shifted.getUTCSeconds()) + ' WIB';
+}
+
+function diracCorporateEmailEscapeHtmlV326(value) {
+  return String(value || '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[character]));
+}
+
+const DIRAC_CORPORATE_EMAIL_TRUSTED_BODY_V326 = Symbol('dirac-corporate-email-trusted-body-v326');
+
+function diracCorporateEmailTrustedBodyV326(bodyHtml) {
+  const html = String(bodyHtml || '');
+  if (!html || Buffer.byteLength(html, 'utf8') > 96 * 1024) {
+    throw new Error('DIRAC_CORPORATE_EMAIL_BODY_INVALID_V326');
+  }
+  const tags = [];
+  let tagStart = -1;
+  let quote = '';
+  let malformedTag = false;
+  for (let index = 0; index < html.length; index += 1) {
+    const character = html[index];
+    if (tagStart < 0) {
+      if (character === '<') tagStart = index;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = '';
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === '<') {
+      malformedTag = true;
+      break;
+    } else if (character === '>') {
+      tags.push(html.slice(tagStart, index + 1));
+      tagStart = -1;
+    }
+  }
+  if (tagStart >= 0 || quote) malformedTag = true;
+  const normalizedTags = tags.map((tag) => {
+    let normalized = tag;
+    for (let pass = 0; pass < 3; pass += 1) {
+      const next = normalized
+        .replace(/&#x([0-9a-f]{1,6});?/gi, (_, hex) => {
+          const codePoint = Number.parseInt(hex, 16);
+          return Number.isSafeInteger(codePoint) && codePoint <= 0x10ffff
+            ? String.fromCodePoint(codePoint)
+            : '\ufffd';
+        })
+        .replace(/&#([0-9]{1,7});?/g, (_, decimal) => {
+          const codePoint = Number.parseInt(decimal, 10);
+          return Number.isSafeInteger(codePoint) && codePoint <= 0x10ffff
+            ? String.fromCodePoint(codePoint)
+            : '\ufffd';
+        })
+        .replace(/&(amp|colon|tab|newline);/gi, (_, name) => ({
+          amp: '&', colon: ':', tab: '\t', newline: '\n'
+        }[String(name).toLowerCase()]));
+      if (next === normalized) break;
+      normalized = next;
+    }
+    return normalized.replace(/[\u0000-\u0020\u007f-\u009f]/g, '').toLowerCase();
+  });
+  if (malformedTag || /<(?:script|iframe|object|embed|form|meta|link|base|svg)\b/i.test(html)
+      || tags.some((tag) => /(?:\s|\/)on[a-z]+\s*=/i.test(tag))
+      || normalizedTags.some((tag) => /(?:(?:java|vb)script:|data:text\/html|expression\()/.test(tag))) {
+    throw new Error('DIRAC_CORPORATE_EMAIL_BODY_INVALID_V326');
+  }
+  return Object.freeze({ token: DIRAC_CORPORATE_EMAIL_TRUSTED_BODY_V326, html });
+}
+
+function diracCorporateEmailShellV326(title, trustedBody, options = {}) {
+  if (!trustedBody || trustedBody.token !== DIRAC_CORPORATE_EMAIL_TRUSTED_BODY_V326
+      || typeof trustedBody.html !== 'string') {
+    throw new Error('DIRAC_CORPORATE_EMAIL_BODY_NOT_TRUSTED_V326');
+  }
+  const safeTitle = diracCorporateEmailEscapeHtmlV326(title);
+  const safeEyebrow = diracCorporateEmailEscapeHtmlV326(options.eyebrow || 'DIRAC GROUP');
+  const supportEmail = 'support@diracgroup.store';
+  const companyEmail = 'companydirac@gmail.com';
+  const whatsappNumber = '+62 878-9252-3968';
+  const whatsappUrl = 'https://wa.me/6287892523968';
+  const logoUrl = diracCorporateEmailEscapeHtmlV326(diracRoleOriginV250('www') + '/umroh.webp');
+  return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<meta name="color-scheme" content="dark"><meta name="supported-color-schemes" content="dark">'
+    + '<title>' + safeTitle + '</title></head>'
+    + '<body style="margin:0;padding:0;background:#111827;font-family:Arial,Helvetica,sans-serif;color:#f8fafc">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#111827" style="width:100%;background:#111827;padding:28px 12px">'
+    + '<tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1f2937" style="width:100%;max-width:680px;background:#1f2937;border:1px solid #475569;border-radius:20px;overflow:hidden">'
+    + '<tr><td align="center" style="padding:30px 28px 24px;background:#273449;border-bottom:1px solid #475569">'
+    + '<img src="' + logoUrl + '" width="76" alt="Dirac Group By CV Multi Usaha Mandiri" style="display:block;width:76px;max-width:76px;height:auto;margin:0 auto 16px;border:0">'
+    + '<div style="font-size:12px;line-height:1.5;letter-spacing:.16em;font-weight:800;color:#cbd5e1">' + safeEyebrow + '</div>'
+    + '<h1 style="margin:8px 0 0;font-size:26px;line-height:1.3;color:#ffffff">' + safeTitle + '</h1>'
+    + '</td></tr><tr><td style="padding:28px;color:#f8fafc;font-size:14px;line-height:1.7">' + trustedBody.html + '</td></tr>'
+    + '<tr><td align="center" style="padding:24px 28px;background:#182233;border-top:1px solid #475569;color:#cbd5e1;font-size:12px;line-height:1.8">'
+    + '<img src="' + logoUrl + '" width="44" alt="Dirac Group By CV Multi Usaha Mandiri" style="display:block;width:44px;max-width:44px;height:auto;margin:0 auto 10px;border:0">'
+    + '<strong style="color:#ffffff">Dirac Group By CV Multi Usaha Mandiri</strong><br>'
+    + '<a href="mailto:' + supportEmail + '" style="color:#dbeafe;text-decoration:none">' + supportEmail + '</a><br>'
+    + '<a href="mailto:' + companyEmail + '" style="color:#dbeafe;text-decoration:none">' + companyEmail + '</a> &nbsp;•&nbsp; '
+    + '<a href="' + whatsappUrl + '" style="color:#dbeafe;text-decoration:none">' + whatsappNumber + '</a><br>'
+    + 'Malang, Jawa Timur, Indonesia<br>'
+    + 'Email otomatis sistem keamanan. Jangan membagikan password, Passkey, token, atau kode rahasia kepada siapa pun.'
+    + '</td></tr></table></td></tr></table></body></html>';
+}
+
 
 function customerSecurityRecoveryEmailTextV156(context = {}) {
   const requestId = String(context.requestId || '');
-  const expiresAt = String(context.expiresAt || '');
+  const expiresAt = diracDisplayWibV326(context.expiresAt);
   const emailPdfCode = String(context.emailPdfCode || '').padStart(2, '0').slice(-2);
   return [
-    'DIRACGROUP SECURE RECOVERY',
+    'DIRAC GROUP BY CV MULTI USAHA MANDIRI · SECURE RECOVERY',
     '',
     'Dokumen pemulihan Passkey terenkripsi telah dibuat untuk akun Anda.',
     '',
@@ -11037,37 +11203,33 @@ function customerSecurityRecoveryEmailTextV156(context = {}) {
     'Password PDF = kode website + 2 digit kode email + password akun Anda. Ketik berurutan tanpa spasi.',
     '',
     'Jangan kirimkan PDF, kode website, atau kode email ini kepada pihak lain.',
-    'Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan DiracGroup.'
+    'Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan Dirac Group By CV Multi Usaha Mandiri.'
   ].join('\n');
 }
 
 function customerSecurityRecoveryEmailHtmlV156(context = {}) {
-  const requestId = String(context.requestId || '').replace(/[<>&]/g, '');
-  const expiresAt = String(context.expiresAt || '').replace(/[<>&]/g, '');
+  const requestId = diracCorporateEmailEscapeHtmlV326(context.requestId || '');
+  const expiresAt = diracCorporateEmailEscapeHtmlV326(diracDisplayWibV326(context.expiresAt));
   const emailPdfCode = String(context.emailPdfCode || '').padStart(2, '0').slice(-2).replace(/[^0-9]/g, '');
-  return '<div style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#111827">'
-    + '<div style="max-width:640px;margin:0 auto;padding:28px 16px">'
-    + '<div style="background:#0f172a;color:#ffffff;border-radius:18px 18px 0 0;padding:22px 24px">'
-    + '<div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#93c5fd">DiracGroup Secure Recovery</div>'
-    + '<div style="font-size:24px;font-weight:700;margin-top:8px">Dokumen Pemulihan Passkey</div>'
-    + '<div style="font-size:13px;color:#cbd5e1;margin-top:6px">File PDF terenkripsi terlampir pada email ini.</div>'
-    + '</div>'
-    + '<div style="background:#ffffff;border:1px solid #e5e7eb;border-top:0;border-radius:0 0 18px 18px;padding:24px">'
-    + '<p style="margin:0 0 14px;line-height:1.6">Permintaan pemulihan Passkey Anda telah diproses. Lampiran PDF hanya dapat dibuka dengan kombinasi password yang benar.</p>'
-    + '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;padding:16px;margin:18px 0">'
-    + '<div style="font-size:12px;color:#1d4ed8;font-weight:700;text-transform:uppercase;letter-spacing:.08em">Kode 2 digit email</div>'
-    + '<div style="font-size:34px;letter-spacing:.22em;font-weight:800;color:#0f172a;margin-top:6px">' + emailPdfCode + '</div>'
-    + '<div style="font-size:12px;color:#475569;margin-top:6px">Gabungkan setelah kode website, lalu lanjutkan dengan password akun Anda.</div>'
+  const body = '<p style="margin:0 0 14px;color:#f8fafc">Permintaan pemulihan Passkey Anda telah diproses. File PDF terenkripsi terlampir pada email ini.</p>'
+    + '<div style="background:#111827;border:1px solid #64748b;border-radius:14px;padding:16px;margin:18px 0">'
+    + '<div style="font-size:12px;color:#cbd5e1;font-weight:700;text-transform:uppercase;letter-spacing:.08em">Kode 2 digit email</div>'
+    + '<div style="font-size:34px;letter-spacing:.22em;font-weight:800;color:#ffffff;margin-top:6px">' + emailPdfCode + '</div>'
+    + '<div style="font-size:12px;color:#cbd5e1;margin-top:6px">Gabungkan setelah kode website, lalu lanjutkan dengan password akun Anda.</div>'
     + '</div>'
     + '<table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px">'
-    + '<tr><td style="padding:10px;border-bottom:1px solid #e5e7eb;color:#64748b">Request ID</td><td style="padding:10px;border-bottom:1px solid #e5e7eb;font-weight:700;text-align:right">' + requestId + '</td></tr>'
-    + '<tr><td style="padding:10px;border-bottom:1px solid #e5e7eb;color:#64748b">Berlaku sampai</td><td style="padding:10px;border-bottom:1px solid #e5e7eb;font-weight:700;text-align:right">' + expiresAt + '</td></tr>'
+    + '<tr><td style="padding:10px;border-bottom:1px solid #475569;color:#cbd5e1">Request ID</td><td style="padding:10px;border-bottom:1px solid #475569;color:#ffffff;font-weight:700;text-align:right;word-break:break-all">' + requestId + '</td></tr>'
+    + '<tr><td style="padding:10px;border-bottom:1px solid #475569;color:#cbd5e1">Berlaku sampai</td><td style="padding:10px;border-bottom:1px solid #475569;color:#ffffff;font-weight:700;text-align:right">' + expiresAt + '</td></tr>'
     + '</table>'
-    + '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:14px;line-height:1.55;font-size:13px;color:#7c2d12">'
+    + '<div style="background:#273449;border:1px solid #64748b;border-radius:14px;padding:14px;line-height:1.55;font-size:13px;color:#e2e8f0">'
     + '<b>Cara membuka PDF:</b><br>Password PDF = kode website + 2 digit kode email + password akun Anda. Ketik berurutan tanpa spasi. Jangan bagikan kode atau file ini kepada siapa pun.'
     + '</div>'
-    + '<p style="font-size:12px;color:#64748b;margin-top:18px;line-height:1.6">Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan DiracGroup.</p>'
-    + '</div></div></div>';
+    + '<p style="font-size:12px;color:#cbd5e1;margin-top:18px;line-height:1.6">Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan resmi.</p>';
+  return diracCorporateEmailShellV326(
+    'Dokumen Pemulihan Passkey',
+    diracCorporateEmailTrustedBodyV326(body),
+    { eyebrow: 'DIRAC SECURE RECOVERY' }
+  );
 }
 
 async function customerSecuritySmtpRead(socket) {
@@ -11109,6 +11271,293 @@ async function customerSecuritySmtpCommand(socket, command, allowed) {
   return response;
 }
 
+const DIRAC_USER_SECURITY_EMAIL_EVENTS_V326 = Object.freeze({
+  passkey_added: Object.freeze({
+    subject: 'Passkey berhasil ditambahkan',
+    title: 'Passkey baru ditambahkan',
+    intro: 'Passkey baru telah berhasil ditambahkan ke akun Anda.'
+  }),
+  passkey_replaced: Object.freeze({
+    subject: 'Passkey berhasil diganti',
+    title: 'Passkey berhasil diganti',
+    intro: 'Passkey lama telah diganti dengan Passkey baru melalui alur pemulihan terverifikasi.'
+  }),
+  password_changed: Object.freeze({
+    subject: 'Password berhasil diubah',
+    title: 'Password berhasil diubah',
+    intro: 'Password akun Anda telah berhasil diubah melalui alur keamanan terverifikasi.'
+  })
+});
+
+function diracUserSecurityEmailCleanLabelV326(value, fallback) {
+  const clean = String(value || '')
+    .normalize('NFKC')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 96);
+  return clean || String(fallback || '').slice(0, 96);
+}
+
+function diracUserSecurityGoogleSmtpConfigV326(timeoutMs) {
+  const host = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim().toLowerCase();
+  const port = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 465);
+  const secure = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || 'true').trim().toLowerCase();
+  const rawUser = String(process.env.DIRAC_USER_SECURITY_SMTP_USER || '').trim();
+  const user = diracSecurityAlertEmailV320(rawUser);
+  const appPassword = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
+  if (host !== 'smtp.gmail.com'
+      || port !== 465
+      || secure !== 'true'
+      || rawUser.toLowerCase() !== user
+      || !user
+      || !/^[A-Za-z0-9]{16,128}$/.test(appPassword)
+      || appPassword.toLowerCase().includes('replace')) return null;
+  return Object.freeze({ host, port, secure: true, user, appPassword, timeoutMs });
+}
+
+function diracUserSecurityEmailConfigV326() {
+  if (String(process.env.DIRAC_USER_SECURITY_EMAIL_ENABLED || '').trim().toLowerCase() !== 'true') {
+    return Object.freeze({ enabled: false, ok: false });
+  }
+  const apiKey = String(process.env.DIRAC_USER_SECURITY_RESEND_API_KEY || '').trim();
+  const rawFromEmail = String(process.env.DIRAC_USER_SECURITY_RESEND_FROM_EMAIL || '').trim();
+  const fromEmail = diracSecurityAlertEmailV320(rawFromEmail);
+  const rawReplyTo = String(process.env.DIRAC_USER_SECURITY_REPLY_TO || '').trim();
+  const replyTo = diracSecurityAlertEmailV320(rawReplyTo);
+  const timeoutMs = Math.max(2000, Math.min(10000,
+    Number(process.env.DIRAC_USER_SECURITY_TIMEOUT_MS || 7000) || 7000));
+  if (!/^re_[A-Za-z0-9_-]{16,500}$/.test(apiKey)
+      || apiKey.toLowerCase().includes('replace')
+      || rawFromEmail.toLowerCase() !== fromEmail
+      || !fromEmail
+      || rawReplyTo.toLowerCase() !== replyTo
+      || !replyTo) {
+    return Object.freeze({ enabled: true, ok: false });
+  }
+  return Object.freeze({
+    enabled: true,
+    ok: true,
+    apiKey,
+    fromEmail,
+    replyTo,
+    timeoutMs,
+    smtp: diracUserSecurityGoogleSmtpConfigV326(timeoutMs)
+  });
+}
+
+function diracUserSecurityEmailContextPassedV326(req, eventType) {
+  if (!new Set(['passkey_added', 'passkey_replaced']).has(String(eventType || ''))) return false;
+  const ctx = typeof diracCentralCurrentContextV149 === 'function'
+    ? diracCentralCurrentContextV149()
+    : null;
+  return Boolean(ctx
+    && ctx.req === req
+    && new Set(['dirac_mfa_passkey_verify', 'domain_mfa_passkey_verify']).has(String(ctx.action || ''))
+    && req
+    && req.__diracCentralSecurityGuardPassedV146 === true
+    && ctx.centralGuardFullyPassedV211 === true
+    && typeof diracCentralHandlerContextFullyPassedV211 === 'function'
+    && diracCentralHandlerContextFullyPassedV211(ctx, req) === true);
+}
+
+function diracUserSecurityEmailBuildV326(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const eventType = String(source.eventType || '');
+  const descriptor = DIRAC_USER_SECURITY_EMAIL_EVENTS_V326[eventType];
+  const recipient = diracSecurityAlertEmailV320(source.recipient || '');
+  const occurredAt = source.occurredAt instanceof Date
+    ? new Date(source.occurredAt.getTime())
+    : typeof source.occurredAt === 'number' && Number.isFinite(source.occurredAt)
+      ? new Date(source.occurredAt)
+      : new Date(String(source.occurredAt || ''));
+  const eventId = String(source.eventId || '');
+  if (!descriptor
+      || !recipient
+      || !Number.isFinite(occurredAt.getTime())
+      || Buffer.byteLength(eventId, 'utf8') < 8
+      || Buffer.byteLength(eventId, 'utf8') > 2048) return null;
+
+  const occurredAtWib = diracDisplayWibV326(occurredAt);
+  const device = diracUserSecurityEmailCleanLabelV326(source.device, 'Perangkat tidak dikenali');
+  const browser = diracUserSecurityEmailCleanLabelV326(source.browser, 'Browser tidak dikenali');
+  const safeOccurredAtWib = diracCorporateEmailEscapeHtmlV326(occurredAtWib);
+  const safeDevice = diracCorporateEmailEscapeHtmlV326(device);
+  const safeBrowser = diracCorporateEmailEscapeHtmlV326(browser);
+  const innerHtml = '<p style="margin:0 0 16px;color:#f8fafc">'
+    + descriptor.intro + '</p>'
+    + '<div style="background:#111827;border:1px solid #64748b;border-radius:14px;padding:16px;margin:18px 0">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;font-size:14px">'
+    + '<tr><td style="padding:9px 0;color:#cbd5e1;border-bottom:1px solid #334155">Waktu</td><td style="padding:9px 0;color:#ffffff;border-bottom:1px solid #334155;text-align:right;font-weight:700">' + safeOccurredAtWib + '</td></tr>'
+    + '<tr><td style="padding:9px 0;color:#cbd5e1;border-bottom:1px solid #334155">Perangkat</td><td style="padding:9px 0;color:#ffffff;border-bottom:1px solid #334155;text-align:right;font-weight:700">' + safeDevice + '</td></tr>'
+    + '<tr><td style="padding:9px 0;color:#cbd5e1">Browser</td><td style="padding:9px 0;color:#ffffff;text-align:right;font-weight:700">' + safeBrowser + '</td></tr>'
+    + '</table></div>'
+    + '<div style="background:#273449;border:1px solid #64748b;border-radius:14px;padding:14px;color:#e2e8f0;font-size:13px;line-height:1.6">'
+    + '<b>Bukan Anda?</b><br>Segera hubungi bantuan resmi Dirac Group By CV Multi Usaha Mandiri dan amankan akun Anda. Jangan pernah membagikan password, Passkey, token, atau kode rahasia.</div>';
+  const html = diracCorporateEmailShellV326(
+    descriptor.title,
+    diracCorporateEmailTrustedBodyV326(innerHtml),
+    { eyebrow: 'DIRAC USER SECURITY' }
+  );
+  const text = [
+    'DIRAC USER SECURITY',
+    '',
+    descriptor.intro,
+    '',
+    'Waktu: ' + occurredAtWib,
+    'Perangkat: ' + device,
+    'Browser: ' + browser,
+    '',
+    'Jika ini bukan Anda, segera hubungi bantuan resmi Dirac Group By CV Multi Usaha Mandiri dan amankan akun Anda.',
+    'Jangan pernah membagikan password, Passkey, token, atau kode rahasia.',
+    '',
+    'Dirac Group By CV Multi Usaha Mandiri'
+  ].join('\n');
+  const idempotencyKey = 'dirac-user-security-'
+    + crypto.createHash('sha256')
+      .update('dirac-user-security-email-v326\n' + eventType + '\n' + recipient + '\n' + eventId)
+      .digest('hex')
+      .slice(0, 48);
+  return Object.freeze({
+    recipient,
+    subject: descriptor.subject,
+    text,
+    html,
+    idempotencyKey,
+    messageIdHash: crypto.createHash('sha256')
+      .update('dirac-user-security-message-v326\n' + eventType + '\n' + recipient + '\n' + eventId)
+      .digest('hex')
+  });
+}
+
+function diracUserSecurityEmailMimeV326(message, config) {
+  const boundary = 'dirac-user-security-' + crypto.randomBytes(16).toString('hex');
+  const senderDomain = String(config.smtp.user).split('@')[1] || 'gmail.com';
+  return [
+    'From: ' + diracSecurityAlertMimeHeaderV320('Dirac Group By CV Multi Usaha Mandiri') + ' <' + config.smtp.user + '>',
+    'Reply-To: ' + config.replyTo,
+    'To: ' + message.recipient,
+    'Subject: ' + diracSecurityAlertMimeHeaderV320(message.subject),
+    'Date: ' + new Date().toUTCString(),
+    'Message-ID: <' + message.messageIdHash + '@' + senderDomain + '>',
+    'Auto-Submitted: auto-generated',
+    'X-Dirac-User-Security: v326',
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/alternative; boundary="' + boundary + '"',
+    '',
+    '--' + boundary,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    diracSecurityAlertBase64LinesV320(message.text),
+    '--' + boundary,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    diracSecurityAlertBase64LinesV320(message.html),
+    '--' + boundary + '--',
+    ''
+  ].join('\r\n');
+}
+
+async function diracUserSecurityEmailGoogleSmtpFallbackV326(message, config) {
+  if (!config.smtp) return { ok: false, provider: 'google_smtp', code: 'USER_SECURITY_SMTP_NOT_CONFIGURED' };
+  let socket = null;
+  let reader = null;
+  let authBytes = null;
+  let dataSubmitted = false;
+  const deadlineMs = Date.now() + config.timeoutMs;
+  try {
+    socket = await diracCentralOpenSmtpSocketV230(config.smtp.host, config.smtp.port, true, config.timeoutMs);
+    reader = diracSecurityAlertSmtpReaderV321(socket);
+    if (typeof socket.setTimeout === 'function') socket.setTimeout(Math.max(1, deadlineMs - Date.now()));
+    await diracSecurityAlertSmtpCommandV320(socket, reader, null, 220, deadlineMs);
+    await diracSecurityAlertSmtpCommandV320(socket, reader, 'EHLO ' + diracBaseDomainV250(), 250, deadlineMs);
+    authBytes = Buffer.from('\u0000' + config.smtp.user + '\u0000' + config.smtp.appPassword, 'utf8');
+    await diracSecurityAlertSmtpCommandV320(socket, reader, 'AUTH PLAIN ' + authBytes.toString('base64'), 235, deadlineMs);
+    await diracSecurityAlertSmtpCommandV320(socket, reader, 'MAIL FROM:<' + config.smtp.user + '>', 250, deadlineMs);
+    await diracSecurityAlertSmtpCommandV320(socket, reader, 'RCPT TO:<' + message.recipient + '>', [250, 251], deadlineMs);
+    await diracSecurityAlertSmtpCommandV320(socket, reader, 'DATA', 354, deadlineMs);
+    dataSubmitted = true;
+    try {
+      await diracSecurityAlertSmtpCommandV320(
+        socket,
+        reader,
+        diracSecurityAlertDotStuffV320(diracUserSecurityEmailMimeV326(message, config)) + '\r\n.',
+        250,
+        deadlineMs
+      );
+    } catch (error) {
+      if (error && typeof error === 'object' && !Number(error.smtpCode || 0) && error.smtpWriteCompleted === true) {
+        error.deliveryAmbiguous = true;
+      }
+      throw error;
+    }
+    try { socket.write('QUIT\r\n'); } catch (_) {}
+    return { ok: true, provider: 'google_smtp' };
+  } catch (error) {
+    return {
+      ok: false,
+      provider: 'google_smtp',
+      code: error && error.deliveryAmbiguous === true
+        ? 'USER_SECURITY_SMTP_DELIVERY_AMBIGUOUS'
+        : 'USER_SECURITY_SMTP_DELIVERY_FAILED',
+      data_submitted: dataSubmitted
+    };
+  } finally {
+    if (authBytes) authBytes.fill(0);
+    if (reader) reader.close();
+    try { if (socket) socket.end(); } catch (_) {}
+    try { if (socket) socket.destroy(); } catch (_) {}
+  }
+}
+
+async function diracUserSecurityEmailSendV326(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const config = diracUserSecurityEmailConfigV326();
+  if (!config.enabled) return { ok: false, provider: 'none', code: 'USER_SECURITY_EMAIL_DISABLED' };
+  if (!config.ok) return { ok: false, provider: 'none', code: 'USER_SECURITY_EMAIL_CONFIG_INVALID' };
+  if (!diracUserSecurityEmailContextPassedV326(source.req, source.eventType)) {
+    return { ok: false, provider: 'none', code: 'USER_SECURITY_EMAIL_GUARD_CONTEXT_INVALID' };
+  }
+  const message = diracUserSecurityEmailBuildV326(source);
+  if (!message) return { ok: false, provider: 'none', code: 'USER_SECURITY_EMAIL_EVENT_INVALID' };
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), config.timeoutMs) : null;
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + config.apiKey,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'Idempotency-Key': message.idempotencyKey
+      },
+      body: JSON.stringify({
+        from: 'Dirac Group By CV Multi Usaha Mandiri <' + config.fromEmail + '>',
+        to: [message.recipient],
+        subject: message.subject,
+        text: message.text,
+        html: message.html,
+        reply_to: config.replyTo
+      }),
+      redirect: 'error',
+      signal: controller ? controller.signal : undefined
+    });
+    await diracReadResponseTextLimitedV210(response, 16 * 1024).catch(() => '');
+    if (response.ok) return { ok: true, provider: 'resend' };
+    if (response.status === 429) {
+      return await diracUserSecurityEmailGoogleSmtpFallbackV326(message, config);
+    }
+    return { ok: false, provider: 'resend', code: 'USER_SECURITY_RESEND_DELIVERY_FAILED' };
+  } catch (_) {
+    return { ok: false, provider: 'resend', code: 'USER_SECURITY_RESEND_UNREACHABLE' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function customerSecuritySendRecoveryEmailViaSmtp(to, fileName, fileBuffer, context = {}) {
   const config = customerSecurityRecoverySmtpConfig();
   if (!config) return { ok: false, status: 503, code: 'RECOVERY_SMTP_NOT_CONFIGURED', message: 'SMTP recovery belum dikonfigurasi.' };
@@ -11118,11 +11567,11 @@ async function customerSecuritySendRecoveryEmailViaSmtp(to, fileName, fileBuffer
   const fromEmail = customerSecurityRecoveryEmailAddress(from);
   if (!isValidAuthEmail(fromEmail)) return { ok: false, status: 503, code: 'RECOVERY_SMTP_FROM_INVALID', message: 'Email pengirim recovery tidak valid.' };
 
-  const subject = 'DiracGroup Secure Recovery - PDF Pemulihan Passkey';
+  const subject = 'Dirac Group By CV Multi Usaha Mandiri - PDF Pemulihan Passkey';
   const text = [
     'File recovery Passkey terenkripsi terlampir.',
     'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + String(context.expiresAt || ''),
+    'Berlaku sampai: ' + diracDisplayWibV326(context.expiresAt),
     'Jangan kirimkan file ini ke pihak lain. Kata sandi file hanya diberikan owner setelah verifikasi SOP.'
   ].join('\r\n\r\n');
   const html = customerSecurityRecoveryEmailHtmlV156(context);
@@ -11186,12 +11635,12 @@ async function customerSecuritySendLostPasskeyRecoveryEmail(to, fileName, fileBu
   if (customerSecurityRecoverySmtpConfig()) {
     return customerSecuritySendRecoveryEmailViaSmtp(email, fileName, fileBuffer, context);
   }
-  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Secure <no-reply@' + diracBaseDomainV250() + '>')).trim();
-  const subject = 'DiracGroup Secure Recovery - PDF Pemulihan Passkey';
+  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Group By CV Multi Usaha Mandiri <no-reply@' + diracBaseDomainV250() + '>')).trim();
+  const subject = 'Dirac Group By CV Multi Usaha Mandiri - PDF Pemulihan Passkey';
   const text = [
     'File recovery Passkey terenkripsi terlampir.',
     'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + String(context.expiresAt || ''),
+    'Berlaku sampai: ' + diracDisplayWibV326(context.expiresAt),
     'Jangan kirimkan file ini ke pihak lain. Kata sandi file hanya diberikan owner setelah verifikasi SOP.'
   ].join('\n\n');
   const html = customerSecurityRecoveryEmailHtmlV156(context);
@@ -11212,7 +11661,7 @@ async function customerSecuritySendLostPasskeyRecoveryEmail(to, fileName, fileBu
   if (process.env.BREVO_API_KEY) {
     try {
       const senderEmail = String(process.env.BREVO_SENDER_EMAIL || process.env.DIRAC_RECOVERY_SENDER_EMAIL || '').trim();
-      const senderName = String(process.env.BREVO_SENDER_NAME || 'Dirac Secure').trim();
+      const senderName = String(process.env.BREVO_SENDER_NAME || 'Dirac Group By CV Multi Usaha Mandiri').trim();
       if (!senderEmail) return { ok: false, status: 503, code: 'BREVO_SENDER_MISSING', message: 'BREVO_SENDER_EMAIL belum diatur.' };
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
@@ -24771,6 +25220,38 @@ async function diracPasskeyA2FVerify(req, res) {
     });
   }
 
+  const userSecurityPasskeyPurposeV326 = String(dbWrite && dbWrite.row && dbWrite.row.rotation_purpose || '');
+  const userSecurityPasskeyEventV326 = !isAuthentication
+    && Boolean(registeredNow || (dbWrite && dbWrite.created === true))
+    ? (lostRecoveryRotation && lostRecoveryRotation.ok === true
+      || new Set(['replace', 'recovery']).has(userSecurityPasskeyPurposeV326)
+      ? 'passkey_replaced'
+      : 'passkey_added')
+    : '';
+  if (userSecurityPasskeyEventV326) {
+    const userSecurityPasskeyOccurredAtV326 = finalActivePasskeys[0].activated_at
+      || finalActivePasskeys[0].confirmed_at
+      || finalActivePasskeys[0].updated_at
+      || finalActivePasskeys[0].created_at;
+    const userSecurityPasskeyAgentV326 = requestUserAgent(req);
+    await diracUserSecurityEmailSendV326({
+      req,
+      eventType: userSecurityPasskeyEventV326,
+      recipient: owner.email,
+      occurredAt: userSecurityPasskeyOccurredAtV326,
+      eventId: [
+        userSecurityPasskeyEventV326,
+        String(owner.authUserId || ''),
+        String(owner.customerId || ''),
+        String(credentialId || ''),
+        String(securityEpoch),
+        String(userSecurityPasskeyOccurredAtV326 || '')
+      ].join('|'),
+      device: customerSecurityDeviceName(userSecurityPasskeyAgentV326),
+      browser: customerSecurityBrowserName(userSecurityPasskeyAgentV326)
+    }).catch(() => ({ ok: false, provider: 'none', code: 'USER_SECURITY_EMAIL_INTERNAL_FAILURE' }));
+  }
+
   return res.status(200).json({
     ok: true,
     verified: true,
@@ -26001,7 +26482,7 @@ function orderMailSmtpConfigLegacyV1(kind) {
   const secure = orderMailEnvTrue(process.env[`${prefix}_SMTP_SECURE`], true);
   const user = String(process.env[`${prefix}_SMTP_USER`] || '').trim();
   const pass = String(process.env[`${prefix}_SMTP_PASS`] || '').trim().replace(/\s+/g, '');
-  const fromName = orderMailCleanText(process.env[`${prefix}_FROM_NAME`] || 'Dirac Group', 80);
+  const fromName = orderMailCleanText(process.env[`${prefix}_FROM_NAME`] || 'Dirac Group By CV Multi Usaha Mandiri', 80);
   const fromEmail = orderMailNormalizeEmail(process.env[`${prefix}_FROM_EMAIL`] || user);
   const recipients = kind === 'owner' ? orderMailParseEmailList(process.env.ORDER_OWNER_EMAIL || '') : [];
 
@@ -26105,8 +26586,8 @@ function orderMailBuildNewOrderMessages(data) {
 
   const paid = ['paid', 'success', 'settled', 'settlement', 'capture'].includes(String(data.order.payment_status || '').toLowerCase());
   const customerSubject = paid
-    ? `Invoice ${data.order.code} sudah dibayar - Dirac Group`
-    : `Pesanan ${data.order.code} diterima - Dirac Group`;
+    ? `Invoice ${data.order.code} sudah dibayar - Dirac Group By CV Multi Usaha Mandiri`
+    : `Pesanan ${data.order.code} diterima - Dirac Group By CV Multi Usaha Mandiri`;
   const ownerSubject = paid
     ? `Pembayaran berhasil ${data.order.code} - ${serviceLabel}`
     : `Order baru ${data.order.code} - ${serviceLabel}`;
@@ -26153,7 +26634,7 @@ function orderMailBuildNewOrderMessages(data) {
     'Lihat pesanan: ' + diracRoleOriginV250('pesanan') + '/pesanan.html',
     'Hubungi support: ' + diracSupportEmailV250(),
     'Butuh bantuan WhatsApp: https://wa.me/6287892523968',
-    'Dirac Group'
+    'Dirac Group By CV Multi Usaha Mandiri'
   ].filter((line) => line !== '').join('\n');
 
   const ownerText = [
@@ -26175,7 +26656,9 @@ function orderMailBuildNewOrderMessages(data) {
     paymentLine.trim(),
     '',
     'Rincian:',
-    itemsText
+    itemsText,
+    '',
+    'Dirac Group By CV Multi Usaha Mandiri'
   ].filter((line) => line !== '').join('\n');
 
   const customerHtml = orderMailHtmlShell(customerSubject, `
@@ -26245,9 +26728,11 @@ function orderMailHtmlShell(title, body, options = {}) {
   const badge = orderMailEscapeHtml(options.badge || 'PAID');
   const total = orderMailEscapeHtml(options.total || '');
   const orderUrl = diracRoleOriginV250('pesanan') + '/pesanan.html';
-  const supportEmail = diracSupportEmailV250();
+  const supportCandidate = orderMailNormalizeEmail(diracSupportEmailV250());
+  const supportEmail = supportCandidate || 'support@diracgroup.store';
   const whatsappUrl = 'https://wa.me/6287892523968';
   const promoImage = diracRoleOriginV250('www') + '/email.webp';
+  const logoImage = diracRoleOriginV250('www') + '/umroh.webp';
   const showActions = options.showActions !== false;
   const showPromoImage = options.showPromoImage !== false;
   const actionsHtml = showActions ? `
@@ -26260,7 +26745,7 @@ function orderMailHtmlShell(title, body, options = {}) {
       <tr>
         <td bgcolor="#2b2f36" style="padding:0 32px 26px;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
           <a href="${orderMailEscapeHtml(orderUrl)}" style="text-decoration:none;border:0;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-            <img src="${orderMailEscapeHtml(promoImage)}" width="616" alt="Dirac Group" style="display:block;width:100%;max-width:616px;height:auto;border:0;border-radius:14px;background:#2b2f36;outline:none;text-decoration:none;box-shadow:0 12px 28px rgba(0,0,0,.42)">
+            <img src="${orderMailEscapeHtml(promoImage)}" width="616" alt="Dirac Group By CV Multi Usaha Mandiri" style="display:block;width:100%;max-width:616px;height:auto;border:0;border-radius:14px;background:#2b2f36;outline:none;text-decoration:none;box-shadow:0 12px 28px rgba(0,0,0,.42)">
           </a>
         </td>
       </tr>` : '';
@@ -26287,11 +26772,16 @@ function orderMailHtmlShell(title, body, options = {}) {
       <td align="center" bgcolor="#2b2f36" style="padding:0 12px;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#2b2f36" style="max-width:680px;background:#2b2f36;background-color:#2b2f36;border-radius:18px;overflow:hidden;border:1px solid #4b5563;box-shadow:0 18px 46px rgba(0,0,0,.68);color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
           <tr>
+            <td align="center" bgcolor="#273449" style="padding:24px 32px 18px;background:#273449;background-color:#273449;border-bottom:1px solid #4b5563">
+              <img src="${orderMailEscapeHtml(logoImage)}" width="72" alt="Dirac Group By CV Multi Usaha Mandiri" style="display:block;width:72px;max-width:72px;height:auto;margin:0 auto;border:0;outline:none;text-decoration:none">
+            </td>
+          </tr>
+          <tr>
             <td bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;padding:30px 32px;background-image:none!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
                 <tr>
                   <td valign="top" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-                    <div style="font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-bottom:10px;font-weight:800;text-shadow:0 2px 8px rgba(0,0,0,.80)"><font color="#ffffff" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">DIRAC GROUP</font></div>
+                    <div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-bottom:10px;font-weight:800;text-shadow:0 2px 8px rgba(0,0,0,.80)"><font color="#ffffff" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">DIRAC GROUP BY CV MULTI USAHA MANDIRI</font></div>
                     <div style="font-size:28px;line-height:1.22;font-weight:900;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-shadow:0 2px 8px rgba(0,0,0,.85);mso-line-height-rule:exactly"><font color="#ffffff" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(title)}</font></div>
                     ${total ? `<div style="margin-top:12px;font-size:15px;line-height:1.5;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Total pembayaran: <strong style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${total}</strong></div>` : ''}
                   </td>
@@ -26311,10 +26801,12 @@ function orderMailHtmlShell(title, body, options = {}) {
           ${promoHtml}
           <tr>
             <td bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;padding:24px 32px;text-align:center;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;line-height:1.8;border-top:1px solid #4b5563">
-              Email ini dikirim otomatis oleh sistem Dirac Group.<br>
+              <img src="${orderMailEscapeHtml(logoImage)}" width="44" alt="Dirac Group By CV Multi Usaha Mandiri" style="display:block;width:44px;max-width:44px;height:auto;margin:0 auto 10px;border:0"><br>
+              <strong>Dirac Group By CV Multi Usaha Mandiri</strong><br>
               Hubungi support hanya ke <a href="mailto:${supportEmail}" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-weight:900">${supportEmail}</a><br>
+              WhatsApp: <a href="${orderMailEscapeHtml(whatsappUrl)}" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-weight:900">+62 878-9252-3968</a><br>
               <a href="${orderMailEscapeHtml(whatsappUrl)}" style="display:inline-block;margin-top:12px;background:#0f3b24;background-color:#0f3b24;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:12px 18px;border-radius:10px;border:1px solid #166534">Butuh bantuan</a><br><br>
-              © 2026 Dirac Group. All rights reserved.
+              © 2026 Dirac Group By CV Multi Usaha Mandiri. All rights reserved.
             </td>
           </tr>
         </table>
@@ -26511,12 +27003,12 @@ async function orderMailSendViaSmtp(config, message) {
 
 function orderMailBuildMimeMessage(message) {
   const boundary = 'DIRAC_' + crypto.randomBytes(12).toString('hex');
-  const from = `${orderMailHeaderName(message.fromName || 'Dirac Group')} <${orderMailNormalizeEmail(message.fromEmail || '')}>`;
+  const from = `${orderMailHeaderName(message.fromName || 'Dirac Group By CV Multi Usaha Mandiri')} <${orderMailNormalizeEmail(message.fromEmail || '')}>`;
   const to = (message.to || []).map((email) => `<${orderMailNormalizeEmail(email)}>`).join(', ');
-  const subject = orderMailHeaderName(message.subject || 'Dirac Group Order');
+  const subject = orderMailHeaderName(message.subject || 'Dirac Group By CV Multi Usaha Mandiri Order');
   const msgId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@${diracBaseDomainV250()}>`;
   const text = orderMailBase64Body(message.text || '');
-  const html = orderMailBase64Body(message.html || '<p>Dirac Group</p>');
+  const html = orderMailBase64Body(message.html || '<p>Dirac Group By CV Multi Usaha Mandiri</p>');
 
   return [
     `From: ${from}`,
@@ -29145,6 +29637,9 @@ function diracV101ValidateServiceRoleSupabasePath(path, options = {}) {
   if (!raw || /https?:\/\//i.test(raw) || /(?:\.\.|\\|\u0000)/.test(raw)) {
     return { ok: false, code: 'SERVICE_ROLE_PATH_INVALID' };
   }
+  if (diracV101ExactInternalSqlmapBanReadV326(raw, options)) {
+    return { ok: true, scope: 'rest_table_exact_sqlmap_ban_read', table: DIRAC_PERSISTENT_BAN_TABLE };
+  }
   if (diracV101FindSqlInjectionThreat([raw], { source: 'service_role_path' }).detected) {
     return { ok: false, code: 'SERVICE_ROLE_PATH_REJECTED' };
   }
@@ -29205,6 +29700,16 @@ function diracV101ValidateServiceRoleSupabasePath(path, options = {}) {
   }
 
   return { ok: true, scope: 'rest_table', table };
+}
+
+function diracV101ExactInternalSqlmapBanReadV326(path, options = {}) {
+  if (String(options.method || 'GET').toUpperCase() !== 'GET' || options.auth !== 'service') return false;
+  const raw = String(path || '');
+  const expectedPrefix = '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
+    + '?select=security_key,record_json,blocked_until_ms,expires_at&security_key=eq.sqlmap-ban%3A';
+  if (!raw.startsWith(expectedPrefix) || !raw.endsWith('&limit=1')) return false;
+  const fingerprint = raw.slice(expectedPrefix.length, -'&limit=1'.length);
+  return /^[a-f0-9]{64}$/.test(fingerprint);
 }
 
 function diracV101ServiceRoleAllowedTables() {
@@ -35081,7 +35586,7 @@ function orderMailSmtpConfig(kind) {
     'BREVO_SENDER_NAME',
     'SMTP_FROM_NAME',
     'MAIL_FROM_NAME'
-  ]) || 'Dirac Group', 80);
+  ]) || 'Dirac Group By CV Multi Usaha Mandiri', 80);
 
   const fromEmail = orderMailNormalizeEmail(orderMailPickEnvV129([
     `${specificPrefix}_FROM_EMAIL`,
@@ -35239,7 +35744,7 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message) {
   if (!recipients.length) return { ok: false, error: 'recipient_missing' };
 
   const fromEmail = orderMailNormalizeEmail(message.fromEmail || cfg.fromEmail || '');
-  const fromName = orderMailCleanText(message.fromName || cfg.fromName || 'Dirac Group', 80);
+  const fromName = orderMailCleanText(message.fromName || cfg.fromName || 'Dirac Group By CV Multi Usaha Mandiri', 80);
   if (!fromEmail) return { ok: false, error: 'from_email_missing' };
 
   const kindUpper = String(cfg.kind || 'OWNER').toUpperCase();
@@ -35259,9 +35764,9 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message) {
         body: JSON.stringify({
           from: `${fromName} <${fromEmail}>`,
           to: recipients,
-          subject: String(message.subject || 'Dirac Group Order'),
+          subject: String(message.subject || 'Dirac Group By CV Multi Usaha Mandiri Order'),
           text: String(message.text || ''),
-          html: String(message.html || '<p>Dirac Group</p>')
+          html: String(message.html || '<p>Dirac Group By CV Multi Usaha Mandiri</p>')
         })
       });
       const body = await parseFetchResponse(response, 256 * 1024).catch(() => ({}));
@@ -35288,9 +35793,9 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message) {
         body: JSON.stringify({
           sender: { email: fromEmail, name: fromName },
           to: recipients.map((email) => ({ email })),
-          subject: String(message.subject || 'Dirac Group Order'),
+          subject: String(message.subject || 'Dirac Group By CV Multi Usaha Mandiri Order'),
           textContent: String(message.text || ''),
-          htmlContent: String(message.html || '<p>Dirac Group</p>')
+          htmlContent: String(message.html || '<p>Dirac Group By CV Multi Usaha Mandiri</p>')
         })
       });
       const body = await parseFetchResponse(response, 256 * 1024).catch(() => ({}));
@@ -40088,7 +40593,7 @@ async function customerSecurityLostPasskeyQueueReadStateV189() {
 
 /* RECO donor source lines 2936-2939 */
 function customerSecurityLostPasskeyQueueRowOwnerV164(row) {
-  const record = row && row.record_json && typeof row.record_json === 'object' ? row.record_json : {};
+  const record = diracPersistentSecurityParseRecordJsonV326(row && row.record_json) || {};
   return String(record.owner_id || '');
 }
 
@@ -40105,16 +40610,25 @@ async function customerSecurityLostPasskeyQueueRenewV188(ownerId, context = {}) 
   if (!cleanOwner || !table) return false;
   const nowMs = Date.now();
   const lockUntilMs = nowMs + customerSecurityLostPasskeyQueueTtlMsV164();
+  const current = await customerSecurityLostPasskeyQueueReadStateV189();
+  const currentRow = current && current.ok === true ? current.row : null;
+  const currentRecordJson = currentRow && typeof currentRow.record_json === 'string' ? currentRow.record_json : '';
+  if (!currentRow || !currentRecordJson
+      || customerSecurityLostPasskeyQueueRowOwnerV164(currentRow) !== cleanOwner
+      || !customerSecurityLostPasskeyQueueRowActiveV164(currentRow, nowMs)) return false;
   const path = '/rest/v1/' + encodeURIComponent(table)
     + '?security_key=eq.' + encodeURIComponent(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164)
-    + '&' + encodeURIComponent('record_json->>owner_id') + '=eq.' + encodeURIComponent(cleanOwner)
+    + '&record_json=eq.' + encodeURIComponent(currentRecordJson)
     + '&blocked_until_ms=gt.' + encodeURIComponent(String(nowMs));
   const result = await supabaseFetch(path, {
     method: 'PATCH',
     auth: 'service',
     prefer: 'return=representation',
     body: {
-      record_json: customerSecurityLostPasskeyQueueRecordV164(cleanOwner, nowMs, lockUntilMs, context),
+      record_json: diracPersistentSecurityStoreRecordJsonV326(
+        table,
+        customerSecurityLostPasskeyQueueRecordV164(cleanOwner, nowMs, lockUntilMs, context)
+      ),
       blocked_until_ms: lockUntilMs,
       updated_at: new Date(nowMs).toISOString(),
       expires_at: new Date(lockUntilMs + 60_000).toISOString()
@@ -40168,7 +40682,10 @@ async function customerSecurityLostPasskeyQueueTryPatchAvailableV167(ownerId, co
   const nowMs = Date.now();
   const lockUntilMs = nowMs + customerSecurityLostPasskeyQueueTtlMsV164();
   const payload = {
-    record_json: customerSecurityLostPasskeyQueueRecordV164(ownerId, nowMs, lockUntilMs, context),
+    record_json: diracPersistentSecurityStoreRecordJsonV326(
+      table,
+      customerSecurityLostPasskeyQueueRecordV164(ownerId, nowMs, lockUntilMs, context)
+    ),
     blocked_until_ms: lockUntilMs,
     updated_at: new Date(nowMs).toISOString(),
     expires_at: new Date(lockUntilMs + 60_000).toISOString()
@@ -40199,7 +40716,10 @@ async function customerSecurityLostPasskeyQueueTryInsertAvailableV167(ownerId, c
   const lockUntilMs = nowMs + customerSecurityLostPasskeyQueueTtlMsV164();
   const payload = [{
     security_key: DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164,
-    record_json: customerSecurityLostPasskeyQueueRecordV164(ownerId, nowMs, lockUntilMs, context),
+    record_json: diracPersistentSecurityStoreRecordJsonV326(
+      table,
+      customerSecurityLostPasskeyQueueRecordV164(ownerId, nowMs, lockUntilMs, context)
+    ),
     blocked_until_ms: lockUntilMs,
     updated_at: new Date(nowMs).toISOString(),
     expires_at: new Date(lockUntilMs + 60_000).toISOString()
@@ -40335,6 +40855,11 @@ async function customerSecurityLostPasskeyQueueReleaseV164(ownerId) {
   const table = customerSecurityLostPasskeyQueueTableV164();
   if (!table) return false;
   const nowMs = Date.now();
+  const current = await customerSecurityLostPasskeyQueueReadStateV189();
+  const currentRow = current && current.ok === true ? current.row : null;
+  const currentRecordJson = currentRow && typeof currentRow.record_json === 'string' ? currentRow.record_json : '';
+  if (!currentRow || !currentRecordJson
+      || customerSecurityLostPasskeyQueueRowOwnerV164(currentRow) !== cleanOwner) return false;
   const releasedRecord = {
     type: 'lost_passkey_generate_argon2id_queue_lock_v164',
     patch: DIRAC_LOST_PASSKEY_GENERATE_QUEUE_PATCH_V164,
@@ -40346,13 +40871,13 @@ async function customerSecurityLostPasskeyQueueReleaseV164(ownerId) {
   };
   const path = '/rest/v1/' + encodeURIComponent(table)
     + '?security_key=eq.' + encodeURIComponent(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164)
-    + '&' + encodeURIComponent('record_json->>owner_id') + '=eq.' + encodeURIComponent(cleanOwner);
+    + '&record_json=eq.' + encodeURIComponent(currentRecordJson);
   const result = await supabaseFetch(path, {
     method: 'PATCH',
     auth: 'service',
     prefer: 'return=minimal',
     body: {
-      record_json: releasedRecord,
+      record_json: diracPersistentSecurityStoreRecordJsonV326(table, releasedRecord),
       blocked_until_ms: 0,
       updated_at: new Date(nowMs).toISOString(),
       expires_at: new Date(nowMs + 60_000).toISOString()
@@ -41272,23 +41797,14 @@ function customerSecurityLostPasskeyRecoveryEmailBannerUrlV172() {
 /* RECO donor source lines 4444-4488 */
 function customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(context = {}) {
   const requestId = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.requestId || '');
-  const expiresAt = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.expiresAt || '');
+  const expiresAt = customerSecurityLostPasskeyEmailEscapeHtmlV157(diracDisplayWibV326(context.expiresAt));
   const recoveryLink = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.recoveryLink || '');
   const emailSecret = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.emailSecret || '');
   const bannerUrl = customerSecurityLostPasskeyEmailEscapeHtmlV157(customerSecurityLostPasskeyRecoveryEmailBannerUrlV172());
 
-  return '<!doctype html>'
-    + '<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Dirac Group Secure Recovery</title></head>'
-    + '<body style="margin:0;padding:0;background:#1f1f1f;font-family:Arial,Helvetica,sans-serif;color:#f1f3f4">'
-    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#1f1f1f;margin:0;padding:24px 0"><tr><td align="center" style="padding:0 12px">'
-    + '<table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="width:600px;max-width:100%;border-collapse:collapse;border:1px solid #b8c3d9;background:#202124">'
-    + '<tr><td style="height:2px;line-height:2px;font-size:0;background:#b8c3d9">&nbsp;</td></tr>'
-    + '<tr><td style="padding:0;border-bottom:1px solid #b8c3d9;background:#202124">'
-    + '<img src="' + bannerUrl + '" width="600" alt="Dirac Group Secure Recovery" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none">'
-    + '</td></tr>'
-    + '<tr><td style="padding:28px 28px 12px;background:#202124;color:#f1f3f4">'
-    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Yth. Pengguna Dirac Group,</p>'
-    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Permintaan pemulihan Passkey Anda telah diterima dan paket recovery terenkripsi sudah disiapkan oleh sistem Dirac Group.</p>'
+  const body = '<img src="' + bannerUrl + '" width="624" alt="Dirac Group By CV Multi Usaha Mandiri Secure Recovery" style="display:block;width:100%;max-width:624px;height:auto;border:0;border-radius:14px;margin:0 0 22px">'
+    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Yth. Pengguna Dirac Group By CV Multi Usaha Mandiri,</p>'
+    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Permintaan pemulihan Passkey Anda telah diterima dan paket recovery terenkripsi sudah disiapkan oleh sistem Dirac Group By CV Multi Usaha Mandiri.</p>'
     + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Silakan buka link resmi berikut untuk mengambil vault recovery. Proses decrypt tetap dilakukan secara lokal di browser dan membutuhkan Secret Email, Secret Website, serta material password terbaru akun Anda.</p>'
     + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;margin:20px 0 24px;background:#202124;border:1px solid #b8c3d9">'
     + '<tr><td style="padding:13px 14px;border-bottom:1px solid #b8c3d9;color:#d7dbe3;font-size:13px">Request ID</td><td style="padding:13px 14px;border-bottom:1px solid #b8c3d9;color:#ffffff;font-size:13px;font-weight:700;text-align:right;word-break:break-all">' + requestId + '</td></tr>'
@@ -41305,15 +41821,12 @@ function customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(context = {}) {
     + '2. Setelah vault diterima, halaman akan meminta decrypt lokal/offline.<br>'
     + '3. Masukkan material password terbaru, Secret Email, dan Secret Website sesuai instruksi sistem.'
     + '</div>'
-    + '<p style="margin:22px 0 0;font-size:13px;line-height:1.7;color:#f1f3f4">Jangan membagikan link recovery, Secret Email, Secret Website, atau hasil decrypt kepada pihak mana pun. Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan resmi Dirac Group.</p>'
-    + '<p style="margin:24px 0 0;font-size:14px;line-height:1.8;color:#f1f3f4">Terima kasih,<br><b>Dirac Group</b></p>'
-    + '</td></tr>'
-    + '<tr><td style="padding:16px 28px 22px;background:#202124;color:#f1f3f4;font-size:12px;line-height:1.7;border-top:1px solid #b8c3d9">'
-    + '(Email ini dibuat otomatis oleh sistem, mohon untuk tidak dibalas.)<br>Dirac Group Secure Recovery • Dirac Group'
-    + '</td></tr>'
-    + '</table>'
-    + '</td></tr></table>'
-    + '</body></html>';
+    + '<p style="margin:22px 0 0;font-size:13px;line-height:1.7;color:#f1f3f4">Jangan membagikan link recovery, Secret Email, Secret Website, atau hasil decrypt kepada pihak mana pun. Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan resmi.</p>';
+  return diracCorporateEmailShellV326(
+    'Link Recovery Passkey',
+    diracCorporateEmailTrustedBodyV326(body),
+    { eyebrow: 'DIRAC SECURE RECOVERY' }
+  );
 }
 
 /* RECO donor source lines 4491-4507 */
@@ -41342,12 +41855,12 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   const recoveryLink = customerSecurityLostPasskeyOfficialEmailLinkV187(context);
   if (!recoveryLink) return { ok: false, status: 500, code: 'RECOVERY_EMAIL_LINK_INVALID', message: 'Link recovery resmi tidak valid.' };
   const emailContext = Object.assign({}, context, { recoveryLink });
-  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Secure <no-reply@' + diracBaseDomainV250() + '>')).trim();
-  const subject = 'DiracGroup Secure Recovery - Link Pemulihan Passkey';
+  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Group By CV Multi Usaha Mandiri <no-reply@' + diracBaseDomainV250() + '>')).trim();
+  const subject = 'Dirac Group By CV Multi Usaha Mandiri - Link Pemulihan Passkey';
   const text = [
     'Link recovery Passkey resmi sudah dibuat.',
     'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + String(context.expiresAt || ''),
+    'Berlaku sampai: ' + diracDisplayWibV326(context.expiresAt),
     'Link resmi: ' + recoveryLink,
     'SECRET_EMAIL_100_CHAR: ' + String(context.emailSecret || ''),
     'Jangan bagikan email secret, link, atau isi pesan ini kepada pihak lain. Website secret hanya tampil di website yang masih login.'
@@ -41441,7 +41954,7 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   if (process.env.BREVO_API_KEY) {
     try {
       const senderEmail = String(process.env.BREVO_SENDER_EMAIL || process.env.DIRAC_RECOVERY_SENDER_EMAIL || '').trim();
-      const senderName = String(process.env.BREVO_SENDER_NAME || 'Dirac Secure').trim();
+      const senderName = String(process.env.BREVO_SENDER_NAME || 'Dirac Group By CV Multi Usaha Mandiri').trim();
       if (!senderEmail) return { ok: false, status: 503, code: 'BREVO_SENDER_MISSING', message: 'BREVO_SENDER_EMAIL belum diatur.' };
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
@@ -53327,7 +53840,8 @@ function diracCentralEgressRouteAllowedV228(url, method, ctx, options) {
   };
 
   const emailActions = [/^domain_register$/, /^domain_checkout$/, /^create_payment$/, /^midtrans_webhook$/, /^customer_security_/, /^admin_/, /^domain_login$/];
-  const resend = exact('api.resend.com', '/emails', ['POST'], emailActions, 'resend_email');
+  const resendActions = [...emailActions, 'dirac_mfa_passkey_verify', 'domain_mfa_passkey_verify'];
+  const resend = exact('api.resend.com', '/emails', ['POST'], resendActions, 'resend_email');
   if (resend) return resend;
   const brevo = exact('api.brevo.com', '/v3/smtp/email', ['POST'], emailActions, 'brevo_email');
   if (brevo) return brevo;
@@ -54051,15 +54565,19 @@ function diracSecurityAlertMessageV320(snapshot, config) {
     ? snapshot.trace.map((entry) => '<li style="margin:7px 0"><b>' + diracSecurityAlertHtmlV320(entry.stage) + '</b> → '
       + diracSecurityAlertHtmlV320(entry.result) + ' <span style="color:#94a3b8">(' + Number(entry.duration_ms) + ' ms)</span></li>').join('')
     : '<li>Tidak tersedia.</li>';
-  const htmlBody = '<!doctype html><html><body style="margin:0;background:#070b16;font-family:Arial,sans-serif;color:#f8fafc">'
-    + '<div style="padding:30px 12px"><div style="max-width:760px;margin:auto;border:1px solid #26334d;border-radius:20px;overflow:hidden;background:#101827">'
-    + '<div style="padding:26px;background:linear-gradient(135deg,#7f1d1d,#dc2626 55%,#f97316)"><div style="font-size:12px;letter-spacing:.18em;font-weight:700">DIRAC CENTRAL GUARD</div>'
-    + '<h1 style="margin:9px 0 4px;font-size:25px">Ancaman diblokir secara otomatis</h1><div style="opacity:.9">' + diracSecurityAlertHtmlV320(snapshot.threat_class) + '</div></div>'
-    + '<div style="padding:22px"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#3f1218;color:#fda4af;font-size:12px;font-weight:800">'
+  const alertHtml = '<div style="padding:18px;border:1px solid #7f1d1d;border-radius:14px;background:#32151c">'
+    + '<div style="font-size:12px;letter-spacing:.12em;font-weight:800;color:#fda4af">DIRAC CENTRAL GUARD · FAIL-CLOSED</div>'
+    + '<div style="margin-top:8px;color:#ffffff;font-size:17px;font-weight:800">' + diracSecurityAlertHtmlV320(snapshot.threat_class) + '</div></div>'
+    + '<div style="padding-top:20px"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#3f1218;color:#fda4af;font-size:12px;font-weight:800">'
     + diracSecurityAlertHtmlV320(snapshot.severity) + ' · FAIL-CLOSED</div><table role="presentation" style="width:100%;border-collapse:collapse;margin-top:18px;font-size:13px">'
     + htmlRows + '</table><h2 style="font-size:16px;margin:24px 0 8px">Jejak pemeriksaan</h2><ol style="margin:0;padding-left:22px;color:#cbd5e1;font-size:13px">'
     + htmlTrace + '</ol><div style="margin-top:22px;padding:14px;border-radius:12px;background:#0b1220;color:#94a3b8;font-size:12px;line-height:1.6">'
-    + 'Tidak ada password, OTP, token, cookie, raw body, alamat lengkap, atau IP penuh di email ini. Lokasi hanyalah perkiraan metadata edge, bukan GPS.</div></div></div></div></body></html>';
+    + 'Tidak ada password, OTP, token, cookie, raw body, alamat lengkap, atau IP penuh di email ini. Lokasi hanyalah perkiraan metadata edge, bukan GPS.</div></div>';
+  const htmlBody = diracCorporateEmailShellV326(
+    'Ancaman diblokir secara otomatis',
+    diracCorporateEmailTrustedBodyV326(alertHtml),
+    { eyebrow: 'DIRAC CENTRAL GUARD · SECURITY INCIDENT' }
+  );
   const boundary = 'dirac-alert-' + crypto.randomBytes(16).toString('hex');
   const senderDomainV321 = String(config.fromEmail || '').split('@')[1] || 'gmail.com';
   const messageId = diracSecurityAlertHmacV320('message-id', snapshot.request_id + '|' + snapshot.timestamp_utc) + '@' + senderDomainV321;
