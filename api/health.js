@@ -56128,6 +56128,22 @@ async function diracCentralBackendComplianceGateV230() {
 }
 
 module.exports = async function diracCentralArchitectureConsolidationV202(req, res) {
+  const entryMethodV323 = String(req && req.method || 'GET').trim().toUpperCase();
+  const entryUrlV323 = String(req && req.url || '');
+  const entryActionV323 = diracV143NormalizeAction(
+    String(new URLSearchParams(entryUrlV323.split('?').slice(1).join('?')).get('action') || '')
+  );
+  if (entryMethodV323 === 'GET' && entryActionV323 === 'domain_login') {
+    diracCentralApplyHeadersV146(res);
+    try { res.setHeader('Allow', 'POST, OPTIONS'); }
+    catch (entryHeaderErrorV323) { diracCentralRecordSuppressedExceptionV221(entryHeaderErrorV323); }
+    return res.status(405).json({
+      ok: false,
+      code: 'CENTRAL_METHOD_NOT_ALLOWED',
+      message: 'Gunakan POST untuk login.'
+    });
+  }
+
   const registerDiagnosticStateV233 =
     /(?:^|[?&])action=domain_register(?:&|$)/.test(String(req && req.url || ''))
       ? { stage: 'raw_capture' }
