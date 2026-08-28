@@ -52874,7 +52874,6 @@ function diracSecurityAlertSmtpReaderV321(socket) {
       if (closed) return;
       closed = true;
       socket.off('data', onData);
-      socket.off('error', onError);
       socket.off('timeout', onTimeout);
       socket.off('end', onEnd);
       socket.off('close', onClose);
