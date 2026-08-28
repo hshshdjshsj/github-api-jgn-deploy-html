@@ -817,7 +817,7 @@ async function domainLogin(req, res, preloadedBody) {
     req,
     result.data && result.data.user,
     loginGuard.email
-  );
+  ).catch(() => null);
   if (!loginBan || loginBan.ok !== true) {
     clearSessionCookies(res);
     return res.status(503).json({
@@ -8120,13 +8120,17 @@ async function customerSecurityCheckDomainLoginBanCoreV321(req, authenticatedUse
     return unavailable('domain_login_ban_context_reuse');
   }
 
-  ctx.__diracDomainLoginVerifiedAuthUserIdV321 = authUserId;
-  ctx.__diracDomainLoginBanEmailV321 = loginEmail;
   try {
-    const providerResult = await supabaseFetch('/auth/v1/admin/users/' + encodeURIComponent(authUserId), {
-      method: 'GET',
-      auth: 'service'
-    }).catch(() => null);
+    ctx.__diracDomainLoginVerifiedAuthUserIdV321 = authUserId;
+    ctx.__diracDomainLoginBanEmailV321 = loginEmail;
+    const [providerResult, linkResult, customerResult] = await Promise.all([
+      supabaseFetch('/auth/v1/admin/users/' + encodeURIComponent(authUserId), {
+        method: 'GET',
+        auth: 'service'
+      }).catch(() => null),
+      customerSecurityFetchAuthLink(authUserId).catch(() => null),
+      customerSecurityFetchCustomerByEmail(loginEmail).catch(() => null)
+    ]);
     const providerUser = providerResult && providerResult.data && typeof providerResult.data === 'object'
       ? (providerResult.data.user && typeof providerResult.data.user === 'object' ? providerResult.data.user : providerResult.data)
       : null;
@@ -8153,7 +8157,6 @@ async function customerSecurityCheckDomainLoginBanCoreV321(req, authenticatedUse
       }
     }
 
-    const linkResult = await customerSecurityFetchAuthLink(authUserId).catch(() => null);
     if (!linkResult || linkResult.ok !== true || !Array.isArray(linkResult.data)) {
       return unavailable('domain_login_auth_link_read_failed');
     }
@@ -8165,7 +8168,6 @@ async function customerSecurityCheckDomainLoginBanCoreV321(req, authenticatedUse
       return unavailable('domain_login_auth_link_email_mismatch');
     }
 
-    const customerResult = await customerSecurityFetchCustomerByEmail(loginEmail).catch(() => null);
     if (!customerResult || customerResult.ok !== true || !Array.isArray(customerResult.data)) {
       return unavailable('domain_login_customer_read_failed');
     }
@@ -8188,29 +8190,6 @@ async function customerSecurityCheckDomainLoginBanCoreV321(req, authenticatedUse
     }
     ctx.__diracDomainLoginBanCustomerIdV321 = customerId;
 
-    if (customerId) {
-      const settingsPath = '/rest/v1/security_customer_settings?select=' +
-        encodeURIComponent('id,customer_id,account_locked,locked_until') +
-        '&customer_id=eq.' + encodeURIComponent(customerId) +
-        '&limit=2';
-      const settingsResult = await supabaseFetch(settingsPath, { method: 'GET', auth: 'service' }).catch(() => null);
-      if (!settingsResult || settingsResult.ok !== true || !Array.isArray(settingsResult.data)) {
-        return unavailable('domain_login_account_lock_read_failed');
-      }
-      if (settingsResult.data.length > 1) return unavailable('domain_login_account_lock_ambiguous');
-      if (settingsResult.data.length === 1) {
-        const settingsRow = settingsResult.data[0];
-        if (!settingsRow || !safeEqual(String(settingsRow.customer_id || ''), customerId)) {
-          return unavailable('domain_login_account_lock_owner_mismatch');
-        }
-        const accountLock = customerSecurityEvaluateAccountLockV321(settingsRow, now);
-        if (!accountLock.ok) return unavailable(accountLock.reason);
-        if (accountLock.locked) {
-          return blocked('domain_login_account_lock_active', accountLock.retry_after_seconds);
-        }
-      }
-    }
-
     const identity = customerSecurityAccessBlockIdentity(req);
     if (!identity || !/^[a-f0-9]{64}$/.test(String(identity.ip_hash || ''))
         || !/^[a-f0-9]{64}$/.test(String(identity.device_hash || ''))) {
@@ -8229,6 +8208,12 @@ async function customerSecurityCheckDomainLoginBanCoreV321(req, authenticatedUse
     }
     if (memoryUntil && memoryUntil <= now) CUSTOMER_SECURITY_ACCESS_BLOCK_MEMORY.delete(memoryKey);
 
+    const settingsPromise = customerId
+      ? supabaseFetch('/rest/v1/security_customer_settings?select=' +
+        encodeURIComponent('id,customer_id,account_locked,locked_until') +
+        '&customer_id=eq.' + encodeURIComponent(customerId) +
+        '&limit=2', { method: 'GET', auth: 'service' }).catch(() => null)
+      : Promise.resolve({ ok: true, data: [] });
     const clauses = [];
     if (customerId) clauses.push('customer_id.eq.' + customerId);
     clauses.push('ip_hash.eq.' + identity.ip_hash, 'device_hash.eq.' + identity.device_hash);
@@ -8237,7 +8222,25 @@ async function customerSecurityCheckDomainLoginBanCoreV321(req, authenticatedUse
       '&or=' + encodeURIComponent('(' + clauses.join(',') + ')') +
       '&blocked_until=gt.' + encodeURIComponent(new Date(now).toISOString()) +
       '&order=blocked_until.desc&limit=1';
-    const blockResult = await supabaseFetch(blockPath, { method: 'GET', auth: 'service' }).catch(() => null);
+    const [settingsResult, blockResult] = await Promise.all([
+      settingsPromise,
+      supabaseFetch(blockPath, { method: 'GET', auth: 'service' }).catch(() => null)
+    ]);
+    if (!settingsResult || settingsResult.ok !== true || !Array.isArray(settingsResult.data)) {
+      return unavailable('domain_login_account_lock_read_failed');
+    }
+    if (settingsResult.data.length > 1) return unavailable('domain_login_account_lock_ambiguous');
+    if (settingsResult.data.length === 1) {
+      const settingsRow = settingsResult.data[0];
+      if (!customerId || !settingsRow || !safeEqual(String(settingsRow.customer_id || ''), customerId)) {
+        return unavailable('domain_login_account_lock_owner_mismatch');
+      }
+      const accountLock = customerSecurityEvaluateAccountLockV321(settingsRow, now);
+      if (!accountLock.ok) return unavailable(accountLock.reason);
+      if (accountLock.locked) {
+        return blocked('domain_login_account_lock_active', accountLock.retry_after_seconds);
+      }
+    }
     if (!blockResult || blockResult.ok !== true || !Array.isArray(blockResult.data)) {
       return unavailable('domain_login_access_block_read_failed');
     }
@@ -43911,6 +43914,13 @@ function guardMemoryBanV202(ctx) {
   return result.blocked ? diracV202StageResult(false, { directCode: 'MEMORY_BAN_ACTIVE' }) : diracV202StageResult(true);
 }
 async function guardPersistentBanV202(ctx) {
+  if (ctx && ctx.method === 'GET'
+      && String(ctx.rawAction || '').trim().toLowerCase() === 'domain_login') {
+    return diracV202StageResult(false, {
+      reason: 'method_not_in_contract',
+      directCode: 'CENTRAL_METHOD_NOT_ALLOWED'
+    });
+  }
   const result = await diracCentralCheckPersistentBanV146(ctx.req, ctx.identity);
   if (result.blocked) {
     diracCentralSetMemoryBanV146(ctx.identity, result.blockedUntilMs, 'persistent_ban');
