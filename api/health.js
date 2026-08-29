@@ -17814,8 +17814,8 @@ async function diracPasskeyA2FStoreChallenge(setupToken, payload) {
     (value) => Number(value && value.expiresAtMs || 0)
   );
   const ttl = Math.max(60, Math.ceil((record.expiresAtMs - Date.now()) / 1000) + 30);
-  const stored = typeof writePersistentSecurityJsonRequiredV194 === 'function'
-    ? await writePersistentSecurityJsonRequiredV194('passkey-a2f-jti:' + jti, record, 0, ttl)
+  const stored = typeof claimPersistentSecurityKeyOnceV194 === 'function'
+    ? await claimPersistentSecurityKeyOnceV194('passkey-a2f-jti:' + jti, record, ttl)
     : false;
   if (process.env.NODE_ENV === 'production' && !stored) {
     DIRAC_PASSKEY_A2F_CHALLENGE_STORE.delete(jti);
@@ -17851,14 +17851,16 @@ async function diracPasskeyA2FConsumeChallenge(setupToken, payload) {
       record = await readPersistentSecurityJson('passkey-a2f-jti:' + jti).catch(() => null);
     }
     if (!record || record.used === true) return { ok: false, reason: 'passkey_challenge_missing_or_used' };
-    if (Number(record.expiresAtMs || 0) <= now) return { ok: false, reason: 'passkey_challenge_expired' };
+    const recordExpiresAtMs = Number(record.expiresAtMs || 0);
+    if (!Number.isSafeInteger(recordExpiresAtMs) || recordExpiresAtMs <= now) return { ok: false, reason: 'passkey_challenge_expired' };
     if (!expectedHash || !record.token_hash || !safeEqual(String(record.token_hash), expectedHash)) return { ok: false, reason: 'passkey_challenge_token_mismatch' };
     if (LOGIN_SECURITY_PERSIST_TABLE && typeof claimPersistentSecurityKeyOnceV194 === 'function') {
+      const replayClaimTtlSeconds = Math.max(120, Math.ceil((recordExpiresAtMs - now) / 1000) + 30);
       const claimed = await claimPersistentSecurityKeyOnceV194('passkey-a2f-used:' + jti, {
         type: 'passkey_a2f_one_time_claim_v194',
         token_hash: expectedHash,
         usedAtMs: now
-      }, 120);
+      }, replayClaimTtlSeconds);
       if (!claimed) return { ok: false, reason: 'passkey_challenge_replay_or_storage_failure' };
     } else if (process.env.NODE_ENV === 'production') {
       return { ok: false, reason: 'passkey_challenge_storage_unavailable' };
