@@ -1,19 +1,33 @@
 'use strict';
 
 const centralHandler = require('./health.js');
+const passwordResetHandler = require('./chat.js');
 
 if (typeof centralHandler !== 'function'
     || Object.isFrozen(centralHandler) !== true
     || centralHandler.__diracCentralSecurityGuardV146 !== true
     || centralHandler.__diracCentralArchitectureConsolidationV202 !== true
-    || centralHandler.__diracCentralBackendComplianceV230 !== true) {
+    || centralHandler.__diracCentralBackendComplianceV230 !== true
+    || centralHandler.__diracCanonicalGuardVersionV325 !== true
+    || typeof centralHandler.__diracRunCanonicalGuardV325 !== 'function') {
   throw new Error('DIRAC_SECURITY_ROUTE_CENTRAL_HANDLER_INVALID');
+}
+
+
+if (typeof passwordResetHandler !== 'function'
+    || passwordResetHandler.__diracChatServer2PasswordResetWorkerV1 !== true
+    || passwordResetHandler.__diracServer2EncryptedResponseRequiredV220 !== true
+    || passwordResetHandler.__diracCentralSecurityGuardV146 !== true
+    || passwordResetHandler.__diracCanonicalGuardVersionV325 !== true) {
+  throw new Error('DIRAC_SECURITY_ROUTE_PASSWORD_RESET_HANDLER_INVALID');
 }
 
 const SECURITY_ROUTE_PATH = '/api/keamanan';
 const CENTRAL_ROUTE_PATH = '/api/health';
 
 const ACTION_METHODS = Object.freeze({
+  request_password_reset: Object.freeze(new Set(['POST', 'OPTIONS'])),
+  confirm_password_reset: Object.freeze(new Set(['POST', 'OPTIONS'])),
   security_report: Object.freeze(new Set(['POST', 'OPTIONS'])),
   domain_health: Object.freeze(new Set(['GET', 'HEAD', 'OPTIONS'])),
   domain_dashboard_me: Object.freeze(new Set(['GET', 'HEAD', 'OPTIONS'])),
@@ -96,6 +110,10 @@ async function keamananHandler(req, res) {
     return reject(res, 403, parsed.code);
   }
 
+  if (parsed.action === 'request_password_reset' || parsed.action === 'confirm_password_reset') {
+    return passwordResetHandler(req, res);
+  }
+
   const originalUrl = req.url;
   try {
     req.url = parsed.canonicalUrl;
@@ -115,6 +133,8 @@ Object.defineProperty(keamananHandler, '__diracCentralSecurityGuardV146', { valu
 Object.defineProperty(keamananHandler, '__diracCentralArchitectureConsolidationV202', { value: true, enumerable: false });
 Object.defineProperty(keamananHandler, '__diracCentralBackendComplianceV230', { value: true, enumerable: false });
 Object.defineProperty(keamananHandler, '__diracSecurityRouteAliasV1', { value: true, enumerable: false });
+Object.defineProperty(keamananHandler, '__diracCanonicalGuardVersionV325', { value: true, enumerable: false });
+Object.defineProperty(keamananHandler, '__diracPasswordResetPasskeyRouteV325', { value: true, enumerable: false });
 Object.freeze(keamananHandler);
 
 module.exports = keamananHandler;

@@ -20,7 +20,9 @@ const DIRAC_LOGIN_FATAL_STATE_V324 = globalThis.__DIRAC_LOGIN_FATAL_STATE_V324__
 globalThis.__DIRAC_LOGIN_FATAL_STATE_V324__ = DIRAC_LOGIN_FATAL_STATE_V324;
 
 function diracLoginFatalIsRequestV324(req) {
-  return false;
+  const action = String(req && req.query && req.query.action || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  return String(req && req.method || '').toUpperCase() === 'POST'
+    && (action === 'domain_login' || action === 'login_domain');
 }
 
 function diracLoginFatalSafeTokenV324(value, fallback, maximum) {
@@ -113,13 +115,9 @@ function diracLoginFatalSafeMetaV324(meta) {
 }
 
 function diracLoginFatalWriteV324(payload, fatal) {
-  try {
-    const line = '[dirac-login-fatal-v324] ' + JSON.stringify(payload).slice(0, fatal ? 4096 : 2048) + '\n';
-    require('fs').writeSync(2, line);
-    return true;
-  } catch (_) {
-    return false;
-  }
+  void payload;
+  void fatal;
+  return false;
 }
 
 function diracLoginFatalTrimV324(now) {
@@ -134,48 +132,9 @@ function diracLoginFatalTrimV324(now) {
 }
 
 function diracLoginFatalBeginV324(req, res) {
-  if (!diracLoginFatalIsRequestV324(req)) return null;
-  const existingId = DIRAC_LOGIN_FATAL_STATE_V324.requestIds.get(req);
-  if (existingId) return DIRAC_LOGIN_FATAL_STATE_V324.traces.get(existingId) || null;
-  const now = Date.now();
-  if (!Number(DIRAC_LOGIN_FATAL_STATE_V324.admissionWindowStartedAt)
-      || now - Number(DIRAC_LOGIN_FATAL_STATE_V324.admissionWindowStartedAt) >= 60000) {
-    DIRAC_LOGIN_FATAL_STATE_V324.admissionWindowStartedAt = now;
-    DIRAC_LOGIN_FATAL_STATE_V324.admissionCount = 0;
-  }
-  if (Number(DIRAC_LOGIN_FATAL_STATE_V324.admissionCount || 0) >= 16) return null;
-  DIRAC_LOGIN_FATAL_STATE_V324.admissionCount = Number(DIRAC_LOGIN_FATAL_STATE_V324.admissionCount || 0) + 1;
-  diracLoginFatalTrimV324(now);
-  const traceId = crypto.randomBytes(16).toString('hex');
-  const trace = {
-    traceId,
-    startedAt: now,
-    lastAt: now,
-    sequence: 0,
-    phase: 'request.enter',
-    dbOrdinal: 0,
-    finished: false,
-    vercelRequestId: diracLoginFatalSafeTokenV324(req && req.headers && req.headers['x-vercel-id'], 'unavailable', 120),
-    buildSha256: diracLoginFatalBuildShaV324()
-  };
-  DIRAC_LOGIN_FATAL_STATE_V324.requestIds.set(req, traceId);
-  DIRAC_LOGIN_FATAL_STATE_V324.traces.set(traceId, trace);
-  try { if (res && typeof res.setHeader === 'function') res.setHeader('X-Dirac-Login-Diagnostic', DIRAC_LOGIN_FATAL_DIAGNOSTIC_V324 + ':' + traceId); } catch (_) {}
-  if (res && typeof res.once === 'function') {
-    res.once('finish', () => {
-      trace.finished = true;
-      diracLoginFatalMarkIdV324(traceId, 'response.finish', 'done', {
-        status: Number(res.statusCode || 0), finished: true
-      }, res);
-    });
-    res.once('close', () => {
-      diracLoginFatalMarkIdV324(traceId, 'response.close', trace.finished ? 'after_finish' : 'before_finish', {
-        status: Number(res.statusCode || 0), finished: trace.finished
-      }, res);
-    });
-  }
-  diracLoginFatalMarkIdV324(traceId, 'request.enter', 'begin', {}, res);
-  return trace;
+  void req;
+  void res;
+  return null;
 }
 
 function diracLoginFatalTraceV324(req) {
@@ -281,32 +240,8 @@ async function diracLoginFatalRunV324(req, res, operation) {
   }
 }
 
-if (!DIRAC_LOGIN_FATAL_STATE_V324.monitorInstalled) {
-  DIRAC_LOGIN_FATAL_STATE_V324.monitorInstalled = true;
-  process.on('uncaughtExceptionMonitor', (error, origin) => {
-    const now = Date.now();
-    diracLoginFatalTrimV324(now);
-    const recent = Array.from(DIRAC_LOGIN_FATAL_STATE_V324.traces.values())
-      .sort((left, right) => Number(right.lastAt || 0) - Number(left.lastAt || 0))
-      .slice(0, 5)
-      .map((trace) => ({
-        trace_id: trace.traceId,
-        phase: trace.phase,
-        sequence: trace.sequence,
-        elapsed_ms: Math.max(0, now - trace.startedAt),
-        finished: Boolean(trace.finished),
-        build_sha256: trace.buildSha256
-      }));
-    diracLoginFatalWriteV324({
-      version: DIRAC_LOGIN_FATAL_DIAGNOSTIC_V324,
-      event: 'fatal_runtime',
-      at_utc: new Date(now).toISOString(),
-      fatal: diracLoginFatalSafeErrorV324(error, origin),
-      memory: diracLoginFatalMemoryV324(),
-      recent_login_traces: recent
-    }, true);
-  });
-}
+DIRAC_LOGIN_FATAL_STATE_V324.monitorInstalled = true;
+
 
 
 /* ============================================================
@@ -314,7 +249,7 @@ if (!DIRAC_LOGIN_FATAL_STATE_V324.monitorInstalled) {
    One health.js for every Dirac role. Domain/provider identity is ENV-driven.
    ============================================================ */
 const DIRAC_UNIVERSAL_APP_ROLES_V250 = Object.freeze(new Set([
-  'www', 'auth', 'dashboard', 'security', 'parfum', 'pesanan', 'recovery'
+  'www', 'auth', 'dashboard', 'security', 'parfum', 'pesanan', 'recovery', 'support'
 ]));
 
 function diracBaseDomainV250() {
@@ -1860,7 +1795,7 @@ function buildLoginSecurityTenYearBody(incident) {
     code: 'LOGIN_ACCESS_RESTRICTED',
     blocked_years: 10,
     incident_code: incident.incidentCode,
-    message: 'AKSES MASUK DIBATASI\n\nSistem keamanan DiracGroup mendeteksi percobaan berbahaya berulang pada form masuk.\n\nAkses masuk dari perangkat ini telah dibatasi selama 10 tahun karena terindikasi melakukan manipulasi input dan percobaan menerobos sistem keamanan.\n\nData teknis yang berhasil dikumpulkan:\n\n* Kode Insiden: ' + incident.incidentCode + '\n* Waktu Server: ' + incident.serverTime + '\n* Waktu Perangkat: Sesuai waktu perangkat pengguna\n* Halaman: masuk.html\n* Form: ' + incident.form + '\n* Endpoint Target: ' + incident.endpoint + '\n* Jumlah Percobaan: ' + incident.attemptCount + ' kali\n* Jenis Deteksi: SQL Injection / Manipulasi Input\n* Status Risiko: Tinggi\n* Tindakan Sistem: Akses masuk dibatasi selama 10 tahun\n\nData Jaringan:\n\n* IP Address: ' + incident.maskedIp + '\n* Provider / ISP: Sesuai hasil deteksi sistem\n* ASN Jaringan: Sesuai hasil deteksi sistem\n* Lokasi Jaringan: Sesuai hasil analisis jaringan\n* Deteksi VPN / Proxy: Sesuai hasil pemeriksaan sistem\n\nData Perangkat:\n\n* Browser: ' + incident.userAgentSummary + '\n* Bahasa Browser: ' + incident.language + '\n* Zona Waktu: Sesuai perangkat pengguna\n* Device Key: ' + incident.deviceKey + '\n* Session Key: ' + incident.sessionKey + '\n\nAktivitas ini telah dicatat otomatis oleh sistem keamanan DiracGroup.\n\nJika ditemukan unsur penyalahgunaan, penyerangan, manipulasi sistem, atau upaya akses tanpa hak, DiracGroup dapat memproses aktivitas ini sesuai ketentuan yang berlaku.'
+    message: 'AKSES MASUK DIBATASI\n\nSistem keamanan Dirac Group mendeteksi percobaan berbahaya berulang pada form masuk.\n\nAkses masuk dari perangkat ini telah dibatasi selama 10 tahun karena terindikasi melakukan manipulasi input dan percobaan menerobos sistem keamanan.\n\nData teknis yang berhasil dikumpulkan:\n\n* Kode Insiden: ' + incident.incidentCode + '\n* Waktu Server: ' + incident.serverTime + '\n* Waktu Perangkat: Sesuai waktu perangkat pengguna\n* Halaman: masuk.html\n* Form: ' + incident.form + '\n* Endpoint Target: ' + incident.endpoint + '\n* Jumlah Percobaan: ' + incident.attemptCount + ' kali\n* Jenis Deteksi: SQL Injection / Manipulasi Input\n* Status Risiko: Tinggi\n* Tindakan Sistem: Akses masuk dibatasi selama 10 tahun\n\nData Jaringan:\n\n* IP Address: ' + incident.maskedIp + '\n* Provider / ISP: Sesuai hasil deteksi sistem\n* ASN Jaringan: Sesuai hasil deteksi sistem\n* Lokasi Jaringan: Sesuai hasil analisis jaringan\n* Deteksi VPN / Proxy: Sesuai hasil pemeriksaan sistem\n\nData Perangkat:\n\n* Browser: ' + incident.userAgentSummary + '\n* Bahasa Browser: ' + incident.language + '\n* Zona Waktu: Sesuai perangkat pengguna\n* Device Key: ' + incident.deviceKey + '\n* Session Key: ' + incident.sessionKey + '\n\nAktivitas ini telah dicatat otomatis oleh sistem keamanan Dirac Group.\n\nJika ditemukan unsur penyalahgunaan, penyerangan, manipulasi sistem, atau upaya akses tanpa hak, Dirac Group dapat memproses aktivitas ini sesuai ketentuan yang berlaku.'
   };
 }
 
@@ -2055,26 +1990,6 @@ function normalizeLoginSecurityRecord(record, now = Date.now()) {
   };
 }
 
-function diracPersistentSecurityParseRecordJsonV326(value) {
-  let parsed = value;
-  if (typeof value === 'string') {
-    if (!value || Buffer.byteLength(value, 'utf8') > 512 * 1024) return null;
-    try { parsed = JSON.parse(value); } catch (_) { return null; }
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
-      || Object.getPrototypeOf(parsed) !== Object.prototype
-      || Object.prototype.hasOwnProperty.call(parsed, '__proto__')
-      || Object.prototype.hasOwnProperty.call(parsed, 'prototype')
-      || Object.prototype.hasOwnProperty.call(parsed, 'constructor')) return null;
-  return parsed;
-}
-
-function diracPersistentSecurityStoreRecordJsonV326(table, value) {
-  const record = diracPersistentSecurityParseRecordJsonV326(value);
-  if (!record) throw new Error('DIRAC_PERSISTENT_SECURITY_RECORD_JSON_INVALID_V326');
-  return String(table || '') === DIRAC_PERSISTENT_BAN_TABLE ? JSON.stringify(record) : record;
-}
-
 
 async function readPersistentSecurityJson(securityKey) {
   const key = String(securityKey || '').trim();
@@ -2089,7 +2004,7 @@ async function readPersistentSecurityJson(securityKey) {
     const row = result.data[0] || {};
     const expiresAtMs = Date.parse(row.expires_at || '');
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return null;
-    return diracPersistentSecurityParseRecordJsonV326(row.record_json);
+    return row.record_json && typeof row.record_json === 'object' ? row.record_json : null;
   } catch (_) {
     return null;
   }
@@ -2103,11 +2018,16 @@ async function writePersistentSecurityJson(securityKey, record, blockedUntilMs =
   try {
     const now = Date.now();
     const safeRecord = record && typeof record === 'object' ? record : {};
-    const expiresAt = new Date(now + Math.max(60, Number(ttlSeconds || 60)) * 1000).toISOString();
+    const ttlExpiresAtMs = now + Math.max(60, Number(ttlSeconds || 60)) * 1000;
+    const requestedBlockedUntilMs = Number(blockedUntilMs || 0);
+    const blockedExpiresAtMs = Number.isFinite(requestedBlockedUntilMs) && requestedBlockedUntilMs > now
+      ? requestedBlockedUntilMs + 60 * 1000
+      : 0;
+    const expiresAt = new Date(Math.max(ttlExpiresAtMs, blockedExpiresAtMs)).toISOString();
     const payload = [{
       security_key: key,
-      record_json: diracPersistentSecurityStoreRecordJsonV326(table, safeRecord),
-      blocked_until_ms: Number(blockedUntilMs || 0),
+      record_json: safeRecord,
+      blocked_until_ms: requestedBlockedUntilMs,
       updated_at: new Date(now).toISOString(),
       expires_at: expiresAt
     }];
@@ -2143,12 +2063,9 @@ async function readPersistentSecurityJsonStrictV194(securityKey) {
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
       return { ok: true, found: false, record: null };
     }
-    const parsedRecord = diracPersistentSecurityParseRecordJsonV326(row.record_json);
-    if (!parsedRecord) return { ok: false, found: false, record: null };
-    const record = {
-      ...parsedRecord,
-      blocked_until_ms: Number(row.blocked_until_ms || parsedRecord.blocked_until_ms || 0)
-    };
+    const record = row.record_json && typeof row.record_json === 'object'
+      ? { ...row.record_json, blocked_until_ms: Number(row.blocked_until_ms || row.record_json.blocked_until_ms || 0) }
+      : { blocked_until_ms: Number(row.blocked_until_ms || 0) };
     return { ok: true, found: true, record };
   } catch (_) {
     return { ok: false, found: false, record: null };
@@ -2165,21 +2082,14 @@ async function readPersistentSecurityJsonManyStrictV194(securityKeys) {
     const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
     if (!result || result.ok !== true || !Array.isArray(result.data)) return { ok: false, records: [] };
     const now = Date.now();
-    const activeRows = result.data.filter((row) => {
+    const records = result.data.filter((row) => {
       const expiresAtMs = Date.parse(String(row && row.expires_at || ''));
       return row && (!Number.isFinite(expiresAtMs) || expiresAtMs > now);
-    });
-    if (activeRows.some((row) => !diracPersistentSecurityParseRecordJsonV326(row.record_json))) {
-      return { ok: false, records: [] };
-    }
-    const records = activeRows.map((row) => {
-      const record = diracPersistentSecurityParseRecordJsonV326(row.record_json);
-      return {
-        security_key: String(row.security_key || ''),
-        record,
-        blocked_until_ms: Number(row.blocked_until_ms || record.blocked_until_ms || 0)
-      };
-    });
+    }).map((row) => ({
+      security_key: String(row.security_key || ''),
+      record: row.record_json && typeof row.record_json === 'object' ? row.record_json : {},
+      blocked_until_ms: Number(row.blocked_until_ms || row.record_json && row.record_json.blocked_until_ms || 0)
+    }));
     return { ok: true, records };
   } catch (_) {
     return { ok: false, records: [] };
@@ -2225,9 +2135,8 @@ async function readPersistentLoginSecurityRecord(identity) {
     const expiresAtMs = Date.parse(row.expires_at || '');
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return null;
 
-    const parsedRecord = diracPersistentSecurityParseRecordJsonV326(row.record_json);
-    if (parsedRecord) {
-      const record = { ...parsedRecord };
+    if (row.record_json && typeof row.record_json === 'object') {
+      const record = { ...row.record_json };
       const topLevelBlockedUntilMs = Number(row.blocked_until_ms || 0);
       const nestedBlockedUntilMs = Number(record.blockedUntilMs || record.blocked_until_ms || 0);
       if (Number.isFinite(topLevelBlockedUntilMs) && topLevelBlockedUntilMs > nestedBlockedUntilMs) {
@@ -2266,11 +2175,10 @@ async function readPersistentLoginSecurityRecordStrictV320(identity) {
     if (Number.isFinite(expiresAtMs) && expiresAtMs > 0 && expiresAtMs <= Date.now()) {
       return { ok: true, found: false, record: null };
     }
-    const parsedRecord = diracPersistentSecurityParseRecordJsonV326(row.record_json);
-    if (!parsedRecord) {
+    if (!row.record_json || typeof row.record_json !== 'object' || Array.isArray(row.record_json)) {
       return { ok: false, found: false, record: null, reason: 'login_security_store_record_invalid' };
     }
-    const record = { ...parsedRecord };
+    const record = { ...row.record_json };
     const topLevelBlockedUntilMs = Number(row.blocked_until_ms || 0);
     const nestedBlockedUntilMs = Number(record.blockedUntilMs || record.blocked_until_ms || 0);
     if (!Number.isFinite(topLevelBlockedUntilMs) || topLevelBlockedUntilMs < 0
@@ -2295,10 +2203,7 @@ async function writePersistentLoginSecurityRecord(identity, record) {
     const expiresAt = new Date(now + LOGIN_SECURITY_PERSIST_TTL_SECONDS * 1000).toISOString();
     const payload = {
       security_key: identity.key,
-      record_json: diracPersistentSecurityStoreRecordJsonV326(
-        LOGIN_SECURITY_PERSIST_TABLE,
-        normalizeLoginSecurityRecord(record, now)
-      ),
+      record_json: normalizeLoginSecurityRecord(record, now),
       blocked_until_ms: Number(record && record.blockedUntilMs || 0),
       updated_at: new Date(now).toISOString(),
       expires_at: expiresAt
@@ -2397,18 +2302,7 @@ async function readDomainLoginRateRecord(identity) {
     const expiresAtMs = Date.parse(row.expires_at || '');
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return null;
 
-    const parsedRecord = diracPersistentSecurityParseRecordJsonV326(row.record_json);
-    if (!parsedRecord) {
-      const failClosedNow = Date.now();
-      return normalizeDomainLoginRateRecord({
-        count: DOMAIN_LOGIN_RATE_MAX,
-        windowStartMs: failClosedNow,
-        resetAtMs: failClosedNow + DOMAIN_LOGIN_RATE_WINDOW_MS,
-        blockedUntilMs: failClosedNow + DOMAIN_LOGIN_RATE_BLOCK_MS,
-        lastFailedAtMs: failClosedNow
-      }, failClosedNow);
-    }
-    const record = normalizeDomainLoginRateRecord(parsedRecord);
+    const record = normalizeDomainLoginRateRecord(row.record_json || {});
     diracBoundedMapSetV321(
       DOMAIN_LOGIN_RATE_STORE,
       key,
@@ -2444,7 +2338,7 @@ async function writeDomainLoginRateRecord(identity, record) {
     const ttlMs = Math.max(DOMAIN_LOGIN_RATE_WINDOW_MS, DOMAIN_LOGIN_RATE_BLOCK_MS, 60 * 1000) + 60 * 1000;
     const payload = [{
       security_key: key,
-      record_json: diracPersistentSecurityStoreRecordJsonV326(DOMAIN_LOGIN_RATE_TABLE, normalized),
+      record_json: normalized,
       blocked_until_ms: Number(normalized.blockedUntilMs || 0),
       updated_at: new Date(now).toISOString(),
       expires_at: new Date(now + ttlMs).toISOString()
@@ -2555,20 +2449,25 @@ function summarizeLoginSecurityUserAgent(userAgent) {
 }
 
 function formatDiracWibTime(ms) {
+  const inputMs = Number(ms || Date.now());
+  const date = new Date(Number.isFinite(inputMs) ? inputMs : Date.now());
   try {
-    return new Intl.DateTimeFormat('id-ID', {
+    const formatted = new Intl.DateTimeFormat('id-ID', {
       timeZone: 'Asia/Jakarta',
       day: '2-digit',
-      month: 'short',
+      month: 'long',
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
-      hour12: false,
-      timeZoneName: 'short'
-    }).format(new Date(Number(ms || Date.now())));
+      hour12: false
+    }).format(date).replace(/\./g, ':');
+    return /\bWIB\b/.test(formatted) ? formatted : formatted + ' WIB';
   } catch (_) {
-    return new Date(Number(ms || Date.now())).toISOString();
+    const shifted = new Date(date.getTime() + 7 * 60 * 60 * 1000);
+    const pad = (value) => String(value).padStart(2, '0');
+    return pad(shifted.getUTCDate()) + '/' + pad(shifted.getUTCMonth() + 1) + '/' + shifted.getUTCFullYear()
+      + ' ' + pad(shifted.getUTCHours()) + ':' + pad(shifted.getUTCMinutes()) + ':' + pad(shifted.getUTCSeconds()) + ' WIB';
   }
 }
 
@@ -2616,7 +2515,7 @@ async function domainRegister(req, res, preloadedBody) {
     body = preloadedBody || await readLimitedJsonBody(req, LOGIN_SECURITY_BODY_LIMIT_BYTES);
   } catch (error) {
     try {
-      console.error('[dirac-register-400-diagnostic]', {
+      void ('[dirac-register-400-diagnostic]') && console.error('[dirac-register-400-diagnostic]', {
         stage: 'body_reader',
         status: Number.isInteger(Number(error && error.statusCode))
           ? Number(error.statusCode)
@@ -2665,7 +2564,7 @@ async function domainRegister(req, res, preloadedBody) {
   });
   if (!registerGuard.ok) {
     try {
-      console.error('[dirac-register-400-diagnostic]', {
+      void ('[dirac-register-400-diagnostic]') && console.error('[dirac-register-400-diagnostic]', {
         stage: 'input_guard',
         status: Number.isInteger(Number(registerGuard.status))
           ? Number(registerGuard.status)
@@ -2683,7 +2582,7 @@ async function domainRegister(req, res, preloadedBody) {
 
   if (password.length < 6) {
     try {
-      console.error('[dirac-register-400-diagnostic]', {
+      void ('[dirac-register-400-diagnostic]') && console.error('[dirac-register-400-diagnostic]', {
         stage: 'password_minimum',
         status: 400,
         code: 'PASSWORD_MINIMUM_LENGTH'
@@ -2961,7 +2860,7 @@ function diracDeviceBootstrapDiagnosticV238(stage, details) {
       provider_identity_complete: source.providerIdentityComplete === true,
       jwt_provider_identity_match: source.jwtProviderIdentityMatch === true
     };
-    console.error('[dirac-device-bootstrap-debug-v238]', JSON.stringify(payload));
+    void ('[dirac-device-bootstrap-debug-v238]') && console.error('[dirac-device-bootstrap-debug-v238]', JSON.stringify(payload));
     return true;
   } catch (diagnosticErrorV238) {
     try {
@@ -7288,7 +7187,7 @@ function customerSecuritySafeCustomerName(value) {
   const raw = String(value || '').trim();
   const fromEmail = raw.includes('@') ? raw.split('@')[0] : raw;
   const cleaned = fromEmail.replace(/[^a-zA-Z0-9À-ž ._'-]/g, ' ').replace(/\s+/g, ' ').trim();
-  return (cleaned || 'Customer DiracGroup').slice(0, 120);
+  return (cleaned || 'Customer Dirac Group').slice(0, 120);
 }
 
 async function customerSecurityFindOrCreateCustomer({ email, fullName, phone }) {
@@ -7302,7 +7201,7 @@ async function customerSecurityFindOrCreateCustomer({ email, fullName, phone }) 
   }
 
   const body = {
-    name: fullName || 'Customer DiracGroup',
+    name: fullName || 'Customer Dirac Group',
     email
   };
   if (phone) body.phone = phone;
@@ -7504,7 +7403,7 @@ function customerSecuritySessionStoreDiagnosticV218(req, stage, result, extra = 
     ctx.customerSessionStoreDebugV218 = diagnostic;
     diracCentralEmitDebugV211(ctx, 'customer_session_store_failure', diagnostic);
   } else {
-    try { console.error('[customer-session-store-debug-v218]', JSON.stringify(diagnostic)); } catch (_) {}
+    try { void ('[customer-session-store-debug-v218]') && console.error('[customer-session-store-debug-v218]', JSON.stringify(diagnostic)); } catch (_) {}
   }
   return diagnostic;
 }
@@ -7960,7 +7859,8 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
         encodeURIComponent('id,customer_id,session_token_hash,status,security_epoch,revoked_at') +
         '&customer_id=eq.' + encodeURIComponent(customerId) +
         '&id=eq.' + encodeURIComponent(String(rows[0].id)) +
-        '&security_epoch=eq.' + encodeURIComponent(String(previousSecurityEpoch)), {
+        '&security_epoch=eq.' + encodeURIComponent(String(previousSecurityEpoch)) +
+        (issuancePermit ? '' : '&session_token_hash=eq.' + encodeURIComponent(fingerprint.session_token_hash) + '&status=eq.active&revoked_at=is.null'), {
         method: 'PATCH',
         auth: 'service',
         prefer: 'return=representation',
@@ -9437,7 +9337,7 @@ function customerSecurityValidatePersistentAccessBlockRowV325(row, options = {})
       || Object.keys(row).sort().join(',') !== 'blocked_until_ms,expires_at,record_json,security_key') {
     return null;
   }
-  const record = diracPersistentSecurityParseRecordJsonV326(row.record_json);
+  const record = row.record_json;
   if (!record || typeof record !== 'object' || Array.isArray(record)
       || Object.keys(record).sort().join(',') !== CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_RECORD_KEYS_V325.join(',')) {
     return null;
@@ -9693,7 +9593,7 @@ async function customerSecurityCreatePersistentAccessBlockV325(identity, action,
   );
   const body = storageKeys.map((securityKey) => ({
     security_key: securityKey,
-    record_json: diracPersistentSecurityStoreRecordJsonV326(DIRAC_PERSISTENT_BAN_TABLE, record),
+    record_json: record,
     blocked_until_ms: safeBlockedUntilMs,
     expires_at: new Date(expiresAtMs).toISOString()
   }));
@@ -9757,7 +9657,7 @@ async function customerSecurityRevokePersistentAccessBlockEventV325(row, admin) 
     auth: 'service',
     prefer: 'return=representation',
     body: {
-      record_json: diracPersistentSecurityStoreRecordJsonV326(DIRAC_PERSISTENT_BAN_TABLE, nextRecord),
+      record_json: nextRecord,
       blocked_until_ms: nowMs
     }
   }).catch(() => null);
@@ -10811,10 +10711,10 @@ function customerSecurityBuildEncryptedRecoveryPdfV156(input) {
   const userValue = customerSecurityRecoveryPdfComputeUV156(fileKey, documentId);
 
   let content = '';
-  content += customerSecurityRecoveryPdfTextLineV156('DIRAC GROUP BY CV MULTI USAHA MANDIRI', 72, 760, 16, 'F1');
+  content += customerSecurityRecoveryPdfTextLineV156('DIRACGROUP SECURE RECOVERY', 72, 760, 16, 'F1');
   content += customerSecurityRecoveryPdfTextLineV156('Dokumen Pemulihan Passkey Terenkripsi', 72, 738, 12, 'F1');
   content += customerSecurityRecoveryPdfTextLineV156('Request ID: ' + String(input.requestId || ''), 72, 704, 9, 'F2');
-  content += customerSecurityRecoveryPdfTextLineV156('Berlaku sampai: ' + diracDisplayWibV326(input.expiresAt), 72, 690, 9, 'F2');
+  content += customerSecurityRecoveryPdfTextLineV156('Berlaku sampai: ' + String(input.expiresAt || ''), 72, 690, 9, 'F2');
   content += customerSecurityRecoveryPdfTextLineV156('Tujuan: register_new_passkey', 72, 676, 9, 'F2');
   content += customerSecurityRecoveryPdfTextLineV156('Kode recovery di bawah ini hanya dapat digunakan satu kali.', 72, 650, 9, 'F2');
   content += customerSecurityRecoveryPdfTextLineV156('Recovery Code:', 72, 622, 10, 'F1');
@@ -10824,7 +10724,7 @@ function customerSecurityBuildEncryptedRecoveryPdfV156(input) {
     y -= 11;
     if (y < 70) break;
   }
-  content += customerSecurityRecoveryPdfTextLineV156('Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan Dirac Group By CV Multi Usaha Mandiri.', 72, 48, 8, 'F2');
+  content += customerSecurityRecoveryPdfTextLineV156('Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan Dirac Group melalui support@diracgroup.store atau +62 878-9252-3968.', 72, 48, 8, 'F2');
 
   const encryptedContent = customerSecurityRecoveryPdfEncryptObjectV156(fileKey, 4, 0, Buffer.from(content, 'binary'));
   const objects = [];
@@ -11063,135 +10963,13 @@ function customerSecurityRecoveryDotStuff(value) {
   return String(value || '').replace(/\r?\n/g, '\r\n').replace(/^\./gm, '..');
 }
 
-function diracDisplayWibV326(value) {
-  const date = value instanceof Date
-    ? new Date(value.getTime())
-    : typeof value === 'number' && Number.isFinite(value)
-      ? new Date(value)
-      : new Date(String(value || ''));
-  if (!Number.isFinite(date.getTime())) return 'Waktu tidak tersedia';
-  const shifted = new Date(date.getTime() + (7 * 60 * 60 * 1000));
-  const months = Object.freeze([
-    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
-  ]);
-  const two = (number) => String(number).padStart(2, '0');
-  return two(shifted.getUTCDate()) + ' ' + months[shifted.getUTCMonth()] + ' '
-    + shifted.getUTCFullYear() + ', ' + two(shifted.getUTCHours()) + '.'
-    + two(shifted.getUTCMinutes()) + '.' + two(shifted.getUTCSeconds()) + ' WIB';
-}
-
-function diracCorporateEmailEscapeHtmlV326(value) {
-  return String(value || '').replace(/[&<>"']/g, (character) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[character]));
-}
-
-const DIRAC_CORPORATE_EMAIL_TRUSTED_BODY_V326 = Symbol('dirac-corporate-email-trusted-body-v326');
-
-function diracCorporateEmailTrustedBodyV326(bodyHtml) {
-  const html = String(bodyHtml || '');
-  if (!html || Buffer.byteLength(html, 'utf8') > 96 * 1024) {
-    throw new Error('DIRAC_CORPORATE_EMAIL_BODY_INVALID_V326');
-  }
-  const tags = [];
-  let tagStart = -1;
-  let quote = '';
-  let malformedTag = false;
-  for (let index = 0; index < html.length; index += 1) {
-    const character = html[index];
-    if (tagStart < 0) {
-      if (character === '<') tagStart = index;
-      continue;
-    }
-    if (quote) {
-      if (character === quote) quote = '';
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-    } else if (character === '<') {
-      malformedTag = true;
-      break;
-    } else if (character === '>') {
-      tags.push(html.slice(tagStart, index + 1));
-      tagStart = -1;
-    }
-  }
-  if (tagStart >= 0 || quote) malformedTag = true;
-  const normalizedTags = tags.map((tag) => {
-    let normalized = tag;
-    for (let pass = 0; pass < 3; pass += 1) {
-      const next = normalized
-        .replace(/&#x([0-9a-f]{1,6});?/gi, (_, hex) => {
-          const codePoint = Number.parseInt(hex, 16);
-          return Number.isSafeInteger(codePoint) && codePoint <= 0x10ffff
-            ? String.fromCodePoint(codePoint)
-            : '\ufffd';
-        })
-        .replace(/&#([0-9]{1,7});?/g, (_, decimal) => {
-          const codePoint = Number.parseInt(decimal, 10);
-          return Number.isSafeInteger(codePoint) && codePoint <= 0x10ffff
-            ? String.fromCodePoint(codePoint)
-            : '\ufffd';
-        })
-        .replace(/&(amp|colon|tab|newline);/gi, (_, name) => ({
-          amp: '&', colon: ':', tab: '\t', newline: '\n'
-        }[String(name).toLowerCase()]));
-      if (next === normalized) break;
-      normalized = next;
-    }
-    return normalized.replace(/[\u0000-\u0020\u007f-\u009f]/g, '').toLowerCase();
-  });
-  if (malformedTag || /<(?:script|iframe|object|embed|form|meta|link|base|svg)\b/i.test(html)
-      || tags.some((tag) => /(?:\s|\/)on[a-z]+\s*=/i.test(tag))
-      || normalizedTags.some((tag) => /(?:(?:java|vb)script:|data:text\/html|expression\()/.test(tag))) {
-    throw new Error('DIRAC_CORPORATE_EMAIL_BODY_INVALID_V326');
-  }
-  return Object.freeze({ token: DIRAC_CORPORATE_EMAIL_TRUSTED_BODY_V326, html });
-}
-
-function diracCorporateEmailShellV326(title, trustedBody, options = {}) {
-  if (!trustedBody || trustedBody.token !== DIRAC_CORPORATE_EMAIL_TRUSTED_BODY_V326
-      || typeof trustedBody.html !== 'string') {
-    throw new Error('DIRAC_CORPORATE_EMAIL_BODY_NOT_TRUSTED_V326');
-  }
-  const safeTitle = diracCorporateEmailEscapeHtmlV326(title);
-  const safeEyebrow = diracCorporateEmailEscapeHtmlV326(options.eyebrow || 'DIRAC GROUP');
-  const supportEmail = 'support@diracgroup.store';
-  const companyEmail = 'companydirac@gmail.com';
-  const whatsappNumber = '+62 878-9252-3968';
-  const whatsappUrl = 'https://wa.me/6287892523968';
-  const logoUrl = diracCorporateEmailEscapeHtmlV326(diracRoleOriginV250('www') + '/umroh.webp');
-  return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-    + '<meta name="color-scheme" content="dark"><meta name="supported-color-schemes" content="dark">'
-    + '<title>' + safeTitle + '</title></head>'
-    + '<body style="margin:0;padding:0;background:#111827;font-family:Arial,Helvetica,sans-serif;color:#f8fafc">'
-    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#111827" style="width:100%;background:#111827;padding:28px 12px">'
-    + '<tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1f2937" style="width:100%;max-width:680px;background:#1f2937;border:1px solid #475569;border-radius:20px;overflow:hidden">'
-    + '<tr><td align="center" style="padding:30px 28px 24px;background:#273449;border-bottom:1px solid #475569">'
-    + '<img src="' + logoUrl + '" width="76" alt="Dirac Group By CV Multi Usaha Mandiri" style="display:block;width:76px;max-width:76px;height:auto;margin:0 auto 16px;border:0">'
-    + '<div style="font-size:12px;line-height:1.5;letter-spacing:.16em;font-weight:800;color:#cbd5e1">' + safeEyebrow + '</div>'
-    + '<h1 style="margin:8px 0 0;font-size:26px;line-height:1.3;color:#ffffff">' + safeTitle + '</h1>'
-    + '</td></tr><tr><td style="padding:28px;color:#f8fafc;font-size:14px;line-height:1.7">' + trustedBody.html + '</td></tr>'
-    + '<tr><td align="center" style="padding:24px 28px;background:#182233;border-top:1px solid #475569;color:#cbd5e1;font-size:12px;line-height:1.8">'
-    + '<img src="' + logoUrl + '" width="44" alt="Dirac Group By CV Multi Usaha Mandiri" style="display:block;width:44px;max-width:44px;height:auto;margin:0 auto 10px;border:0">'
-    + '<strong style="color:#ffffff">Dirac Group By CV Multi Usaha Mandiri</strong><br>'
-    + '<a href="mailto:' + supportEmail + '" style="color:#dbeafe;text-decoration:none">' + supportEmail + '</a><br>'
-    + '<a href="mailto:' + companyEmail + '" style="color:#dbeafe;text-decoration:none">' + companyEmail + '</a> &nbsp;•&nbsp; '
-    + '<a href="' + whatsappUrl + '" style="color:#dbeafe;text-decoration:none">' + whatsappNumber + '</a><br>'
-    + 'Malang, Jawa Timur, Indonesia<br>'
-    + 'Email otomatis sistem keamanan. Jangan membagikan password, Passkey, token, atau kode rahasia kepada siapa pun.'
-    + '</td></tr></table></td></tr></table></body></html>';
-}
-
 
 function customerSecurityRecoveryEmailTextV156(context = {}) {
   const requestId = String(context.requestId || '');
-  const expiresAt = diracDisplayWibV326(context.expiresAt);
+  const expiresAt = String(context.expiresAt || '');
   const emailPdfCode = String(context.emailPdfCode || '').padStart(2, '0').slice(-2);
   return [
-    'DIRAC GROUP BY CV MULTI USAHA MANDIRI · SECURE RECOVERY',
+    'DIRACGROUP SECURE RECOVERY',
     '',
     'Dokumen pemulihan Passkey terenkripsi telah dibuat untuk akun Anda.',
     '',
@@ -11203,33 +10981,37 @@ function customerSecurityRecoveryEmailTextV156(context = {}) {
     'Password PDF = kode website + 2 digit kode email + password akun Anda. Ketik berurutan tanpa spasi.',
     '',
     'Jangan kirimkan PDF, kode website, atau kode email ini kepada pihak lain.',
-    'Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan Dirac Group By CV Multi Usaha Mandiri.'
+    'Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan Dirac Group melalui support@diracgroup.store atau +62 878-9252-3968.'
   ].join('\n');
 }
 
 function customerSecurityRecoveryEmailHtmlV156(context = {}) {
-  const requestId = diracCorporateEmailEscapeHtmlV326(context.requestId || '');
-  const expiresAt = diracCorporateEmailEscapeHtmlV326(diracDisplayWibV326(context.expiresAt));
+  const requestId = String(context.requestId || '').replace(/[<>&]/g, '');
+  const expiresAt = String(context.expiresAt || '').replace(/[<>&]/g, '');
   const emailPdfCode = String(context.emailPdfCode || '').padStart(2, '0').slice(-2).replace(/[^0-9]/g, '');
-  const body = '<p style="margin:0 0 14px;color:#f8fafc">Permintaan pemulihan Passkey Anda telah diproses. File PDF terenkripsi terlampir pada email ini.</p>'
-    + '<div style="background:#111827;border:1px solid #64748b;border-radius:14px;padding:16px;margin:18px 0">'
-    + '<div style="font-size:12px;color:#cbd5e1;font-weight:700;text-transform:uppercase;letter-spacing:.08em">Kode 2 digit email</div>'
-    + '<div style="font-size:34px;letter-spacing:.22em;font-weight:800;color:#ffffff;margin-top:6px">' + emailPdfCode + '</div>'
-    + '<div style="font-size:12px;color:#cbd5e1;margin-top:6px">Gabungkan setelah kode website, lalu lanjutkan dengan password akun Anda.</div>'
+  return '<div style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#111827">'
+    + '<div style="max-width:640px;margin:0 auto;padding:28px 16px">'
+    + '<div style="background:#0f172a;color:#ffffff;border-radius:18px 18px 0 0;padding:22px 24px">'
+    + '<div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#93c5fd">Dirac Group By CV Multi Usaha Mandiri — Secure Recovery</div>'
+    + '<div style="font-size:24px;font-weight:700;margin-top:8px">Dokumen Pemulihan Passkey</div>'
+    + '<div style="font-size:13px;color:#cbd5e1;margin-top:6px">File PDF terenkripsi terlampir pada email ini.</div>'
+    + '</div>'
+    + '<div style="background:#ffffff;border:1px solid #e5e7eb;border-top:0;border-radius:0 0 18px 18px;padding:24px">'
+    + '<p style="margin:0 0 14px;line-height:1.6">Permintaan pemulihan Passkey Anda telah diproses. Lampiran PDF hanya dapat dibuka dengan kombinasi password yang benar.</p>'
+    + '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;padding:16px;margin:18px 0">'
+    + '<div style="font-size:12px;color:#1d4ed8;font-weight:700;text-transform:uppercase;letter-spacing:.08em">Kode 2 digit email</div>'
+    + '<div style="font-size:34px;letter-spacing:.22em;font-weight:800;color:#0f172a;margin-top:6px">' + emailPdfCode + '</div>'
+    + '<div style="font-size:12px;color:#475569;margin-top:6px">Gabungkan setelah kode website, lalu lanjutkan dengan password akun Anda.</div>'
     + '</div>'
     + '<table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px">'
-    + '<tr><td style="padding:10px;border-bottom:1px solid #475569;color:#cbd5e1">Request ID</td><td style="padding:10px;border-bottom:1px solid #475569;color:#ffffff;font-weight:700;text-align:right;word-break:break-all">' + requestId + '</td></tr>'
-    + '<tr><td style="padding:10px;border-bottom:1px solid #475569;color:#cbd5e1">Berlaku sampai</td><td style="padding:10px;border-bottom:1px solid #475569;color:#ffffff;font-weight:700;text-align:right">' + expiresAt + '</td></tr>'
+    + '<tr><td style="padding:10px;border-bottom:1px solid #e5e7eb;color:#64748b">Request ID</td><td style="padding:10px;border-bottom:1px solid #e5e7eb;font-weight:700;text-align:right">' + requestId + '</td></tr>'
+    + '<tr><td style="padding:10px;border-bottom:1px solid #e5e7eb;color:#64748b">Berlaku sampai</td><td style="padding:10px;border-bottom:1px solid #e5e7eb;font-weight:700;text-align:right">' + expiresAt + '</td></tr>'
     + '</table>'
-    + '<div style="background:#273449;border:1px solid #64748b;border-radius:14px;padding:14px;line-height:1.55;font-size:13px;color:#e2e8f0">'
+    + '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:14px;line-height:1.55;font-size:13px;color:#7c2d12">'
     + '<b>Cara membuka PDF:</b><br>Password PDF = kode website + 2 digit kode email + password akun Anda. Ketik berurutan tanpa spasi. Jangan bagikan kode atau file ini kepada siapa pun.'
     + '</div>'
-    + '<p style="font-size:12px;color:#cbd5e1;margin-top:18px;line-height:1.6">Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan resmi.</p>';
-  return diracCorporateEmailShellV326(
-    'Dokumen Pemulihan Passkey',
-    diracCorporateEmailTrustedBodyV326(body),
-    { eyebrow: 'DIRAC SECURE RECOVERY' }
-  );
+    + '<p style="font-size:12px;color:#64748b;margin-top:18px;line-height:1.6">Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan Dirac Group melalui support@diracgroup.store atau +62 878-9252-3968.</p>'
+    + '</div></div></div>';
 }
 
 async function customerSecuritySmtpRead(socket) {
@@ -11271,293 +11053,6 @@ async function customerSecuritySmtpCommand(socket, command, allowed) {
   return response;
 }
 
-const DIRAC_USER_SECURITY_EMAIL_EVENTS_V326 = Object.freeze({
-  passkey_added: Object.freeze({
-    subject: 'Passkey berhasil ditambahkan',
-    title: 'Passkey baru ditambahkan',
-    intro: 'Passkey baru telah berhasil ditambahkan ke akun Anda.'
-  }),
-  passkey_replaced: Object.freeze({
-    subject: 'Passkey berhasil diganti',
-    title: 'Passkey berhasil diganti',
-    intro: 'Passkey lama telah diganti dengan Passkey baru melalui alur pemulihan terverifikasi.'
-  }),
-  password_changed: Object.freeze({
-    subject: 'Password berhasil diubah',
-    title: 'Password berhasil diubah',
-    intro: 'Password akun Anda telah berhasil diubah melalui alur keamanan terverifikasi.'
-  })
-});
-
-function diracUserSecurityEmailCleanLabelV326(value, fallback) {
-  const clean = String(value || '')
-    .normalize('NFKC')
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 96);
-  return clean || String(fallback || '').slice(0, 96);
-}
-
-function diracUserSecurityGoogleSmtpConfigV326(timeoutMs) {
-  const host = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim().toLowerCase();
-  const port = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 465);
-  const secure = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || 'true').trim().toLowerCase();
-  const rawUser = String(process.env.DIRAC_USER_SECURITY_SMTP_USER || '').trim();
-  const user = diracSecurityAlertEmailV320(rawUser);
-  const appPassword = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
-  if (host !== 'smtp.gmail.com'
-      || port !== 465
-      || secure !== 'true'
-      || rawUser.toLowerCase() !== user
-      || !user
-      || !/^[A-Za-z0-9]{16,128}$/.test(appPassword)
-      || appPassword.toLowerCase().includes('replace')) return null;
-  return Object.freeze({ host, port, secure: true, user, appPassword, timeoutMs });
-}
-
-function diracUserSecurityEmailConfigV326() {
-  if (String(process.env.DIRAC_USER_SECURITY_EMAIL_ENABLED || '').trim().toLowerCase() !== 'true') {
-    return Object.freeze({ enabled: false, ok: false });
-  }
-  const apiKey = String(process.env.DIRAC_USER_SECURITY_RESEND_API_KEY || '').trim();
-  const rawFromEmail = String(process.env.DIRAC_USER_SECURITY_RESEND_FROM_EMAIL || '').trim();
-  const fromEmail = diracSecurityAlertEmailV320(rawFromEmail);
-  const rawReplyTo = String(process.env.DIRAC_USER_SECURITY_REPLY_TO || '').trim();
-  const replyTo = diracSecurityAlertEmailV320(rawReplyTo);
-  const timeoutMs = Math.max(2000, Math.min(10000,
-    Number(process.env.DIRAC_USER_SECURITY_TIMEOUT_MS || 7000) || 7000));
-  if (!/^re_[A-Za-z0-9_-]{16,500}$/.test(apiKey)
-      || apiKey.toLowerCase().includes('replace')
-      || rawFromEmail.toLowerCase() !== fromEmail
-      || !fromEmail
-      || rawReplyTo.toLowerCase() !== replyTo
-      || !replyTo) {
-    return Object.freeze({ enabled: true, ok: false });
-  }
-  return Object.freeze({
-    enabled: true,
-    ok: true,
-    apiKey,
-    fromEmail,
-    replyTo,
-    timeoutMs,
-    smtp: diracUserSecurityGoogleSmtpConfigV326(timeoutMs)
-  });
-}
-
-function diracUserSecurityEmailContextPassedV326(req, eventType) {
-  if (!new Set(['passkey_added', 'passkey_replaced']).has(String(eventType || ''))) return false;
-  const ctx = typeof diracCentralCurrentContextV149 === 'function'
-    ? diracCentralCurrentContextV149()
-    : null;
-  return Boolean(ctx
-    && ctx.req === req
-    && new Set(['dirac_mfa_passkey_verify', 'domain_mfa_passkey_verify']).has(String(ctx.action || ''))
-    && req
-    && req.__diracCentralSecurityGuardPassedV146 === true
-    && ctx.centralGuardFullyPassedV211 === true
-    && typeof diracCentralHandlerContextFullyPassedV211 === 'function'
-    && diracCentralHandlerContextFullyPassedV211(ctx, req) === true);
-}
-
-function diracUserSecurityEmailBuildV326(input) {
-  const source = input && typeof input === 'object' ? input : {};
-  const eventType = String(source.eventType || '');
-  const descriptor = DIRAC_USER_SECURITY_EMAIL_EVENTS_V326[eventType];
-  const recipient = diracSecurityAlertEmailV320(source.recipient || '');
-  const occurredAt = source.occurredAt instanceof Date
-    ? new Date(source.occurredAt.getTime())
-    : typeof source.occurredAt === 'number' && Number.isFinite(source.occurredAt)
-      ? new Date(source.occurredAt)
-      : new Date(String(source.occurredAt || ''));
-  const eventId = String(source.eventId || '');
-  if (!descriptor
-      || !recipient
-      || !Number.isFinite(occurredAt.getTime())
-      || Buffer.byteLength(eventId, 'utf8') < 8
-      || Buffer.byteLength(eventId, 'utf8') > 2048) return null;
-
-  const occurredAtWib = diracDisplayWibV326(occurredAt);
-  const device = diracUserSecurityEmailCleanLabelV326(source.device, 'Perangkat tidak dikenali');
-  const browser = diracUserSecurityEmailCleanLabelV326(source.browser, 'Browser tidak dikenali');
-  const safeOccurredAtWib = diracCorporateEmailEscapeHtmlV326(occurredAtWib);
-  const safeDevice = diracCorporateEmailEscapeHtmlV326(device);
-  const safeBrowser = diracCorporateEmailEscapeHtmlV326(browser);
-  const innerHtml = '<p style="margin:0 0 16px;color:#f8fafc">'
-    + descriptor.intro + '</p>'
-    + '<div style="background:#111827;border:1px solid #64748b;border-radius:14px;padding:16px;margin:18px 0">'
-    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;font-size:14px">'
-    + '<tr><td style="padding:9px 0;color:#cbd5e1;border-bottom:1px solid #334155">Waktu</td><td style="padding:9px 0;color:#ffffff;border-bottom:1px solid #334155;text-align:right;font-weight:700">' + safeOccurredAtWib + '</td></tr>'
-    + '<tr><td style="padding:9px 0;color:#cbd5e1;border-bottom:1px solid #334155">Perangkat</td><td style="padding:9px 0;color:#ffffff;border-bottom:1px solid #334155;text-align:right;font-weight:700">' + safeDevice + '</td></tr>'
-    + '<tr><td style="padding:9px 0;color:#cbd5e1">Browser</td><td style="padding:9px 0;color:#ffffff;text-align:right;font-weight:700">' + safeBrowser + '</td></tr>'
-    + '</table></div>'
-    + '<div style="background:#273449;border:1px solid #64748b;border-radius:14px;padding:14px;color:#e2e8f0;font-size:13px;line-height:1.6">'
-    + '<b>Bukan Anda?</b><br>Segera hubungi bantuan resmi Dirac Group By CV Multi Usaha Mandiri dan amankan akun Anda. Jangan pernah membagikan password, Passkey, token, atau kode rahasia.</div>';
-  const html = diracCorporateEmailShellV326(
-    descriptor.title,
-    diracCorporateEmailTrustedBodyV326(innerHtml),
-    { eyebrow: 'DIRAC USER SECURITY' }
-  );
-  const text = [
-    'DIRAC USER SECURITY',
-    '',
-    descriptor.intro,
-    '',
-    'Waktu: ' + occurredAtWib,
-    'Perangkat: ' + device,
-    'Browser: ' + browser,
-    '',
-    'Jika ini bukan Anda, segera hubungi bantuan resmi Dirac Group By CV Multi Usaha Mandiri dan amankan akun Anda.',
-    'Jangan pernah membagikan password, Passkey, token, atau kode rahasia.',
-    '',
-    'Dirac Group By CV Multi Usaha Mandiri'
-  ].join('\n');
-  const idempotencyKey = 'dirac-user-security-'
-    + crypto.createHash('sha256')
-      .update('dirac-user-security-email-v326\n' + eventType + '\n' + recipient + '\n' + eventId)
-      .digest('hex')
-      .slice(0, 48);
-  return Object.freeze({
-    recipient,
-    subject: descriptor.subject,
-    text,
-    html,
-    idempotencyKey,
-    messageIdHash: crypto.createHash('sha256')
-      .update('dirac-user-security-message-v326\n' + eventType + '\n' + recipient + '\n' + eventId)
-      .digest('hex')
-  });
-}
-
-function diracUserSecurityEmailMimeV326(message, config) {
-  const boundary = 'dirac-user-security-' + crypto.randomBytes(16).toString('hex');
-  const senderDomain = String(config.smtp.user).split('@')[1] || 'gmail.com';
-  return [
-    'From: ' + diracSecurityAlertMimeHeaderV320('Dirac Group By CV Multi Usaha Mandiri') + ' <' + config.smtp.user + '>',
-    'Reply-To: ' + config.replyTo,
-    'To: ' + message.recipient,
-    'Subject: ' + diracSecurityAlertMimeHeaderV320(message.subject),
-    'Date: ' + new Date().toUTCString(),
-    'Message-ID: <' + message.messageIdHash + '@' + senderDomain + '>',
-    'Auto-Submitted: auto-generated',
-    'X-Dirac-User-Security: v326',
-    'MIME-Version: 1.0',
-    'Content-Type: multipart/alternative; boundary="' + boundary + '"',
-    '',
-    '--' + boundary,
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    diracSecurityAlertBase64LinesV320(message.text),
-    '--' + boundary,
-    'Content-Type: text/html; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    diracSecurityAlertBase64LinesV320(message.html),
-    '--' + boundary + '--',
-    ''
-  ].join('\r\n');
-}
-
-async function diracUserSecurityEmailGoogleSmtpFallbackV326(message, config) {
-  if (!config.smtp) return { ok: false, provider: 'google_smtp', code: 'USER_SECURITY_SMTP_NOT_CONFIGURED' };
-  let socket = null;
-  let reader = null;
-  let authBytes = null;
-  let dataSubmitted = false;
-  const deadlineMs = Date.now() + config.timeoutMs;
-  try {
-    socket = await diracCentralOpenSmtpSocketV230(config.smtp.host, config.smtp.port, true, config.timeoutMs);
-    reader = diracSecurityAlertSmtpReaderV321(socket);
-    if (typeof socket.setTimeout === 'function') socket.setTimeout(Math.max(1, deadlineMs - Date.now()));
-    await diracSecurityAlertSmtpCommandV320(socket, reader, null, 220, deadlineMs);
-    await diracSecurityAlertSmtpCommandV320(socket, reader, 'EHLO ' + diracBaseDomainV250(), 250, deadlineMs);
-    authBytes = Buffer.from('\u0000' + config.smtp.user + '\u0000' + config.smtp.appPassword, 'utf8');
-    await diracSecurityAlertSmtpCommandV320(socket, reader, 'AUTH PLAIN ' + authBytes.toString('base64'), 235, deadlineMs);
-    await diracSecurityAlertSmtpCommandV320(socket, reader, 'MAIL FROM:<' + config.smtp.user + '>', 250, deadlineMs);
-    await diracSecurityAlertSmtpCommandV320(socket, reader, 'RCPT TO:<' + message.recipient + '>', [250, 251], deadlineMs);
-    await diracSecurityAlertSmtpCommandV320(socket, reader, 'DATA', 354, deadlineMs);
-    dataSubmitted = true;
-    try {
-      await diracSecurityAlertSmtpCommandV320(
-        socket,
-        reader,
-        diracSecurityAlertDotStuffV320(diracUserSecurityEmailMimeV326(message, config)) + '\r\n.',
-        250,
-        deadlineMs
-      );
-    } catch (error) {
-      if (error && typeof error === 'object' && !Number(error.smtpCode || 0) && error.smtpWriteCompleted === true) {
-        error.deliveryAmbiguous = true;
-      }
-      throw error;
-    }
-    try { socket.write('QUIT\r\n'); } catch (_) {}
-    return { ok: true, provider: 'google_smtp' };
-  } catch (error) {
-    return {
-      ok: false,
-      provider: 'google_smtp',
-      code: error && error.deliveryAmbiguous === true
-        ? 'USER_SECURITY_SMTP_DELIVERY_AMBIGUOUS'
-        : 'USER_SECURITY_SMTP_DELIVERY_FAILED',
-      data_submitted: dataSubmitted
-    };
-  } finally {
-    if (authBytes) authBytes.fill(0);
-    if (reader) reader.close();
-    try { if (socket) socket.end(); } catch (_) {}
-    try { if (socket) socket.destroy(); } catch (_) {}
-  }
-}
-
-async function diracUserSecurityEmailSendV326(input) {
-  const source = input && typeof input === 'object' ? input : {};
-  const config = diracUserSecurityEmailConfigV326();
-  if (!config.enabled) return { ok: false, provider: 'none', code: 'USER_SECURITY_EMAIL_DISABLED' };
-  if (!config.ok) return { ok: false, provider: 'none', code: 'USER_SECURITY_EMAIL_CONFIG_INVALID' };
-  if (!diracUserSecurityEmailContextPassedV326(source.req, source.eventType)) {
-    return { ok: false, provider: 'none', code: 'USER_SECURITY_EMAIL_GUARD_CONTEXT_INVALID' };
-  }
-  const message = diracUserSecurityEmailBuildV326(source);
-  if (!message) return { ok: false, provider: 'none', code: 'USER_SECURITY_EMAIL_EVENT_INVALID' };
-
-  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timer = controller ? setTimeout(() => controller.abort(), config.timeoutMs) : null;
-  try {
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + config.apiKey,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'Idempotency-Key': message.idempotencyKey
-      },
-      body: JSON.stringify({
-        from: 'Dirac Group By CV Multi Usaha Mandiri <' + config.fromEmail + '>',
-        to: [message.recipient],
-        subject: message.subject,
-        text: message.text,
-        html: message.html,
-        reply_to: config.replyTo
-      }),
-      redirect: 'error',
-      signal: controller ? controller.signal : undefined
-    });
-    await diracReadResponseTextLimitedV210(response, 16 * 1024).catch(() => '');
-    if (response.ok) return { ok: true, provider: 'resend' };
-    if (response.status === 429) {
-      return await diracUserSecurityEmailGoogleSmtpFallbackV326(message, config);
-    }
-    return { ok: false, provider: 'resend', code: 'USER_SECURITY_RESEND_DELIVERY_FAILED' };
-  } catch (_) {
-    return { ok: false, provider: 'resend', code: 'USER_SECURITY_RESEND_UNREACHABLE' };
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 async function customerSecuritySendRecoveryEmailViaSmtp(to, fileName, fileBuffer, context = {}) {
   const config = customerSecurityRecoverySmtpConfig();
   if (!config) return { ok: false, status: 503, code: 'RECOVERY_SMTP_NOT_CONFIGURED', message: 'SMTP recovery belum dikonfigurasi.' };
@@ -11567,11 +11062,11 @@ async function customerSecuritySendRecoveryEmailViaSmtp(to, fileName, fileBuffer
   const fromEmail = customerSecurityRecoveryEmailAddress(from);
   if (!isValidAuthEmail(fromEmail)) return { ok: false, status: 503, code: 'RECOVERY_SMTP_FROM_INVALID', message: 'Email pengirim recovery tidak valid.' };
 
-  const subject = 'Dirac Group By CV Multi Usaha Mandiri - PDF Pemulihan Passkey';
+  const subject = 'Dirac Group By CV Multi Usaha Mandiri — Secure Recovery - PDF Pemulihan Passkey';
   const text = [
     'File recovery Passkey terenkripsi terlampir.',
     'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + diracDisplayWibV326(context.expiresAt),
+    'Berlaku sampai: ' + String(context.expiresAt || ''),
     'Jangan kirimkan file ini ke pihak lain. Kata sandi file hanya diberikan owner setelah verifikasi SOP.'
   ].join('\r\n\r\n');
   const html = customerSecurityRecoveryEmailHtmlV156(context);
@@ -11636,11 +11131,11 @@ async function customerSecuritySendLostPasskeyRecoveryEmail(to, fileName, fileBu
     return customerSecuritySendRecoveryEmailViaSmtp(email, fileName, fileBuffer, context);
   }
   const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Group By CV Multi Usaha Mandiri <no-reply@' + diracBaseDomainV250() + '>')).trim();
-  const subject = 'Dirac Group By CV Multi Usaha Mandiri - PDF Pemulihan Passkey';
+  const subject = 'Dirac Group By CV Multi Usaha Mandiri — Secure Recovery - PDF Pemulihan Passkey';
   const text = [
     'File recovery Passkey terenkripsi terlampir.',
     'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + diracDisplayWibV326(context.expiresAt),
+    'Berlaku sampai: ' + String(context.expiresAt || ''),
     'Jangan kirimkan file ini ke pihak lain. Kata sandi file hanya diberikan owner setelah verifikasi SOP.'
   ].join('\n\n');
   const html = customerSecurityRecoveryEmailHtmlV156(context);
@@ -11661,7 +11156,7 @@ async function customerSecuritySendLostPasskeyRecoveryEmail(to, fileName, fileBu
   if (process.env.BREVO_API_KEY) {
     try {
       const senderEmail = String(process.env.BREVO_SENDER_EMAIL || process.env.DIRAC_RECOVERY_SENDER_EMAIL || '').trim();
-      const senderName = String(process.env.BREVO_SENDER_NAME || 'Dirac Group By CV Multi Usaha Mandiri').trim();
+      const senderName = String(process.env.BREVO_SENDER_NAME || 'Dirac Secure').trim();
       if (!senderEmail) return { ok: false, status: 503, code: 'BREVO_SENDER_MISSING', message: 'BREVO_SENDER_EMAIL belum diatur.' };
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
@@ -12746,7 +12241,7 @@ async function customerSecurityGenerateRecoveryCodes(req, res, action, override 
     return res.status(created.status || 500).json({ ok: false, message: 'Gagal menyimpan lost passkey recovery request.' });
   }
 
-  const sent = await customerSecuritySendLostPasskeyRecoveryEmail(owner.email, fileName, fileBuffer, { requestId, expiresAt, emailPdfCode });
+  const sent = await customerSecuritySendLostPasskeyRecoveryEmail(owner.email, fileName, fileBuffer, { requestId, expiresAt: formatDiracWibTime(Date.parse(expiresAt)), emailPdfCode });
   if (!sent.ok) {
     await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestId), {
       method: 'PATCH',
@@ -14553,7 +14048,7 @@ function sessionOwnershipCheckoutActiveAuthLinkBody(customerId, email) {
 }
 
 function sessionOwnershipCheckoutBuildProductTitle(body, serviceType) {
-  const base = sessionOwnershipCheckoutCleanText(body.product_title || body.product || body.item_name || body.service_name || body.package_name || 'Pesanan DiracGroup', 120);
+  const base = sessionOwnershipCheckoutCleanText(body.product_title || body.product || body.item_name || body.service_name || body.package_name || 'Pesanan Dirac Group', 120);
   const details = [];
   const detailPairs = [
     ['Game', body.game || body.game_name],
@@ -14939,7 +14434,7 @@ function sessionOwnershipCheckoutFallbackTitle(serviceType) {
     parfum: 'Pesanan Parfum', domain: 'Pesanan Domain', jasa_website: 'Jasa Pembuatan Website', pengembangan_website: 'Pengembangan Website',
     topup_game: 'Top Up Game', isi_pulsa: 'Isi Pulsa', paket_data: 'Paket Data', isi_saldo: 'Isi Saldo', isi_saldo_etoll: 'Isi Saldo E-Toll', transfer_luar_negeri: 'Transfer Luar Negeri'
   };
-  return labels[serviceType] || 'Pesanan DiracGroup';
+  return labels[serviceType] || 'Pesanan Dirac Group';
 }
 
 function sessionOwnershipCheckoutNormalizeServiceType(value) {
@@ -14966,7 +14461,7 @@ function sessionOwnershipCheckoutSafeName(value) {
   const raw = String(value || '').trim();
   const fromEmail = raw.includes('@') ? raw.split('@')[0] : raw;
   const cleaned = fromEmail.replace(/[^a-zA-Z0-9À-ž ._'-]/g, ' ').replace(/\s+/g, ' ').trim();
-  return (cleaned || 'Customer DiracGroup').slice(0, 120);
+  return (cleaned || 'Customer Dirac Group').slice(0, 120);
 }
 
 function sessionOwnershipCheckoutCleanText(value, maxLength) {
@@ -17814,8 +17309,8 @@ async function diracPasskeyA2FStoreChallenge(setupToken, payload) {
     (value) => Number(value && value.expiresAtMs || 0)
   );
   const ttl = Math.max(60, Math.ceil((record.expiresAtMs - Date.now()) / 1000) + 30);
-  const stored = typeof claimPersistentSecurityKeyOnceV194 === 'function'
-    ? await claimPersistentSecurityKeyOnceV194('passkey-a2f-jti:' + jti, record, ttl)
+  const stored = typeof writePersistentSecurityJsonRequiredV194 === 'function'
+    ? await writePersistentSecurityJsonRequiredV194('passkey-a2f-jti:' + jti, record, 0, ttl)
     : false;
   if (process.env.NODE_ENV === 'production' && !stored) {
     DIRAC_PASSKEY_A2F_CHALLENGE_STORE.delete(jti);
@@ -17851,16 +17346,14 @@ async function diracPasskeyA2FConsumeChallenge(setupToken, payload) {
       record = await readPersistentSecurityJson('passkey-a2f-jti:' + jti).catch(() => null);
     }
     if (!record || record.used === true) return { ok: false, reason: 'passkey_challenge_missing_or_used' };
-    const recordExpiresAtMs = Number(record.expiresAtMs || 0);
-    if (!Number.isSafeInteger(recordExpiresAtMs) || recordExpiresAtMs <= now) return { ok: false, reason: 'passkey_challenge_expired' };
+    if (Number(record.expiresAtMs || 0) <= now) return { ok: false, reason: 'passkey_challenge_expired' };
     if (!expectedHash || !record.token_hash || !safeEqual(String(record.token_hash), expectedHash)) return { ok: false, reason: 'passkey_challenge_token_mismatch' };
     if (LOGIN_SECURITY_PERSIST_TABLE && typeof claimPersistentSecurityKeyOnceV194 === 'function') {
-      const replayClaimTtlSeconds = Math.max(120, Math.ceil((recordExpiresAtMs - now) / 1000) + 30);
       const claimed = await claimPersistentSecurityKeyOnceV194('passkey-a2f-used:' + jti, {
         type: 'passkey_a2f_one_time_claim_v194',
         token_hash: expectedHash,
         usedAtMs: now
-      }, replayClaimTtlSeconds);
+      }, 120);
       if (!claimed) return { ok: false, reason: 'passkey_challenge_replay_or_storage_failure' };
     } else if (process.env.NODE_ENV === 'production') {
       return { ok: false, reason: 'passkey_challenge_storage_unavailable' };
@@ -25222,36 +24715,12 @@ async function diracPasskeyA2FVerify(req, res) {
     });
   }
 
-  const userSecurityPasskeyPurposeV326 = String(dbWrite && dbWrite.row && dbWrite.row.rotation_purpose || '');
-  const userSecurityPasskeyEventV326 = !isAuthentication
-    && Boolean(registeredNow || (dbWrite && dbWrite.created === true))
-    ? (lostRecoveryRotation && lostRecoveryRotation.ok === true
-      || new Set(['replace', 'recovery']).has(userSecurityPasskeyPurposeV326)
-      ? 'passkey_replaced'
-      : 'passkey_added')
-    : '';
-  if (userSecurityPasskeyEventV326) {
-    const userSecurityPasskeyOccurredAtV326 = finalActivePasskeys[0].activated_at
-      || finalActivePasskeys[0].confirmed_at
-      || finalActivePasskeys[0].updated_at
-      || finalActivePasskeys[0].created_at;
-    const userSecurityPasskeyAgentV326 = requestUserAgent(req);
-    await diracUserSecurityEmailSendV326({
-      req,
-      eventType: userSecurityPasskeyEventV326,
-      recipient: owner.email,
-      occurredAt: userSecurityPasskeyOccurredAtV326,
-      eventId: [
-        userSecurityPasskeyEventV326,
-        String(owner.authUserId || ''),
-        String(owner.customerId || ''),
-        String(credentialId || ''),
-        String(securityEpoch),
-        String(userSecurityPasskeyOccurredAtV326 || '')
-      ].join('|'),
-      device: customerSecurityDeviceName(userSecurityPasskeyAgentV326),
-      browser: customerSecurityBrowserName(userSecurityPasskeyAgentV326)
-    }).catch(() => ({ ok: false, provider: 'none', code: 'USER_SECURITY_EMAIL_INTERNAL_FAILURE' }));
+  if (registeredNow || (lostRecoveryRotation && lostRecoveryRotation.ok)) {
+    await diracUserSecurityNotifyV325({
+      to: owner.email,
+      event: 'passkey_changed',
+      occurredAtMs: Date.now()
+    }).catch(() => ({ ok: false }));
   }
 
   return res.status(200).json({
@@ -26588,8 +26057,8 @@ function orderMailBuildNewOrderMessages(data) {
 
   const paid = ['paid', 'success', 'settled', 'settlement', 'capture'].includes(String(data.order.payment_status || '').toLowerCase());
   const customerSubject = paid
-    ? `Invoice ${data.order.code} sudah dibayar - Dirac Group By CV Multi Usaha Mandiri`
-    : `Pesanan ${data.order.code} diterima - Dirac Group By CV Multi Usaha Mandiri`;
+    ? `Invoice ${data.order.code} sudah dibayar - Dirac Group`
+    : `Pesanan ${data.order.code} diterima - Dirac Group`;
   const ownerSubject = paid
     ? `Pembayaran berhasil ${data.order.code} - ${serviceLabel}`
     : `Order baru ${data.order.code} - ${serviceLabel}`;
@@ -26636,7 +26105,7 @@ function orderMailBuildNewOrderMessages(data) {
     'Lihat pesanan: ' + diracRoleOriginV250('pesanan') + '/pesanan.html',
     'Hubungi support: ' + diracSupportEmailV250(),
     'Butuh bantuan WhatsApp: https://wa.me/6287892523968',
-    'Dirac Group By CV Multi Usaha Mandiri'
+    'Dirac Group'
   ].filter((line) => line !== '').join('\n');
 
   const ownerText = [
@@ -26658,9 +26127,7 @@ function orderMailBuildNewOrderMessages(data) {
     paymentLine.trim(),
     '',
     'Rincian:',
-    itemsText,
-    '',
-    'Dirac Group By CV Multi Usaha Mandiri'
+    itemsText
   ].filter((line) => line !== '').join('\n');
 
   const customerHtml = orderMailHtmlShell(customerSubject, `
@@ -26730,11 +26197,9 @@ function orderMailHtmlShell(title, body, options = {}) {
   const badge = orderMailEscapeHtml(options.badge || 'PAID');
   const total = orderMailEscapeHtml(options.total || '');
   const orderUrl = diracRoleOriginV250('pesanan') + '/pesanan.html';
-  const supportCandidate = orderMailNormalizeEmail(diracSupportEmailV250());
-  const supportEmail = supportCandidate || 'support@diracgroup.store';
+  const supportEmail = diracSupportEmailV250();
   const whatsappUrl = 'https://wa.me/6287892523968';
   const promoImage = diracRoleOriginV250('www') + '/email.webp';
-  const logoImage = diracRoleOriginV250('www') + '/umroh.webp';
   const showActions = options.showActions !== false;
   const showPromoImage = options.showPromoImage !== false;
   const actionsHtml = showActions ? `
@@ -26747,7 +26212,7 @@ function orderMailHtmlShell(title, body, options = {}) {
       <tr>
         <td bgcolor="#2b2f36" style="padding:0 32px 26px;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
           <a href="${orderMailEscapeHtml(orderUrl)}" style="text-decoration:none;border:0;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-            <img src="${orderMailEscapeHtml(promoImage)}" width="616" alt="Dirac Group By CV Multi Usaha Mandiri" style="display:block;width:100%;max-width:616px;height:auto;border:0;border-radius:14px;background:#2b2f36;outline:none;text-decoration:none;box-shadow:0 12px 28px rgba(0,0,0,.42)">
+            <img src="${orderMailEscapeHtml(promoImage)}" width="616" alt="Dirac Group" style="display:block;width:100%;max-width:616px;height:auto;border:0;border-radius:14px;background:#2b2f36;outline:none;text-decoration:none;box-shadow:0 12px 28px rgba(0,0,0,.42)">
           </a>
         </td>
       </tr>` : '';
@@ -26774,16 +26239,11 @@ function orderMailHtmlShell(title, body, options = {}) {
       <td align="center" bgcolor="#2b2f36" style="padding:0 12px;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#2b2f36" style="max-width:680px;background:#2b2f36;background-color:#2b2f36;border-radius:18px;overflow:hidden;border:1px solid #4b5563;box-shadow:0 18px 46px rgba(0,0,0,.68);color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
           <tr>
-            <td align="center" bgcolor="#273449" style="padding:24px 32px 18px;background:#273449;background-color:#273449;border-bottom:1px solid #4b5563">
-              <img src="${orderMailEscapeHtml(logoImage)}" width="72" alt="Dirac Group By CV Multi Usaha Mandiri" style="display:block;width:72px;max-width:72px;height:auto;margin:0 auto;border:0;outline:none;text-decoration:none">
-            </td>
-          </tr>
-          <tr>
             <td bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;padding:30px 32px;background-image:none!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
                 <tr>
                   <td valign="top" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-                    <div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-bottom:10px;font-weight:800;text-shadow:0 2px 8px rgba(0,0,0,.80)"><font color="#ffffff" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">DIRAC GROUP BY CV MULTI USAHA MANDIRI</font></div>
+                    <div style="font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-bottom:10px;font-weight:800;text-shadow:0 2px 8px rgba(0,0,0,.80)"><font color="#ffffff" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">DIRAC GROUP</font></div><div style="margin-top:6px;font-size:11px;line-height:1.5;color:#dbeafe!important;-webkit-text-fill-color:#dbeafe!important;mso-color-alt:#dbeafe">Dirac Group By CV Multi Usaha Mandiri</div>
                     <div style="font-size:28px;line-height:1.22;font-weight:900;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-shadow:0 2px 8px rgba(0,0,0,.85);mso-line-height-rule:exactly"><font color="#ffffff" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(title)}</font></div>
                     ${total ? `<div style="margin-top:12px;font-size:15px;line-height:1.5;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Total pembayaran: <strong style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${total}</strong></div>` : ''}
                   </td>
@@ -26803,12 +26263,11 @@ function orderMailHtmlShell(title, body, options = {}) {
           ${promoHtml}
           <tr>
             <td bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;padding:24px 32px;text-align:center;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;line-height:1.8;border-top:1px solid #4b5563">
-              <img src="${orderMailEscapeHtml(logoImage)}" width="44" alt="Dirac Group By CV Multi Usaha Mandiri" style="display:block;width:44px;max-width:44px;height:auto;margin:0 auto 10px;border:0"><br>
-              <strong>Dirac Group By CV Multi Usaha Mandiri</strong><br>
+              Email ini dikirim otomatis oleh <b>Dirac Group By CV Multi Usaha Mandiri</b>.<br>
+
               Hubungi support hanya ke <a href="mailto:${supportEmail}" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-weight:900">${supportEmail}</a><br>
-              WhatsApp: <a href="${orderMailEscapeHtml(whatsappUrl)}" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-weight:900">+62 878-9252-3968</a><br>
               <a href="${orderMailEscapeHtml(whatsappUrl)}" style="display:inline-block;margin-top:12px;background:#0f3b24;background-color:#0f3b24;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:12px 18px;border-radius:10px;border:1px solid #166534">Butuh bantuan</a><br><br>
-              © 2026 Dirac Group By CV Multi Usaha Mandiri. All rights reserved.
+              support@diracgroup.store • +62 878-9252-3968<br>© 2026 Dirac Group By CV Multi Usaha Mandiri. All rights reserved.
             </td>
           </tr>
         </table>
@@ -26818,6 +26277,132 @@ function orderMailHtmlShell(title, body, options = {}) {
 </body>
 </html>`;
 }
+
+/* ============================================================
+   DIRAC USER SECURITY EMAIL v325
+   Resend primary. Google SMTP fallback is permitted only for Resend HTTP 429.
+   ============================================================ */
+function diracUserSecurityEmailEnabledV325() {
+  return String(process.env.DIRAC_USER_SECURITY_EMAIL_ENABLED || '').trim().toLowerCase() === 'true';
+}
+
+function diracUserSecurityEmailEscapeV325(value) {
+  return String(value === undefined || value === null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function diracUserSecurityEmailContentV325(input) {
+  const event = String(input && input.event || 'security_changed');
+  const occurredAt = formatDiracWibTime(Number(input && input.occurredAtMs || Date.now()));
+  const labels = {
+    password_changed: ['Password akun berhasil diubah', 'Password akun Anda baru saja diubah melalui verifikasi Passkey.'],
+    passkey_changed: ['Passkey akun berhasil diperbarui', 'Passkey akun Anda baru saja ditambahkan, diganti, atau dirotasi.'],
+    sessions_revoked: ['Sesi akun berhasil dicabut', 'Satu atau beberapa sesi akun Anda baru saja dicabut.']
+  };
+  const selected = labels[event] || ['Pengaturan keamanan akun berubah', 'Salah satu pengaturan keamanan akun Anda baru saja berubah.'];
+  const subject = 'Dirac Security — ' + selected[0];
+  const text = [
+    selected[0], '', selected[1], 'Waktu: ' + occurredAt, '',
+    'Jika aktivitas ini bukan Anda, segera masuk melalui domain resmi dan hubungi support.',
+    'Dirac Group By CV Multi Usaha Mandiri',
+    'support@diracgroup.store | +62 878-9252-3968'
+  ].join('\n');
+  const html = '<!doctype html><html lang="id"><body style="margin:0;background:#e8edf3;font-family:Arial,Helvetica,sans-serif;color:#1f2937">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#e8edf3;padding:28px 12px"><tr><td align="center">'
+    + '<table role="presentation" width="640" cellspacing="0" cellpadding="0" style="max-width:640px;width:100%;border-collapse:separate;border-spacing:0;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 12px 35px rgba(15,23,42,.16)">'
+    + '<tr><td style="padding:28px;text-align:center;background:linear-gradient(135deg,#0b2748,#164f78 58%,#64748b);color:#ffffff">'
+    + '<div style="font-size:23px;font-weight:800;letter-spacing:.04em">DIRAC</div><div style="margin-top:8px;font-size:12px;color:#dbeafe">Dirac Group By CV Multi Usaha Mandiri</div></td></tr>'
+    + '<tr><td style="padding:30px"><div style="font-size:12px;font-weight:800;letter-spacing:.12em;color:#1d4ed8">NOTIFIKASI KEAMANAN</div>'
+    + '<h1 style="margin:10px 0 14px;font-size:24px;color:#0f172a">' + diracUserSecurityEmailEscapeV325(selected[0]) + '</h1>'
+    + '<p style="margin:0 0 18px;line-height:1.7;color:#475569">' + diracUserSecurityEmailEscapeV325(selected[1]) + '</p>'
+    + '<div style="padding:15px 16px;border:1px solid #cbd5e1;border-radius:12px;background:#f8fafc"><b>Waktu kejadian</b><br><span style="color:#475569">' + diracUserSecurityEmailEscapeV325(occurredAt) + '</span></div>'
+    + '<div style="margin-top:20px;padding:15px 16px;border-left:4px solid #f59e0b;background:#fffbeb;color:#78350f;line-height:1.6">Jika aktivitas ini bukan Anda, segera masuk melalui domain resmi dan hubungi support.</div></td></tr>'
+    + '<tr><td style="padding:22px 28px;text-align:center;background:#172033;color:#d1d5db;font-size:12px;line-height:1.8"><b style="color:#ffffff">Dirac Group By CV Multi Usaha Mandiri</b><br>support@diracgroup.store • +62 878-9252-3968</td></tr>'
+    + '</table></td></tr></table></body></html>';
+  return { subject, text, html };
+}
+
+async function diracUserSecurityEmailResendV325(config, recipient, content) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      redirect: 'error',
+      signal: controller.signal,
+      headers: { Authorization: 'Bearer ' + config.resendApiKey, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        from: 'Dirac Group By CV Multi Usaha Mandiri <' + config.resendFromEmail + '>',
+        to: [recipient],
+        reply_to: config.replyTo || undefined,
+        subject: content.subject,
+        text: content.text,
+        html: content.html
+      })
+    });
+    return { ok: response.ok === true, status: Number(response.status || 0), provider: 'resend' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function diracUserSecurityEmailSmtpV325(config, recipient, content) {
+  return orderMailSendViaSmtp({
+    configured: true,
+    host: config.smtpHost,
+    port: config.smtpPort,
+    secure: config.smtpSecure,
+    user: config.smtpUser,
+    pass: config.smtpPassword,
+    fromEmail: config.smtpUser,
+    fromName: 'Dirac Group By CV Multi Usaha Mandiri',
+    timeoutMs: config.timeoutMs
+  }, {
+    to: [recipient],
+    subject: content.subject,
+    text: content.text,
+    html: content.html,
+    fromName: 'Dirac Group By CV Multi Usaha Mandiri',
+    fromEmail: config.smtpUser,
+    replyTo: config.replyTo
+  });
+}
+
+async function diracUserSecurityNotifyV325(input) {
+  if (!diracUserSecurityEmailEnabledV325()) return { ok: false, skipped: true, reason: 'disabled' };
+  const recipient = orderMailNormalizeEmail(input && input.to);
+  const resendApiKey = String(process.env.DIRAC_USER_SECURITY_RESEND_API_KEY || '').trim();
+  const resendFromEmail = orderMailNormalizeEmail(process.env.DIRAC_USER_SECURITY_RESEND_FROM_EMAIL);
+  const replyTo = orderMailNormalizeEmail(process.env.DIRAC_USER_SECURITY_REPLY_TO);
+  const timeoutMs = Math.max(3000, Math.min(20000, Number(process.env.DIRAC_USER_SECURITY_TIMEOUT_MS || 7000)));
+  if (!recipient || !resendApiKey || !resendFromEmail) return { ok: false, skipped: true, reason: 'resend_not_configured' };
+  const content = diracUserSecurityEmailContentV325(input || {});
+  let primary;
+  try {
+    primary = await diracUserSecurityEmailResendV325({ resendApiKey, resendFromEmail, replyTo, timeoutMs }, recipient, content);
+  } catch (error) {
+    return { ok: false, provider: 'resend', status: 0, reason: String(error && error.name || 'resend_transport_failed').slice(0, 80) };
+  }
+  if (primary.ok === true) return primary;
+  if (primary.status !== 429) return primary;
+
+  const smtpHost = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim().toLowerCase();
+  const smtpPort = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 465);
+  const smtpSecure = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || 'true').trim().toLowerCase() === 'true';
+  const smtpUser = orderMailNormalizeEmail(process.env.DIRAC_USER_SECURITY_SMTP_USER);
+  const smtpPassword = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
+  if (!smtpHost || !Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535 || !smtpSecure || !smtpUser || !smtpPassword) {
+    return { ok: false, provider: 'smtp', fallback_for_status: 429, reason: 'smtp_not_configured' };
+  }
+  try {
+    const fallback = await diracUserSecurityEmailSmtpV325({ smtpHost, smtpPort, smtpSecure, smtpUser, smtpPassword, replyTo, timeoutMs }, recipient, content);
+    return { ...fallback, provider: 'smtp', fallback_for_status: 429 };
+  } catch (error) {
+    return { ok: false, provider: 'smtp', fallback_for_status: 429, reason: String(error && error.message || 'smtp_failed').slice(0, 100) };
+  }
+}
+
 function orderMailInfoTable(rows) {
   const body = (rows || []).map(([key, value]) => `<tr><td bgcolor="#2b2f36" style="padding:13px 16px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;width:42%;font-size:14px;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(key)}</td><td bgcolor="#2b2f36" style="padding:13px 16px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;font-weight:700;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(value)}</td></tr>`).join('');
   return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;border-spacing:0;width:100%;margin:14px 0 20px;border:1px solid #4b5563;border-radius:14px;overflow:hidden;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${body}</table>`;
@@ -26864,7 +26449,7 @@ async function orderMailSendViaSmtp(config, message) {
   const net = require('net');
   const host = config.host;
   const port = config.port || (config.secure ? 465 : 587);
-  const timeoutMs = Math.max(3000, Math.min(20000, Number(process.env.ORDER_SMTP_TIMEOUT_MS || 9000)));
+  const timeoutMs = Math.max(3000, Math.min(20000, Number(config.timeoutMs || process.env.ORDER_SMTP_TIMEOUT_MS || 9000)));
 
   return await new Promise((resolve, reject) => {
     let socket;
@@ -27007,7 +26592,7 @@ function orderMailBuildMimeMessage(message) {
   const boundary = 'DIRAC_' + crypto.randomBytes(12).toString('hex');
   const from = `${orderMailHeaderName(message.fromName || 'Dirac Group By CV Multi Usaha Mandiri')} <${orderMailNormalizeEmail(message.fromEmail || '')}>`;
   const to = (message.to || []).map((email) => `<${orderMailNormalizeEmail(email)}>`).join(', ');
-  const subject = orderMailHeaderName(message.subject || 'Dirac Group By CV Multi Usaha Mandiri Order');
+  const subject = orderMailHeaderName(message.subject || 'Dirac Group Order');
   const msgId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@${diracBaseDomainV250()}>`;
   const text = orderMailBase64Body(message.text || '');
   const html = orderMailBase64Body(message.html || '<p>Dirac Group By CV Multi Usaha Mandiri</p>');
@@ -27018,6 +26603,7 @@ function orderMailBuildMimeMessage(message) {
     `Subject: ${subject}`,
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: ${msgId}`,
+    ...(orderMailNormalizeEmail(message.replyTo || '') ? [`Reply-To: <${orderMailNormalizeEmail(message.replyTo)}>`] : []),
     'MIME-Version: 1.0',
     `Content-Type: multipart/alternative; boundary="${boundary}"`,
     '',
@@ -29639,9 +29225,6 @@ function diracV101ValidateServiceRoleSupabasePath(path, options = {}) {
   if (!raw || /https?:\/\//i.test(raw) || /(?:\.\.|\\|\u0000)/.test(raw)) {
     return { ok: false, code: 'SERVICE_ROLE_PATH_INVALID' };
   }
-  if (diracV101ExactInternalSqlmapBanReadV326(raw, options)) {
-    return { ok: true, scope: 'rest_table_exact_sqlmap_ban_read', table: DIRAC_PERSISTENT_BAN_TABLE };
-  }
   if (diracV101FindSqlInjectionThreat([raw], { source: 'service_role_path' }).detected) {
     return { ok: false, code: 'SERVICE_ROLE_PATH_REJECTED' };
   }
@@ -29702,16 +29285,6 @@ function diracV101ValidateServiceRoleSupabasePath(path, options = {}) {
   }
 
   return { ok: true, scope: 'rest_table', table };
-}
-
-function diracV101ExactInternalSqlmapBanReadV326(path, options = {}) {
-  if (String(options.method || 'GET').toUpperCase() !== 'GET' || options.auth !== 'service') return false;
-  const raw = String(path || '');
-  const expectedPrefix = '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
-    + '?select=security_key,record_json,blocked_until_ms,expires_at&security_key=eq.sqlmap-ban%3A';
-  if (!raw.startsWith(expectedPrefix) || !raw.endsWith('&limit=1')) return false;
-  const fingerprint = raw.slice(expectedPrefix.length, -'&limit=1'.length);
-  return /^[a-f0-9]{64}$/.test(fingerprint);
 }
 
 function diracV101ServiceRoleAllowedTables() {
@@ -35588,7 +35161,7 @@ function orderMailSmtpConfig(kind) {
     'BREVO_SENDER_NAME',
     'SMTP_FROM_NAME',
     'MAIL_FROM_NAME'
-  ]) || 'Dirac Group By CV Multi Usaha Mandiri', 80);
+  ]) || 'Dirac Group', 80);
 
   const fromEmail = orderMailNormalizeEmail(orderMailPickEnvV129([
     `${specificPrefix}_FROM_EMAIL`,
@@ -35766,7 +35339,7 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message) {
         body: JSON.stringify({
           from: `${fromName} <${fromEmail}>`,
           to: recipients,
-          subject: String(message.subject || 'Dirac Group By CV Multi Usaha Mandiri Order'),
+          subject: String(message.subject || 'Dirac Group Order'),
           text: String(message.text || ''),
           html: String(message.html || '<p>Dirac Group By CV Multi Usaha Mandiri</p>')
         })
@@ -35795,7 +35368,7 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message) {
         body: JSON.stringify({
           sender: { email: fromEmail, name: fromName },
           to: recipients.map((email) => ({ email })),
-          subject: String(message.subject || 'Dirac Group By CV Multi Usaha Mandiri Order'),
+          subject: String(message.subject || 'Dirac Group Order'),
           textContent: String(message.text || ''),
           htmlContent: String(message.html || '<p>Dirac Group By CV Multi Usaha Mandiri</p>')
         })
@@ -40595,7 +40168,7 @@ async function customerSecurityLostPasskeyQueueReadStateV189() {
 
 /* RECO donor source lines 2936-2939 */
 function customerSecurityLostPasskeyQueueRowOwnerV164(row) {
-  const record = diracPersistentSecurityParseRecordJsonV326(row && row.record_json) || {};
+  const record = row && row.record_json && typeof row.record_json === 'object' ? row.record_json : {};
   return String(record.owner_id || '');
 }
 
@@ -40612,25 +40185,16 @@ async function customerSecurityLostPasskeyQueueRenewV188(ownerId, context = {}) 
   if (!cleanOwner || !table) return false;
   const nowMs = Date.now();
   const lockUntilMs = nowMs + customerSecurityLostPasskeyQueueTtlMsV164();
-  const current = await customerSecurityLostPasskeyQueueReadStateV189();
-  const currentRow = current && current.ok === true ? current.row : null;
-  const currentRecordJson = currentRow && typeof currentRow.record_json === 'string' ? currentRow.record_json : '';
-  if (!currentRow || !currentRecordJson
-      || customerSecurityLostPasskeyQueueRowOwnerV164(currentRow) !== cleanOwner
-      || !customerSecurityLostPasskeyQueueRowActiveV164(currentRow, nowMs)) return false;
   const path = '/rest/v1/' + encodeURIComponent(table)
     + '?security_key=eq.' + encodeURIComponent(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164)
-    + '&record_json=eq.' + encodeURIComponent(currentRecordJson)
+    + '&' + encodeURIComponent('record_json->>owner_id') + '=eq.' + encodeURIComponent(cleanOwner)
     + '&blocked_until_ms=gt.' + encodeURIComponent(String(nowMs));
   const result = await supabaseFetch(path, {
     method: 'PATCH',
     auth: 'service',
     prefer: 'return=representation',
     body: {
-      record_json: diracPersistentSecurityStoreRecordJsonV326(
-        table,
-        customerSecurityLostPasskeyQueueRecordV164(cleanOwner, nowMs, lockUntilMs, context)
-      ),
+      record_json: customerSecurityLostPasskeyQueueRecordV164(cleanOwner, nowMs, lockUntilMs, context),
       blocked_until_ms: lockUntilMs,
       updated_at: new Date(nowMs).toISOString(),
       expires_at: new Date(lockUntilMs + 60_000).toISOString()
@@ -40684,10 +40248,7 @@ async function customerSecurityLostPasskeyQueueTryPatchAvailableV167(ownerId, co
   const nowMs = Date.now();
   const lockUntilMs = nowMs + customerSecurityLostPasskeyQueueTtlMsV164();
   const payload = {
-    record_json: diracPersistentSecurityStoreRecordJsonV326(
-      table,
-      customerSecurityLostPasskeyQueueRecordV164(ownerId, nowMs, lockUntilMs, context)
-    ),
+    record_json: customerSecurityLostPasskeyQueueRecordV164(ownerId, nowMs, lockUntilMs, context),
     blocked_until_ms: lockUntilMs,
     updated_at: new Date(nowMs).toISOString(),
     expires_at: new Date(lockUntilMs + 60_000).toISOString()
@@ -40718,10 +40279,7 @@ async function customerSecurityLostPasskeyQueueTryInsertAvailableV167(ownerId, c
   const lockUntilMs = nowMs + customerSecurityLostPasskeyQueueTtlMsV164();
   const payload = [{
     security_key: DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164,
-    record_json: diracPersistentSecurityStoreRecordJsonV326(
-      table,
-      customerSecurityLostPasskeyQueueRecordV164(ownerId, nowMs, lockUntilMs, context)
-    ),
+    record_json: customerSecurityLostPasskeyQueueRecordV164(ownerId, nowMs, lockUntilMs, context),
     blocked_until_ms: lockUntilMs,
     updated_at: new Date(nowMs).toISOString(),
     expires_at: new Date(lockUntilMs + 60_000).toISOString()
@@ -40857,11 +40415,6 @@ async function customerSecurityLostPasskeyQueueReleaseV164(ownerId) {
   const table = customerSecurityLostPasskeyQueueTableV164();
   if (!table) return false;
   const nowMs = Date.now();
-  const current = await customerSecurityLostPasskeyQueueReadStateV189();
-  const currentRow = current && current.ok === true ? current.row : null;
-  const currentRecordJson = currentRow && typeof currentRow.record_json === 'string' ? currentRow.record_json : '';
-  if (!currentRow || !currentRecordJson
-      || customerSecurityLostPasskeyQueueRowOwnerV164(currentRow) !== cleanOwner) return false;
   const releasedRecord = {
     type: 'lost_passkey_generate_argon2id_queue_lock_v164',
     patch: DIRAC_LOST_PASSKEY_GENERATE_QUEUE_PATCH_V164,
@@ -40873,13 +40426,13 @@ async function customerSecurityLostPasskeyQueueReleaseV164(ownerId) {
   };
   const path = '/rest/v1/' + encodeURIComponent(table)
     + '?security_key=eq.' + encodeURIComponent(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164)
-    + '&record_json=eq.' + encodeURIComponent(currentRecordJson);
+    + '&' + encodeURIComponent('record_json->>owner_id') + '=eq.' + encodeURIComponent(cleanOwner);
   const result = await supabaseFetch(path, {
     method: 'PATCH',
     auth: 'service',
     prefer: 'return=minimal',
     body: {
-      record_json: diracPersistentSecurityStoreRecordJsonV326(table, releasedRecord),
+      record_json: releasedRecord,
       blocked_until_ms: 0,
       updated_at: new Date(nowMs).toISOString(),
       expires_at: new Date(nowMs + 60_000).toISOString()
@@ -41799,14 +41352,23 @@ function customerSecurityLostPasskeyRecoveryEmailBannerUrlV172() {
 /* RECO donor source lines 4444-4488 */
 function customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(context = {}) {
   const requestId = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.requestId || '');
-  const expiresAt = customerSecurityLostPasskeyEmailEscapeHtmlV157(diracDisplayWibV326(context.expiresAt));
+  const expiresAt = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.expiresAt || '');
   const recoveryLink = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.recoveryLink || '');
   const emailSecret = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.emailSecret || '');
   const bannerUrl = customerSecurityLostPasskeyEmailEscapeHtmlV157(customerSecurityLostPasskeyRecoveryEmailBannerUrlV172());
 
-  const body = '<img src="' + bannerUrl + '" width="624" alt="Dirac Group By CV Multi Usaha Mandiri Secure Recovery" style="display:block;width:100%;max-width:624px;height:auto;border:0;border-radius:14px;margin:0 0 22px">'
-    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Yth. Pengguna Dirac Group By CV Multi Usaha Mandiri,</p>'
-    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Permintaan pemulihan Passkey Anda telah diterima dan paket recovery terenkripsi sudah disiapkan oleh sistem Dirac Group By CV Multi Usaha Mandiri.</p>'
+  return '<!doctype html>'
+    + '<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Dirac Group Secure Recovery</title></head>'
+    + '<body style="margin:0;padding:0;background:#1f1f1f;font-family:Arial,Helvetica,sans-serif;color:#f1f3f4">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#1f1f1f;margin:0;padding:24px 0"><tr><td align="center" style="padding:0 12px">'
+    + '<table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="width:600px;max-width:100%;border-collapse:collapse;border:1px solid #b8c3d9;background:#202124">'
+    + '<tr><td style="height:2px;line-height:2px;font-size:0;background:#b8c3d9">&nbsp;</td></tr>'
+    + '<tr><td style="padding:0;border-bottom:1px solid #b8c3d9;background:#202124">'
+    + '<img src="' + bannerUrl + '" width="600" alt="Dirac Group Secure Recovery" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none">'
+    + '</td></tr>'
+    + '<tr><td style="padding:28px 28px 12px;background:#202124;color:#f1f3f4">'
+    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Yth. Pengguna Dirac Group,</p>'
+    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Permintaan pemulihan Passkey Anda telah diterima dan paket recovery terenkripsi sudah disiapkan oleh sistem Dirac Group.</p>'
     + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Silakan buka link resmi berikut untuk mengambil vault recovery. Proses decrypt tetap dilakukan secara lokal di browser dan membutuhkan Secret Email, Secret Website, serta material password terbaru akun Anda.</p>'
     + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;margin:20px 0 24px;background:#202124;border:1px solid #b8c3d9">'
     + '<tr><td style="padding:13px 14px;border-bottom:1px solid #b8c3d9;color:#d7dbe3;font-size:13px">Request ID</td><td style="padding:13px 14px;border-bottom:1px solid #b8c3d9;color:#ffffff;font-size:13px;font-weight:700;text-align:right;word-break:break-all">' + requestId + '</td></tr>'
@@ -41823,12 +41385,15 @@ function customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(context = {}) {
     + '2. Setelah vault diterima, halaman akan meminta decrypt lokal/offline.<br>'
     + '3. Masukkan material password terbaru, Secret Email, dan Secret Website sesuai instruksi sistem.'
     + '</div>'
-    + '<p style="margin:22px 0 0;font-size:13px;line-height:1.7;color:#f1f3f4">Jangan membagikan link recovery, Secret Email, Secret Website, atau hasil decrypt kepada pihak mana pun. Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan resmi.</p>';
-  return diracCorporateEmailShellV326(
-    'Link Recovery Passkey',
-    diracCorporateEmailTrustedBodyV326(body),
-    { eyebrow: 'DIRAC SECURE RECOVERY' }
-  );
+    + '<p style="margin:22px 0 0;font-size:13px;line-height:1.7;color:#f1f3f4">Jangan membagikan link recovery, Secret Email, Secret Website, atau hasil decrypt kepada pihak mana pun. Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan resmi Dirac Group.</p>'
+    + '<p style="margin:24px 0 0;font-size:14px;line-height:1.8;color:#f1f3f4">Terima kasih,<br><b>Dirac Group By CV Multi Usaha Mandiri</b></p>'
+    + '</td></tr>'
+    + '<tr><td style="padding:16px 28px 22px;background:#202124;color:#f1f3f4;font-size:12px;line-height:1.7;border-top:1px solid #b8c3d9">'
+    + '(Email ini dibuat otomatis oleh sistem, mohon untuk tidak dibalas.)<br>Dirac Group Secure Recovery • Dirac Group By CV Multi Usaha Mandiri<br>support@diracgroup.store • +62 878-9252-3968'
+    + '</td></tr>'
+    + '</table>'
+    + '</td></tr></table>'
+    + '</body></html>';
 }
 
 /* RECO donor source lines 4491-4507 */
@@ -41858,11 +41423,11 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   if (!recoveryLink) return { ok: false, status: 500, code: 'RECOVERY_EMAIL_LINK_INVALID', message: 'Link recovery resmi tidak valid.' };
   const emailContext = Object.assign({}, context, { recoveryLink });
   const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Group By CV Multi Usaha Mandiri <no-reply@' + diracBaseDomainV250() + '>')).trim();
-  const subject = 'Dirac Group By CV Multi Usaha Mandiri - Link Pemulihan Passkey';
+  const subject = 'Dirac Group By CV Multi Usaha Mandiri — Secure Recovery - Link Pemulihan Passkey';
   const text = [
     'Link recovery Passkey resmi sudah dibuat.',
     'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + diracDisplayWibV326(context.expiresAt),
+    'Berlaku sampai: ' + String(context.expiresAt || ''),
     'Link resmi: ' + recoveryLink,
     'SECRET_EMAIL_100_CHAR: ' + String(context.emailSecret || ''),
     'Jangan bagikan email secret, link, atau isi pesan ini kepada pihak lain. Website secret hanya tampil di website yang masih login.'
@@ -41932,7 +41497,7 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
               : /TLS|CERT|VERIFY|SSL/.test(errorCode)
                 ? 'tls'
                 : 'unknown';
-      try { console.error('[dirac-recovery-smtp-diagnostic-v228]', JSON.stringify({ stage: smtpStage, error_name: errorName, error_code: errorCode, smtp_code: smtpCode, classification })); } catch (_) {}
+      try { void ('[dirac-recovery-smtp-diagnostic-v228]') && console.error('[dirac-recovery-smtp-diagnostic-v228]', JSON.stringify({ stage: smtpStage, error_name: errorName, error_code: errorCode, smtp_code: smtpCode, classification })); } catch (_) {}
       return { ok: false, status: 502, code: 'RECOVERY_SMTP_DELIVERY_FAILED', message: 'Gagal mengirim link recovery lewat SMTP.' };
     } finally {
       try { if (socket) socket.end(); } catch (_) {}
@@ -41956,7 +41521,7 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   if (process.env.BREVO_API_KEY) {
     try {
       const senderEmail = String(process.env.BREVO_SENDER_EMAIL || process.env.DIRAC_RECOVERY_SENDER_EMAIL || '').trim();
-      const senderName = String(process.env.BREVO_SENDER_NAME || 'Dirac Group By CV Multi Usaha Mandiri').trim();
+      const senderName = String(process.env.BREVO_SENDER_NAME || 'Dirac Secure').trim();
       if (!senderEmail) return { ok: false, status: 503, code: 'BREVO_SENDER_MISSING', message: 'BREVO_SENDER_EMAIL belum diatur.' };
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
@@ -42268,7 +41833,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
 
   const sent = await customerSecuritySendLostPasskeyRecoveryLinkEmailV157(owner.email, {
     requestId,
-    expiresAt,
+    expiresAt: formatDiracWibTime(Date.parse(expiresAt)),
     recoveryLink,
     emailSecret: emailSecret100
   });
@@ -46236,11 +45801,6 @@ function diracCentralEmitDebugV211(ctx, event, extra) {
       : undefined,
     extra: extra && typeof extra === 'object' ? diracCentralSanitizeOutputV146(extra, 0) : undefined
   };
-  try {
-    const line = JSON.stringify(payload);
-    if (event === 'request_passed' && diracCentralDebugEnabledV211()) console.info('[dirac-central-debug-v211]', line);
-    else if (event !== 'request_passed' && diracCentralShouldEmitBlockLogV322(payload)) console.error('[dirac-central-debug-v211]', line);
-  } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
   try { diracSecurityAlertScheduleV320(ctx, event, payload); }
   catch (suppressedErrorV320) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV320); }
   return payload;
@@ -49425,7 +48985,9 @@ const DIRAC_CENTRAL_ACTION_ALIASES_V146 = Object.freeze({
   'customer-security-status': 'customer_security_status',
   'customer-security-overview': 'customer_security_overview',
   'midtrans-webhook': 'midtrans_webhook',
-  'midtrans-health': 'midtrans_health'
+  'midtrans-health': 'midtrans_health',
+  'request-password-reset': 'request_password_reset',
+  'confirm-password-reset': 'confirm_password_reset'
 });
 
 const DIRAC_CENTRAL_ACTIVE_ACTIONS_V146 = new Set([
@@ -49513,7 +49075,34 @@ const DIRAC_CENTRAL_ACTIVE_ACTIONS_V146 = new Set([
   'security_report',
   'customer_session_handoff_issue',
   'dirac_session_handoff_prepare',
-  'customer_session_handoff_consume'
+  'customer_session_handoff_consume',
+  'request_password_reset',
+  'confirm_password_reset',
+  'passkey_sync_push',
+  'customer_binding_sync_push',
+  'status_bootstrap',
+  'chat_public_config',
+  'admin_public_config',
+  'chat_bootstrap',
+  'chat_start',
+  'chat_send',
+  'chat_close',
+  'customer_access_refresh',
+  'admin_login',
+  'admin_mfa_verify',
+  'admin_bootstrap',
+  'admin_queue',
+  'admin_thread',
+  'admin_send',
+  'admin_conversation_update',
+  'admin_status_snapshot',
+  'admin_component_update',
+  'admin_monitor_config_update',
+  'admin_incident_create',
+  'admin_incident_advance',
+  'admin_maintenance_create',
+  'admin_logout',
+  'monitor_run'
 ]);
 
 const DIRAC_CENTRAL_DISABLED_ACTIONS_V146 = new Set([
@@ -49530,7 +49119,33 @@ if (diracAppRoleV250() === 'recovery') {
   DIRAC_CENTRAL_ACTIVE_ACTIONS_V146.add(DIRAC_MERGED_RECOVERY_V251.hpkeVerifyAction);
 }
 
-const DIRAC_CENTRAL_SERVER_ACTIONS_V146 = new Set(['midtrans_webhook', DIRAC_RECOVERY_WORKER_ACTION, 'dirac_session_handoff_prepare']);
+const DIRAC_CENTRAL_SERVER_ACTIONS_V146 = new Set(['midtrans_webhook', DIRAC_RECOVERY_WORKER_ACTION, 'dirac_session_handoff_prepare', 'passkey_sync_push', 'customer_binding_sync_push']);
+
+const DIRAC_CENTRAL_SUPPORT_ACTIONS_V325 = Object.freeze(new Set([
+  'status_bootstrap',
+  'chat_public_config',
+  'admin_public_config',
+  'chat_bootstrap',
+  'chat_start',
+  'chat_send',
+  'chat_close',
+  'customer_access_refresh',
+  'admin_login',
+  'admin_mfa_verify',
+  'admin_bootstrap',
+  'admin_queue',
+  'admin_thread',
+  'admin_send',
+  'admin_conversation_update',
+  'admin_status_snapshot',
+  'admin_component_update',
+  'admin_monitor_config_update',
+  'admin_incident_create',
+  'admin_incident_advance',
+  'admin_maintenance_create',
+  'admin_logout',
+  'monitor_run'
+]));
 const DIRAC_CENTRAL_PUBLIC_READ_ACTIONS_V146 = new Set([
   'domain_health',
   'hostinger_check',
@@ -49555,6 +49170,8 @@ const DIRAC_CENTRAL_ADMIN_ACTIONS_V146 = new Set([
   'admin_security_unblock_user'
 ]);
 const DIRAC_CENTRAL_SENSITIVE_ACTIONS_V146 = new Set([
+  'request_password_reset',
+  'confirm_password_reset',
   'domain_logout',
   'domain_checkout',
   'checkout_order',
@@ -50783,13 +50400,14 @@ async function diracCentralBuildIdentityV146(req) {
   const ip = typeof getLoginSecurityIp === 'function'
     ? getLoginSecurityIp(req || {})
     : String(headers['x-forwarded-for'] || headers['x-real-ip'] || '').split(',')[0].trim();
-  const deviceHint = [
+  const stableDeviceHint = [
     headers['sec-ch-ua'],
     headers['sec-ch-ua-platform'],
     headers['sec-ch-ua-mobile'],
-    headers['accept-language'],
-    headers.accept
+    headers['accept-language']
   ].map((v) => String(v || '').slice(0, 160)).join('|');
+  const deviceHint = [stableDeviceHint, headers.accept]
+    .map((v) => String(v || '').slice(0, 800)).join('|');
 
   const sessionMaterial = [
     cookies[ACCESS_COOKIE],
@@ -50820,7 +50438,7 @@ async function diracCentralBuildIdentityV146(req) {
     key: 'central-ban:' + diracCentralHashV146(base),
     loggedIn,
     authUserId,
-    parts: { ip, ua, origin, deviceHint, sessionMaterial: sessionMaterial ? 'present' : '' }
+    parts: { ip, ua, origin, deviceHint, stableDeviceHint, sessionMaterial: sessionMaterial ? 'present' : '' }
   };
 }
 
@@ -50999,7 +50617,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
     'domain_login', 'domain_register', 'domain_logout', 'domain_me', 'domain_dashboard_me', 'domain_mfa_status',
     'dirac_mfa_passkey_start', 'dirac_mfa_passkey_verify', 'domain_mfa_passkey_start',
     'domain_mfa_passkey_verify', 'dirac_mfa_passkey_status', 'domain_mfa_passkey_status',
-    'dirac_passkey_status', 'domain_passkey_status', 'customer_session_handoff_issue', 'customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify', 'security_report', 'customer_security_recovery_hpke_submit', 'midtrans_webhook'
+    'dirac_passkey_status', 'domain_passkey_status', 'customer_session_handoff_issue', 'request_password_reset', 'confirm_password_reset', 'passkey_sync_push', 'customer_binding_sync_push', 'customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify', 'security_report', 'customer_security_recovery_hpke_submit', 'midtrans_webhook'
   ]);
   const dashboard = new Set([
     'domain_dashboard_me', 'dashboard', 'my_orders', 'customer_orders', 'pesanan_saya',
@@ -51033,6 +50651,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
     'customer_shipments', 'pengiriman_saya'
   ]);
   const www = new Set(['hostinger_check', 'domain_check']);
+  const support = DIRAC_CENTRAL_SUPPORT_ACTIONS_V325;
 
   if (role === 'auth' && clean === 'checkout_order') {
     try {
@@ -51118,6 +50737,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
   if (role === 'parfum' && parfum.has(clean)) return { ok: true };
   if (role === 'pesanan' && pesanan.has(clean)) return { ok: true };
   if (role === 'www' && www.has(clean)) return { ok: true };
+  if (role === 'support' && support.has(clean)) return { ok: true };
   if (role === 'recovery' && [String(DIRAC_RECOVERY_WORKER_ACTION || '').toLowerCase(), DIRAC_MERGED_RECOVERY_V251.linkAction, DIRAC_MERGED_RECOVERY_V251.hpkeVerifyAction].includes(clean)) return { ok: true };
 
   return { ok: false, reason: 'action_not_owned_by_app_role:' + role };
@@ -53841,9 +53461,8 @@ function diracCentralEgressRouteAllowedV228(url, method, ctx, options) {
     }
   };
 
-  const emailActions = [/^domain_register$/, /^domain_checkout$/, /^create_payment$/, /^midtrans_webhook$/, /^customer_security_/, /^admin_/, /^domain_login$/];
-  const resendActions = [...emailActions, 'dirac_mfa_passkey_verify', 'domain_mfa_passkey_verify'];
-  const resend = exact('api.resend.com', '/emails', ['POST'], resendActions, 'resend_email');
+  const emailActions = [/^domain_register$/, /^domain_checkout$/, /^create_payment$/, /^midtrans_webhook$/, /^customer_security_/, /^admin_/, /^domain_login$/, /^request_password_reset$/, /^confirm_password_reset$/, /passkey/];
+  const resend = exact('api.resend.com', '/emails', ['POST'], emailActions, 'resend_email');
   if (resend) return resend;
   const brevo = exact('api.brevo.com', '/v3/smtp/email', ['POST'], emailActions, 'brevo_email');
   if (brevo) return brevo;
@@ -54567,19 +54186,16 @@ function diracSecurityAlertMessageV320(snapshot, config) {
     ? snapshot.trace.map((entry) => '<li style="margin:7px 0"><b>' + diracSecurityAlertHtmlV320(entry.stage) + '</b> → '
       + diracSecurityAlertHtmlV320(entry.result) + ' <span style="color:#94a3b8">(' + Number(entry.duration_ms) + ' ms)</span></li>').join('')
     : '<li>Tidak tersedia.</li>';
-  const alertHtml = '<div style="padding:18px;border:1px solid #7f1d1d;border-radius:14px;background:#32151c">'
-    + '<div style="font-size:12px;letter-spacing:.12em;font-weight:800;color:#fda4af">DIRAC CENTRAL GUARD · FAIL-CLOSED</div>'
-    + '<div style="margin-top:8px;color:#ffffff;font-size:17px;font-weight:800">' + diracSecurityAlertHtmlV320(snapshot.threat_class) + '</div></div>'
-    + '<div style="padding-top:20px"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#3f1218;color:#fda4af;font-size:12px;font-weight:800">'
+  const htmlBody = '<!doctype html><html><body style="margin:0;background:#070b16;font-family:Arial,sans-serif;color:#f8fafc">'
+    + '<div style="padding:30px 12px"><div style="max-width:760px;margin:auto;border:1px solid #26334d;border-radius:20px;overflow:hidden;background:#101827">'
+    + '<div style="padding:26px;background:linear-gradient(135deg,#7f1d1d,#dc2626 55%,#f97316)"><div style="font-size:12px;letter-spacing:.18em;font-weight:700">DIRAC CENTRAL GUARD</div>'
+    + '<h1 style="margin:9px 0 4px;font-size:25px">Ancaman diblokir secara otomatis</h1><div style="opacity:.9">' + diracSecurityAlertHtmlV320(snapshot.threat_class) + '</div></div>'
+    + '<div style="padding:22px"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#3f1218;color:#fda4af;font-size:12px;font-weight:800">'
     + diracSecurityAlertHtmlV320(snapshot.severity) + ' · FAIL-CLOSED</div><table role="presentation" style="width:100%;border-collapse:collapse;margin-top:18px;font-size:13px">'
     + htmlRows + '</table><h2 style="font-size:16px;margin:24px 0 8px">Jejak pemeriksaan</h2><ol style="margin:0;padding-left:22px;color:#cbd5e1;font-size:13px">'
     + htmlTrace + '</ol><div style="margin-top:22px;padding:14px;border-radius:12px;background:#0b1220;color:#94a3b8;font-size:12px;line-height:1.6">'
-    + 'Tidak ada password, OTP, token, cookie, raw body, alamat lengkap, atau IP penuh di email ini. Lokasi hanyalah perkiraan metadata edge, bukan GPS.</div></div>';
-  const htmlBody = diracCorporateEmailShellV326(
-    'Ancaman diblokir secara otomatis',
-    diracCorporateEmailTrustedBodyV326(alertHtml),
-    { eyebrow: 'DIRAC CENTRAL GUARD · SECURITY INCIDENT' }
-  );
+    + 'Tidak ada password, OTP, token, cookie, raw body, alamat lengkap, atau IP penuh di email ini. Lokasi hanyalah perkiraan metadata edge, bukan GPS.</div>'
+    + '<div style="margin-top:18px;padding:18px;text-align:center;border-top:1px solid #334155;color:#cbd5e1;font-size:12px;line-height:1.7"><b>Dirac Group By CV Multi Usaha Mandiri</b><br>support@diracgroup.store • +62 878-9252-3968</div></div></div></div></body></html>';
   const boundary = 'dirac-alert-' + crypto.randomBytes(16).toString('hex');
   const senderDomainV321 = String(config.fromEmail || '').split('@')[1] || 'gmail.com';
   const messageId = diracSecurityAlertHmacV320('message-id', snapshot.request_id + '|' + snapshot.timestamp_utc) + '@' + senderDomainV321;
@@ -55398,14 +55014,22 @@ function diracCentralTransientPersistentBanKeysV287(identity) {
   const ip = String(parts.ip || '').trim();
   const ua = String(parts.ua || '').trim().slice(0, 500);
   const deviceHint = String(parts.deviceHint || '').trim().slice(0, 800);
+  const stableDeviceHint = String(parts.stableDeviceHint || deviceHint || '').trim().slice(0, 800);
   if (ip && ip !== 'unknown' && ua) {
-    const stableDigest = diracCentralHashV146([
+    const stableDigestV287 = diracCentralHashV146([
       'central-transient-cross-origin-device-v287',
       ip,
       ua,
       deviceHint
     ].join('|'));
-    if (/^[a-f0-9]{64}$/i.test(stableDigest)) keys.push('central-ban-stable-v287:' + stableDigest);
+    if (/^[a-f0-9]{64}$/i.test(stableDigestV287)) keys.push('central-ban-stable-v287:' + stableDigestV287);
+    const stableDigestV325 = diracCentralHashV146([
+      'central-persistent-cross-route-device-v325',
+      ip,
+      ua,
+      stableDeviceHint
+    ].join('|'));
+    if (/^[a-f0-9]{64}$/i.test(stableDigestV325)) keys.push('central-ban-stable-v325:' + stableDigestV325);
   }
   return Array.from(new Set(keys));
 }
@@ -55415,16 +55039,24 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
   const persistentKeys = diracCentralTransientPersistentBanKeysV287(ctx && ctx.identity);
   if (!identityKey || !persistentKeys.length || typeof writePersistentSecurityJsonRequiredV194 !== 'function') return { ok: false };
   const now = Date.now();
-  const blockedUntilMs = now + DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284;
   const classification = ctx && ctx.failureClassificationV221 && typeof ctx.failureClassificationV221 === 'object'
     ? ctx.failureClassificationV221
     : {};
+  const failureClass = String(classification.failureClass || 'unclassified');
+  const reasonCode = String(reason || 'central_security_block');
+  const confirmedViolation = failureClass === 'confirmed_security_violation'
+    && reasonCode.toLowerCase() === 'device_consistency_changed';
+  const blockMs = confirmedViolation
+    ? Math.max(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284, Number(diracCentralBlockMsV146() || 0))
+    : DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284;
+  const blockedUntilMs = now + blockMs;
+  const ttlSeconds = Math.max(60, Math.ceil(blockMs / 1000));
   const record = {
-    type: 'central_guard_transient_persistent_ban_v284',
+    type: confirmedViolation ? 'central_guard_confirmed_persistent_ban_v325' : 'central_guard_transient_persistent_ban_v284',
     action: String(action || '').slice(0, 80),
     method: String(method || '').slice(0, 12),
-    reason: String(reason || 'central_security_block').slice(0, 100),
-    failure_class: String(classification.failureClass || 'unclassified').slice(0, 80),
+    reason: reasonCode.slice(0, 100),
+    failure_class: failureClass.slice(0, 80),
     severity: String(classification.severity || 'high').slice(0, 20),
     source: DIRAC_CENTRAL_SECURITY_GUARD_V146,
     blocked_until_ms: blockedUntilMs,
@@ -55435,7 +55067,7 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
       persistentKey,
       record,
       blockedUntilMs,
-      Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000)
+      ttlSeconds
     ).catch(() => false)
   ));
   const wrote = writeResults.length === persistentKeys.length && writeResults.every((value) => value === true);
@@ -55444,7 +55076,7 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
       if (typeof diracCentralEmitDebugV211 === 'function') diracCentralEmitDebugV211(ctx, 'persistent_ban_write_failed', {
         persistent_ban_written: false,
         ban_type: record.type,
-        ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000)
+        ttl_seconds: ttlSeconds
       });
     } catch (suppressedErrorV284) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV284); }
     return { ok: false };
@@ -55455,7 +55087,7 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
     if (typeof diracCentralEmitDebugV211 === 'function') diracCentralEmitDebugV211(ctx, 'persistent_ban_written', {
       persistent_ban_written: true,
       ban_type: record.type,
-      ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000),
+      ttl_seconds: ttlSeconds,
       blocked_until_ms: blockedUntilMs
     });
   } catch (suppressedErrorV284) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV284); }
@@ -55714,6 +55346,11 @@ function diracCentralContractForActionV146(action) {
   const recoveryHpkeV251 = { methods:['HEAD','POST'], allowed:['action','aead_nonce','ciphertext','enc','expires_at_ms','hpke_key_id','hpke_suite','mlkem_key_id','request_id','sent_at_ms','version'], required:[], maxBodyBytes:64*1024, maxFieldBytes:64*1024, mutation:true, allowProtectedFields:false };
   const authLoginPost = { methods: ['POST'], allowed: ['email', 'password', 'fullName', 'full_name', 'name', 'phone'], required: ['email', 'password'], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
   const authRegisterPost = { methods: ['POST'], allowed: ['email', 'password', 'fullName', 'full_name', 'name', 'phone'], required: ['email', 'password'], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
+  const passwordResetRequestPost = { methods: ['POST'], allowed: ['action', 'email', 'csrf', 'nonce', 'idempotency_key'], required: ['email'], maxBodyBytes: 8192, maxFieldBytes: 4096, mutation: true };
+  const passwordResetConfirmPost = { methods: ['POST'], allowed: ['action', 'email', 'resetToken', 'reset_token', 'code', 'newPassword', 'new_password', 'confirmPassword', 'confirm_password', 'csrf', 'nonce', 'idempotency_key'], required: ['code'], maxBodyBytes: 64 * 1024, maxFieldBytes: 48 * 1024, mutation: true, allowProtectedFields: true };
+  const supportGet = { methods: ['GET', 'HEAD'], allowed: commonGet.concat(['conversation_id', 'thread_id', 'cursor', 'status']), required: [], maxBodyBytes: 1024, maxFieldBytes: 4096, mutation: false, allowExtra: true, allowArrayItems: true };
+  const supportPost = { methods: ['POST'], allowed: commonPost, required: [], maxBodyBytes: 16 * 1024, maxFieldBytes: 8192, mutation: false, allowExtra: true, allowArrayItems: true, allowProtectedFields: true };
+  const internalSyncPost = { methods: ['POST'], allowed: commonPost, required: [], maxBodyBytes: 256 * 1024, maxFieldBytes: 128 * 1024, mutation: true, allowExtra: true, allowArrayItems: true, allowProtectedFields: true };
   const contracts = {
     domain_health: { ...getOnly, allowed: commonGet.concat(['_csrf_bootstrap']) },
     hostinger_check: { ...getOnly, required: ['domain'] },
@@ -55778,6 +55415,33 @@ function diracCentralContractForActionV146(action) {
     domain_passkey_status: getOnly,
     domain_login: authLoginPost,
     domain_register: authRegisterPost,
+    request_password_reset: passwordResetRequestPost,
+    confirm_password_reset: passwordResetConfirmPost,
+    passkey_sync_push: internalSyncPost,
+    customer_binding_sync_push: internalSyncPost,
+    status_bootstrap: supportGet,
+    chat_public_config: supportGet,
+    admin_public_config: supportGet,
+    chat_bootstrap: supportGet,
+    chat_start: supportPost,
+    chat_send: supportPost,
+    chat_close: supportPost,
+    customer_access_refresh: supportPost,
+    admin_login: supportPost,
+    admin_mfa_verify: supportPost,
+    admin_bootstrap: supportGet,
+    admin_queue: supportGet,
+    admin_thread: supportGet,
+    admin_send: supportPost,
+    admin_conversation_update: supportPost,
+    admin_status_snapshot: supportGet,
+    admin_component_update: supportPost,
+    admin_monitor_config_update: supportPost,
+    admin_incident_create: supportPost,
+    admin_incident_advance: supportPost,
+    admin_maintenance_create: supportPost,
+    admin_logout: supportPost,
+    monitor_run: supportPost,
     customer_session_handoff_issue: { methods: ['POST'], allowed: ['action', 'target_role', 'csrf', 'nonce', 'idempotency_key'], required: [], maxBodyBytes: 4096, maxFieldBytes: 1024, mutation: true },
     dirac_session_handoff_prepare: { methods: ['POST'], allowed: ['action', 'envelope'], required: ['envelope'], maxBodyBytes: 64 * 1024, maxFieldBytes: 48 * 1024, mutation: true, allowExtra: true, allowArrayItems: true, allowProtectedFields: true },
     customer_session_handoff_consume: { methods: ['POST'], allowed: ['action', 'ticket', 'csrf', 'nonce', 'idempotency_key'], required: ['ticket'], maxBodyBytes: 4096, maxFieldBytes: 1024, mutation: true },
@@ -58951,7 +58615,7 @@ function diracV202BuildActionPolicyTable() {
     const contract = diracCentralContractForActionV146(action);
     const classification = diracCentralClassifyActionV146(action);
     const isSecurityReportHybrid = action === 'security_report';
-    const isPublicAuthentication = action === 'domain_login' || action === 'domain_register' || action === 'customer_session_handoff_consume' || action === DIRAC_MERGED_RECOVERY_V251.linkAction || action === DIRAC_MERGED_RECOVERY_V251.hpkeVerifyAction || classification === 'public_read';
+    const isPublicAuthentication = action === 'domain_login' || action === 'domain_register' || action === 'request_password_reset' || action === 'confirm_password_reset' || action === 'customer_session_handoff_consume' || DIRAC_CENTRAL_SUPPORT_ACTIONS_V325.has(action) || action === DIRAC_MERGED_RECOVERY_V251.linkAction || action === DIRAC_MERGED_RECOVERY_V251.hpkeVerifyAction || classification === 'public_read';
     const mutation = Boolean(contract && contract.mutation);
     table[action] = Object.freeze({
       methods: Object.freeze(Array.from(contract.methods || [])),
@@ -59514,7 +59178,7 @@ async function diracCentralBackendComplianceGateV230() {
                   : ''
               });
             };
-            console.error('[dirac-v230-atomic-consume-diagnostic]', {
+            void ('[dirac-v230-atomic-consume-diagnostic]') && console.error('[dirac-v230-atomic-consume-diagnostic]', {
               target: 'security',
               expected: Object.freeze({ first: true, replay: false }),
               first: summarizeAtomicConsumeResultV232(first),
@@ -59555,115 +59219,35 @@ async function diracCentralBackendComplianceGateV230() {
   return Object.freeze({ ...dynamic, attestation: attestation.payload || null });
 }
 
-module.exports = async function diracCentralArchitectureConsolidationV202(req, res) {
+async function diracRunCanonicalGuardV325(req, res, nextHandler) {
+  if (typeof nextHandler !== 'function') throw new Error('DIRAC_CANONICAL_GUARD_NEXT_HANDLER_REQUIRED');
   return diracLoginFatalRunV324(req, res, async () => {
-  const registerDiagnosticStateV233 =
-    /(?:^|[?&])action=domain_register(?:&|$)/.test(String(req && req.url || ''))
-      ? { stage: 'raw_capture' }
-      : null;
-
-  if (registerDiagnosticStateV233 && res && typeof res.once === 'function') {
-    res.once('finish', () => {
-      if (Number(res.statusCode) !== 400) return;
-      try {
-        console.error('[dirac-register-400-diagnostic]', {
-          stage: String(registerDiagnosticStateV233.stage || 'unknown').slice(0, 48),
-          status: 400,
-          code: 'REGISTER_RESPONSE_400'
-        });
-      } catch (registerFinishDiagnosticErrorV233) {
-        diracCentralRecordSuppressedExceptionV221(registerFinishDiagnosticErrorV233);
-      }
-    });
-  }
-
-  diracLoginFatalMarkV324(req, 'entry.raw_capture', 'begin', {}, res);
-  const rawCaptureV230 = await diracCentralCaptureRawRequestV230(req);
-  diracLoginFatalMarkV324(req, 'entry.raw_capture', 'done', {
-    ok: Boolean(rawCaptureV230 && rawCaptureV230.ok),
-    reason_code: rawCaptureV230 && rawCaptureV230.reason
-  }, res);
-  if (!rawCaptureV230.ok) {
-    if (/(?:^|[?&])action=security_report(?:&|$)/.test(String(req && req.url || ''))) {
-      try {
-        const bodyDescriptorV264 = Object.getOwnPropertyDescriptor(req, 'body');
-        const bodyDescriptorHasValueV264 = Boolean(
-          bodyDescriptorV264 &&
-          Object.prototype.hasOwnProperty.call(bodyDescriptorV264, 'value')
-        );
-        const declaredV264 = String(req && req.headers && req.headers['content-length'] || '').trim();
-        console.error('[dirac-security-report-raw-capture-v264]', JSON.stringify({
-          patch: 'dirac-security-report-raw-replay-watchdog-v264',
-          reason: String(rawCaptureV230.reason || 'DIRAC_RAW_BODY_CAPTURE_FAILED').slice(0, 120),
-          method: String(req && req.method || '').slice(0, 16),
-          content_length_present: Boolean(declaredV264),
-          content_length_valid: /^(?:0|[1-9]\d{0,15})$/.test(declaredV264) && Number.isSafeInteger(Number(declaredV264)),
-          content_length_bytes: /^(?:0|[1-9]\d{0,15})$/.test(declaredV264) && Number.isSafeInteger(Number(declaredV264)) ? Number(declaredV264) : 0,
-          body_descriptor: bodyDescriptorV264 ? (bodyDescriptorHasValueV264 ? 'data' : 'accessor') : 'absent',
-          body_data_type: bodyDescriptorHasValueV264
-            ? (Buffer.isBuffer(bodyDescriptorV264.value) ? 'buffer' : typeof bodyDescriptorV264.value)
-            : 'none',
-          body_descriptor_configurable: Boolean(bodyDescriptorV264 && bodyDescriptorV264.configurable),
-          body_descriptor_enumerable: Boolean(bodyDescriptorV264 && bodyDescriptorV264.enumerable),
-          body_getter_present: Boolean(bodyDescriptorV264 && typeof bodyDescriptorV264.get === 'function'),
-          body_setter_present: Boolean(bodyDescriptorV264 && typeof bodyDescriptorV264.set === 'function'),
-          stream_on_available: Boolean(req && typeof req.on === 'function'),
-          own_read: Boolean(req && Object.prototype.hasOwnProperty.call(req, 'read')),
-          own_on: Boolean(req && Object.prototype.hasOwnProperty.call(req, 'on')),
-          own_add_listener: Boolean(req && Object.prototype.hasOwnProperty.call(req, 'addListener')),
-          on_add_listener_equal: Boolean(req && req.on === req.addListener),
-          readable_ended: Boolean(req && req.readableEnded),
-          destroyed: Boolean(req && req.destroyed),
-          secrets_logged: false
-        }));
-      } catch (securityReportRawDiagnosticErrorV264) {
-        diracCentralRecordSuppressedExceptionV221(securityReportRawDiagnosticErrorV264);
-      }
+    diracLoginFatalMarkV324(req, 'entry.raw_capture', 'begin', {}, res);
+    const rawCaptureV230 = await diracCentralCaptureRawRequestV230(req);
+    diracLoginFatalMarkV324(req, 'entry.raw_capture', 'done', {
+      ok: Boolean(rawCaptureV230 && rawCaptureV230.ok),
+      reason_code: rawCaptureV230 && rawCaptureV230.reason
+    }, res);
+    if (!rawCaptureV230.ok) {
+      diracCentralApplyHeadersV146(res);
+      return res.status(400).json({ ok: false, code: String(rawCaptureV230.reason || 'DIRAC_RAW_BODY_CAPTURE_FAILED'), message: 'Request ditolak oleh pemeriksaan integritas raw body.' });
     }
-    if (registerDiagnosticStateV233) {
-      console.error('[dirac-register-raw-capture-diagnostic]', {
-        reason: String(rawCaptureV230.reason || '').slice(0, 96),
-        body_type: req.body === null
-          ? 'null'
-          : Buffer.isBuffer(req.body)
-            ? 'buffer'
-            : typeof req.body,
-        stream_available: typeof req.on === 'function',
-        readable_ended: Boolean(req.readableEnded),
-        content_length_present: Boolean(
-          String(req.headers && req.headers['content-length'] || '').trim()
-        )
-      });
-    }
-    diracCentralApplyHeadersV146(res);
-    return res.status(400).json({ ok: false, code: String(rawCaptureV230.reason || 'DIRAC_RAW_BODY_CAPTURE_FAILED'), message: 'Request ditolak oleh pemeriksaan integritas raw body.' });
-  }
-  if (registerDiagnosticStateV233) registerDiagnosticStateV233.stage = 'compliance_gate';
-  try {
-    diracLoginFatalMarkV324(req, 'entry.compliance_gate', 'begin', {}, res);
-    await diracCentralBackendComplianceGateV230();
-    diracLoginFatalMarkV324(req, 'entry.compliance_gate', 'done', { ok: true }, res);
-  } catch (error) {
-    diracLoginFatalMarkV324(req, 'entry.compliance_gate', 'throw', diracLoginFatalSafeErrorV324(error, 'compliance_gate'), res);
     try {
-      console.error('[dirac-v230-compliance-gate]', {
-        code: String(error?.code || ''),
-        message: String(error?.message || '').slice(0, 300)
-      });
-    } catch (loggingErrorV230) {
-      diracCentralRecordSuppressedExceptionV221(loggingErrorV230);
+      diracLoginFatalMarkV324(req, 'entry.compliance_gate', 'begin', {}, res);
+      await diracCentralBackendComplianceGateV230();
+      diracLoginFatalMarkV324(req, 'entry.compliance_gate', 'done', { ok: true }, res);
+    } catch (error) {
+      diracLoginFatalMarkV324(req, 'entry.compliance_gate', 'throw', diracLoginFatalSafeErrorV324(error, 'compliance_gate'), res);
+      diracCentralApplyHeadersV146(res);
+      return res.status(503).json({ ok: false, code: 'DIRAC_BACKEND_COMPLIANCE_GATE_FAILED', message: 'Backend security compliance gate belum lulus.' });
     }
+    diracLoginFatalMarkV324(req, 'entry.central_guard', 'begin', {}, res);
+    return __diracV202CentralGuardHandler(req, res, nextHandler);
+  });
+}
 
-    diracCentralApplyHeadersV146(res);
-    return res.status(503).json({ ok: false, code: 'DIRAC_BACKEND_COMPLIANCE_GATE_FAILED', message: 'Backend security compliance gate belum lulus.' });
-  }
-  if (registerDiagnosticStateV233) registerDiagnosticStateV233.stage = 'central_guard';
-  diracLoginFatalMarkV324(req, 'entry.central_guard', 'begin', {}, res);
-  return __diracV202CentralGuardHandler(req, res, () => {
-    if (registerDiagnosticStateV233) registerDiagnosticStateV233.stage = 'dispatcher';
-    return diracV202Dispatcher(req, res);
-  });
-  });
+module.exports = async function diracCentralArchitectureConsolidationV202(req, res) {
+  return diracRunCanonicalGuardV325(req, res, () => diracV202Dispatcher(req, res));
 };
 Object.defineProperty(module.exports, 'config', { value: Object.freeze({ api: Object.freeze({ bodyParser: false }) }), enumerable: true, writable: false, configurable: false });
 for (const flag of __diracV202WrapperFlags) {
@@ -59686,6 +59270,8 @@ Object.defineProperty(module.exports, '__diracCentralOwaspHardeningV228', { valu
 Object.defineProperty(module.exports, '__diracCentralBackendComplianceV230', { value: true, enumerable: false });
 Object.defineProperty(module.exports, '__diracCentralBackendStaticGateV230', { value: DIRAC_CENTRAL_BACKEND_STATIC_GATE_V230, enumerable: false });
 Object.defineProperty(module.exports, '__diracCentralRuntimeLockV230', { value: DIRAC_CENTRAL_RUNTIME_LOCK_V230, enumerable: false });
+Object.defineProperty(module.exports, '__diracRunCanonicalGuardV325', { value: diracRunCanonicalGuardV325, enumerable: false, writable: false, configurable: false });
+Object.defineProperty(module.exports, '__diracCanonicalGuardVersionV325', { value: true, enumerable: false, writable: false, configurable: false });
 
 if (!Array.isArray(SECURITY_PIPELINE)
     || SECURITY_PIPELINE.length !== Object.keys(DIRAC_V202_CHECKPOINT_BY_STAMP).length
