@@ -113,9 +113,9 @@ function diracLoginFatalSafeMetaV324(meta) {
   }
   return out;
 }
-
+function customerSecurityLostPasskeyEmailWibV325(value) { const millis = Date.parse(String(value || '').trim()); if (!Number.isFinite(millis)) return 'Waktu WIB tidak tersedia'; const date = new Date(millis + (7 * 60 * 60 * 1000)); if (!Number.isFinite(date.getTime())) return 'Waktu WIB tidak tersedia'; const pad = (number) => String(number).padStart(2, '0'); const months = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']; return pad(date.getUTCDate()) + ' ' + months[date.getUTCMonth()] + ' ' + date.getUTCFullYear() + ', ' + pad(date.getUTCHours()) + ':' + pad(date.getUTCMinutes()) + ':' + pad(date.getUTCSeconds()) + ' WIB'; }
 function diracLoginFatalWriteV324(payload, fatal) {
-  try {
+  try { if (!fatal) return false;
     const line = '[dirac-login-fatal-v324] ' + JSON.stringify(payload).slice(0, fatal ? 4096 : 2048) + '\n';
     require('fs').writeSync(2, line);
     return true;
@@ -11022,7 +11022,7 @@ function customerSecurityRecoveryDotStuff(value) {
 
 function customerSecurityRecoveryEmailTextV156(context = {}) {
   const requestId = String(context.requestId || '');
-  const expiresAt = String(context.expiresAt || '');
+  const expiresAt = customerSecurityLostPasskeyEmailWibV325(context.expiresAt);
   const emailPdfCode = String(context.emailPdfCode || '').padStart(2, '0').slice(-2);
   return [
     'DIRACGROUP SECURE RECOVERY',
@@ -11043,31 +11043,31 @@ function customerSecurityRecoveryEmailTextV156(context = {}) {
 
 function customerSecurityRecoveryEmailHtmlV156(context = {}) {
   const requestId = String(context.requestId || '').replace(/[<>&]/g, '');
-  const expiresAt = String(context.expiresAt || '').replace(/[<>&]/g, '');
+  const expiresAt = customerSecurityLostPasskeyEmailWibV325(context.expiresAt).replace(/[<>&]/g, '');
   const emailPdfCode = String(context.emailPdfCode || '').padStart(2, '0').slice(-2).replace(/[^0-9]/g, '');
-  return '<div style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#111827">'
-    + '<div style="max-width:640px;margin:0 auto;padding:28px 16px">'
-    + '<div style="background:#0f172a;color:#ffffff;border-radius:18px 18px 0 0;padding:22px 24px">'
-    + '<div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#93c5fd">DiracGroup Secure Recovery</div>'
-    + '<div style="font-size:24px;font-weight:700;margin-top:8px">Dokumen Pemulihan Passkey</div>'
-    + '<div style="font-size:13px;color:#cbd5e1;margin-top:6px">File PDF terenkripsi terlampir pada email ini.</div>'
+  return '<div style="margin:0;padding:0;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;font-family:Arial,Helvetica,sans-serif;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">' + '<div style="max-width:640px;margin:0 auto;padding:28px 16px">'
+    + '<div style="background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;border:1px solid #4b5563;border-radius:18px 18px 0 0;padding:22px 24px">'
+    + '<div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">DiracGroup Secure Recovery</div>' + '<div style="font-size:24px;font-weight:700;margin-top:8px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">Dokumen Pemulihan Passkey</div>'
+    + '<div style="font-size:13px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;margin-top:6px">File PDF terenkripsi terlampir pada email ini.</div>'
     + '</div>'
-    + '<div style="background:#ffffff;border:1px solid #e5e7eb;border-top:0;border-radius:0 0 18px 18px;padding:24px">'
-    + '<p style="margin:0 0 14px;line-height:1.6">Permintaan pemulihan Passkey Anda telah diproses. Lampiran PDF hanya dapat dibuka dengan kombinasi password yang benar.</p>'
-    + '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;padding:16px;margin:18px 0">'
-    + '<div style="font-size:12px;color:#1d4ed8;font-weight:700;text-transform:uppercase;letter-spacing:.08em">Kode 2 digit email</div>'
-    + '<div style="font-size:34px;letter-spacing:.22em;font-weight:800;color:#0f172a;margin-top:6px">' + emailPdfCode + '</div>'
-    + '<div style="font-size:12px;color:#475569;margin-top:6px">Gabungkan setelah kode website, lalu lanjutkan dengan password akun Anda.</div>'
+    + '<div style="background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;border:1px solid #4b5563;border-top:0;padding:24px">'
+    + '<p style="margin:0 0 14px;line-height:1.6;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">Permintaan pemulihan Passkey Anda telah diproses. Lampiran PDF hanya dapat dibuka dengan kombinasi password yang benar.</p>'
+    + '<div style="background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;border:1px solid #7187ff;border-radius:14px;padding:16px;margin:18px 0;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">'
+    + '<div style="font-size:12px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-weight:700;text-transform:uppercase;letter-spacing:.08em">Kode 2 digit email</div>'
+    + '<div style="font-size:34px;letter-spacing:.22em;font-weight:800;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;margin-top:6px">' + emailPdfCode + '</div>'
+    + '<div style="font-size:12px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;margin-top:6px">Gabungkan setelah kode website, lalu lanjutkan dengan password akun Anda.</div>'
     + '</div>'
-    + '<table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px">'
-    + '<tr><td style="padding:10px;border-bottom:1px solid #e5e7eb;color:#64748b">Request ID</td><td style="padding:10px;border-bottom:1px solid #e5e7eb;font-weight:700;text-align:right">' + requestId + '</td></tr>'
-    + '<tr><td style="padding:10px;border-bottom:1px solid #e5e7eb;color:#64748b">Berlaku sampai</td><td style="padding:10px;border-bottom:1px solid #e5e7eb;font-weight:700;text-align:right">' + expiresAt + '</td></tr>'
+    + '<table role="presentation" bgcolor="#000000" style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">'
+    + '<tr><td style="padding:10px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">Request ID</td><td style="padding:10px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-weight:700;text-align:right;word-break:break-all">' + requestId + '</td></tr>'
+    + '<tr><td style="padding:10px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">Berlaku sampai</td><td style="padding:10px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-weight:700;text-align:right">' + expiresAt + '</td></tr>'
     + '</table>'
-    + '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:14px;line-height:1.55;font-size:13px;color:#7c2d12">'
+    + '<div style="background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;border:1px solid #f5b521;border-radius:14px;padding:14px;line-height:1.55;font-size:13px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">'
     + '<b>Cara membuka PDF:</b><br>Password PDF = kode website + 2 digit kode email + password akun Anda. Ketik berurutan tanpa spasi. Jangan bagikan kode atau file ini kepada siapa pun.'
     + '</div>'
-    + '<p style="font-size:12px;color:#64748b;margin-top:18px;line-height:1.6">Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan DiracGroup.</p>'
-    + '</div></div></div>';
+    + '<p style="font-size:12px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;margin-top:18px;line-height:1.6">Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan DiracGroup.</p>'
+    + '</div>'
+    + '<div style="background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;border:1px solid #4b5563;border-top:0;border-radius:0 0 18px 18px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">' + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td height="5" bgcolor="#7187ff" style="height:5px;line-height:5px;font-size:0;background:#7187ff">&nbsp;</td><td width="10" bgcolor="#000000" style="width:10px;background:#000000">&nbsp;</td><td width="84" bgcolor="#18a8d8" style="width:84px;background:#18a8d8">&nbsp;</td><td width="10" bgcolor="#000000" style="width:10px;background:#000000">&nbsp;</td><td width="32" bgcolor="#f5b521" style="width:32px;background:#f5b521">&nbsp;</td></tr></table>'
+    + '<div style="padding:18px 24px;font-size:12px;line-height:1.7;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important"><b>DG · DIRAC GROUP</b><br>SECURE RECOVERY MAIL · ENCRYPTED • PRIVATE<br>Email otomatis—jangan membalas atau membagikan kode recovery.</div>' + '</div></div></div>';
 }
 
 async function customerSecuritySmtpRead(socket) {
@@ -11122,7 +11122,7 @@ async function customerSecuritySendRecoveryEmailViaSmtp(to, fileName, fileBuffer
   const text = [
     'File recovery Passkey terenkripsi terlampir.',
     'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + String(context.expiresAt || ''),
+    'Berlaku sampai: ' + customerSecurityLostPasskeyEmailWibV325(context.expiresAt),
     'Jangan kirimkan file ini ke pihak lain. Kata sandi file hanya diberikan owner setelah verifikasi SOP.'
   ].join('\r\n\r\n');
   const html = customerSecurityRecoveryEmailHtmlV156(context);
@@ -11191,7 +11191,7 @@ async function customerSecuritySendLostPasskeyRecoveryEmail(to, fileName, fileBu
   const text = [
     'File recovery Passkey terenkripsi terlampir.',
     'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + String(context.expiresAt || ''),
+    'Berlaku sampai: ' + customerSecurityLostPasskeyEmailWibV325(context.expiresAt),
     'Jangan kirimkan file ini ke pihak lain. Kata sandi file hanya diberikan owner setelah verifikasi SOP.'
   ].join('\n\n');
   const html = customerSecurityRecoveryEmailHtmlV156(context);
@@ -26100,7 +26100,7 @@ function orderMailBuildNewOrderMessages(data) {
   const productCardsHtml = orderMailProductCardsHtml(data.items, data.order.currency);
   const paymentLine = data.payment.url ? `\nLink pembayaran: ${data.payment.url}` : '';
   const paymentHtml = data.payment.url
-    ? `<p style="margin:18px 0 0"><a href="${orderMailEscapeHtml(data.payment.url)}" style="display:inline-block;padding:12px 18px;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;border-radius:10px;font-size:14px;font-weight:700;border:1px solid #4b5563">Buka Link Pembayaran</a></p>`
+    ? `<p style="margin:18px 0 0"><a href="${orderMailEscapeHtml(data.payment.url)}" style="display:inline-block;padding:12px 18px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;border-radius:10px;font-size:14px;font-weight:700;border:1px solid #4b5563">Buka Link Pembayaran</a></p>`
     : '';
 
   const paid = ['paid', 'success', 'settled', 'settlement', 'capture'].includes(String(data.order.payment_status || '').toLowerCase());
@@ -26216,7 +26216,7 @@ function orderMailBuildNewOrderMessages(data) {
     ${productCardsHtml}
     <h3 style="margin:22px 0 12px;font-size:16px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Rincian pesanan</h3>
     ${itemsHtml}
-  `, { badge: paid ? 'PAID' : 'OWNER', total, showActions: false, showPromoImage: false });
+  `, { badge: paid ? 'PAID' : 'OWNER', total, showActions: false, showPromoImage: true });
 
   return { customerSubject, ownerSubject, customerText, ownerText, customerHtml, ownerHtml };
 }
@@ -26252,15 +26252,15 @@ function orderMailHtmlShell(title, body, options = {}) {
   const showPromoImage = options.showPromoImage !== false;
   const actionsHtml = showActions ? `
         <div style="margin-top:24px;text-align:left;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-          <a href="${orderMailEscapeHtml(orderUrl)}" style="display:inline-block;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:13px 18px;border-radius:10px;margin:0 8px 8px 0;border:1px solid #4b5563">Lihat pesanan</a>
-          <a href="mailto:${supportEmail}" style="display:inline-block;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:13px 18px;border-radius:10px;margin:0 8px 8px 0;border:1px solid #4b5563">Hubungi support</a>
+          <a href="${orderMailEscapeHtml(orderUrl)}" style="display:inline-block;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:13px 18px;border-radius:10px;margin:0 8px 8px 0;border:1px solid #4b5563">Lihat pesanan</a>
+          <a href="mailto:${supportEmail}" style="display:inline-block;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:13px 18px;border-radius:10px;margin:0 8px 8px 0;border:1px solid #4b5563">Hubungi support</a>
           <a href="${orderMailEscapeHtml(whatsappUrl)}" style="display:inline-block;background:#0f3b24;background-color:#0f3b24;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:13px 18px;border-radius:10px;margin:0 0 8px 0;border:1px solid #166534">Butuh bantuan</a>
         </div>` : '';
   const promoHtml = showPromoImage ? `
       <tr>
-        <td bgcolor="#2b2f36" style="padding:0 32px 26px;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+        <td class="dirac-order-black" bgcolor="#000000" style="padding:0 32px 26px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
           <a href="${orderMailEscapeHtml(orderUrl)}" style="text-decoration:none;border:0;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-            <img src="${orderMailEscapeHtml(promoImage)}" width="616" alt="Dirac Group" style="display:block;width:100%;max-width:616px;height:auto;border:0;border-radius:14px;background:#2b2f36;outline:none;text-decoration:none;box-shadow:0 12px 28px rgba(0,0,0,.42)">
+            <img src="${orderMailEscapeHtml(promoImage)}" width="616" alt="Dirac Group" style="display:block;width:100%;max-width:616px;height:auto;border:0;border-radius:14px;background:#000000;outline:none;text-decoration:none;box-shadow:0 12px 28px rgba(0,0,0,.42)">
           </a>
         </td>
       </tr>` : '';
@@ -26270,24 +26270,24 @@ function orderMailHtmlShell(title, body, options = {}) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <meta name="supported-color-schemes" content="light">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
   <style>
-    html, body { background:#2b2f36!important; background-color:#2b2f36!important; }
-    :root { color-scheme:light; supported-color-schemes:light; }
+    html, body { background:#000000!important; background-color:#000000!important; }
+    :root { color-scheme:light dark; supported-color-schemes:light dark; } .dirac-order-black { background-color:#000000!important; background-image:linear-gradient(#000000,#000000)!important; } u + .dirac-order-body .dirac-order-black { background-color:#000000!important; background-image:linear-gradient(#000000,#000000)!important; }
     body, table, td, div, p, span, strong, h1, h2, h3, th, a { color:#ffffff!important; -webkit-text-fill-color:#ffffff!important; mso-color-alt:#ffffff!important; }
     a[x-apple-data-detectors], .x-gmail-data-detectors, .ii a[href] { color:#ffffff!important; -webkit-text-fill-color:#ffffff!important; mso-color-alt:#ffffff!important; }
     @media (prefers-color-scheme: dark) { body, table, td, div, p, span, strong, h1, h2, h3, th, a { color:#ffffff!important; -webkit-text-fill-color:#ffffff!important; } }
   </style>
   <title>${orderMailEscapeHtml(title)}</title>
 </head>
-<body bgcolor="#2b2f36" style="margin:0!important;padding:0!important;background:#2b2f36;background-color:#2b2f36;font-family:Arial,Helvetica,sans-serif;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;background-image:none!important;margin:0;padding:24px 0;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+<body class="dirac-order-body dirac-order-black" bgcolor="#000000" style="margin:0!important;padding:0!important;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;font-family:Arial,Helvetica,sans-serif;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+  <table class="dirac-order-black" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#000000" style="background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;margin:0;padding:24px 0;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
     <tr>
-      <td align="center" bgcolor="#2b2f36" style="padding:0 12px;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#2b2f36" style="max-width:680px;background:#2b2f36;background-color:#2b2f36;border-radius:18px;overflow:hidden;border:1px solid #4b5563;box-shadow:0 18px 46px rgba(0,0,0,.68);color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+      <td class="dirac-order-black" align="center" bgcolor="#000000" style="padding:0 12px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+        <table class="dirac-order-black" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#000000" style="max-width:680px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;border-radius:18px;overflow:hidden;border:1px solid #4b5563;box-shadow:0 18px 46px rgba(0,0,0,.68);color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
           <tr>
-            <td bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;padding:30px 32px;background-image:none!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+            <td class="dirac-order-black" bgcolor="#000000" style="background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;padding:30px 32px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
                 <tr>
                   <td valign="top" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
@@ -26303,18 +26303,18 @@ function orderMailHtmlShell(title, body, options = {}) {
             </td>
           </tr>
           <tr>
-            <td bgcolor="#2b2f36" style="padding:28px 32px;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+            <td class="dirac-order-black" bgcolor="#000000" style="padding:28px 32px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
               ${body}
               ${actionsHtml}
             </td>
           </tr>
           ${promoHtml}
           <tr>
-            <td bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;padding:24px 32px;text-align:center;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;line-height:1.8;border-top:1px solid #4b5563">
-              Email ini dikirim otomatis oleh sistem Dirac Group.<br>
-              Hubungi support hanya ke <a href="mailto:${supportEmail}" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-weight:900">${supportEmail}</a><br>
-              <a href="${orderMailEscapeHtml(whatsappUrl)}" style="display:inline-block;margin-top:12px;background:#0f3b24;background-color:#0f3b24;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:12px 18px;border-radius:10px;border:1px solid #166534">Butuh bantuan</a><br><br>
-              © 2026 Dirac Group. All rights reserved.
+            <td class="dirac-order-black" bgcolor="#000000" style="background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;padding:0;text-align:center;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;line-height:1.8;border-top:1px solid #4b5563"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td height="5" bgcolor="#7187ff" style="height:5px;line-height:5px;font-size:0;background:#7187ff">&nbsp;</td><td width="10" bgcolor="#000000" style="width:10px;background:#000000">&nbsp;</td><td width="84" bgcolor="#18a8d8" style="width:84px;background:#18a8d8">&nbsp;</td><td width="10" bgcolor="#000000" style="width:10px;background:#000000">&nbsp;</td><td width="32" bgcolor="#f5b521" style="width:32px;background:#f5b521">&nbsp;</td></tr></table>
+              <table role="presentation" align="center" cellspacing="0" cellpadding="0" border="0" style="margin:20px auto 12px"><tr><td width="46" valign="middle"><div style="width:38px;height:38px;line-height:38px;text-align:center;background:#172554;border:1px solid #7187ff;border-radius:10px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-weight:900">DG</div></td><td valign="middle" align="left" style="padding-left:12px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-size:12px;line-height:1.55;letter-spacing:.04em"><b>DIRAC GROUP</b><br>SECURE ORDER MAIL · AUTOMATED • VERIFIED</td></tr></table><div style="padding:0 32px 24px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">
+                Email ini dikirim otomatis oleh sistem Dirac Group.<br>Hubungi support hanya ke <a href="mailto:${supportEmail}" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-weight:900">${supportEmail}</a><br>
+                <a href="${orderMailEscapeHtml(whatsappUrl)}" style="display:inline-block;margin-top:12px;background:#0f3b24;background-color:#0f3b24;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:12px 18px;border-radius:10px;border:1px solid #166534">Butuh bantuan</a><br><br>
+                © 2026 Dirac Group. All rights reserved.</div>
             </td>
           </tr>
         </table>
@@ -26325,8 +26325,8 @@ function orderMailHtmlShell(title, body, options = {}) {
 </html>`;
 }
 function orderMailInfoTable(rows) {
-  const body = (rows || []).map(([key, value]) => `<tr><td bgcolor="#2b2f36" style="padding:13px 16px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;width:42%;font-size:14px;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(key)}</td><td bgcolor="#2b2f36" style="padding:13px 16px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;font-weight:700;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(value)}</td></tr>`).join('');
-  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;border-spacing:0;width:100%;margin:14px 0 20px;border:1px solid #4b5563;border-radius:14px;overflow:hidden;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${body}</table>`;
+  const body = (rows || []).map(([key, value]) => `<tr><td bgcolor="#000000" style="padding:13px 16px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;width:42%;font-size:14px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important">${orderMailEscapeHtml(key)}</td><td bgcolor="#000000" style="padding:13px 16px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;font-weight:700;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important">${orderMailEscapeHtml(value)}</td></tr>`).join('');
+  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;border-spacing:0;width:100%;margin:14px 0 20px;border:1px solid #4b5563;border-radius:14px;overflow:hidden;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${body}</table>`;
 }
 function orderMailItemsText(items, currency = 'IDR') {
   const rows = Array.isArray(items) && items.length ? items : [{ title: 'Total pesanan', quantity: 1, unit_price: 0, subtotal: 0 }];
@@ -26339,9 +26339,9 @@ function orderMailItemsHtml(items, currency = 'IDR') {
   const rows = Array.isArray(items) && items.length ? items : [{ title: 'Total pesanan', quantity: 1, unit_price: 0, subtotal: 0 }];
   const body = rows.map((item, index) => {
     const subtotal = item.subtotal || (item.unit_price * item.quantity) || 0;
-    return `<tr><td style="padding:12px 14px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;background:#2b2f36;background-color:#2b2f36">${index + 1}</td><td style="padding:12px 14px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;font-weight:700;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(item.title)}${item.description ? `<div style="font-size:12px;font-weight:400;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-top:4px;line-height:1.5">${orderMailEscapeHtml(item.description)}</div>` : ''}</td><td style="padding:12px 14px;border-bottom:1px solid #4b5563;text-align:center;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(item.quantity)}</td><td style="padding:12px 14px;border-bottom:1px solid #4b5563;text-align:right;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;font-weight:800;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(orderMailFormatCurrency(subtotal, currency))}</td></tr>`;
+    return `<tr><td style="padding:12px 14px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important">${index + 1}</td><td style="padding:12px 14px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;font-weight:700;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important">${orderMailEscapeHtml(item.title)}${item.description ? `<div style="font-size:12px;font-weight:400;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-top:4px;line-height:1.5">${orderMailEscapeHtml(item.description)}</div>` : ''}</td><td style="padding:12px 14px;border-bottom:1px solid #4b5563;text-align:center;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important">${orderMailEscapeHtml(item.quantity)}</td><td style="padding:12px 14px;border-bottom:1px solid #4b5563;text-align:right;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;font-weight:800;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important">${orderMailEscapeHtml(orderMailFormatCurrency(subtotal, currency))}</td></tr>`;
   }).join('');
-  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;border-spacing:0;width:100%;border:1px solid #4b5563;border-radius:14px;overflow:hidden;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><thead><tr><th style="padding:12px 14px;text-align:left;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">#</th><th style="padding:12px 14px;text-align:left;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Item</th><th style="padding:12px 14px;text-align:center;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Qty</th><th style="padding:12px 14px;text-align:right;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Subtotal</th></tr></thead><tbody>${body}</tbody></table>`;
+  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;border-spacing:0;width:100%;border:1px solid #4b5563;border-radius:14px;overflow:hidden;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><thead><tr><th style="padding:12px 14px;text-align:left;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">#</th><th style="padding:12px 14px;text-align:left;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Item</th><th style="padding:12px 14px;text-align:center;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Qty</th><th style="padding:12px 14px;text-align:right;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Subtotal</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 function orderMailProductCardsHtml(items, currency = 'IDR') {
   const rows = (Array.isArray(items) ? items : []).filter((item) => item && (item.image_url || item.title));
@@ -26349,9 +26349,9 @@ function orderMailProductCardsHtml(items, currency = 'IDR') {
   const cards = rows.map((item) => {
     const image = orderMailAssetUrl(item.image_url || item.img || '') || orderMailDefaultProductImageUrl();
     const amount = orderMailFormatCurrency(item.subtotal || ((item.unit_price || 0) * (item.quantity || 1)), currency);
-    return `<tr><td style="padding:18px;border-bottom:1px solid #4b5563;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><tr>${image ? `<td width="128" valign="top" style="padding-right:16px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><img src="${orderMailEscapeHtml(image)}" width="112" alt="${orderMailEscapeHtml(item.title || 'Produk')}" style="display:block;width:112px;max-width:112px;height:auto;border-radius:14px;border:1px solid #4b5563;background:#2b2f36"></td>` : ''}<td valign="top" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><div style="font-size:16px;line-height:1.45;font-weight:800;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-bottom:6px">${orderMailEscapeHtml(item.title || 'Item pesanan')}</div>${item.description ? `<div style="font-size:13px;line-height:1.6;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-bottom:10px">${orderMailEscapeHtml(item.description)}</div>` : ''}<div style="font-size:13px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Qty <strong style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(item.quantity || 1)}</strong> · Subtotal <strong style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(amount)}</strong></div></td></tr></table></td></tr>`;
+    return `<tr><td style="padding:18px;border-bottom:1px solid #4b5563;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><tr>${image ? `<td width="128" valign="top" style="padding-right:16px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><img src="${orderMailEscapeHtml(image)}" width="112" alt="${orderMailEscapeHtml(item.title || 'Produk')}" style="display:block;width:112px;max-width:112px;height:auto;border-radius:14px;border:1px solid #4b5563;background:#000000"></td>` : ''}<td valign="top" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><div style="font-size:16px;line-height:1.45;font-weight:800;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-bottom:6px">${orderMailEscapeHtml(item.title || 'Item pesanan')}</div>${item.description ? `<div style="font-size:13px;line-height:1.6;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-bottom:10px">${orderMailEscapeHtml(item.description)}</div>` : ''}<div style="font-size:13px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Qty <strong style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(item.quantity || 1)}</strong> · Subtotal <strong style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(amount)}</strong></div></td></tr></table></td></tr>`;
   }).join('');
-  return `<h3 style="margin:22px 0 12px;font-size:16px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Produk yang dibeli</h3><table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;border-spacing:0;width:100%;border:1px solid #4b5563;border-radius:14px;overflow:hidden;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${cards}</table>`;
+  return `<h3 style="margin:22px 0 12px;font-size:16px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Produk yang dibeli</h3><table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;border-spacing:0;width:100%;border:1px solid #4b5563;border-radius:14px;overflow:hidden;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${cards}</table>`;
 }
 async function orderMailSendViaSmtpSafeLegacyV1(config, message) {
   try {
@@ -41272,44 +41272,44 @@ function customerSecurityLostPasskeyRecoveryEmailBannerUrlV172() {
 /* RECO donor source lines 4444-4488 */
 function customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(context = {}) {
   const requestId = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.requestId || '');
-  const expiresAt = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.expiresAt || '');
+  const expiresAt = customerSecurityLostPasskeyEmailEscapeHtmlV157(customerSecurityLostPasskeyEmailWibV325(context.expiresAt));
   const recoveryLink = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.recoveryLink || '');
   const emailSecret = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.emailSecret || '');
   const bannerUrl = customerSecurityLostPasskeyEmailEscapeHtmlV157(customerSecurityLostPasskeyRecoveryEmailBannerUrlV172());
 
   return '<!doctype html>'
-    + '<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Dirac Group Secure Recovery</title></head>'
-    + '<body style="margin:0;padding:0;background:#1f1f1f;font-family:Arial,Helvetica,sans-serif;color:#f1f3f4">'
-    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#1f1f1f;margin:0;padding:24px 0"><tr><td align="center" style="padding:0 12px">'
-    + '<table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="width:600px;max-width:100%;border-collapse:collapse;border:1px solid #b8c3d9;background:#202124">'
+    + '<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="supported-color-schemes" content="light dark"><style>:root{color-scheme:light dark;supported-color-schemes:light dark}.dirac-black{background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important}u+.dirac-body .dirac-black{background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important}</style><title>Dirac Group Secure Recovery</title></head>'
+    + '<body class="dirac-body dirac-black" bgcolor="#000000" style="margin:0;padding:0;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;font-family:Arial,Helvetica,sans-serif;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">'
+    + '<table class="dirac-black" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#000000" style="width:100%;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;margin:0;padding:24px 0;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><tr><td align="center" bgcolor="#000000" style="padding:0 12px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important">'
+    + '<table class="dirac-black" role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#000000" style="width:600px;max-width:100%;border-collapse:collapse;border:1px solid #4b5563;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">'
     + '<tr><td style="height:2px;line-height:2px;font-size:0;background:#b8c3d9">&nbsp;</td></tr>'
-    + '<tr><td style="padding:0;border-bottom:1px solid #b8c3d9;background:#202124">'
+    + '<tr><td class="dirac-black" bgcolor="#000000" style="padding:0;border-bottom:1px solid #4b5563;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important">'
     + '<img src="' + bannerUrl + '" width="600" alt="Dirac Group Secure Recovery" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none">'
     + '</td></tr>'
-    + '<tr><td style="padding:28px 28px 12px;background:#202124;color:#f1f3f4">'
-    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Yth. Pengguna Dirac Group,</p>'
-    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Permintaan pemulihan Passkey Anda telah diterima dan paket recovery terenkripsi sudah disiapkan oleh sistem Dirac Group.</p>'
-    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#f1f3f4">Silakan buka link resmi berikut untuk mengambil vault recovery. Proses decrypt tetap dilakukan secara lokal di browser dan membutuhkan Secret Email, Secret Website, serta material password terbaru akun Anda.</p>'
-    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;margin:20px 0 24px;background:#202124;border:1px solid #b8c3d9">'
-    + '<tr><td style="padding:13px 14px;border-bottom:1px solid #b8c3d9;color:#d7dbe3;font-size:13px">Request ID</td><td style="padding:13px 14px;border-bottom:1px solid #b8c3d9;color:#ffffff;font-size:13px;font-weight:700;text-align:right;word-break:break-all">' + requestId + '</td></tr>'
-    + '<tr><td style="padding:13px 14px;color:#d7dbe3;font-size:13px">Berlaku sampai</td><td style="padding:13px 14px;color:#ffffff;font-size:13px;font-weight:700;text-align:right;word-break:break-all">' + expiresAt + '</td></tr>'
+    + '<tr><td class="dirac-black" bgcolor="#000000" style="padding:28px 28px 12px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">'
+    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Yth. Pengguna Dirac Group,</p>'
+    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Permintaan pemulihan Passkey Anda telah diterima dan paket recovery terenkripsi sudah disiapkan oleh sistem Dirac Group.</p>'
+    + '<p style="margin:0 0 18px;font-size:15px;line-height:1.8;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Silakan buka link resmi berikut untuk mengambil vault recovery. Proses decrypt tetap dilakukan secara lokal di browser dan membutuhkan Secret Email, Secret Website, serta material password terbaru akun Anda.</p>'
+    + '<table class="dirac-black" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#000000" style="border-collapse:collapse;margin:20px 0 24px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;border:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">'
+    + '<tr><td style="padding:13px 14px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-size:13px">Request ID</td><td style="padding:13px 14px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-size:13px;font-weight:700;text-align:right;word-break:break-all">' + requestId + '</td></tr>'
+    + '<tr><td style="padding:13px 14px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-size:13px">Berlaku sampai</td><td style="padding:13px 14px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-size:13px;font-weight:700;text-align:right;word-break:break-all">' + expiresAt + '</td></tr>'
     + '</table>'
     + '<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:6px 0 24px"><tr><td bgcolor="#6f8df7" style="border-radius:9px">'
-    + '<a href="' + recoveryLink + '" style="display:inline-block;padding:13px 18px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:9px">Buka Recovery Resmi</a>'
+    + '<a href="' + recoveryLink + '" style="display:inline-block;padding:13px 18px;font-size:14px;font-weight:700;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;text-decoration:none;border-radius:9px">Buka Recovery Resmi</a>'
     + '</td></tr></table>'
-    + '<p style="margin:0 0 8px;font-size:14px;line-height:1.6;color:#f1f3f4;font-weight:700;letter-spacing:.2px">SECRET_EMAIL_100_CHAR</p>'
-    + '<div style="font-family:Consolas,Menlo,Monaco,monospace;font-size:12px;line-height:1.7;color:#f1f5ff;background:#202124;border:1px solid #b8c3d9;border-radius:10px;padding:14px;word-break:break-all;white-space:pre-wrap">' + emailSecret + '</div>'
-    + '<div style="margin:20px 0 0;padding:15px 16px;background:#202124;border-left:4px solid #b8c3d9;color:#f1f3f4;font-size:13px;line-height:1.7">'
-    + '<b style="color:#ffffff">Petunjuk singkat:</b><br>'
+    + '<p style="margin:0 0 8px;font-size:14px;line-height:1.6;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-weight:700;letter-spacing:.2px">SECRET_EMAIL_100_CHAR</p>'
+    + '<div class="dirac-black" style="font-family:Consolas,Menlo,Monaco,monospace;font-size:12px;line-height:1.7;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;border:1px solid #7187ff;border-radius:10px;padding:14px;word-break:break-all;white-space:pre-wrap">' + emailSecret + '</div>'
+    + '<div class="dirac-black" style="margin:20px 0 0;padding:15px 16px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;border-left:4px solid #f5b521;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-size:13px;line-height:1.7">'
+    + '<b style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">Petunjuk singkat:</b><br>'
     + '1. Buka link recovery resmi di atas.<br>'
     + '2. Setelah vault diterima, halaman akan meminta decrypt lokal/offline.<br>'
     + '3. Masukkan material password terbaru, Secret Email, dan Secret Website sesuai instruksi sistem.'
     + '</div>'
-    + '<p style="margin:22px 0 0;font-size:13px;line-height:1.7;color:#f1f3f4">Jangan membagikan link recovery, Secret Email, Secret Website, atau hasil decrypt kepada pihak mana pun. Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan resmi Dirac Group.</p>'
-    + '<p style="margin:24px 0 0;font-size:14px;line-height:1.8;color:#f1f3f4">Terima kasih,<br><b>Dirac Group</b></p>'
+    + '<p style="margin:22px 0 0;font-size:13px;line-height:1.7;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">Jangan membagikan link recovery, Secret Email, Secret Website, atau hasil decrypt kepada pihak mana pun. Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan resmi Dirac Group.</p>'
+    + '<p style="margin:24px 0 0;font-size:14px;line-height:1.8;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">Terima kasih,<br><b>Dirac Group</b></p>'
     + '</td></tr>'
-    + '<tr><td style="padding:16px 28px 22px;background:#202124;color:#f1f3f4;font-size:12px;line-height:1.7;border-top:1px solid #b8c3d9">'
-    + '(Email ini dibuat otomatis oleh sistem, mohon untuk tidak dibalas.)<br>Dirac Group Secure Recovery • Dirac Group'
+    + '<tr><td class="dirac-black" bgcolor="#000000" style="padding:0;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;border-top:1px solid #4b5563">' + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td height="5" bgcolor="#7187ff" style="height:5px;line-height:5px;font-size:0;background:#7187ff">&nbsp;</td><td width="10" bgcolor="#000000" style="width:10px;background:#000000">&nbsp;</td><td width="84" bgcolor="#18a8d8" style="width:84px;background:#18a8d8">&nbsp;</td><td width="10" bgcolor="#000000" style="width:10px;background:#000000">&nbsp;</td><td width="32" bgcolor="#f5b521" style="width:32px;background:#f5b521">&nbsp;</td></tr></table>'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td width="48" valign="top" style="padding:18px 0 18px 28px"><div style="width:38px;height:38px;line-height:38px;text-align:center;background:#172554;border:1px solid #7187ff;border-radius:10px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-weight:900">DG</div></td><td valign="top" style="padding:18px 28px 18px 14px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-size:12px;line-height:1.7"><b>DIRAC GROUP</b><br>SECURE RECOVERY MAIL · ENCRYPTED • PRIVATE<br>(Email ini dibuat otomatis oleh sistem, mohon untuk tidak dibalas.)</td></tr></table>'
     + '</td></tr>'
     + '</table>'
     + '</td></tr></table>'
@@ -41347,7 +41347,7 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   const text = [
     'Link recovery Passkey resmi sudah dibuat.',
     'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + String(context.expiresAt || ''),
+    'Berlaku sampai: ' + customerSecurityLostPasskeyEmailWibV325(context.expiresAt),
     'Link resmi: ' + recoveryLink,
     'SECRET_EMAIL_100_CHAR: ' + String(context.emailSecret || ''),
     'Jangan bagikan email secret, link, atau isi pesan ini kepada pihak lain. Website secret hanya tampil di website yang masih login.'
@@ -54044,22 +54044,22 @@ function diracSecurityAlertMessageV320(snapshot, config) {
     'Privasi: email ini tidak memuat password, OTP, token, cookie, raw request body, alamat lengkap, atau IP penuh.',
     'Lokasi bersifat perkiraan dari metadata edge dan bukan bukti lokasi fisik.'
   ].join('\r\n');
-  const htmlRows = rows.map((row) => '<tr><td style="padding:9px 12px;color:#94a3b8;border-bottom:1px solid #243047;width:34%">'
-    + diracSecurityAlertHtmlV320(row[0]) + '</td><td style="padding:9px 12px;color:#f8fafc;border-bottom:1px solid #243047;font-weight:600;word-break:break-word">'
+  const htmlRows = rows.map((row) => '<tr><td bgcolor="#000000" style="padding:9px 12px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;border-bottom:1px solid #4b5563;width:34%">'
+    + diracSecurityAlertHtmlV320(row[0]) + '</td><td bgcolor="#000000" style="padding:9px 12px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;border-bottom:1px solid #4b5563;font-weight:600;word-break:break-word">'
     + diracSecurityAlertHtmlV320(row[1]) + '</td></tr>').join('');
   const htmlTrace = snapshot.trace.length
-    ? snapshot.trace.map((entry) => '<li style="margin:7px 0"><b>' + diracSecurityAlertHtmlV320(entry.stage) + '</b> → '
-      + diracSecurityAlertHtmlV320(entry.result) + ' <span style="color:#94a3b8">(' + Number(entry.duration_ms) + ' ms)</span></li>').join('')
+    ? snapshot.trace.map((entry) => '<li style="margin:7px 0;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important"><b>' + diracSecurityAlertHtmlV320(entry.stage) + '</b> → '
+      + diracSecurityAlertHtmlV320(entry.result) + ' <span style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">(' + Number(entry.duration_ms) + ' ms)</span></li>').join('')
     : '<li>Tidak tersedia.</li>';
-  const htmlBody = '<!doctype html><html><body style="margin:0;background:#070b16;font-family:Arial,sans-serif;color:#f8fafc">'
-    + '<div style="padding:30px 12px"><div style="max-width:760px;margin:auto;border:1px solid #26334d;border-radius:20px;overflow:hidden;background:#101827">'
-    + '<div style="padding:26px;background:linear-gradient(135deg,#7f1d1d,#dc2626 55%,#f97316)"><div style="font-size:12px;letter-spacing:.18em;font-weight:700">DIRAC CENTRAL GUARD</div>'
-    + '<h1 style="margin:9px 0 4px;font-size:25px">Ancaman diblokir secara otomatis</h1><div style="opacity:.9">' + diracSecurityAlertHtmlV320(snapshot.threat_class) + '</div></div>'
-    + '<div style="padding:22px"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#3f1218;color:#fda4af;font-size:12px;font-weight:800">'
-    + diracSecurityAlertHtmlV320(snapshot.severity) + ' · FAIL-CLOSED</div><table role="presentation" style="width:100%;border-collapse:collapse;margin-top:18px;font-size:13px">'
-    + htmlRows + '</table><h2 style="font-size:16px;margin:24px 0 8px">Jejak pemeriksaan</h2><ol style="margin:0;padding-left:22px;color:#cbd5e1;font-size:13px">'
-    + htmlTrace + '</ol><div style="margin-top:22px;padding:14px;border-radius:12px;background:#0b1220;color:#94a3b8;font-size:12px;line-height:1.6">'
-    + 'Tidak ada password, OTP, token, cookie, raw body, alamat lengkap, atau IP penuh di email ini. Lokasi hanyalah perkiraan metadata edge, bukan GPS.</div></div></div></div></body></html>';
+  const htmlBody = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="supported-color-schemes" content="light dark"><style>:root{color-scheme:light dark;supported-color-schemes:light dark}.dirac-alert-black{background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important}u+.dirac-alert-body .dirac-alert-black{background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important}</style></head><body class="dirac-alert-body dirac-alert-black" bgcolor="#000000" style="margin:0;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;font-family:Arial,sans-serif;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">' + '<table class="dirac-alert-black" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#000000" style="background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important"><tr><td align="center" style="padding:30px 12px">'
+    + '<table class="dirac-alert-black" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#000000" style="max-width:760px;border:1px solid #4b5563;border-radius:20px;overflow:hidden;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">' + '<tr><td style="padding:26px;background:linear-gradient(135deg,#7f1d1d,#dc2626 55%,#f97316);color:#ffffff!important;-webkit-text-fill-color:#ffffff!important"><div style="font-size:12px;letter-spacing:.18em;font-weight:700;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">DIRAC CENTRAL GUARD</div>'
+    + '<h1 style="margin:9px 0 4px;font-size:25px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">Ancaman diblokir secara otomatis</h1><div style="opacity:.9;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">' + diracSecurityAlertHtmlV320(snapshot.threat_class) + '</div></td></tr>' + '<tr><td class="dirac-alert-black" bgcolor="#000000" style="padding:22px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#3f1218;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-size:12px;font-weight:800">'
+    + diracSecurityAlertHtmlV320(snapshot.severity) + ' · FAIL-CLOSED</div><table class="dirac-alert-black" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#000000" style="width:100%;border-collapse:collapse;margin-top:18px;font-size:13px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">'
+    + htmlRows + '</table><h2 style="font-size:16px;margin:24px 0 8px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">Jejak pemeriksaan</h2><ol style="margin:0;padding-left:22px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-size:13px">'
+    + htmlTrace + '</ol><div class="dirac-alert-black" style="margin-top:22px;padding:14px;border-radius:12px;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;border:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-size:12px;line-height:1.6">'
+    + 'Tidak ada password, OTP, token, cookie, raw body, alamat lengkap, atau IP penuh di email ini. Lokasi hanyalah perkiraan metadata edge, bukan GPS.</div></td></tr>'
+    + '<tr><td class="dirac-alert-black" bgcolor="#000000" style="padding:0;background:#000000;background-color:#000000!important;background-image:linear-gradient(#000000,#000000)!important;border-top:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important">' + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td height="5" bgcolor="#dc2626" style="height:5px;line-height:5px;font-size:0;background:#dc2626">&nbsp;</td><td width="10" bgcolor="#000000" style="width:10px;background:#000000">&nbsp;</td><td width="84" bgcolor="#f5b521" style="width:84px;background:#f5b521">&nbsp;</td><td width="10" bgcolor="#000000" style="width:10px;background:#000000">&nbsp;</td><td width="32" bgcolor="#7187ff" style="width:32px;background:#7187ff">&nbsp;</td></tr></table>'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td width="48" valign="top" style="padding:18px 0 18px 22px"><div style="width:38px;height:38px;line-height:38px;text-align:center;background:#3f1218;border:1px solid #dc2626;border-radius:10px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-weight:900">DG</div></td><td valign="top" style="padding:18px 22px 18px 14px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;font-size:12px;line-height:1.7"><b>DIRAC GROUP</b><br>SECURITY ALERT NETWORK · SYSTEM • FAIL-CLOSED<br>Notifikasi otomatis dari Central Guard.</td></tr></table>' + '</td></tr></table></td></tr></table></body></html>';
   const boundary = 'dirac-alert-' + crypto.randomBytes(16).toString('hex');
   const senderDomainV321 = String(config.fromEmail || '').split('@')[1] || 'gmail.com';
   const messageId = diracSecurityAlertHmacV320('message-id', snapshot.request_id + '|' + snapshot.timestamp_utc) + '@' + senderDomainV321;
