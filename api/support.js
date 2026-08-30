@@ -10,12 +10,18 @@ const DIRAC_SUPPORT_NATIVE_DNS_LOOKUP_V325 = dns.lookup.bind(dns);
 const DIRAC_SUPPORT_NATIVE_HTTPS_REQUEST_V325 = https.request.bind(https);
 const require = createRequire(import.meta.url);
 const DIRAC_SUPPORT_CANONICAL_HEALTH_V325 = require('./health.js');
+const DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325 = Object.getOwnPropertyDescriptor(DIRAC_SUPPORT_CANONICAL_HEALTH_V325, '__diracRunCanonicalGuardV325');
 if (typeof DIRAC_SUPPORT_CANONICAL_HEALTH_V325 !== 'function'
-    || DIRAC_SUPPORT_CANONICAL_HEALTH_V325.__diracRunCanonicalGuardV325 === undefined
+    || Object.isFrozen(DIRAC_SUPPORT_CANONICAL_HEALTH_V325) !== true
+    || !DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325
+    || typeof DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325.value !== 'function'
+    || DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325.writable !== false
+    || DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325.configurable !== false
     || DIRAC_SUPPORT_CANONICAL_HEALTH_V325.__diracCanonicalGuardVersionV325 !== true
     || DIRAC_SUPPORT_CANONICAL_HEALTH_V325.__diracCentralSecurityGuardV146 !== true) {
   throw new Error('DIRAC_SUPPORT_CANONICAL_HEALTH_INVALID');
 }
+const DIRAC_SUPPORT_RUN_CANONICAL_GUARD_V325 = DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325.value;
 
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_MESSAGE_CHARS = 2000;
@@ -2237,7 +2243,7 @@ async function supportBusinessHandlerV325(req, res) {
 }
 
 async function handler(req, res) {
-  return DIRAC_SUPPORT_CANONICAL_HEALTH_V325.__diracRunCanonicalGuardV325(
+  return DIRAC_SUPPORT_RUN_CANONICAL_GUARD_V325(
     req,
     res,
     () => supportBusinessHandlerV325(req, res)

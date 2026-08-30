@@ -1,7 +1,8 @@
 'use strict';
 
 const centralHandler = require('./health.js');
-const passwordResetHandler = require('./chat.js');
+const centralGuardDescriptor = Object.getOwnPropertyDescriptor(centralHandler, '__diracRunCanonicalGuardV325');
+const passwordResetRouteGateDescriptor = Object.getOwnPropertyDescriptor(centralHandler, '__diracPasswordResetSecurityRouteGateV326');
 
 if (typeof centralHandler !== 'function'
     || Object.isFrozen(centralHandler) !== true
@@ -9,18 +10,22 @@ if (typeof centralHandler !== 'function'
     || centralHandler.__diracCentralArchitectureConsolidationV202 !== true
     || centralHandler.__diracCentralBackendComplianceV230 !== true
     || centralHandler.__diracCanonicalGuardVersionV325 !== true
-    || typeof centralHandler.__diracRunCanonicalGuardV325 !== 'function') {
+    || !centralGuardDescriptor
+    || typeof centralGuardDescriptor.value !== 'function'
+    || centralGuardDescriptor.writable !== false
+    || centralGuardDescriptor.configurable !== false
+    || !passwordResetRouteGateDescriptor
+    || passwordResetRouteGateDescriptor.writable !== false
+    || passwordResetRouteGateDescriptor.configurable !== false
+    || !passwordResetRouteGateDescriptor.value
+    || Object.isFrozen(passwordResetRouteGateDescriptor.value) !== true
+    || typeof passwordResetRouteGateDescriptor.value.marker !== 'symbol'
+    || !passwordResetRouteGateDescriptor.value.token
+    || Object.isFrozen(passwordResetRouteGateDescriptor.value.token) !== true) {
   throw new Error('DIRAC_SECURITY_ROUTE_CENTRAL_HANDLER_INVALID');
 }
-
-
-if (typeof passwordResetHandler !== 'function'
-    || passwordResetHandler.__diracChatServer2PasswordResetWorkerV1 !== true
-    || passwordResetHandler.__diracServer2EncryptedResponseRequiredV220 !== true
-    || passwordResetHandler.__diracCentralSecurityGuardV146 !== true
-    || passwordResetHandler.__diracCanonicalGuardVersionV325 !== true) {
-  throw new Error('DIRAC_SECURITY_ROUTE_PASSWORD_RESET_HANDLER_INVALID');
-}
+const runCanonicalGuard = centralGuardDescriptor.value;
+const passwordResetRouteGate = passwordResetRouteGateDescriptor.value;
 
 const SECURITY_ROUTE_PATH = '/api/keamanan';
 const CENTRAL_ROUTE_PATH = '/api/health';
@@ -110,12 +115,16 @@ async function keamananHandler(req, res) {
     return reject(res, 403, parsed.code);
   }
 
-  if (parsed.action === 'request_password_reset' || parsed.action === 'confirm_password_reset') {
-    return passwordResetHandler(req, res);
-  }
-
   const originalUrl = req.url;
   try {
+    if (parsed.action === 'request_password_reset' || parsed.action === 'confirm_password_reset') {
+      Object.defineProperty(req, passwordResetRouteGate.marker, {
+        value: passwordResetRouteGate.token,
+        enumerable: false,
+        writable: false,
+        configurable: false
+      });
+    }
     req.url = parsed.canonicalUrl;
     return await centralHandler(req, res);
   } finally {

@@ -10963,13 +10963,17 @@ function customerSecurityRecoveryDotStuff(value) {
   return String(value || '').replace(/\r?\n/g, '\r\n').replace(/^\./gm, '..');
 }
 
+function customerSecurityRecoveryWibTimeV326(value) {
+  const parsed = Date.parse(String(value || ''));
+  return Number.isFinite(parsed) ? formatDiracWibTime(parsed) : String(value || '');
+}
 
 function customerSecurityRecoveryEmailTextV156(context = {}) {
   const requestId = String(context.requestId || '');
-  const expiresAt = String(context.expiresAt || '');
+  const expiresAt = customerSecurityRecoveryWibTimeV326(context.expiresAt);
   const emailPdfCode = String(context.emailPdfCode || '').padStart(2, '0').slice(-2);
   return [
-    'DIRACGROUP SECURE RECOVERY',
+    'DIRAC GROUP BY CV MULTI USAHA MANDIRI — SECURE RECOVERY',
     '',
     'Dokumen pemulihan Passkey terenkripsi telah dibuat untuk akun Anda.',
     '',
@@ -10981,17 +10985,21 @@ function customerSecurityRecoveryEmailTextV156(context = {}) {
     'Password PDF = kode website + 2 digit kode email + password akun Anda. Ketik berurutan tanpa spasi.',
     '',
     'Jangan kirimkan PDF, kode website, atau kode email ini kepada pihak lain.',
-    'Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan Dirac Group melalui support@diracgroup.store atau +62 878-9252-3968.'
+    'Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan resmi.',
+    '',
+    'Dirac Group By CV Multi Usaha Mandiri',
+    'support@diracgroup.store | +62 878-9252-3968'
   ].join('\n');
 }
 
 function customerSecurityRecoveryEmailHtmlV156(context = {}) {
   const requestId = String(context.requestId || '').replace(/[<>&]/g, '');
-  const expiresAt = String(context.expiresAt || '').replace(/[<>&]/g, '');
+  const expiresAt = customerSecurityRecoveryWibTimeV326(context.expiresAt).replace(/[<>&]/g, '');
   const emailPdfCode = String(context.emailPdfCode || '').padStart(2, '0').slice(-2).replace(/[^0-9]/g, '');
   return '<div style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#111827">'
     + '<div style="max-width:640px;margin:0 auto;padding:28px 16px">'
-    + '<div style="background:#0f172a;color:#ffffff;border-radius:18px 18px 0 0;padding:22px 24px">'
+    + '<div style="background:#18364b;color:#ffffff;border-radius:18px 18px 0 0;padding:26px 24px;text-align:center">'
+    + '<img src="https://diracgroup.store/logo.webp" width="72" height="72" alt="Dirac Group" style="display:block;width:72px;height:72px;margin:0 auto 14px;border:0;border-radius:14px">'
     + '<div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#93c5fd">Dirac Group By CV Multi Usaha Mandiri — Secure Recovery</div>'
     + '<div style="font-size:24px;font-weight:700;margin-top:8px">Dokumen Pemulihan Passkey</div>'
     + '<div style="font-size:13px;color:#cbd5e1;margin-top:6px">File PDF terenkripsi terlampir pada email ini.</div>'
@@ -11011,6 +11019,8 @@ function customerSecurityRecoveryEmailHtmlV156(context = {}) {
     + '<b>Cara membuka PDF:</b><br>Password PDF = kode website + 2 digit kode email + password akun Anda. Ketik berurutan tanpa spasi. Jangan bagikan kode atau file ini kepada siapa pun.'
     + '</div>'
     + '<p style="font-size:12px;color:#64748b;margin-top:18px;line-height:1.6">Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan Dirac Group melalui support@diracgroup.store atau +62 878-9252-3968.</p>'
+    + '</div><div style="padding:22px 28px;text-align:center;background:#243746;color:#d7e1e7;font-size:12px;line-height:1.8;border-radius:0 0 18px 18px">'
+    + '<img src="https://diracgroup.store/logo.webp" width="42" height="42" alt="Dirac Group" style="display:block;width:42px;height:42px;margin:0 auto 10px;border:0;border-radius:9px"><b style="color:#ffffff">Dirac Group By CV Multi Usaha Mandiri</b><br>support@diracgroup.store • +62 878-9252-3968'
     + '</div></div></div>';
 }
 
@@ -11063,12 +11073,7 @@ async function customerSecuritySendRecoveryEmailViaSmtp(to, fileName, fileBuffer
   if (!isValidAuthEmail(fromEmail)) return { ok: false, status: 503, code: 'RECOVERY_SMTP_FROM_INVALID', message: 'Email pengirim recovery tidak valid.' };
 
   const subject = 'Dirac Group By CV Multi Usaha Mandiri — Secure Recovery - PDF Pemulihan Passkey';
-  const text = [
-    'File recovery Passkey terenkripsi terlampir.',
-    'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + String(context.expiresAt || ''),
-    'Jangan kirimkan file ini ke pihak lain. Kata sandi file hanya diberikan owner setelah verifikasi SOP.'
-  ].join('\r\n\r\n');
+  const text = customerSecurityRecoveryEmailTextV156(context).replace(/\n/g, '\r\n');
   const html = customerSecurityRecoveryEmailHtmlV156(context);
   const boundary = 'dirac-recovery-' + crypto.randomBytes(18).toString('hex');
   const mime = [
@@ -11132,12 +11137,7 @@ async function customerSecuritySendLostPasskeyRecoveryEmail(to, fileName, fileBu
   }
   const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Group By CV Multi Usaha Mandiri <no-reply@' + diracBaseDomainV250() + '>')).trim();
   const subject = 'Dirac Group By CV Multi Usaha Mandiri — Secure Recovery - PDF Pemulihan Passkey';
-  const text = [
-    'File recovery Passkey terenkripsi terlampir.',
-    'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + String(context.expiresAt || ''),
-    'Jangan kirimkan file ini ke pihak lain. Kata sandi file hanya diberikan owner setelah verifikasi SOP.'
-  ].join('\n\n');
+  const text = customerSecurityRecoveryEmailTextV156(context);
   const html = customerSecurityRecoveryEmailHtmlV156(context);
   const content = Buffer.from(fileBuffer).toString('base64');
   if (process.env.RESEND_API_KEY) {
@@ -26057,8 +26057,8 @@ function orderMailBuildNewOrderMessages(data) {
 
   const paid = ['paid', 'success', 'settled', 'settlement', 'capture'].includes(String(data.order.payment_status || '').toLowerCase());
   const customerSubject = paid
-    ? `Invoice ${data.order.code} sudah dibayar - Dirac Group`
-    : `Pesanan ${data.order.code} diterima - Dirac Group`;
+    ? `Invoice ${data.order.code} sudah dibayar - Dirac Group By CV Multi Usaha Mandiri`
+    : `Pesanan ${data.order.code} diterima - Dirac Group By CV Multi Usaha Mandiri`;
   const ownerSubject = paid
     ? `Pembayaran berhasil ${data.order.code} - ${serviceLabel}`
     : `Order baru ${data.order.code} - ${serviceLabel}`;
@@ -26105,7 +26105,9 @@ function orderMailBuildNewOrderMessages(data) {
     'Lihat pesanan: ' + diracRoleOriginV250('pesanan') + '/pesanan.html',
     'Hubungi support: ' + diracSupportEmailV250(),
     'Butuh bantuan WhatsApp: https://wa.me/6287892523968',
-    'Dirac Group'
+    '',
+    'Dirac Group By CV Multi Usaha Mandiri',
+    'support@diracgroup.store | +62 878-9252-3968'
   ].filter((line) => line !== '').join('\n');
 
   const ownerText = [
@@ -26127,7 +26129,10 @@ function orderMailBuildNewOrderMessages(data) {
     paymentLine.trim(),
     '',
     'Rincian:',
-    itemsText
+    itemsText,
+    '',
+    'Dirac Group By CV Multi Usaha Mandiri',
+    'support@diracgroup.store | +62 878-9252-3968'
   ].filter((line) => line !== '').join('\n');
 
   const customerHtml = orderMailHtmlShell(customerSubject, `
@@ -26240,6 +26245,7 @@ function orderMailHtmlShell(title, body, options = {}) {
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#2b2f36" style="max-width:680px;background:#2b2f36;background-color:#2b2f36;border-radius:18px;overflow:hidden;border:1px solid #4b5563;box-shadow:0 18px 46px rgba(0,0,0,.68);color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
           <tr>
             <td bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;padding:30px 32px;background-image:none!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+              <img src="https://diracgroup.store/logo.webp" width="76" height="76" alt="Dirac Group" style="display:block;width:76px;height:76px;margin:0 auto 18px;border:0;border-radius:15px">
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
                 <tr>
                   <td valign="top" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
@@ -26263,6 +26269,7 @@ function orderMailHtmlShell(title, body, options = {}) {
           ${promoHtml}
           <tr>
             <td bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;padding:24px 32px;text-align:center;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;line-height:1.8;border-top:1px solid #4b5563">
+              <img src="https://diracgroup.store/logo.webp" width="42" height="42" alt="Dirac Group" style="display:block;width:42px;height:42px;margin:0 auto 10px;border:0;border-radius:9px">
               Email ini dikirim otomatis oleh <b>Dirac Group By CV Multi Usaha Mandiri</b>.<br>
 
               Hubungi support hanya ke <a href="mailto:${supportEmail}" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-weight:900">${supportEmail}</a><br>
@@ -26296,7 +26303,7 @@ function diracUserSecurityEmailContentV325(input) {
   const event = String(input && input.event || 'security_changed');
   const occurredAt = formatDiracWibTime(Number(input && input.occurredAtMs || Date.now()));
   const labels = {
-    password_changed: ['Password akun berhasil diubah', 'Password akun Anda baru saja diubah melalui verifikasi Passkey.'],
+    password_changed: ['Password akun berhasil diubah', 'Password akun Anda baru saja diubah melalui verifikasi keamanan.'],
     passkey_changed: ['Passkey akun berhasil diperbarui', 'Passkey akun Anda baru saja ditambahkan, diganti, atau dirotasi.'],
     sessions_revoked: ['Sesi akun berhasil dicabut', 'Satu atau beberapa sesi akun Anda baru saja dicabut.']
   };
@@ -26304,22 +26311,29 @@ function diracUserSecurityEmailContentV325(input) {
   const subject = 'Dirac Security — ' + selected[0];
   const text = [
     selected[0], '', selected[1], 'Waktu: ' + occurredAt, '',
-    'Jika aktivitas ini bukan Anda, segera masuk melalui domain resmi dan hubungi support.',
+    'Jika aktivitas ini bukan Anda, segera masuk melalui domain resmi dan hubungi tim dukungan.',
     'Dirac Group By CV Multi Usaha Mandiri',
     'support@diracgroup.store | +62 878-9252-3968'
   ].join('\n');
-  const html = '<!doctype html><html lang="id"><body style="margin:0;background:#e8edf3;font-family:Arial,Helvetica,sans-serif;color:#1f2937">'
-    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#e8edf3;padding:28px 12px"><tr><td align="center">'
-    + '<table role="presentation" width="640" cellspacing="0" cellpadding="0" style="max-width:640px;width:100%;border-collapse:separate;border-spacing:0;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 12px 35px rgba(15,23,42,.16)">'
-    + '<tr><td style="padding:28px;text-align:center;background:linear-gradient(135deg,#0b2748,#164f78 58%,#64748b);color:#ffffff">'
-    + '<div style="font-size:23px;font-weight:800;letter-spacing:.04em">DIRAC</div><div style="margin-top:8px;font-size:12px;color:#dbeafe">Dirac Group By CV Multi Usaha Mandiri</div></td></tr>'
-    + '<tr><td style="padding:30px"><div style="font-size:12px;font-weight:800;letter-spacing:.12em;color:#1d4ed8">NOTIFIKASI KEAMANAN</div>'
-    + '<h1 style="margin:10px 0 14px;font-size:24px;color:#0f172a">' + diracUserSecurityEmailEscapeV325(selected[0]) + '</h1>'
-    + '<p style="margin:0 0 18px;line-height:1.7;color:#475569">' + diracUserSecurityEmailEscapeV325(selected[1]) + '</p>'
-    + '<div style="padding:15px 16px;border:1px solid #cbd5e1;border-radius:12px;background:#f8fafc"><b>Waktu kejadian</b><br><span style="color:#475569">' + diracUserSecurityEmailEscapeV325(occurredAt) + '</span></div>'
-    + '<div style="margin-top:20px;padding:15px 16px;border-left:4px solid #f59e0b;background:#fffbeb;color:#78350f;line-height:1.6">Jika aktivitas ini bukan Anda, segera masuk melalui domain resmi dan hubungi support.</div></td></tr>'
-    + '<tr><td style="padding:22px 28px;text-align:center;background:#172033;color:#d1d5db;font-size:12px;line-height:1.8"><b style="color:#ffffff">Dirac Group By CV Multi Usaha Mandiri</b><br>support@diracgroup.store • +62 878-9252-3968</td></tr>'
-    + '</table></td></tr></table></body></html>';
+  const safeTitle = diracUserSecurityEmailEscapeV325(selected[0]);
+  const safeMessage = diracUserSecurityEmailEscapeV325(selected[1]);
+  const safeTime = diracUserSecurityEmailEscapeV325(occurredAt);
+  const html = '<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+    + '<body style="margin:0;padding:0;background:#edf1f5;font-family:Arial,Helvetica,sans-serif;color:#1f2937">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#edf1f5"><tr><td align="center" style="padding:28px 12px">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 12px 32px rgba(15,23,42,.14)">'
+    + '<tr><td align="center" style="padding:30px 24px;background:#18364b"><img src="https://diracgroup.store/logo.webp" width="72" height="72" alt="Dirac Group" style="display:block;width:72px;height:72px;margin:0 auto 14px;border:0;border-radius:14px"><div style="font-size:27px;font-weight:800;letter-spacing:2px;color:#ffffff">DIRAC</div>'
+    + '<div style="margin-top:8px;font-size:12px;line-height:1.6;color:#dbe5ec">Dirac Group By CV Multi Usaha Mandiri</div></td></tr>'
+    + '<tr><td style="padding:30px"><div style="font-size:12px;font-weight:800;letter-spacing:.12em;color:#315f79">NOTIFIKASI KEAMANAN</div>'
+    + '<h1 style="margin:10px 0 14px;font-size:24px;line-height:1.35;color:#173247">' + safeTitle + '</h1>'
+    + '<p style="margin:0 0 20px;line-height:1.7;color:#52606d">' + safeMessage + '</p>'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f7f9fb;border:1px solid #d8e1e7;border-radius:10px">'
+    + '<tr><td style="padding:14px 16px;color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:.05em">Waktu</td><td align="right" style="padding:14px 16px;color:#1f2937;font-size:14px;font-weight:700">' + safeTime + '</td></tr>'
+    + '</table><div style="margin-top:18px;padding:15px 16px;border-left:4px solid #d97706;background:#fff8e8;color:#78350f;line-height:1.65">Jika aktivitas ini bukan Anda, segera masuk melalui domain resmi dan hubungi tim dukungan.</div>'
+    + '</td></tr><tr><td style="padding:24px 28px;text-align:center;background:#243746;color:#d7e1e7;font-size:12px;line-height:1.8">'
+    + '<img src="https://diracgroup.store/logo.webp" width="42" height="42" alt="Dirac Group" style="display:block;width:42px;height:42px;margin:0 auto 10px;border:0;border-radius:9px"><b style="color:#ffffff">Dirac Group By CV Multi Usaha Mandiri</b><br>support@diracgroup.store • +62 878-9252-3968<br>'
+    + '<span style="color:#aebdc7">Pesan otomatis keamanan. Jangan membalas dengan kata sandi, kode, atau data rahasia.</span>'
+    + '</td></tr></table></td></tr></table></body></html>';
   return { subject, text, html };
 }
 
@@ -26371,6 +26385,10 @@ async function diracUserSecurityEmailSmtpV325(config, recipient, content) {
 
 async function diracUserSecurityNotifyV325(input) {
   if (!diracUserSecurityEmailEnabledV325()) return { ok: false, skipped: true, reason: 'disabled' };
+  const event = String(input && input.event || '').trim();
+  if (!new Set(['password_changed', 'passkey_changed', 'sessions_revoked', 'security_changed']).has(event)) {
+    return { ok: false, skipped: true, reason: 'event_not_allowed' };
+  }
   const recipient = orderMailNormalizeEmail(input && input.to);
   const resendApiKey = String(process.env.DIRAC_USER_SECURITY_RESEND_API_KEY || '').trim();
   const resendFromEmail = orderMailNormalizeEmail(process.env.DIRAC_USER_SECURITY_RESEND_FROM_EMAIL);
@@ -26392,14 +26410,14 @@ async function diracUserSecurityNotifyV325(input) {
   const smtpSecure = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || 'true').trim().toLowerCase() === 'true';
   const smtpUser = orderMailNormalizeEmail(process.env.DIRAC_USER_SECURITY_SMTP_USER);
   const smtpPassword = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
-  if (!smtpHost || !Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535 || !smtpSecure || !smtpUser || !smtpPassword) {
+  if (smtpHost !== 'smtp.gmail.com' || smtpPort !== 465 || smtpSecure !== true || !smtpUser || !smtpPassword) {
     return { ok: false, provider: 'smtp', fallback_for_status: 429, reason: 'smtp_not_configured' };
   }
   try {
     const fallback = await diracUserSecurityEmailSmtpV325({ smtpHost, smtpPort, smtpSecure, smtpUser, smtpPassword, replyTo, timeoutMs }, recipient, content);
     return { ...fallback, provider: 'smtp', fallback_for_status: 429 };
   } catch (error) {
-    return { ok: false, provider: 'smtp', fallback_for_status: 429, reason: String(error && error.message || 'smtp_failed').slice(0, 100) };
+    return { ok: false, provider: 'smtp', fallback_for_status: 429, reason: String(error && error.code || error && error.name || 'smtp_failed').replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 100) };
   }
 }
 
@@ -26695,7 +26713,7 @@ function orderMailFormatDate(value) {
       timeZoneName: 'short'
     }).format(Number.isFinite(date.getTime()) ? date : new Date());
   } catch (_) {
-    return (Number.isFinite(date.getTime()) ? date : new Date()).toISOString();
+    return formatDiracWibTime((Number.isFinite(date.getTime()) ? date : new Date()).getTime());
   }
 }
 
@@ -41352,7 +41370,7 @@ function customerSecurityLostPasskeyRecoveryEmailBannerUrlV172() {
 /* RECO donor source lines 4444-4488 */
 function customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(context = {}) {
   const requestId = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.requestId || '');
-  const expiresAt = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.expiresAt || '');
+  const expiresAt = customerSecurityLostPasskeyEmailEscapeHtmlV157(customerSecurityRecoveryWibTimeV326(context.expiresAt));
   const recoveryLink = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.recoveryLink || '');
   const emailSecret = customerSecurityLostPasskeyEmailEscapeHtmlV157(context.emailSecret || '');
   const bannerUrl = customerSecurityLostPasskeyEmailEscapeHtmlV157(customerSecurityLostPasskeyRecoveryEmailBannerUrlV172());
@@ -41363,6 +41381,7 @@ function customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(context = {}) {
     + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#1f1f1f;margin:0;padding:24px 0"><tr><td align="center" style="padding:0 12px">'
     + '<table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="width:600px;max-width:100%;border-collapse:collapse;border:1px solid #b8c3d9;background:#202124">'
     + '<tr><td style="height:2px;line-height:2px;font-size:0;background:#b8c3d9">&nbsp;</td></tr>'
+    + '<tr><td align="center" style="padding:24px;background:#18364b;color:#ffffff"><img src="https://diracgroup.store/logo.webp" width="72" height="72" alt="Dirac Group" style="display:block;width:72px;height:72px;margin:0 auto 12px;border:0;border-radius:14px"><div style="font-size:25px;font-weight:800;letter-spacing:2px">DIRAC</div><div style="margin-top:7px;font-size:12px;color:#dbe5ec">Dirac Group By CV Multi Usaha Mandiri — Secure Recovery</div></td></tr>'
     + '<tr><td style="padding:0;border-bottom:1px solid #b8c3d9;background:#202124">'
     + '<img src="' + bannerUrl + '" width="600" alt="Dirac Group Secure Recovery" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none">'
     + '</td></tr>'
@@ -41388,8 +41407,8 @@ function customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(context = {}) {
     + '<p style="margin:22px 0 0;font-size:13px;line-height:1.7;color:#f1f3f4">Jangan membagikan link recovery, Secret Email, Secret Website, atau hasil decrypt kepada pihak mana pun. Jika Anda tidak meminta pemulihan ini, abaikan email ini dan segera hubungi bantuan resmi Dirac Group.</p>'
     + '<p style="margin:24px 0 0;font-size:14px;line-height:1.8;color:#f1f3f4">Terima kasih,<br><b>Dirac Group By CV Multi Usaha Mandiri</b></p>'
     + '</td></tr>'
-    + '<tr><td style="padding:16px 28px 22px;background:#202124;color:#f1f3f4;font-size:12px;line-height:1.7;border-top:1px solid #b8c3d9">'
-    + '(Email ini dibuat otomatis oleh sistem, mohon untuk tidak dibalas.)<br>Dirac Group Secure Recovery • Dirac Group By CV Multi Usaha Mandiri<br>support@diracgroup.store • +62 878-9252-3968'
+    + '<tr><td align="center" style="padding:18px 28px 22px;background:#243746;color:#d7e1e7;font-size:12px;line-height:1.8;border-top:1px solid #b8c3d9">'
+    + '<img src="https://diracgroup.store/logo.webp" width="42" height="42" alt="Dirac Group" style="display:block;width:42px;height:42px;margin:0 auto 10px;border:0;border-radius:9px">(Email ini dibuat otomatis oleh sistem, mohon untuk tidak dibalas.)<br>Dirac Group Secure Recovery • Dirac Group By CV Multi Usaha Mandiri<br>support@diracgroup.store • +62 878-9252-3968'
     + '</td></tr>'
     + '</table>'
     + '</td></tr></table>'
@@ -41427,10 +41446,12 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   const text = [
     'Link recovery Passkey resmi sudah dibuat.',
     'Request ID: ' + String(context.requestId || ''),
-    'Berlaku sampai: ' + String(context.expiresAt || ''),
+    'Berlaku sampai: ' + customerSecurityRecoveryWibTimeV326(context.expiresAt),
     'Link resmi: ' + recoveryLink,
     'SECRET_EMAIL_100_CHAR: ' + String(context.emailSecret || ''),
-    'Jangan bagikan email secret, link, atau isi pesan ini kepada pihak lain. Website secret hanya tampil di website yang masih login.'
+    'Jangan bagikan email secret, link, atau isi pesan ini kepada pihak lain. Website secret hanya tampil di website yang masih login.',
+    'Dirac Group By CV Multi Usaha Mandiri',
+    'support@diracgroup.store | +62 878-9252-3968'
   ].join('\n\n');
   const html = customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(emailContext);
 
@@ -50628,6 +50649,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
     'dirac_session_handoff_prepare', 'customer_session_handoff_consume'
   ]);
   const security = new Set([
+    'request_password_reset', 'confirm_password_reset',
     'customer_security_status', 'customer_security_overview', 'customer_security_guard_status',
     'customer_security_revoke_session', 'customer_security_revoke_other_sessions',
     'customer_security_account_request', 'customer_security_recovery_codes_status',
@@ -51790,6 +51812,9 @@ async function diracCentralIdorBolaGuardV146(req, ctx) {
   }
   const ids = diracCentralCollectIdsV146(req, ctx.body);
   const verifiedOwnerRequired = diracCentralVerifiedOwnerActionV217(ctx.action);
+  if (diracPasswordResetProfileCarrierIdorV326(ctx, ids)) {
+    return { ok: true, guarded: 'password_reset_d10_profile_carrier_v326' };
+  }
   if (diracCentralIsAuthBootstrapIdentityOnlyV146(ctx.action, ids)) return { ok: true, guarded: 'auth_bootstrap_identity_only' };
   if (diracCentralIsAuthSelfReadOnlyV146(ctx.action, ids) && !verifiedOwnerRequired) return { ok: true, guarded: 'auth_self_read_only' };
   const needsOwner = verifiedOwnerRequired || ids.length > 0 || DIRAC_CENTRAL_USER_DATA_ACTIONS_V146.has(ctx.action);
@@ -51827,6 +51852,23 @@ async function diracCentralIdorBolaGuardV146(req, ctx) {
   }
   ctx.__diracCentralOwnerBoundObjectValuesV194 = new Set(ownerBoundObjects.map((item) => String(item.value || '').trim()).filter(Boolean));
   return { ok: true };
+}
+
+function diracPasswordResetProfileCarrierIdorV326(ctx, ids) {
+  if (!ctx
+      || ctx.action !== 'request_password_reset'
+      || ctx.method !== 'POST'
+      || !ctx.body
+      || typeof ctx.body !== 'object'
+      || Array.isArray(ctx.body)) return false;
+  const keys = Object.keys(ctx.body).sort();
+  if (keys.length !== 2 || keys[0] !== 'action' || keys[1] !== 'email') return false;
+  if (String(ctx.body.action || '') !== 'request-password-reset'
+      || String(ctx.body.email || '') !== 'd10.profile@recovery.dirac') return false;
+  const list = Array.isArray(ids) ? ids : [];
+  return list.length === 1
+    && String(list[0] && list[0].key || '').toLowerCase() === 'email'
+    && String(list[0] && list[0].value || '') === 'd10.profile@recovery.dirac';
 }
 
 function diracCentralIsAuthBootstrapIdentityOnlyV146(action, ids) {
@@ -52275,6 +52317,49 @@ function diracCentralIsExactParfumProductsPublicReadV318(ctx, table, path, optio
   }
 }
 
+const DIRAC_PASSWORD_RESET_DB1_SERVICE_PERMIT_V326 = Symbol('dirac.password-reset.db1.service-permit.v326');
+
+function diracCentralIsPasswordResetDb1ServiceRoleV326(ctx, table, path, options, method) {
+  const permit = ctx && ctx[DIRAC_PASSWORD_RESET_DB1_SERVICE_PERMIT_V326];
+  if (!permit || !Object.isFrozen(permit)
+      || !ctx.req
+      || ctx.action !== 'confirm_password_reset'
+      || ctx.method !== 'POST'
+      || ctx.req.__diracCentralSecurityGuardPassedV146 !== true
+      || diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) !== true
+      || permit.action !== ctx.action
+      || permit.requestId !== String(ctx.requestId || '')
+      || permit.path !== String(path || '')
+      || permit.method !== String(method || '').toUpperCase()
+      || permit.table !== String(table || '').toLowerCase()
+      || !/^[a-z][a-z0-9_]{2,63}$/.test(String(permit.phase || ''))
+      || !customerSecurityLooksLikeUuid(String(permit.authUserId || ''))
+      || !customerSecurityLooksLikeUuid(String(permit.customerId || ''))
+      || normalizeAuthEmail(permit.email || '') !== permit.email) {
+    return false;
+  }
+  const phaseContracts = Object.freeze({
+    owner_link_read: Object.freeze({ table: 'security_customer_auth_links', method: 'GET' }),
+    password_hash_read: Object.freeze({ table: 'security_customer_password_hashes', method: 'GET' }),
+    password_hash_update: Object.freeze({ table: 'security_customer_password_hashes', method: 'PATCH' }),
+    password_hash_insert: Object.freeze({ table: 'security_customer_password_hashes', method: 'POST' }),
+    password_hash_verify: Object.freeze({ table: 'security_customer_password_hashes', method: 'GET' }),
+    settings_read: Object.freeze({ table: 'security_customer_settings', method: 'GET' }),
+    settings_update: Object.freeze({ table: 'security_customer_settings', method: 'PATCH' }),
+    settings_verify: Object.freeze({ table: 'security_customer_settings', method: 'GET' }),
+    sessions_revoke: Object.freeze({ table: 'security_customer_sessions', method: 'PATCH' }),
+    sessions_verify: Object.freeze({ table: 'security_customer_sessions', method: 'GET' })
+  });
+  const contract = phaseContracts[permit.phase];
+  if (!contract || contract.table !== permit.table || contract.method !== permit.method) return false;
+  const bodyPresent = options && options.body !== undefined && options.body !== null;
+  const actualBodyHash = bodyPresent
+    ? crypto.createHash('sha512').update(customerSecurityLostPasskeyCanonical(options.body), 'utf8').digest('hex')
+    : '';
+  return actualBodyHash === permit.bodySha512
+    && String(options && options.auth || '') === 'service';
+}
+
 async function diracCentralInspectServiceRoleAccessV146(path, options = {}) {
   if (!options || options.auth !== 'service') {
     if (customerSecurityPersistentAccessBlockRequestMayTouchV325(path, options || {})) {
@@ -52316,6 +52401,9 @@ async function diracCentralInspectServiceRoleAccessV146(path, options = {}) {
   }
   if (diracCentralIsInternalOwnerLookupV194(ctx, table, path, options, method)) {
     return { ok: true, guarded: 'central_owner_lookup_v194' };
+  }
+  if (diracCentralIsPasswordResetDb1ServiceRoleV326(ctx, table, path, options, method)) {
+    return { ok: true, guarded: 'password_reset_passkey_db1_exact_service_role_v326' };
   }
   if (diracCentralIsRegisterBootstrapServiceRoleV146(ctx, table, path, options, method)) return { ok: true, guarded: 'domain_register_bootstrap_service_role' };
   if (diracCentralIsCheckoutOwnerBootstrapServiceRoleV146(ctx, table, path, options, method)) return { ok: true, guarded: 'checkout_owner_bootstrap_service_role' };
@@ -53491,7 +53579,7 @@ function diracCentralEgressRouteAllowedV228(url, method, ctx, options) {
   }
 
   const recoveryUrl = String(typeof customerSecurityRecoveryWorkerUrl === 'function' ? customerSecurityRecoveryWorkerUrl() : process.env.DIRAC_RECOVERY_WORKER_URL || '').trim();
-  if (recoveryUrl && actionAllowed([/recovery/, /passkey/, /^customer_security_/])) {
+  if (recoveryUrl && actionAllowed(['request_password_reset', 'confirm_password_reset', /recovery/, /passkey/, /^customer_security_/])) {
     try {
       const configured = new URL(recoveryUrl);
       if (host === configured.hostname.toLowerCase()
@@ -53884,7 +53972,7 @@ function diracSecurityAlertConfigV320() {
     .split(/[;,\s]+/).map(diracSecurityAlertEmailV320).filter(Boolean))).slice(0, 5);
   const hmacSecretText = String(process.env.DIRAC_SECURITY_ALERT_HMAC_SECRET || '');
   const hmacSecret = Buffer.from(hmacSecretText, 'utf8');
-  const placeholderPatternV321 = /(?:replace[_ -]?with|change[_ -]?me|example|placeholder|your[_ -]?(?:password|secret)|app[_ -]?password)/i;
+  const placeholderPatternV321 = /(?:ganti|replace[_ -]?with|change[_ -]?me|example|placeholder|your[_ -]?(?:password|secret)|app[_ -]?password)/i;
   const valid = host === 'smtp.gmail.com'
     && port === 465
     && secure
@@ -54086,7 +54174,7 @@ function diracSecurityAlertSnapshotV320(ctx, event, extra) {
   const methodV321 = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']).has(rawMethodV321) ? rawMethodV321 : 'UNKNOWN';
   const rawBlockedUntilV321 = String(extra && extra.blocked_until || '').trim();
   const blockedUntilV321 = rawBlockedUntilV321 && Number.isFinite(Date.parse(rawBlockedUntilV321))
-    ? new Date(rawBlockedUntilV321).toISOString()
+    ? formatDiracWibTime(Date.parse(rawBlockedUntilV321))
     : 'unavailable';
   return Object.freeze({
     event: diracSecurityAlertCodeV321(event, 'security_event', 80),
@@ -54107,7 +54195,7 @@ function diracSecurityAlertSnapshotV320(ctx, event, extra) {
       ? String(ctx.failedStageV211 || ctx.currentStageV211)
       : 'unavailable',
     timestamp_utc: new Date().toISOString(),
-    timestamp_wib: typeof formatDiracWibTime === 'function' ? formatDiracWibTime(Date.now()) : new Date().toISOString(),
+    timestamp_wib: formatDiracWibTime(Date.now()),
     masked_ip: diracSecurityAlertMaskIpV320(ip),
     ip_fingerprint: diracSecurityAlertHmacV320('ip', ip),
     account_fingerprint: accountMaterial ? diracSecurityAlertHmacV320('account', accountMaterial) : 'unavailable',
@@ -54149,7 +54237,6 @@ function diracSecurityAlertMessageV320(snapshot, config) {
     ['Stage', snapshot.stage],
     ['Failure ID', snapshot.failure_id],
     ['Request ID', snapshot.request_id],
-    ['Waktu UTC', snapshot.timestamp_utc],
     ['Waktu WIB', snapshot.timestamp_wib],
     ['IP tersamar', snapshot.masked_ip],
     ['IP fingerprint', snapshot.ip_fingerprint],
@@ -54170,6 +54257,7 @@ function diracSecurityAlertMessageV320(snapshot, config) {
     : 'Tidak tersedia.';
   const textBody = [
     'DIRAC CENTRAL GUARD — SECURITY INCIDENT',
+    'Dirac Group By CV Multi Usaha Mandiri',
     '',
     ...rows.map((row) => row[0] + ': ' + row[1]),
     '',
@@ -54177,25 +54265,28 @@ function diracSecurityAlertMessageV320(snapshot, config) {
     traceText,
     '',
     'Privasi: email ini tidak memuat password, OTP, token, cookie, raw request body, alamat lengkap, atau IP penuh.',
-    'Lokasi bersifat perkiraan dari metadata edge dan bukan bukti lokasi fisik.'
+    'Lokasi bersifat perkiraan dari metadata edge dan bukan bukti lokasi fisik.',
+    '',
+    'support@diracgroup.store | +62 878-9252-3968'
   ].join('\r\n');
-  const htmlRows = rows.map((row) => '<tr><td style="padding:9px 12px;color:#94a3b8;border-bottom:1px solid #243047;width:34%">'
-    + diracSecurityAlertHtmlV320(row[0]) + '</td><td style="padding:9px 12px;color:#f8fafc;border-bottom:1px solid #243047;font-weight:600;word-break:break-word">'
+  const htmlRows = rows.map((row) => '<tr><td style="padding:9px 12px;color:#64748b;border-bottom:1px solid #d8e1e7;width:34%">'
+    + diracSecurityAlertHtmlV320(row[0]) + '</td><td style="padding:9px 12px;color:#1f2937;border-bottom:1px solid #d8e1e7;font-weight:600;word-break:break-word">'
     + diracSecurityAlertHtmlV320(row[1]) + '</td></tr>').join('');
   const htmlTrace = snapshot.trace.length
     ? snapshot.trace.map((entry) => '<li style="margin:7px 0"><b>' + diracSecurityAlertHtmlV320(entry.stage) + '</b> → '
-      + diracSecurityAlertHtmlV320(entry.result) + ' <span style="color:#94a3b8">(' + Number(entry.duration_ms) + ' ms)</span></li>').join('')
+      + diracSecurityAlertHtmlV320(entry.result) + ' <span style="color:#64748b">(' + Number(entry.duration_ms) + ' ms)</span></li>').join('')
     : '<li>Tidak tersedia.</li>';
-  const htmlBody = '<!doctype html><html><body style="margin:0;background:#070b16;font-family:Arial,sans-serif;color:#f8fafc">'
-    + '<div style="padding:30px 12px"><div style="max-width:760px;margin:auto;border:1px solid #26334d;border-radius:20px;overflow:hidden;background:#101827">'
-    + '<div style="padding:26px;background:linear-gradient(135deg,#7f1d1d,#dc2626 55%,#f97316)"><div style="font-size:12px;letter-spacing:.18em;font-weight:700">DIRAC CENTRAL GUARD</div>'
-    + '<h1 style="margin:9px 0 4px;font-size:25px">Ancaman diblokir secara otomatis</h1><div style="opacity:.9">' + diracSecurityAlertHtmlV320(snapshot.threat_class) + '</div></div>'
-    + '<div style="padding:22px"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#3f1218;color:#fda4af;font-size:12px;font-weight:800">'
-    + diracSecurityAlertHtmlV320(snapshot.severity) + ' · FAIL-CLOSED</div><table role="presentation" style="width:100%;border-collapse:collapse;margin-top:18px;font-size:13px">'
-    + htmlRows + '</table><h2 style="font-size:16px;margin:24px 0 8px">Jejak pemeriksaan</h2><ol style="margin:0;padding-left:22px;color:#cbd5e1;font-size:13px">'
-    + htmlTrace + '</ol><div style="margin-top:22px;padding:14px;border-radius:12px;background:#0b1220;color:#94a3b8;font-size:12px;line-height:1.6">'
-    + 'Tidak ada password, OTP, token, cookie, raw body, alamat lengkap, atau IP penuh di email ini. Lokasi hanyalah perkiraan metadata edge, bukan GPS.</div>'
-    + '<div style="margin-top:18px;padding:18px;text-align:center;border-top:1px solid #334155;color:#cbd5e1;font-size:12px;line-height:1.7"><b>Dirac Group By CV Multi Usaha Mandiri</b><br>support@diracgroup.store • +62 878-9252-3968</div></div></div></div></body></html>';
+  const htmlBody = '<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#edf1f5;font-family:Arial,Helvetica,sans-serif;color:#1f2937">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#edf1f5"><tr><td align="center" style="padding:30px 12px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:760px;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 12px 32px rgba(15,23,42,.15)">'
+    + '<tr><td align="center" style="padding:28px;background:#18364b;color:#ffffff"><img src="https://diracgroup.store/logo.webp" width="72" height="72" alt="Dirac Group" style="display:block;width:72px;height:72px;margin:0 auto 14px;border:0;border-radius:14px"><div style="font-size:27px;font-weight:800;letter-spacing:2px">DIRAC</div><div style="margin-top:7px;font-size:12px;color:#dbe5ec">Dirac Group By CV Multi Usaha Mandiri</div><div style="margin-top:13px;font-size:11px;letter-spacing:.16em;color:#b9cbd6">CENTRAL GUARD</div>'
+    + '<h1 style="margin:8px 0 4px;font-size:24px;line-height:1.35">Ancaman diblokir secara otomatis</h1><div style="color:#dbe5ec">' + diracSecurityAlertHtmlV320(snapshot.threat_class) + '</div></td></tr>'
+    + '<tr><td style="padding:26px 28px"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#fff1f2;color:#b91c1c;border:1px solid #fecdd3;font-size:12px;font-weight:800">'
+    + diracSecurityAlertHtmlV320(snapshot.severity) + ' · FAIL-CLOSED</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;margin-top:18px;font-size:13px;background:#f8fafc;border:1px solid #d8e1e7">'
+    + htmlRows + '</table><h2 style="font-size:16px;color:#173247;margin:24px 0 8px">Jejak pemeriksaan</h2><ol style="margin:0;padding-left:22px;color:#475569;font-size:13px">'
+    + htmlTrace + '</ol><div style="margin-top:22px;padding:14px;border-radius:12px;background:#eef5f8;color:#52606d;font-size:12px;line-height:1.6">'
+    + 'Tidak ada password, OTP, token, cookie, raw body, alamat lengkap, atau IP penuh di email ini. Lokasi hanyalah perkiraan metadata edge, bukan GPS.</div></td></tr>'
+    + '<tr><td style="padding:24px 28px;text-align:center;background:#243746;color:#d7e1e7;font-size:12px;line-height:1.8"><img src="https://diracgroup.store/logo.webp" width="42" height="42" alt="Dirac Group" style="display:block;width:42px;height:42px;margin:0 auto 10px;border:0;border-radius:9px"><b style="color:#ffffff">Dirac Group By CV Multi Usaha Mandiri</b><br>support@diracgroup.store • +62 878-9252-3968</td></tr>'
+    + '</table></td></tr></table></body></html>';
   const boundary = 'dirac-alert-' + crypto.randomBytes(16).toString('hex');
   const senderDomainV321 = String(config.fromEmail || '').split('@')[1] || 'gmail.com';
   const messageId = diracSecurityAlertHmacV320('message-id', snapshot.request_id + '|' + snapshot.timestamp_utc) + '@' + senderDomainV321;
@@ -58603,6 +58694,695 @@ __diracV202RegisterMiddleware(async function diracSessionHandoffV250Wrapper(req,
 }, 'diracSessionHandoffV250Wrapper');
 
 /* ============================================================
+   DIRAC PASSWORD RESET PASSKEY SOURCE v326
+   Browser -> keamanan.js -> canonical Health guard -> encrypted Server 2
+   worker -> verified DB1 commit -> authenticated Server 2 finalization.
+   ============================================================ */
+const DIRAC_PASSWORD_RESET_SOURCE_V326 = 'dirac-password-reset-passkey-source-v326';
+const DIRAC_PASSWORD_RESET_D10_PROTOCOL_V326 = 'dirac-lost-password-10-layer-v1';
+const DIRAC_PASSWORD_RESET_PROFILE_CARRIER_V326 = 'd10.profile@recovery.dirac';
+const DIRAC_PASSWORD_RESET_CONFIRM_MARKER_V326 = 'D10_PASSKEY_V1';
+const DIRAC_PASSWORD_RESET_WORKER_TASK_REQUEST_V326 = 'chat_password_reset_request';
+const DIRAC_PASSWORD_RESET_WORKER_TASK_CONFIRM_V326 = 'chat_password_reset_confirm';
+const DIRAC_PASSWORD_RESET_SECURITY_ROUTE_GATE_V326 = Object.freeze({
+  marker: Symbol('dirac-password-reset-security-route-v326'),
+  token: Object.freeze({ version: DIRAC_PASSWORD_RESET_SOURCE_V326 })
+});
+
+function diracPasswordResetExactKeysV326(value, expected) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const wanted = expected.slice().sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function diracPasswordResetWorkerRequestIdV326(ctx) {
+  const current = String(ctx && ctx.requestId || '').trim();
+  return /^[A-Za-z0-9_.:-]{8,128}$/.test(current)
+    ? current
+    : crypto.randomBytes(24).toString('base64url');
+}
+
+function diracPasswordResetFailureV326(res, status, code, message) {
+  return res.status(Math.max(400, Math.min(599, Number(status || 503)))).json({
+    ok: false,
+    code: String(code || 'PASSWORD_RESET_UNAVAILABLE').replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 120),
+    message: String(message || 'Reset password melalui Passkey belum dapat diproses.').slice(0, 240)
+  });
+}
+
+async function diracPasswordResetWorkerCallV326(innerPayload) {
+  const diagnostics = customerSecurityRecoveryWorkerMainEnvDiagnostics();
+  if (!diagnostics || diagnostics.ok !== true) {
+    const error = new Error('PASSWORD_RESET_WORKER_ENV_INVALID');
+    error.code = 'PASSWORD_RESET_WORKER_ENV_INVALID';
+    throw error;
+  }
+  const workerUrl = customerSecurityRecoveryWorkerUrl();
+  const secret = customerSecurityRecoveryWorkerSecret();
+  const caller = customerSecurityRecoveryWorkerCaller();
+  if (!workerUrl || !secret || !caller
+      || !innerPayload
+      || innerPayload.action !== DIRAC_RECOVERY_WORKER_ACTION
+      || innerPayload.caller_id !== caller
+      || !/^[A-Za-z0-9_.:-]{8,128}$/.test(String(innerPayload.request_id || ''))) {
+    const error = new Error('PASSWORD_RESET_WORKER_CONFIGURATION_INVALID');
+    error.code = 'PASSWORD_RESET_WORKER_CONFIGURATION_INVALID';
+    throw error;
+  }
+  const timestamp = String(Date.now());
+  const transportContext = customerSecurityRecoveryWorkerSealV190(innerPayload, caller, timestamp);
+  const payload = transportContext.envelope;
+  const target = new URL(workerUrl);
+  target.searchParams.set('action', DIRAC_RECOVERY_WORKER_ACTION);
+  const signature = customerSecurityRecoveryWorkerSign(
+    caller,
+    timestamp,
+    customerSecurityLostPasskeyCanonical(payload)
+  );
+  const timeoutMs = customerSecurityRecoveryWorkerTimeoutMsV281();
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(target.toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-Dirac-Worker-Caller': caller,
+        'X-Dirac-Worker-Timestamp': timestamp,
+        'X-Dirac-Worker-Signature': signature,
+        ...diracS2SSignHeadersV206({
+          target,
+          action: DIRAC_RECOVERY_WORKER_ACTION,
+          body: payload,
+          targetServerId: diracS2SIdV206('recovery')
+        })
+      },
+      body: JSON.stringify(payload),
+      redirect: 'error',
+      signal: controller ? controller.signal : undefined
+    });
+    const responseText = await customerSecurityRecoveryWorkerReadResponseTextV200(response);
+    const parsedOuter = await Promise.resolve()
+      .then(() => responseText ? JSON.parse(responseText) : null)
+      .then(
+        (value) => ({ ok: true, value }),
+        (error) => {
+          diracCentralRecordSuppressedExceptionV221(error);
+          return { ok: false, value: null };
+        }
+      );
+    const outer = parsedOuter.ok ? parsedOuter.value : null;
+    if (!outer || outer.transport_encrypted !== true) {
+      throw customerSecurityRecoveryWorkerTransportFailV190('PASSWORD_RESET_WORKER_ENCRYPTED_RESPONSE_REQUIRED');
+    }
+    const data = customerSecurityRecoveryWorkerOpenResponseV190(outer, transportContext, response.status);
+    return {
+      ok: Boolean(response.ok && data && data.ok === true),
+      status: Number(response.status || 502),
+      data: data && typeof data === 'object' ? data : {}
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (transportContext && Buffer.isBuffer(transportContext.responseKey)) {
+      transportContext.responseKey.fill(0);
+    }
+  }
+}
+
+async function diracPasswordResetDb1FetchV326(ctx, phase, path, options, owner) {
+  const match = /^\/rest\/v1\/([a-z][a-z0-9_]*)/.exec(String(path || ''));
+  const table = match ? match[1] : '';
+  const bodyPresent = options && options.body !== undefined && options.body !== null;
+  const bodySha512 = bodyPresent
+    ? crypto.createHash('sha512').update(customerSecurityLostPasskeyCanonical(options.body), 'utf8').digest('hex')
+    : '';
+  const permit = Object.freeze({
+    action: String(ctx && ctx.action || ''),
+    requestId: String(ctx && ctx.requestId || ''),
+    phase: String(phase || ''),
+    table,
+    path: String(path || ''),
+    method: String(options && options.method || 'GET').toUpperCase(),
+    bodySha512,
+    authUserId: String(owner && owner.authUserId || ''),
+    customerId: String(owner && owner.customerId || ''),
+    email: normalizeAuthEmail(owner && owner.email || '')
+  });
+  const previous = ctx[DIRAC_PASSWORD_RESET_DB1_SERVICE_PERMIT_V326];
+  ctx[DIRAC_PASSWORD_RESET_DB1_SERVICE_PERMIT_V326] = permit;
+  try {
+    return await supabaseFetch(path, options);
+  } finally {
+    if (previous) ctx[DIRAC_PASSWORD_RESET_DB1_SERVICE_PERMIT_V326] = previous;
+    else delete ctx[DIRAC_PASSWORD_RESET_DB1_SERVICE_PERMIT_V326];
+  }
+}
+
+function diracPasswordResetWorkerAuthorizationV326(data, caller, requestId) {
+  const update = data && data.server1_password_update;
+  const expected = [
+    'version', 'authorization_id', 'server2_finalization_token', 'auth_user_id',
+    'customer_id', 'email', 'new_password', 'password_sha512', 'owner_ref',
+    'source_grant_lookup', 'issued_at_ms', 'expires_at_ms', 'passkey_verified',
+    'owner_bound', 'grant_consumed', 'db1_session_revocation_required',
+    'db1_password_verifier_required', 'caller_id', 'source_request_id',
+    'client_response_sha512'
+  ];
+  if (!diracPasswordResetExactKeysV326(update, expected)
+      || update.version !== 'dirac-server1-db1-password-update-v1'
+      || !/^[A-Za-z0-9_-]{43}$/.test(String(update.authorization_id || ''))
+      || !/^[A-Za-z0-9_-]{86}$/.test(String(update.server2_finalization_token || ''))
+      || !customerSecurityLooksLikeUuid(String(update.auth_user_id || ''))
+      || !customerSecurityLooksLikeUuid(String(update.customer_id || ''))
+      || normalizeAuthEmail(update.email || '') !== update.email
+      || typeof update.new_password !== 'string'
+      || Buffer.byteLength(update.new_password, 'utf8') < 12
+      || Buffer.byteLength(update.new_password, 'utf8') > 512
+      || !/^[a-f0-9]{128}$/.test(String(update.password_sha512 || ''))
+      || !/^[A-Za-z0-9_-]{86}$/.test(String(update.owner_ref || ''))
+      || !/^[A-Za-z0-9_-]{86}$/.test(String(update.source_grant_lookup || ''))
+      || !Number.isSafeInteger(Number(update.issued_at_ms))
+      || !Number.isSafeInteger(Number(update.expires_at_ms))
+      || Number(update.expires_at_ms) - Number(update.issued_at_ms) !== 120000
+      || Number(update.issued_at_ms) > Date.now() + 5000
+      || Number(update.expires_at_ms) <= Date.now()
+      || update.passkey_verified !== true
+      || update.owner_bound !== true
+      || update.grant_consumed !== true
+      || update.db1_session_revocation_required !== true
+      || update.db1_password_verifier_required !== true
+      || update.caller_id !== caller
+      || update.source_request_id !== requestId
+      || !/^[a-f0-9]{128}$/.test(String(update.client_response_sha512 || ''))) {
+    return null;
+  }
+  const passwordSha512 = crypto.createHash('sha512').update(update.new_password, 'utf8').digest('hex');
+  const clientResponse = String(data && data.client_response || '');
+  const clientResponseSha512 = crypto.createHash('sha512').update(clientResponse, 'utf8').digest('hex');
+  if (!safeEqual(passwordSha512, update.password_sha512)
+      || !safeEqual(clientResponseSha512, update.client_response_sha512)
+      || !/^d10r\.v1\.[A-Za-z0-9_.-]{80,131000}$/.test(clientResponse)) {
+    return null;
+  }
+  return update;
+}
+
+async function diracPasswordResetCommitDb1V326(ctx, authorization) {
+  const owner = Object.freeze({
+    authUserId: String(authorization.auth_user_id || '').toLowerCase(),
+    customerId: String(authorization.customer_id || '').toLowerCase(),
+    email: normalizeAuthEmail(authorization.email || '')
+  });
+  const authLinkSelect = [
+    'id', 'auth_user_id', 'customer_id', 'email', 'link_status',
+    'match_confidence', 'disabled_at', 'revoked_at', 'updated_at'
+  ].join(',');
+  const authLinkPath = '/rest/v1/security_customer_auth_links?select=' + encodeURIComponent(authLinkSelect)
+    + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId)
+    + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&order=updated_at.desc&limit=2';
+  const authLinks = await diracPasswordResetDb1FetchV326(
+    ctx,
+    'owner_link_read',
+    authLinkPath,
+    { method: 'GET', auth: 'service' },
+    owner
+  );
+  const linkRows = authLinks && authLinks.ok === true && Array.isArray(authLinks.data)
+    ? authLinks.data.filter((row) => row && typeof row === 'object')
+    : [];
+  if (linkRows.length !== 1
+      || String(linkRows[0].auth_user_id || '').toLowerCase() !== owner.authUserId
+      || String(linkRows[0].customer_id || '').toLowerCase() !== owner.customerId
+      || normalizeAuthEmail(linkRows[0].email || '') !== owner.email
+      || String(linkRows[0].link_status || '').toLowerCase() !== 'active'
+      || linkRows[0].disabled_at
+      || linkRows[0].revoked_at) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_OWNER_LINK_INVALID'), { code: 'PASSWORD_RESET_DB1_OWNER_LINK_INVALID' });
+  }
+
+  const authPath = '/auth/v1/admin/users/' + encodeURIComponent(owner.authUserId);
+  const beforeAuth = await supabaseFetch(authPath, { method: 'GET', auth: 'service' });
+  const beforeUser = beforeAuth && beforeAuth.ok === true
+    ? normalizeSupabaseAdminUser(beforeAuth.data && beforeAuth.data.user || beforeAuth.data)
+    : null;
+  if (!beforeUser
+      || String(beforeUser.id || '').toLowerCase() !== owner.authUserId
+      || normalizeAuthEmail(beforeUser.email || '') !== owner.email) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_AUTH_OWNER_INVALID'), { code: 'PASSWORD_RESET_DB1_AUTH_OWNER_INVALID' });
+  }
+
+  const settingsSelect = 'id,customer_id,security_epoch,updated_at';
+  const settingsPath = '/rest/v1/security_customer_settings?select=' + encodeURIComponent(settingsSelect)
+    + '&customer_id=eq.' + encodeURIComponent(owner.customerId) + '&limit=2';
+  const settingsRead = await diracPasswordResetDb1FetchV326(
+    ctx,
+    'settings_read',
+    settingsPath,
+    { method: 'GET', auth: 'service' },
+    owner
+  );
+  const settingsRows = settingsRead && settingsRead.ok === true && Array.isArray(settingsRead.data)
+    ? settingsRead.data
+    : [];
+  const settingsRow = settingsRows.length === 1 ? settingsRows[0] : null;
+  const settingsId = String(settingsRow && settingsRow.id || '').trim();
+  const previousEpoch = Number(settingsRow && settingsRow.security_epoch);
+  if (!settingsRow
+      || !/^[A-Za-z0-9_-]{1,96}$/.test(settingsId)
+      || String(settingsRow.customer_id || '').toLowerCase() !== owner.customerId
+      || !Number.isSafeInteger(previousEpoch)
+      || previousEpoch < 1) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_SETTINGS_INVALID'), { code: 'PASSWORD_RESET_DB1_SETTINGS_INVALID' });
+  }
+
+  const passwordSelect = 'id,auth_user_id,customer_id,password_hash,hash_algorithm,status,updated_at';
+  const passwordReadPath = '/rest/v1/security_customer_password_hashes?select=' + encodeURIComponent(passwordSelect)
+    + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId)
+    + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+    + '&status=eq.active&order=updated_at.desc&limit=2';
+  const passwordRead = await diracPasswordResetDb1FetchV326(
+    ctx,
+    'password_hash_read',
+    passwordReadPath,
+    { method: 'GET', auth: 'service' },
+    owner
+  );
+  const activePasswordRows = passwordRead && passwordRead.ok === true && Array.isArray(passwordRead.data)
+    ? passwordRead.data
+    : [];
+  if (activePasswordRows.length > 1) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_PASSWORD_ROWS_AMBIGUOUS'), { code: 'PASSWORD_RESET_DB1_PASSWORD_ROWS_AMBIGUOUS' });
+  }
+
+  const params = diracPasswordArgon2V4Params();
+  const newPasswordHash = await diracPasswordArgon2V4Hash(authorization.new_password, {
+    authUserId: owner.authUserId,
+    customerId: owner.customerId,
+    email: owner.email
+  });
+  if (!String(newPasswordHash || '').startsWith('$argon2id$')) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_ARGON2_INVALID'), { code: 'PASSWORD_RESET_DB1_ARGON2_INVALID' });
+  }
+  const committedAtIso = new Date().toISOString();
+
+  const passwordBody = {
+    auth_user_id: owner.authUserId,
+    customer_id: owner.customerId,
+    email_hash: diracPasswordArgon2V4Hmac('email|' + owner.email),
+    password_hash: newPasswordHash,
+    hash_algorithm: 'argon2id',
+    hash_params: {
+      profile: DIRAC_PASSWORD_ARGON2ID_VERIFIED_SHADOW_PATCH_V4,
+      memory_kib: params.memoryCost,
+      time_cost: params.timeCost,
+      parallelism: params.parallelism,
+      hash_length: params.hashLength,
+      pepper: 'env',
+      auth_user_bound: true,
+      customer_bound: true,
+      source_action: 'confirm_password_reset',
+      passkey_verified: true
+    },
+    status: 'active',
+    updated_at: committedAtIso
+  };
+  let passwordWrite;
+  if (activePasswordRows.length === 1) {
+    const passwordRowId = diracPasswordArgon2ActiveOnlyV120SafeRowId(activePasswordRows[0].id);
+    if (!passwordRowId
+        || String(activePasswordRows[0].auth_user_id || '').toLowerCase() !== owner.authUserId
+        || String(activePasswordRows[0].customer_id || '').toLowerCase() !== owner.customerId
+        || String(activePasswordRows[0].status || '').toLowerCase() !== 'active') {
+      throw Object.assign(new Error('PASSWORD_RESET_DB1_PASSWORD_ROW_INVALID'), { code: 'PASSWORD_RESET_DB1_PASSWORD_ROW_INVALID' });
+    }
+    const passwordUpdatePath = '/rest/v1/security_customer_password_hashes?id=eq.' + encodeURIComponent(passwordRowId)
+      + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId)
+      + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+      + '&status=eq.active';
+    passwordWrite = await diracPasswordResetDb1FetchV326(
+      ctx,
+      'password_hash_update',
+      passwordUpdatePath,
+      { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: passwordBody },
+      owner
+    );
+  } else {
+    passwordWrite = await diracPasswordResetDb1FetchV326(
+      ctx,
+      'password_hash_insert',
+      '/rest/v1/security_customer_password_hashes',
+      {
+        method: 'POST',
+        auth: 'service',
+        prefer: 'return=representation',
+        body: [{ ...passwordBody, created_at: committedAtIso }]
+      },
+      owner
+    );
+  }
+  const writtenPasswordRows = passwordWrite && passwordWrite.ok === true && Array.isArray(passwordWrite.data)
+    ? passwordWrite.data
+    : [];
+  if (writtenPasswordRows.length !== 1
+      || String(writtenPasswordRows[0].auth_user_id || '').toLowerCase() !== owner.authUserId
+      || String(writtenPasswordRows[0].customer_id || '').toLowerCase() !== owner.customerId
+      || String(writtenPasswordRows[0].status || '').toLowerCase() !== 'active'
+      || String(writtenPasswordRows[0].hash_algorithm || '').toLowerCase() !== 'argon2id'
+      || !safeEqual(String(writtenPasswordRows[0].password_hash || ''), newPasswordHash)) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_PASSWORD_WRITE_FAILED'), { code: 'PASSWORD_RESET_DB1_PASSWORD_WRITE_FAILED' });
+  }
+
+  const passwordVerify = await diracPasswordResetDb1FetchV326(
+    ctx,
+    'password_hash_verify',
+    passwordReadPath,
+    { method: 'GET', auth: 'service' },
+    owner
+  );
+  const verifiedPasswordRows = passwordVerify && passwordVerify.ok === true && Array.isArray(passwordVerify.data)
+    ? passwordVerify.data
+    : [];
+  if (verifiedPasswordRows.length !== 1
+      || !safeEqual(String(verifiedPasswordRows[0].password_hash || ''), newPasswordHash)
+      || String(verifiedPasswordRows[0].auth_user_id || '').toLowerCase() !== owner.authUserId
+      || String(verifiedPasswordRows[0].customer_id || '').toLowerCase() !== owner.customerId) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_PASSWORD_VERIFY_FAILED'), { code: 'PASSWORD_RESET_DB1_PASSWORD_VERIFY_FAILED' });
+  }
+
+  const nextEpoch = previousEpoch + 1;
+  const settingsUpdatePath = '/rest/v1/security_customer_settings?id=eq.' + encodeURIComponent(settingsId)
+    + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+    + '&security_epoch=eq.' + encodeURIComponent(String(previousEpoch));
+  const settingsUpdate = await diracPasswordResetDb1FetchV326(
+    ctx,
+    'settings_update',
+    settingsUpdatePath,
+    {
+      method: 'PATCH',
+      auth: 'service',
+      prefer: 'return=representation',
+      body: { security_epoch: nextEpoch, updated_at: committedAtIso }
+    },
+    owner
+  );
+  const updatedSettingsRows = settingsUpdate && settingsUpdate.ok === true && Array.isArray(settingsUpdate.data)
+    ? settingsUpdate.data
+    : [];
+  if (updatedSettingsRows.length !== 1
+      || String(updatedSettingsRows[0].id || '') !== settingsId
+      || String(updatedSettingsRows[0].customer_id || '').toLowerCase() !== owner.customerId
+      || Number(updatedSettingsRows[0].security_epoch) !== nextEpoch) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_SECURITY_EPOCH_UPDATE_FAILED'), { code: 'PASSWORD_RESET_DB1_SECURITY_EPOCH_UPDATE_FAILED' });
+  }
+  const settingsVerify = await diracPasswordResetDb1FetchV326(
+    ctx,
+    'settings_verify',
+    settingsPath,
+    { method: 'GET', auth: 'service' },
+    owner
+  );
+  const verifiedSettingsRows = settingsVerify && settingsVerify.ok === true && Array.isArray(settingsVerify.data)
+    ? settingsVerify.data
+    : [];
+  if (verifiedSettingsRows.length !== 1
+      || Number(verifiedSettingsRows[0].security_epoch) !== nextEpoch
+      || String(verifiedSettingsRows[0].customer_id || '').toLowerCase() !== owner.customerId) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_SECURITY_EPOCH_VERIFY_FAILED'), { code: 'PASSWORD_RESET_DB1_SECURITY_EPOCH_VERIFY_FAILED' });
+  }
+
+  const sessionsRevokePath = '/rest/v1/security_customer_sessions?customer_id=eq.' + encodeURIComponent(owner.customerId)
+    + '&status=eq.active';
+  const sessionsRevoked = await diracPasswordResetDb1FetchV326(
+    ctx,
+    'sessions_revoke',
+    sessionsRevokePath,
+    {
+      method: 'PATCH',
+      auth: 'service',
+      prefer: 'return=representation',
+      body: {
+        status: 'revoked',
+        revoked_at: committedAtIso,
+        revoke_reason: 'password_reset_passkey_d10'
+      }
+    },
+    owner
+  );
+  const revokedSessionRows = sessionsRevoked && sessionsRevoked.ok === true && Array.isArray(sessionsRevoked.data)
+    ? sessionsRevoked.data
+    : null;
+  if (!revokedSessionRows
+      || revokedSessionRows.some((row) => !row
+        || String(row.customer_id || '').toLowerCase() !== owner.customerId
+        || String(row.status || '').toLowerCase() !== 'revoked'
+        || !Number.isFinite(Date.parse(String(row.revoked_at || '')))
+        || String(row.revoke_reason || '') !== 'password_reset_passkey_d10')) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_SESSION_REVOCATION_FAILED'), { code: 'PASSWORD_RESET_DB1_SESSION_REVOCATION_FAILED' });
+  }
+  const sessionsVerifyPath = '/rest/v1/security_customer_sessions?select='
+    + encodeURIComponent('id,customer_id,status,revoked_at')
+    + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+    + '&status=eq.active&limit=1';
+  const sessionsVerify = await diracPasswordResetDb1FetchV326(
+    ctx,
+    'sessions_verify',
+    sessionsVerifyPath,
+    { method: 'GET', auth: 'service' },
+    owner
+  );
+  if (!sessionsVerify || sessionsVerify.ok !== true
+      || !Array.isArray(sessionsVerify.data)
+      || sessionsVerify.data.length !== 0) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_SESSION_VERIFY_FAILED'), { code: 'PASSWORD_RESET_DB1_SESSION_VERIFY_FAILED' });
+  }
+  const authUpdated = await supabaseFetch(authPath, {
+    method: 'PUT',
+    auth: 'service',
+    body: { password: authorization.new_password }
+  });
+  const updatedUser = authUpdated && authUpdated.ok === true
+    ? normalizeSupabaseAdminUser(authUpdated.data && authUpdated.data.user || authUpdated.data)
+    : null;
+  if (!updatedUser
+      || String(updatedUser.id || '').toLowerCase() !== owner.authUserId
+      || normalizeAuthEmail(updatedUser.email || '') !== owner.email) {
+    throw Object.assign(new Error('PASSWORD_RESET_DB1_AUTH_UPDATE_FAILED'), { code: 'PASSWORD_RESET_DB1_AUTH_UPDATE_FAILED' });
+  }
+  const committedAtMs = Date.now();
+  return Object.freeze({ owner, committedAtMs });
+}
+
+function diracPasswordResetFinalizerV326(authorization, committedAtMs) {
+  const finalization = {
+    version: 'dirac-server2-db1-commit-finalize-v2',
+    finalization_token: authorization.server2_finalization_token,
+    authorization_id: authorization.authorization_id,
+    auth_user_id: authorization.auth_user_id,
+    customer_id: authorization.customer_id,
+    email: authorization.email,
+    password_sha512: authorization.password_sha512,
+    owner_ref: authorization.owner_ref,
+    source_grant_lookup: authorization.source_grant_lookup,
+    source_request_id: authorization.source_request_id,
+    client_response_sha512: authorization.client_response_sha512,
+    db1_committed: true,
+    db1_auth_password_updated: true,
+    db1_password_verifier_updated: true,
+    db1_sessions_revoked: true,
+    db1_committed_at_ms: committedAtMs
+  };
+  finalization.proof_b64url = crypto.createHmac('sha512', customerSecurityRecoveryWorkerSecret())
+    .update('dirac-server1-db1-commit-proof-v2\n', 'utf8')
+    .update(customerSecurityLostPasskeyCanonical(finalization), 'utf8')
+    .digest('base64url');
+  return finalization;
+}
+
+async function diracPasswordResetFinalizeWorkerV326(authorization, committedAtMs, caller, requestId) {
+  const finalization = diracPasswordResetFinalizerV326(authorization, committedAtMs);
+  let last = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const innerPayload = {
+      action: DIRAC_RECOVERY_WORKER_ACTION,
+      worker_action: DIRAC_PASSWORD_RESET_WORKER_TASK_CONFIRM_V326,
+      source_action: 'confirm_password_reset',
+      caller_id: caller,
+      nonce: crypto.randomBytes(32).toString('base64url'),
+      request_id: requestId,
+      requested_at: new Date().toISOString(),
+      server_finalize: finalization
+    };
+    const attemptResult = await Promise.resolve()
+      .then(() => diracPasswordResetWorkerCallV326(innerPayload))
+      .then(
+        (value) => ({ ok: true, value }),
+        (error) => {
+          diracCentralRecordSuppressedExceptionV221(error);
+          return { ok: false, value: null };
+        }
+      );
+    last = attemptResult.ok ? attemptResult.value : null;
+    if (last && last.ok === true
+        && last.data
+        && last.data.d10_finalize_completed === true
+        && last.data.authorization_id === authorization.authorization_id
+        && last.data.source_request_id === requestId) {
+      finalization.proof_b64url = '';
+      return true;
+    }
+    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+  }
+  finalization.proof_b64url = '';
+  return false;
+}
+
+async function diracPasswordResetPasskeySourceV326(req, res, ctx) {
+  const action = String(ctx && ctx.action || '').trim();
+  const cors = setCors(req, res, { isDomainAction: true });
+  if (!cors.allowed) return diracPasswordResetFailureV326(res, 403, 'PASSWORD_RESET_ORIGIN_NOT_ALLOWED', 'Origin reset password tidak diizinkan.');
+  if (String(req && req.method || '').toUpperCase() === 'OPTIONS') return res.status(204).end();
+  if (!ctx
+      || !diracCentralHandlerContextFullyPassedV211(ctx, req)
+      || req.__diracCentralSecurityGuardPassedV146 !== true
+      || ctx.method !== 'POST'
+      || !new Set(['request_password_reset', 'confirm_password_reset']).has(action)) {
+    return diracPasswordResetFailureV326(res, 403, 'PASSWORD_RESET_CENTRAL_GUARD_REQUIRED', 'Permintaan reset password ditolak.');
+  }
+  const body = ctx.body && typeof ctx.body === 'object' && !Array.isArray(ctx.body) ? ctx.body : {};
+  const requestId = diracPasswordResetWorkerRequestIdV326(ctx);
+  const caller = customerSecurityRecoveryWorkerCaller();
+  let clientEnvelope = '';
+  let workerTask = '';
+  if (action === 'request_password_reset') {
+    if (!diracPasswordResetExactKeysV326(body, ['action', 'email'])
+        || !new Set(['request-password-reset', 'request_password_reset']).has(String(body.action || ''))
+        || String(body.email || '') !== DIRAC_PASSWORD_RESET_PROFILE_CARRIER_V326) {
+      return diracPasswordResetFailureV326(res, 400, 'PASSWORD_RESET_PROFILE_REQUEST_INVALID', 'Permintaan profil kriptografi tidak valid.');
+    }
+    clientEnvelope = DIRAC_PASSWORD_RESET_PROFILE_CARRIER_V326;
+    workerTask = DIRAC_PASSWORD_RESET_WORKER_TASK_REQUEST_V326;
+  } else {
+    if (!diracPasswordResetExactKeysV326(body, ['action', 'code', 'resetToken'])
+        || !new Set(['confirm-password-reset', 'confirm_password_reset']).has(String(body.action || ''))
+        || String(body.code || '') !== DIRAC_PASSWORD_RESET_CONFIRM_MARKER_V326
+        || typeof body.resetToken !== 'string'
+        || Buffer.byteLength(body.resetToken, 'utf8') > 8192
+        || !/^d10\.v1\.[A-Za-z0-9_.-]{80,8192}$/.test(body.resetToken)) {
+      return diracPasswordResetFailureV326(res, 400, 'PASSWORD_RESET_ENCRYPTED_REQUEST_INVALID', 'Payload reset password terenkripsi tidak valid.');
+    }
+    clientEnvelope = body.resetToken;
+    workerTask = DIRAC_PASSWORD_RESET_WORKER_TASK_CONFIRM_V326;
+  }
+  const innerPayload = {
+    action: DIRAC_RECOVERY_WORKER_ACTION,
+    worker_action: workerTask,
+    source_action: action,
+    caller_id: caller,
+    nonce: crypto.randomBytes(32).toString('base64url'),
+    request_id: requestId,
+    requested_at: new Date().toISOString(),
+    client_envelope: clientEnvelope
+  };
+  let workerResult = null;
+  try {
+    const execution = await Promise.resolve().then(async () => {
+      workerResult = await diracPasswordResetWorkerCallV326(innerPayload);
+      if (!workerResult || workerResult.ok !== true || !workerResult.data) {
+        return diracPasswordResetFailureV326(
+          res,
+          workerResult && workerResult.status >= 400 ? workerResult.status : 502,
+          workerResult && workerResult.data && workerResult.data.code || 'PASSWORD_RESET_WORKER_REJECTED',
+          workerResult && workerResult.data && workerResult.data.message || 'Worker reset password menolak permintaan.'
+        );
+      }
+      const data = workerResult.data;
+      if (!data.server1_password_update) {
+        const challenge = String(data.client_response || '');
+        if (!challenge
+            || (action === 'request_password_reset' && !/^d10p\.[A-Za-z0-9_-]{40,131000}$/.test(challenge))
+            || (action === 'confirm_password_reset' && !/^d10r\.v1\.[A-Za-z0-9_.-]{80,131000}$/.test(challenge))) {
+          return diracPasswordResetFailureV326(res, 502, 'PASSWORD_RESET_WORKER_RESPONSE_INVALID', 'Respons terenkripsi worker tidak valid.');
+        }
+        return res.status(200).json({
+          ok: true,
+          encrypted: true,
+          protocol: DIRAC_PASSWORD_RESET_D10_PROTOCOL_V326,
+          challenge
+        });
+      }
+      const authorization = diracPasswordResetWorkerAuthorizationV326(data, caller, requestId);
+      if (!authorization || action !== 'confirm_password_reset') {
+        return diracPasswordResetFailureV326(res, 502, 'PASSWORD_RESET_WORKER_AUTHORIZATION_INVALID', 'Otorisasi reset password worker tidak valid.');
+      }
+      const committed = await diracPasswordResetCommitDb1V326(ctx, authorization);
+      const finalized = await diracPasswordResetFinalizeWorkerV326(
+        authorization,
+        committed.committedAtMs,
+        caller,
+        requestId
+      );
+      if (!finalized) {
+        await diracUserSecurityNotifyV325({
+          to: authorization.email,
+          event: 'password_changed',
+          occurredAtMs: committed.committedAtMs
+        }).catch(() => ({ ok: false }));
+      }
+      return res.status(200).json({
+        ok: true,
+        encrypted: true,
+        protocol: DIRAC_PASSWORD_RESET_D10_PROTOCOL_V326,
+        challenge: String(data.client_response || '')
+      });
+    }).then(
+      (value) => ({ ok: true, value }),
+      (error) => ({ ok: false, error })
+    );
+    if (!execution.ok) {
+      const error = execution.error;
+      console.error('[dirac-password-reset-source-v326]', JSON.stringify({
+        patch: DIRAC_PASSWORD_RESET_SOURCE_V326,
+        code: String(error && error.code || 'PASSWORD_RESET_SOURCE_FAILED').replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 120),
+        action,
+        request_id_hash: crypto.createHash('sha256').update(requestId, 'utf8').digest('hex'),
+        secrets_logged: false
+      }));
+      return diracPasswordResetFailureV326(res, 503, 'PASSWORD_RESET_SOURCE_FAILED', 'Reset password melalui Passkey belum dapat diselesaikan.');
+    }
+    return execution.value;
+  } finally {
+    innerPayload.client_envelope = '';
+    if (workerResult && workerResult.data && workerResult.data.server1_password_update) {
+      workerResult.data.server1_password_update.new_password = '';
+      workerResult.data.server1_password_update.password_sha512 = '';
+      workerResult.data.server1_password_update = null;
+    }
+  }
+}
+
+__diracV202RegisterMiddleware(async function diracPasswordResetPasskeySourceV326Wrapper(req, res, nextHandlerV202) {
+  const ctx = diracCentralCurrentContextV149();
+  const action = String(ctx && ctx.action || req && req.query && req.query.action || '').trim().toLowerCase();
+  if (action !== 'request_password_reset' && action !== 'confirm_password_reset') {
+    return nextHandlerV202(req, res);
+  }
+  if (!req
+      || req[DIRAC_PASSWORD_RESET_SECURITY_ROUTE_GATE_V326.marker]
+        !== DIRAC_PASSWORD_RESET_SECURITY_ROUTE_GATE_V326.token) {
+    return diracPasswordResetFailureV326(
+      res,
+      403,
+      'PASSWORD_RESET_SECURITY_ROUTE_REQUIRED',
+      'Reset password hanya dapat diproses melalui gerbang keamanan.'
+    );
+  }
+  return diracPasswordResetPasskeySourceV326(req, res, ctx);
+}, 'diracPasswordResetPasskeySourceV326Wrapper');
+__diracV202MarkWrapperFlag('__diracPasswordResetPasskeySourceV326');
+
+/* ============================================================
    v202 CENTRALIZED ACTION POLICY AND GATEWAYS
    ============================================================ */
 function diracV202BuildActionPolicyTable() {
@@ -59272,6 +60052,7 @@ Object.defineProperty(module.exports, '__diracCentralBackendStaticGateV230', { v
 Object.defineProperty(module.exports, '__diracCentralRuntimeLockV230', { value: DIRAC_CENTRAL_RUNTIME_LOCK_V230, enumerable: false });
 Object.defineProperty(module.exports, '__diracRunCanonicalGuardV325', { value: diracRunCanonicalGuardV325, enumerable: false, writable: false, configurable: false });
 Object.defineProperty(module.exports, '__diracCanonicalGuardVersionV325', { value: true, enumerable: false, writable: false, configurable: false });
+Object.defineProperty(module.exports, '__diracPasswordResetSecurityRouteGateV326', { value: DIRAC_PASSWORD_RESET_SECURITY_ROUTE_GATE_V326, enumerable: false, writable: false, configurable: false });
 
 if (!Array.isArray(SECURITY_PIPELINE)
     || SECURITY_PIPELINE.length !== Object.keys(DIRAC_V202_CHECKPOINT_BY_STAMP).length
