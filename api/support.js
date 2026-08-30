@@ -3,25 +3,6 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import https from 'node:https';
 import { promises as dns } from 'node:dns';
 import net from 'node:net';
-import { createRequire } from 'node:module';
-
-const DIRAC_SUPPORT_NATIVE_FETCH_V325 = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
-const DIRAC_SUPPORT_NATIVE_DNS_LOOKUP_V325 = dns.lookup.bind(dns);
-const DIRAC_SUPPORT_NATIVE_HTTPS_REQUEST_V325 = https.request.bind(https);
-const require = createRequire(import.meta.url);
-const DIRAC_SUPPORT_CANONICAL_HEALTH_V325 = require('./health.js');
-const DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325 = Object.getOwnPropertyDescriptor(DIRAC_SUPPORT_CANONICAL_HEALTH_V325, '__diracRunCanonicalGuardV325');
-if (typeof DIRAC_SUPPORT_CANONICAL_HEALTH_V325 !== 'function'
-    || Object.isFrozen(DIRAC_SUPPORT_CANONICAL_HEALTH_V325) !== true
-    || !DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325
-    || typeof DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325.value !== 'function'
-    || DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325.writable !== false
-    || DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325.configurable !== false
-    || DIRAC_SUPPORT_CANONICAL_HEALTH_V325.__diracCanonicalGuardVersionV325 !== true
-    || DIRAC_SUPPORT_CANONICAL_HEALTH_V325.__diracCentralSecurityGuardV146 !== true) {
-  throw new Error('DIRAC_SUPPORT_CANONICAL_HEALTH_INVALID');
-}
-const DIRAC_SUPPORT_RUN_CANONICAL_GUARD_V325 = DIRAC_SUPPORT_CANONICAL_GUARD_DESCRIPTOR_V325.value;
 
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_MESSAGE_CHARS = 2000;
@@ -588,8 +569,7 @@ async function fetchJson(url, options, timeoutMs) {
   supportCentralAssertFixedEgress(url);
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs || 8000);
   try {
-    if (!DIRAC_SUPPORT_NATIVE_FETCH_V325) throw new PublicError(503, 'SUPPORT_FETCH_UNAVAILABLE', 'Transport jaringan support tidak tersedia.');
-    const response = await DIRAC_SUPPORT_NATIVE_FETCH_V325(url, Object.assign({}, options, { signal: controller.signal, redirect: 'error' }));
+    const response = await fetch(url, Object.assign({}, options, { signal: controller.signal, redirect: 'error' }));
     const maxBytes = 2 * 1024 * 1024;
     const declared = Number(response.headers.get('content-length') || 0);
     if (Number.isFinite(declared) && declared > maxBytes) {
@@ -1385,7 +1365,7 @@ async function resolveMonitorAddress(url) {
   try {
     if (net.isIP(hostname)) records = [{ address: hostname, family: net.isIP(hostname) }];
     else records = await Promise.race([
-      DIRAC_SUPPORT_NATIVE_DNS_LOOKUP_V325(hostname, { all: true, verbatim: true }),
+      dns.lookup(hostname, { all: true, verbatim: true }),
       new Promise((_, reject) => { dnsTimer = setTimeout(() => reject(new Error('DNS_TIMEOUT')), 3000); })
     ]);
   } catch (_) {
@@ -1404,7 +1384,7 @@ async function probeTarget(target) {
   return new Promise((resolve) => {
     let finished = false; let deadline;
     const finish = (value) => { if (finished) return; finished = true; if (deadline) clearTimeout(deadline); resolve(value); };
-    const request = DIRAC_SUPPORT_NATIVE_HTTPS_REQUEST_V325(url, { method: 'GET', headers: { Accept: 'text/plain,application/json;q=0.9,*/*;q=0.1', 'User-Agent': 'Dirac-Support-Monitor/2.1', Connection: 'close' }, family: chosen.family, autoSelectFamily: false, lookup: (_hostname, options, callback) => options && options.all ? callback(null, [{ address: chosen.address, family: chosen.family }]) : callback(null, chosen.address, chosen.family), servername: net.isIP(url.hostname.replace(/^\[|\]$/g, '')) ? '' : url.hostname, rejectUnauthorized: true }, (response) => {
+    const request = https.request(url, { method: 'GET', headers: { Accept: 'text/plain,application/json;q=0.9,*/*;q=0.1', 'User-Agent': 'Dirac-Support-Monitor/2.1', Connection: 'close' }, family: chosen.family, autoSelectFamily: false, lookup: (_hostname, options, callback) => options && options.all ? callback(null, [{ address: chosen.address, family: chosen.family }]) : callback(null, chosen.address, chosen.family), servername: net.isIP(url.hostname.replace(/^\[|\]$/g, '')) ? '' : url.hostname, rejectUnauthorized: true }, (response) => {
       let bytes = 0; response.on('data', (chunk) => { bytes += chunk.length; if (bytes > 64 * 1024) request.destroy(new Error('RESPONSE_TOO_LARGE')); });
       response.on('end', () => { const range = Array.isArray(target.expectedStatus) ? target.expectedStatus : [200, 399]; const ok = response.statusCode >= Number(range[0]) && response.statusCode <= Number(range[1]); finish({ ok, latencyMs: Date.now() - started, statusCode: response.statusCode || 0, errorCode: ok ? '' : 'HTTP_STATUS' }); });
       response.on('aborted', () => finish({ ok: false, latencyMs: Date.now() - started, statusCode: response.statusCode || 0, errorCode: 'RESPONSE_ABORTED' }));
@@ -2186,7 +2166,7 @@ function supportCentralContextV146(req, res) {
   };
 }
 
-async function supportBusinessHandlerV325(req, res) {
+async function handler(req, res) {
   const ctx = supportCentralContextV146(req, res);
   return DIRAC_SUPPORT_CENTRAL_CONTEXT_V146.run(ctx, async () => {
     req.diracRequestId = ctx.requestId;
@@ -2242,14 +2222,6 @@ async function supportBusinessHandlerV325(req, res) {
   });
 }
 
-async function handler(req, res) {
-  return DIRAC_SUPPORT_RUN_CANONICAL_GUARD_V325(
-    req,
-    res,
-    () => supportBusinessHandlerV325(req, res)
-  );
-}
-
 const supportActionNamesV146 = Object.keys(DIRAC_SUPPORT_CENTRAL_ACTION_POLICY_V146).sort();
 const supportHandlerNamesV146 = Object.keys(DIRAC_SUPPORT_ACTION_HANDLERS_V146).sort();
 if (JSON.stringify(supportActionNamesV146) !== JSON.stringify(supportHandlerNamesV146)
@@ -2260,9 +2232,6 @@ if (JSON.stringify(supportActionNamesV146) !== JSON.stringify(supportHandlerName
 
 handler.config = { api: { bodyParser: false } };
 handler.__diracSupportCentralSecurityGuardV146 = true;
-handler.__diracCentralSecurityGuardV146 = true;
-handler.__diracCentralArchitectureConsolidationV202 = true;
-handler.__diracCanonicalGuardVersionV325 = true;
 handler.__diracSupportCentralActionCountV146 = supportActionNamesV146.length;
 handler.__test = Object.freeze({
   text, messageText, email, seal, unseal, isPrivateIp, normalizeMonitorUrl,

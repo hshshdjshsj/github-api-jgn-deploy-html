@@ -1,38 +1,19 @@
 'use strict';
 
 const centralHandler = require('./health.js');
-const centralGuardDescriptor = Object.getOwnPropertyDescriptor(centralHandler, '__diracRunCanonicalGuardV325');
-const passwordResetRouteGateDescriptor = Object.getOwnPropertyDescriptor(centralHandler, '__diracPasswordResetSecurityRouteGateV326');
 
 if (typeof centralHandler !== 'function'
     || Object.isFrozen(centralHandler) !== true
     || centralHandler.__diracCentralSecurityGuardV146 !== true
     || centralHandler.__diracCentralArchitectureConsolidationV202 !== true
-    || centralHandler.__diracCentralBackendComplianceV230 !== true
-    || centralHandler.__diracCanonicalGuardVersionV325 !== true
-    || !centralGuardDescriptor
-    || typeof centralGuardDescriptor.value !== 'function'
-    || centralGuardDescriptor.writable !== false
-    || centralGuardDescriptor.configurable !== false
-    || !passwordResetRouteGateDescriptor
-    || passwordResetRouteGateDescriptor.writable !== false
-    || passwordResetRouteGateDescriptor.configurable !== false
-    || !passwordResetRouteGateDescriptor.value
-    || Object.isFrozen(passwordResetRouteGateDescriptor.value) !== true
-    || typeof passwordResetRouteGateDescriptor.value.marker !== 'symbol'
-    || !passwordResetRouteGateDescriptor.value.token
-    || Object.isFrozen(passwordResetRouteGateDescriptor.value.token) !== true) {
+    || centralHandler.__diracCentralBackendComplianceV230 !== true) {
   throw new Error('DIRAC_SECURITY_ROUTE_CENTRAL_HANDLER_INVALID');
 }
-const runCanonicalGuard = centralGuardDescriptor.value;
-const passwordResetRouteGate = passwordResetRouteGateDescriptor.value;
 
 const SECURITY_ROUTE_PATH = '/api/keamanan';
 const CENTRAL_ROUTE_PATH = '/api/health';
 
 const ACTION_METHODS = Object.freeze({
-  request_password_reset: Object.freeze(new Set(['POST', 'OPTIONS'])),
-  confirm_password_reset: Object.freeze(new Set(['POST', 'OPTIONS'])),
   security_report: Object.freeze(new Set(['POST', 'OPTIONS'])),
   domain_health: Object.freeze(new Set(['GET', 'HEAD', 'OPTIONS'])),
   domain_dashboard_me: Object.freeze(new Set(['GET', 'HEAD', 'OPTIONS'])),
@@ -117,14 +98,6 @@ async function keamananHandler(req, res) {
 
   const originalUrl = req.url;
   try {
-    if (parsed.action === 'request_password_reset' || parsed.action === 'confirm_password_reset') {
-      Object.defineProperty(req, passwordResetRouteGate.marker, {
-        value: passwordResetRouteGate.token,
-        enumerable: false,
-        writable: false,
-        configurable: false
-      });
-    }
     req.url = parsed.canonicalUrl;
     return await centralHandler(req, res);
   } finally {
@@ -142,8 +115,6 @@ Object.defineProperty(keamananHandler, '__diracCentralSecurityGuardV146', { valu
 Object.defineProperty(keamananHandler, '__diracCentralArchitectureConsolidationV202', { value: true, enumerable: false });
 Object.defineProperty(keamananHandler, '__diracCentralBackendComplianceV230', { value: true, enumerable: false });
 Object.defineProperty(keamananHandler, '__diracSecurityRouteAliasV1', { value: true, enumerable: false });
-Object.defineProperty(keamananHandler, '__diracCanonicalGuardVersionV325', { value: true, enumerable: false });
-Object.defineProperty(keamananHandler, '__diracPasswordResetPasskeyRouteV325', { value: true, enumerable: false });
 Object.freeze(keamananHandler);
 
 module.exports = keamananHandler;
