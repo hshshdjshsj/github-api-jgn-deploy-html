@@ -25795,7 +25795,7 @@ async function diracUniversalPesananFindReusableTransaction(input) {
    - Owner/store email uses ORDER_OWNER_* ENV.
    ============================================================ */
 
-const DIRAC_ORDER_MAIL_PATCH = 'order-mail-v23-wib-display-datefix-email-only';
+const DIRAC_ORDER_MAIL_PATCH = 'order-mail-v24-paid-corporate-recovery-theme-email-only';
 const __diracOrderMailPreviousHandler = __diracV202DispatcherSentinel;
 
 __diracV202RegisterMiddleware(async function diracOrderMailWrapper(req, res, nextHandlerV202) {
@@ -26184,9 +26184,14 @@ function orderMailBuildNewOrderMessages(data) {
   const itemsText = orderMailItemsText(data.items, data.order.currency);
   const itemsHtml = orderMailItemsHtml(data.items, data.order.currency);
   const productCardsHtml = orderMailProductCardsHtml(data.items, data.order.currency);
+  const orderItemsSectionHtml = productCardsHtml || `
+    <div class="gmail-blend-screen"><div class="gmail-blend-difference">
+      <div style="margin:26px 0 12px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">RINCIAN PESANAN</div>
+    </div></div>
+    ${itemsHtml}`;
   const paymentLine = data.payment.url ? `\nLink pembayaran: ${data.payment.url}` : '';
   const paymentHtml = data.payment.url
-    ? `<p style="margin:18px 0 0"><a href="${orderMailEscapeHtml(data.payment.url)}" style="display:inline-block;padding:12px 18px;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;border-radius:10px;font-size:14px;font-weight:700;border:1px solid #4b5563">Buka Link Pembayaran</a></p>`
+    ? `<table class="dirac-button" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;margin:0 0 20px"><tr><td align="center" bgcolor="#4568d4" style="background:#4568d4;background-color:#4568d4;background-image:linear-gradient(#4568d4,#4568d4);border-radius:8px"><a href="${orderMailEscapeHtml(data.payment.url)}" style="display:block;padding:17px 18px;font-size:16px;line-height:1.3;font-weight:800;letter-spacing:.04em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;border-radius:8px"><span class="gmail-blend-screen" style="display:inline-block"><span class="gmail-blend-difference" style="display:inline-block">BUKA LINK PEMBAYARAN</span></span></a></td></tr></table>`
     : '';
 
   const paid = ['paid', 'success', 'settled', 'settlement', 'capture'].includes(String(data.order.payment_status || '').toLowerCase());
@@ -26197,13 +26202,12 @@ function orderMailBuildNewOrderMessages(data) {
     ? `Pembayaran berhasil ${data.order.code} - ${serviceLabel}`
     : `Order baru ${data.order.code} - ${serviceLabel}`;
   const customerIntro = paid
-    ? 'Pembayaran kamu sudah berhasil kami terima. Berikut invoice dan rincian pesanan kamu.'
-    : 'Pesanan kamu sudah kami terima. Berikut rincian pesanan dan informasi pembayaran kamu.';
+    ? 'Pembayaran Anda telah berhasil diterima dan diverifikasi. Berikut invoice serta rincian pesanan Anda.'
+    : 'Pesanan Anda telah kami terima. Berikut rincian pesanan dan informasi pembayarannya.';
   const ownerIntro = paid
-    ? 'Ada pembayaran order yang sudah berhasil dan valid dari webhook payment gateway.'
-    : 'Ada order baru masuk.';
+    ? 'Pembayaran pelanggan telah berhasil diterima dan dinyatakan valid oleh webhook payment gateway.'
+    : 'Terdapat pesanan baru yang masuk ke sistem.';
   const statusLabel = paid ? 'paid / sudah dibayar' : data.order.payment_status;
-  const orderUrl = orderMailOrderUrl(data.order.code);
   const shippingAddress = orderMailCleanText(data.order.shipping_address || data.customer.shipping_address || '', 1400);
   const orderNote = orderMailCleanText(data.order.note || '', 700);
   const shippingTextLine = shippingAddress ? `Alamat pengiriman: ${shippingAddress}` : '';
@@ -26216,9 +26220,16 @@ function orderMailBuildNewOrderMessages(data) {
     ['Ongkir', shippingCost],
     ['Total akhir', total]
   ];
+  const officialSupportText = [
+    'WhatsApp: 0878 9252 3968',
+    'Email Support: support@diracgroup.store',
+    'Email Perusahaan: companydirac@gmail.com',
+    'Instagram: @diraccorp'
+  ];
+  const paymentSafetyText = 'Dirac Group tidak pernah meminta password, OTP, PIN, CVV, atau data kartu melalui WhatsApp, Instagram, telepon, maupun balasan email.';
 
   const customerText = [
-    `Halo ${data.customer.name || 'Customer'},`,
+    `Yth. ${data.customer.name || 'Pengguna Dirac Group'},`,
     '',
     customerIntro,
     `Kode pesanan: ${data.order.code}`,
@@ -26231,14 +26242,16 @@ function orderMailBuildNewOrderMessages(data) {
     shippingTextLine,
     noteTextLine,
     `Waktu pembayaran: ${created}`,
+    `Referensi pembayaran: ${data.payment.invoice_id || '-'}`,
     paymentLine.trim(),
     '',
-    'Rincian:',
+    'Rincian pesanan:',
     itemsText,
     '',
     'Lihat pesanan: ' + diracRoleOriginV250('pesanan') + '/pesanan.html',
-    'Hubungi support: ' + diracSupportEmailV250(),
-    'Butuh bantuan WhatsApp: https://wa.me/6287892523968',
+    'Bantuan resmi Dirac Group:',
+    ...officialSupportText,
+    paymentSafetyText,
     'Dirac Group'
   ].filter((line) => line !== '').join('\n');
 
@@ -26258,15 +26271,23 @@ function orderMailBuildNewOrderMessages(data) {
     `Total: ${total}`,
     `Status bayar: ${statusLabel}`,
     `Waktu pembayaran: ${created}`,
+    `Referensi pembayaran: ${data.payment.invoice_id || '-'}`,
     paymentLine.trim(),
     '',
-    'Rincian:',
-    itemsText
+    'Rincian pesanan:',
+    itemsText,
+    '',
+    'Bantuan resmi Dirac Group:',
+    ...officialSupportText,
+    paymentSafetyText
   ].filter((line) => line !== '').join('\n');
 
   const customerHtml = orderMailHtmlShell(customerSubject, `
-    <p style="margin:0 0 12px;font-size:15px;line-height:1.7;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Halo <strong style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(data.customer.name || 'Customer')}</strong>,</p>
-    <p style="margin:0 0 18px;font-size:15px;line-height:1.7;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(customerIntro)}</p>
+    <div class="gmail-blend-screen"><div class="gmail-blend-difference">
+      <p style="margin:0 0 12px;font-size:17px;line-height:1.55;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">Yth. <strong style="color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(data.customer.name || 'Pengguna Dirac Group')}</strong>,</p>
+      <p style="margin:0 0 26px;font-size:16px;line-height:1.65;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">${orderMailEscapeHtml(customerIntro)}</p>
+      <div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">DETAIL PEMBAYARAN</div>
+    </div></div>
     ${orderMailInfoTable([
       ['Kode pesanan', data.order.code],
       ['Layanan', serviceLabel],
@@ -26278,13 +26299,27 @@ function orderMailBuildNewOrderMessages(data) {
       ['Referensi pembayaran', data.payment.invoice_id || '-']
     ])}
     ${paymentHtml}
-    ${productCardsHtml}
-    <h3 style="margin:22px 0 12px;font-size:16px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Rincian pesanan</h3>
-    ${itemsHtml}
-  `, { badge: paid ? 'PAID' : 'ORDER', total, showActions: true, showPromoImage: true });
+    ${orderItemsSectionHtml}
+  `, {
+    badge: paid ? 'PAID' : 'ORDER',
+    total,
+    showActions: true,
+    showPromoImage: true,
+    displayTitle: paid ? 'Pembayaran Berhasil' : 'Pesanan Diterima',
+    eyebrow: paid ? 'PAYMENT CONFIRMED' : 'ORDER CONFIRMATION',
+    brandSubtitle: 'SECURE PAYMENT NOTIFICATION',
+    orderCode: data.order.code,
+    serviceLabel,
+    preheader: paid
+      ? `Pembayaran ${data.order.code} telah diterima dan diverifikasi.`
+      : `Pesanan ${data.order.code} telah diterima.`
+  });
 
   const ownerHtml = orderMailHtmlShell(ownerSubject, `
-    <p style="margin:0 0 18px;font-size:15px;line-height:1.7;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(ownerIntro)}</p>
+    <div class="gmail-blend-screen"><div class="gmail-blend-difference">
+      <p style="margin:0 0 26px;font-size:16px;line-height:1.65;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">${orderMailEscapeHtml(ownerIntro)}</p>
+      <div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">DETAIL TRANSAKSI</div>
+    </div></div>
     ${orderMailInfoTable([
       ['Kode pesanan', data.order.code],
       ['Jenis', serviceLabel],
@@ -26299,14 +26334,24 @@ function orderMailBuildNewOrderMessages(data) {
       ['Referensi pembayaran', data.payment.invoice_id || '-']
     ])}
     ${paymentHtml}
-    ${productCardsHtml}
-    <h3 style="margin:22px 0 12px;font-size:16px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Rincian pesanan</h3>
-    ${itemsHtml}
-  `, { badge: paid ? 'PAID' : 'OWNER', total, showActions: false, showPromoImage: true });
+    ${orderItemsSectionHtml}
+  `, {
+    badge: paid ? 'PAID' : 'OWNER',
+    total,
+    showActions: false,
+    showPromoImage: true,
+    displayTitle: paid ? 'Pembayaran Diterima' : 'Order Baru Diterima',
+    eyebrow: paid ? 'VERIFIED PAYMENT RECEIVED' : 'NEW ORDER NOTIFICATION',
+    brandSubtitle: 'SECURE PAYMENT NOTIFICATION',
+    orderCode: data.order.code,
+    serviceLabel,
+    preheader: paid
+      ? `Pembayaran valid ${data.order.code} telah diterima.`
+      : `Order baru ${data.order.code} telah diterima.`
+  });
 
   return { customerSubject, ownerSubject, customerText, ownerText, customerHtml, ownerHtml };
 }
-
 function orderMailAssetBaseUrl() {
   return String(process.env.ORDER_EMAIL_ASSET_BASE_URL || process.env.DOMAIN_SITE_URL || process.env.SITE_URL || globalThis.SITE_URL || diracRoleOriginV250('www')).trim().replace(/\/+$/, '');
 }
@@ -26330,79 +26375,151 @@ function orderMailOrderUrl(orderCode) {
 function orderMailHtmlShell(title, body, options = {}) {
   const badge = orderMailEscapeHtml(options.badge || 'PAID');
   const total = orderMailEscapeHtml(options.total || '');
+  const displayTitle = orderMailEscapeHtml(options.displayTitle || title || 'Dirac Group');
+  const eyebrow = orderMailEscapeHtml(options.eyebrow || 'SECURE PAYMENT NOTIFICATION');
+  const brandSubtitle = orderMailEscapeHtml(options.brandSubtitle || 'SECURE PAYMENT NOTIFICATION');
+  const orderCode = orderMailEscapeHtml(options.orderCode || '');
+  const serviceLabel = orderMailEscapeHtml(options.serviceLabel || '');
+  const preheader = orderMailEscapeHtml(options.preheader || title || 'Notifikasi pembayaran Dirac Group.');
   const orderUrl = diracRoleOriginV250('pesanan') + '/pesanan.html';
-  const supportEmail = diracSupportEmailV250();
+  let orderHost = diracBaseDomainV250();
+  try { orderHost = new URL(orderUrl).hostname; } catch (_) {}
+  const supportEmail = 'support@diracgroup.store';
   const whatsappUrl = 'https://wa.me/6287892523968';
-  const promoImage = diracRoleOriginV250('www') + '/email.webp';
+  const companyEmail = 'companydirac@gmail.com';
+  const instagramUrl = 'https://www.instagram.com/diraccorp/';
+  const bannerImage = diracRoleOriginV250('www') + '/email.webp';
   const showActions = options.showActions !== false;
-  const showPromoImage = options.showPromoImage !== false;
+  const showBanner = options.showPromoImage !== false;
+  const paidBadge = String(options.badge || '').toUpperCase() === 'PAID';
+  const badgeBackground = paidBadge ? '#163d2a' : '#263653';
+  const badgeBorder = paidBadge ? '#2f8a58' : '#5276e8';
+  const badgeText = paidBadge ? '#d9ffe5' : '#e8eeff';
+
+  const bannerHtml = showBanner ? `
+          <tr>
+            <td bgcolor="#10151e" style="padding:0;line-height:0;font-size:0;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
+              <img src="${orderMailEscapeHtml(bannerImage)}" width="600" alt="Dirac Group Pembayaran Berhasil" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;background:#10151e;background-color:#10151e">
+            </td>
+          </tr>` : '';
+
   const actionsHtml = showActions ? `
-        <div style="margin-top:24px;text-align:left;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-          <a href="${orderMailEscapeHtml(orderUrl)}" style="display:inline-block;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:13px 18px;border-radius:10px;margin:0 8px 8px 0;border:1px solid #4b5563">Lihat pesanan</a>
-          <a href="mailto:${supportEmail}" style="display:inline-block;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:13px 18px;border-radius:10px;margin:0 8px 8px 0;border:1px solid #4b5563">Hubungi support</a>
-          <a href="${orderMailEscapeHtml(whatsappUrl)}" style="display:inline-block;background:#0f3b24;background-color:#0f3b24;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:14px;font-weight:900;padding:13px 18px;border-radius:10px;margin:0 0 8px 0;border:1px solid #166534">Butuh bantuan</a>
-        </div>` : '';
-  const promoHtml = showPromoImage ? `
-      <tr>
-        <td bgcolor="#2b2f36" style="padding:0 32px 26px;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-          <a href="${orderMailEscapeHtml(orderUrl)}" style="text-decoration:none;border:0;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-            <img src="${orderMailEscapeHtml(promoImage)}" width="616" alt="Dirac Group" style="display:block;width:100%;max-width:616px;height:auto;border:0;border-radius:14px;background:#2b2f36;outline:none;text-decoration:none;box-shadow:0 12px 28px rgba(0,0,0,.42)">
-          </a>
-        </td>
-      </tr>` : '';
+              <table class="dirac-button" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;margin:28px 0 12px">
+                <tr>
+                  <td align="center" bgcolor="#4568d4" style="background:#4568d4;background-color:#4568d4;background-image:linear-gradient(#4568d4,#4568d4);border-radius:8px">
+                    <a href="${orderMailEscapeHtml(orderUrl)}" style="display:block;padding:17px 18px;font-size:16px;line-height:1.3;font-weight:800;letter-spacing:.04em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;border-radius:8px">
+                      <span class="gmail-blend-screen" style="display:inline-block"><span class="gmail-blend-difference" style="display:inline-block">LIHAT PESANAN</span></span>
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              <div class="gmail-blend-screen"><div class="gmail-blend-difference">
+                <p style="margin:0 0 29px;font-size:13px;line-height:1.55;text-align:center;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">Tujuan resmi: <strong style="color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(orderHost)}</strong></p>
+              </div></div>` : '';
+
+  const supportHtml = `
+              <div class="gmail-blend-screen"><div class="gmail-blend-difference">
+                <div style="margin-top:30px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI DIRAC GROUP</div>
+                <p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">Ada kendala terkait pembayaran atau pesanan? Hubungi tim support melalui kanal resmi berikut.</p>
+              </div></div>
+
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:0 0 13px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
+                <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WHATSAPP</div><a href="${whatsappUrl}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">0878 9252 3968</a></div></div></td></tr>
+                <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL SUPPORT</div><a href="mailto:${supportEmail}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${supportEmail}</a></div></div></td></tr>
+                <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL PERUSAHAAN</div><a href="mailto:${companyEmail}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${companyEmail}</a></div></div></td></tr>
+                <tr><td style="padding:15px 20px;border-left:4px solid #148ba4"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">INSTAGRAM</div><a href="${instagramUrl}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">@diraccorp</a></div></div></td></tr>
+              </table>
+
+              <div class="gmail-blend-screen"><div class="gmail-blend-difference">
+                <p style="margin:0;font-size:12px;line-height:1.65;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tim Dirac Group tidak pernah meminta password, OTP, PIN, CVV, atau data kartu melalui WhatsApp, Instagram, telepon, maupun balasan email.</p>
+              </div></div>`;
 
   return `<!doctype html>
-<html>
+<html lang="id">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="supported-color-schemes" content="dark">
-  <style>
-    html, body, .dirac-order-dark { background:#2b2f36!important; background-color:#2b2f36!important; background-image:linear-gradient(#2b2f36,#2b2f36)!important; }
-    :root { color-scheme:dark; supported-color-schemes:dark; }
-    body, table, td, div, p, span, strong, h1, h2, h3, th, a { color:#ffffff!important; -webkit-text-fill-color:#ffffff!important; mso-color-alt:#ffffff!important; }
-    a[x-apple-data-detectors], .x-gmail-data-detectors, .ii a[href] { color:#ffffff!important; -webkit-text-fill-color:#ffffff!important; mso-color-alt:#ffffff!important; }
-    @media (prefers-color-scheme: dark) { body, table, td, div, p, span, strong, h1, h2, h3, th, a { color:#ffffff!important; -webkit-text-fill-color:#ffffff!important; } }
-  </style>
   <title>${orderMailEscapeHtml(title)}</title>
+  <style>
+    :root { color-scheme:dark; supported-color-schemes:dark; }
+    body { margin:0!important; padding:0!important; }
+    .dirac-preheader { display:none!important; max-height:0!important; max-width:0!important; opacity:0!important; overflow:hidden!important; mso-hide:all!important; }
+    u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+    u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
+    a[x-apple-data-detectors], .x-gmail-data-detectors, .ii a[href] { text-decoration:none!important; }
+    @media only screen and (max-width:620px) {
+      .dirac-outer-pad { padding:0!important; }
+      .dirac-shell { width:100%!important; max-width:100%!important; }
+      .dirac-pad { padding-left:24px!important; padding-right:24px!important; }
+      .dirac-title { font-size:32px!important; line-height:1.18!important; }
+      .dirac-button a { display:block!important; padding:17px 14px!important; }
+      .dirac-footer-pad { padding-left:18px!important; padding-right:18px!important; }
+      .dirac-product-image { width:84px!important; padding-right:12px!important; }
+      .dirac-product-image img { width:72px!important; max-width:72px!important; }
+    }
+  </style>
 </head>
-<body class="dirac-order-dark" bgcolor="#2b2f36" style="margin:0!important;padding:0!important;background:#2b2f36;background-color:#2b2f36;background-image:linear-gradient(#2b2f36,#2b2f36);font-family:Arial,Helvetica,sans-serif;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-  <table class="dirac-order-dark" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;background-image:linear-gradient(#2b2f36,#2b2f36)!important;margin:0;padding:24px 0;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+<body class="body" bgcolor="#090c12" style="margin:0!important;padding:0!important;background:#090c12;background-color:#090c12;background-image:linear-gradient(#090c12,#090c12);font-family:Arial,Helvetica,sans-serif;color:#f4f6f9">
+  <div class="dirac-preheader">${preheader}</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#090c12" style="width:100%;margin:0;padding:0;background:#090c12;background-color:#090c12;background-image:linear-gradient(#090c12,#090c12)">
     <tr>
-      <td class="dirac-order-dark" align="center" bgcolor="#2b2f36" style="padding:0 12px;background:#2b2f36;background-color:#2b2f36;background-image:linear-gradient(#2b2f36,#2b2f36)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-        <table class="dirac-order-dark" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#2b2f36" style="max-width:680px;background:#2b2f36;background-color:#2b2f36;background-image:linear-gradient(#2b2f36,#2b2f36)!important;border-radius:18px;overflow:hidden;border:1px solid #4b5563;box-shadow:0 18px 46px rgba(0,0,0,.68);color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+      <td class="dirac-outer-pad" align="center" bgcolor="#090c12" style="padding:18px 12px;background:#090c12;background-color:#090c12;background-image:linear-gradient(#090c12,#090c12)">
+        <table class="dirac-shell" role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#141820" style="width:100%;max-width:600px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:18px;overflow:hidden;box-shadow:0 18px 48px rgba(0,0,0,.24);background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
           <tr>
-            <td class="dirac-order-dark" bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;padding:30px 32px;background-image:linear-gradient(#2b2f36,#2b2f36)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+            <td style="padding:0;line-height:0;font-size:0">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="50%" height="4" bgcolor="#5276e8" style="height:4px;line-height:4px;font-size:0;background:#5276e8;background-color:#5276e8">&nbsp;</td><td width="30%" height="4" bgcolor="#148ba4" style="height:4px;line-height:4px;font-size:0;background:#148ba4;background-color:#148ba4">&nbsp;</td><td width="20%" height="4" bgcolor="#9a741f" style="height:4px;line-height:4px;font-size:0;background:#9a741f;background-color:#9a741f">&nbsp;</td></tr></table>
+            </td>
+          </tr>
+          ${bannerHtml}
+          <tr>
+            <td class="dirac-pad" bgcolor="#141820" style="padding:27px 32px 13px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
+              <div class="gmail-blend-screen"><div class="gmail-blend-difference">
+                <div style="font-size:21px;line-height:1.2;font-weight:800;letter-spacing:.14em;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">DIRAC GROUP</div>
+                <div style="margin-top:7px;font-size:11px;line-height:1.4;font-weight:700;letter-spacing:.2em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${brandSubtitle}</div>
+              </div></div>
+            </td>
+          </tr>
+          <tr>
+            <td class="dirac-pad" bgcolor="#141820" style="padding:24px 32px 32px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
+              <div class="gmail-blend-screen"><div class="gmail-blend-difference">
+                <div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#9eb6ff!important;-webkit-text-fill-color:#9eb6ff!important;mso-color-alt:#9eb6ff">${eyebrow}</div>
+                <div class="dirac-title" style="margin-top:13px;font-size:38px;line-height:1.16;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${displayTitle}</div>
+              </div></div>
+
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1a1f29" style="width:100%;margin:24px 0 28px;border-collapse:separate;border-spacing:0;border:1px solid #303a49;border-radius:14px;overflow:hidden;box-shadow:0 8px 22px rgba(0,0,0,.12);background:#1a1f29;background-color:#1a1f29;background-image:linear-gradient(#1a1f29,#1a1f29)">
                 <tr>
-                  <td valign="top" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-                    <div style="font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-bottom:10px;font-weight:800;text-shadow:0 2px 8px rgba(0,0,0,.80)"><font color="#ffffff" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">DIRAC GROUP</font></div>
-                    <div style="font-size:28px;line-height:1.22;font-weight:900;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-shadow:0 2px 8px rgba(0,0,0,.85);mso-line-height-rule:exactly"><font color="#ffffff" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(title)}</font></div>
-                    ${total ? `<div style="margin-top:12px;font-size:15px;line-height:1.5;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Total pembayaran: <strong style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${total}</strong></div>` : ''}
-                  </td>
-                  <td valign="top" align="right" style="padding-left:12px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
-                    <span style="display:inline-block;background:#0f3b24;background-color:#0f3b24;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;font-weight:900;padding:8px 14px;border-radius:999px;white-space:nowrap;border:1px solid #166534;box-shadow:0 6px 18px rgba(0,0,0,.35)">${badge}</span>
+                  <td style="padding:18px 20px;border-left:4px solid #5276e8">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr>
+                      <td valign="top" style="padding-right:12px">
+                        <div class="gmail-blend-screen"><div class="gmail-blend-difference">
+                          <div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#9eb6ff!important;-webkit-text-fill-color:#9eb6ff!important;mso-color-alt:#9eb6ff">TOTAL PEMBAYARAN</div>
+                          ${total ? `<div style="margin-top:8px;font-size:22px;line-height:1.35;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${total}</div>` : ''}
+                          ${orderCode ? `<div style="margin-top:8px;font-family:Menlo,Consolas,'Courier New',monospace;font-size:12px;line-height:1.55;font-weight:700;word-break:break-all;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${orderCode}${serviceLabel ? ` &middot; ${serviceLabel}` : ''}</div>` : ''}
+                        </div></div>
+                      </td>
+                      <td valign="top" align="right" width="88">
+                        <span style="display:inline-block;background:${badgeBackground};background-color:${badgeBackground};background-image:linear-gradient(${badgeBackground},${badgeBackground});color:${badgeText}!important;-webkit-text-fill-color:${badgeText}!important;mso-color-alt:${badgeText};font-size:12px;font-weight:900;padding:8px 13px;border-radius:999px;white-space:nowrap;border:1px solid ${badgeBorder}">${badge}</span>
+                      </td>
+                    </tr></table>
                   </td>
                 </tr>
               </table>
-            </td>
-          </tr>
-          <tr>
-            <td class="dirac-order-dark" bgcolor="#2b2f36" style="padding:28px 32px;background:#2b2f36;background-color:#2b2f36;background-image:linear-gradient(#2b2f36,#2b2f36)!important;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">
+
               ${body}
               ${actionsHtml}
+              ${supportHtml}
             </td>
           </tr>
-          ${promoHtml}
           <tr>
-            <td class="dirac-order-dark" bgcolor="#2b2f36" style="background:#2b2f36;background-color:#2b2f36;background-image:linear-gradient(#2b2f36,#2b2f36)!important;padding:0 32px 26px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;border-top:1px solid #4b5563">
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:0 0 22px;border-collapse:collapse"><tr><td width="34%" height="5" bgcolor="#6f8df7" style="height:5px;line-height:5px;font-size:0;background:#6f8df7">&nbsp;</td><td width="33%" height="5" bgcolor="#58b7d3" style="height:5px;line-height:5px;font-size:0;background:#58b7d3">&nbsp;</td><td width="33%" height="5" bgcolor="#f2b84b" style="height:5px;line-height:5px;font-size:0;background:#f2b84b">&nbsp;</td></tr></table>
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><tr><td valign="top"><div style="font-size:15px;font-weight:900;letter-spacing:.12em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">DIRAC GROUP</div><div style="margin-top:5px;font-size:11px;letter-spacing:.12em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">COMMERCE • SERVICE • SUPPORT</div></td><td valign="top" align="right" style="font-size:12px;line-height:1.65;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Secure Payment<br>Verified Notification</td></tr></table>
-              <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:20px auto 0"><tr><td style="padding:0 6px 8px 0"><a href="mailto:${supportEmail}" style="display:inline-block;background:#23262d;background-color:#23262d;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:13px;font-weight:900;padding:11px 14px;border-radius:9px;border:1px solid #4b5563">Email support</a></td><td style="padding:0 0 8px 6px"><a href="${orderMailEscapeHtml(whatsappUrl)}" style="display:inline-block;background:#0f3b24;background-color:#0f3b24;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;text-decoration:none;font-size:13px;font-weight:900;padding:11px 14px;border-radius:9px;border:1px solid #166534">WhatsApp</a></td></tr></table>
-              <p style="margin:12px 0 0;text-align:center;font-size:11px;line-height:1.65;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Email otomatis dari sistem Dirac Group. Hubungi support hanya melalui ${supportEmail}.<br>© 2026 Dirac Group. All rights reserved.</p>
+            <td class="dirac-footer-pad" bgcolor="#b9dcff" style="padding:24px 26px 26px;border-top:1px solid #79aee5;background:#b9dcff;background-color:#b9dcff;background-image:linear-gradient(#b9dcff,#b9dcff)">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10213a" style="width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24466c;border-radius:16px;overflow:hidden;box-shadow:0 10px 24px rgba(14,42,72,.18);background:#10213a;background-color:#10213a;background-image:linear-gradient(#10213a,#10213a)">
+                <tr><td style="padding:22px 24px 23px;border-left:4px solid #27a2bd"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:18px;line-height:1.3;font-weight:800;letter-spacing:.14em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">DIRAC GROUP</div><div style="margin-top:7px;font-size:11px;line-height:1.5;font-weight:700;letter-spacing:.13em;color:#d9e8ff!important;-webkit-text-fill-color:#d9e8ff!important;mso-color-alt:#d9e8ff">COMMERCE &bull; PAYMENT &bull; SUPPORT</div><div style="margin-top:14px;font-size:13px;line-height:1.55;color:#d7e7f8!important;-webkit-text-fill-color:#d7e7f8!important;mso-color-alt:#d7e7f8">Secure Payment &middot; Verified Notification</div><p style="margin:17px 0 0;font-size:11px;line-height:1.65;color:#bfd0e3!important;-webkit-text-fill-color:#bfd0e3!important;mso-color-alt:#bfd0e3">Email ini dibuat otomatis oleh sistem Dirac Group. Mohon tidak membalas. Simpan email ini sebagai bukti dan referensi pembayaran.</p></div></div></td></tr>
+              </table>
             </td>
           </tr>
+          <tr><td style="padding:0;line-height:0;font-size:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="50%" height="4" bgcolor="#5276e8" style="height:4px;line-height:4px;font-size:0;background:#5276e8;background-color:#5276e8">&nbsp;</td><td width="30%" height="4" bgcolor="#148ba4" style="height:4px;line-height:4px;font-size:0;background:#148ba4;background-color:#148ba4">&nbsp;</td><td width="20%" height="4" bgcolor="#9a741f" style="height:4px;line-height:4px;font-size:0;background:#9a741f;background-color:#9a741f">&nbsp;</td></tr></table></td></tr>
         </table>
       </td>
     </tr>
@@ -26411,8 +26528,12 @@ function orderMailHtmlShell(title, body, options = {}) {
 </html>`;
 }
 function orderMailInfoTable(rows) {
-  const body = (rows || []).map(([key, value]) => `<tr><td bgcolor="#2b2f36" style="padding:13px 16px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;width:42%;font-size:14px;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(key)}</td><td bgcolor="#2b2f36" style="padding:13px 16px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;font-weight:700;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(value)}</td></tr>`).join('');
-  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;border-spacing:0;width:100%;margin:14px 0 20px;border:1px solid #4b5563;border-radius:14px;overflow:hidden;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${body}</table>`;
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const body = safeRows.map(([key, value], index) => {
+    const borderBottom = index < safeRows.length - 1 ? 'border-bottom:1px solid #303a49;' : '';
+    return `<tr><td bgcolor="#1a1f29" style="padding:16px 20px;${borderBottom}border-left:4px solid #5276e8;background:#1a1f29;background-color:#1a1f29;background-image:linear-gradient(#1a1f29,#1a1f29)"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.13em;text-transform:uppercase;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">${orderMailEscapeHtml(key)}</div><div style="margin-top:7px;font-size:15px;line-height:1.55;font-weight:700;word-break:break-word;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(value)}</div></div></div></td></tr>`;
+  }).join('');
+  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" bgcolor="#1a1f29" style="border-collapse:separate;border-spacing:0;width:100%;margin:12px 0 28px;border:1px solid #303a49;border-radius:14px;overflow:hidden;background:#1a1f29;background-color:#1a1f29;background-image:linear-gradient(#1a1f29,#1a1f29)">${body}</table>`;
 }
 function orderMailItemsText(items, currency = 'IDR') {
   const rows = Array.isArray(items) && items.length ? items : [{ title: 'Total pesanan', quantity: 1, unit_price: 0, subtotal: 0 }];
@@ -26425,19 +26546,21 @@ function orderMailItemsHtml(items, currency = 'IDR') {
   const rows = Array.isArray(items) && items.length ? items : [{ title: 'Total pesanan', quantity: 1, unit_price: 0, subtotal: 0 }];
   const body = rows.map((item, index) => {
     const subtotal = item.subtotal || (item.unit_price * item.quantity) || 0;
-    return `<tr><td style="padding:12px 14px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;background:#2b2f36;background-color:#2b2f36">${index + 1}</td><td style="padding:12px 14px;border-bottom:1px solid #4b5563;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;font-weight:700;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(item.title)}${item.description ? `<div style="font-size:12px;font-weight:400;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-top:4px;line-height:1.5">${orderMailEscapeHtml(item.description)}</div>` : ''}</td><td style="padding:12px 14px;border-bottom:1px solid #4b5563;text-align:center;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(item.quantity)}</td><td style="padding:12px 14px;border-bottom:1px solid #4b5563;text-align:right;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:14px;font-weight:800;background:#2b2f36;background-color:#2b2f36">${orderMailEscapeHtml(orderMailFormatCurrency(subtotal, currency))}</td></tr>`;
+    const borderBottom = index < rows.length - 1 ? 'border-bottom:1px solid #2c3544;' : '';
+    return `<tr><td bgcolor="#10151e" style="padding:16px 18px;${borderBottom}border-left:4px solid #5276e8;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">ITEM ${index + 1}</div><div style="margin-top:6px;font-size:15px;line-height:1.5;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(item.title)}</div>${item.description ? `<div style="margin-top:5px;font-size:13px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${orderMailEscapeHtml(item.description)}</div>` : ''}<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin-top:10px;border-collapse:collapse"><tr><td style="font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">QTY <strong style="color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(item.quantity)}</strong></td><td align="right" style="font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">SUBTOTAL <strong style="color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(orderMailFormatCurrency(subtotal, currency))}</strong></td></tr></table></div></div></td></tr>`;
   }).join('');
-  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;border-spacing:0;width:100%;border:1px solid #4b5563;border-radius:14px;overflow:hidden;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><thead><tr><th style="padding:12px 14px;text-align:left;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">#</th><th style="padding:12px 14px;text-align:left;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Item</th><th style="padding:12px 14px;text-align:center;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Qty</th><th style="padding:12px 14px;text-align:right;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;font-size:12px;text-transform:uppercase;letter-spacing:.04em">Subtotal</th></tr></thead><tbody>${body}</tbody></table>`;
+  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="border-collapse:separate;border-spacing:0;width:100%;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">${body}</table>`;
 }
 function orderMailProductCardsHtml(items, currency = 'IDR') {
   const rows = (Array.isArray(items) ? items : []).filter((item) => item && (item.image_url || item.title));
   if (!rows.length) return '';
-  const cards = rows.map((item) => {
+  const cards = rows.map((item, index) => {
     const image = orderMailAssetUrl(item.image_url || item.img || '') || orderMailDefaultProductImageUrl();
     const amount = orderMailFormatCurrency(item.subtotal || ((item.unit_price || 0) * (item.quantity || 1)), currency);
-    return `<tr><td style="padding:18px;border-bottom:1px solid #4b5563;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><tr>${image ? `<td width="128" valign="top" style="padding-right:16px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><img src="${orderMailEscapeHtml(image)}" width="112" alt="${orderMailEscapeHtml(item.title || 'Produk')}" style="display:block;width:112px;max-width:112px;height:auto;border-radius:14px;border:1px solid #4b5563;background:#2b2f36"></td>` : ''}<td valign="top" style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff"><div style="font-size:16px;line-height:1.45;font-weight:800;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-bottom:6px">${orderMailEscapeHtml(item.title || 'Item pesanan')}</div>${item.description ? `<div style="font-size:13px;line-height:1.6;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff;margin-bottom:10px">${orderMailEscapeHtml(item.description)}</div>` : ''}<div style="font-size:13px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Qty <strong style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(item.quantity || 1)}</strong> · Subtotal <strong style="color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${orderMailEscapeHtml(amount)}</strong></div></td></tr></table></td></tr>`;
+    const borderBottom = index < rows.length - 1 ? 'border-bottom:1px solid #2c3544;' : '';
+    return `<tr><td bgcolor="#10151e" style="padding:17px 18px;${borderBottom}background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr>${image ? `<td class="dirac-product-image" width="104" valign="top" style="width:104px;padding-right:14px"><img src="${orderMailEscapeHtml(image)}" width="90" alt="${orderMailEscapeHtml(item.title || 'Produk')}" style="display:block;width:90px;max-width:90px;height:auto;border-radius:12px;border:1px solid #344052;background:#0e1219;background-color:#0e1219"></td>` : ''}<td valign="top"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:16px;line-height:1.45;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(item.title || 'Item pesanan')}</div>${item.description ? `<div style="margin-top:6px;font-size:13px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${orderMailEscapeHtml(item.description)}</div>` : ''}<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin-top:11px;border-collapse:collapse"><tr><td valign="top" style="font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">QTY<br><strong style="font-size:14px;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(item.quantity || 1)}</strong></td><td valign="top" align="right" style="font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">SUBTOTAL<br><strong style="font-size:14px;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(amount)}</strong></td></tr></table></div></div></td></tr></table></td></tr>`;
   }).join('');
-  return `<h3 style="margin:22px 0 12px;font-size:16px;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">Produk yang dibeli</h3><table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:separate;border-spacing:0;width:100%;border:1px solid #4b5563;border-radius:14px;overflow:hidden;background:#2b2f36;background-color:#2b2f36;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">${cards}</table>`;
+  return `<div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="margin:26px 0 12px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">RINCIAN PESANAN</div></div></div><table role="presentation" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="border-collapse:separate;border-spacing:0;width:100%;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">${cards}</table>`;
 }
 async function orderMailSendViaSmtpSafeLegacyV1(config, message) {
   try {
