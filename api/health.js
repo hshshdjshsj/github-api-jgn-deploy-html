@@ -24857,6 +24857,22 @@ async function diracPasskeyA2FVerify(req, res) {
     });
   }
 
+  try {
+    Object.defineProperty(req, '__diracUserSecurityPasskeyEventV327', {
+      value: Object.freeze({
+        email: diracSecurityMailEmailV327(owner.email || email || ''),
+        mode: isAuthentication ? 'authentication' : 'registration',
+        registeredNow: Boolean(registeredNow),
+        recoveryReplacement: Boolean(lostRecoveryRotation && lostRecoveryRotation.ok)
+      }),
+      writable: false,
+      configurable: false,
+      enumerable: false
+    });
+  } catch (passkeySecurityMailMarkerErrorV327) {
+    if (typeof diracCentralRecordSuppressedExceptionV221 === 'function') diracCentralRecordSuppressedExceptionV221(passkeySecurityMailMarkerErrorV327);
+  }
+
   return res.status(200).json({
     ok: true,
     verified: true,
@@ -45997,6 +46013,965 @@ diracS2SProcessSecurityReportV206 = async function diracS2SProcessSecurityReport
 };
 
 /* ============================================================
+   DIRAC SECURITY NOTIFICATION MAIL v327 - APPEND ONLY
+   - User notification after completed account login, detected password
+     change, and passkey activation/replacement.
+   - Central Guard owner/cyber alert uses the same corporate recovery design.
+   - Resend is the primary user provider; Gmail SMTP is used only after HTTP 429.
+   - Login/register/passkey mutations fail closed when either dedicated mail
+     configuration is absent or invalid. No table or ENV is added here.
+   ============================================================ */
+
+const DIRAC_SECURITY_NOTIFICATION_MAIL_PATCH_V327 = 'dirac-security-notification-mail-v327';
+const DIRAC_USER_SECURITY_NOTIFICATION_STATE_V327 = {
+  pending: new Set(),
+  configurationWarningLogged: false
+};
+
+function diracSecurityMailPlaceholderV327(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[_-]+/g, ' ');
+  return /(?:^|\s)(?:ganti|example|placeholder)(?:\s|$)/.test(normalized)
+    || /(?:replace\s*with|change\s*me|your\s*(?:password|secret|key|email)|app\s*password|belum\s*diatur)/.test(normalized);
+}
+
+function diracSecurityMailEmailV327(value) {
+  if (typeof diracSecurityAlertEmailV320 === 'function') return diracSecurityAlertEmailV320(value);
+  const email = String(value || '').trim().toLowerCase();
+  if (!email || email.length > 254 || /[\r\n<>]/.test(email)) return '';
+  return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(email) ? email : '';
+}
+
+function diracUserSecurityConfigV327() {
+  if (String(process.env.DIRAC_USER_SECURITY_EMAIL_ENABLED || '').trim().toLowerCase() !== 'true') return null;
+  const resendApiKey = String(process.env.DIRAC_USER_SECURITY_RESEND_API_KEY || '').trim();
+  const resendFromEmail = diracSecurityMailEmailV327(process.env.DIRAC_USER_SECURITY_RESEND_FROM_EMAIL);
+  const replyTo = diracSecurityMailEmailV327(process.env.DIRAC_USER_SECURITY_REPLY_TO);
+  const smtpHost = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim().toLowerCase();
+  const smtpPort = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 0);
+  const smtpSecure = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || '').trim().toLowerCase() === 'true';
+  const smtpUser = diracSecurityMailEmailV327(process.env.DIRAC_USER_SECURITY_SMTP_USER);
+  const smtpAppPassword = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
+  const timeoutRaw = Number(process.env.DIRAC_USER_SECURITY_TIMEOUT_MS || 7000);
+  const timeoutMs = Number.isSafeInteger(timeoutRaw) ? Math.max(3000, Math.min(15000, timeoutRaw)) : 7000;
+  const senderDomain = resendFromEmail.split('@')[1] || '';
+  let officialSender = false;
+  try {
+    const baseDomain = diracBaseDomainV250();
+    officialSender = Boolean(senderDomain && (senderDomain === baseDomain || senderDomain.endsWith('.' + baseDomain)));
+  } catch (_) { officialSender = false; }
+  const valid = /^re_[A-Za-z0-9_-]{16,252}$/.test(resendApiKey)
+    && !diracSecurityMailPlaceholderV327(resendApiKey)
+    && officialSender
+    && replyTo
+    && smtpHost === 'smtp.gmail.com'
+    && smtpPort === 465
+    && smtpSecure
+    && smtpUser
+    && smtpAppPassword.length >= 16
+    && smtpAppPassword.length <= 128
+    && !diracSecurityMailPlaceholderV327(smtpAppPassword);
+  if (!valid) {
+    if (!DIRAC_USER_SECURITY_NOTIFICATION_STATE_V327.configurationWarningLogged) {
+      DIRAC_USER_SECURITY_NOTIFICATION_STATE_V327.configurationWarningLogged = true;
+      try { console.error('[dirac-user-security-mail-v327]', 'configuration_invalid_or_incomplete'); }
+      catch (configurationLogErrorV327) { if (typeof diracCentralRecordSuppressedExceptionV221 === 'function') diracCentralRecordSuppressedExceptionV221(configurationLogErrorV327); }
+    }
+    return null;
+  }
+  return Object.freeze({
+    resendApiKey,
+    resendFromEmail,
+    replyTo,
+    timeoutMs,
+    smtpHost,
+    smtpPort,
+    smtpSecure,
+    smtpUser,
+    smtpAppPassword
+  });
+}
+
+function diracSecurityMailEscapeV327(value) {
+  if (typeof customerSecurityLostPasskeyEmailEscapeHtmlV157 === 'function') return customerSecurityLostPasskeyEmailEscapeHtmlV157(value);
+  return String(value || '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+}
+
+function diracSecurityMailCleanV327(value, maximum = 220) {
+  const limit = Math.max(1, Math.min(1000, Number(maximum || 220)));
+  return String(value || '')
+    .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069<>]/g, ' ')
+    .replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+
+function diracSecurityMailOfficialUrlV327(value, fallback) {
+  try {
+    const parsed = new URL(String(value || ''));
+    const base = diracBaseDomainV250();
+    const host = String(parsed.hostname || '').toLowerCase();
+    if (parsed.protocol !== 'https:' || !(host === base || host.endsWith('.' + base))) return String(fallback || '');
+    return parsed.toString();
+  } catch (_) {
+    return String(fallback || '');
+  }
+}
+
+function diracSecurityMailReferenceV327(kind, req, email) {
+  const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
+  const material = [
+    DIRAC_SECURITY_NOTIFICATION_MAIL_PATCH_V327,
+    String(kind || 'security'),
+    String(ctx && ctx.requestId || ''),
+    String(email || ''),
+    String(Date.now()),
+    crypto.randomBytes(8).toString('hex')
+  ].join('|');
+  return crypto.createHash('sha256').update(material).digest('hex').slice(0, 10).toUpperCase();
+}
+
+function diracSecurityMailDeviceV327(userAgent) {
+  const value = String(userAgent || '').slice(0, 500);
+  if (/iPhone/i.test(value)) return 'iPhone';
+  if (/iPad/i.test(value)) return 'iPad';
+  if (/Android/i.test(value)) return 'Perangkat Android';
+  if (/Macintosh|Mac OS X/i.test(value)) return 'Mac';
+  if (/Windows/i.test(value)) return 'PC Windows';
+  if (/Linux/i.test(value)) return 'Perangkat Linux';
+  return 'Perangkat tidak dikenali';
+}
+
+function diracSecurityMailOsV327(userAgent) {
+  const value = String(userAgent || '').slice(0, 500);
+  const ios = value.match(/(?:CPU (?:iPhone )?OS|iPhone OS)\s*([0-9_]+)/i);
+  if (ios) return 'iOS ' + ios[1].replace(/_/g, '.');
+  const android = value.match(/Android\s+([0-9.]+)/i);
+  if (android) return 'Android ' + android[1];
+  const windows = value.match(/Windows NT\s+([0-9.]+)/i);
+  if (windows) return 'Windows ' + windows[1];
+  const mac = value.match(/Mac OS X\s+([0-9_]+)/i);
+  if (mac) return 'macOS ' + mac[1].replace(/_/g, '.');
+  if (/Linux/i.test(value)) return 'Linux';
+  return 'Tidak dikenali';
+}
+
+function diracSecurityMailClientContextV327(req) {
+  const headers = req && req.headers && typeof req.headers === 'object' ? req.headers : {};
+  const userAgent = String(headers['user-agent'] || '').slice(0, 500);
+  const ip = typeof getLoginSecurityIp === 'function' ? getLoginSecurityIp(req || {}) : '';
+  const vercelTrusted = String(process.env.VERCEL || '').trim() === '1';
+  const cleanLocation = (value) => typeof diracSecurityAlertLocationV321 === 'function'
+    ? diracSecurityAlertLocationV321(value)
+    : diracSecurityMailCleanV327(value, 80);
+  const locationParts = vercelTrusted
+    ? [headers['x-vercel-ip-city'], headers['x-vercel-ip-country-region'], headers['x-vercel-ip-country']]
+      .map(cleanLocation).filter((item) => item && item !== 'unavailable')
+    : [];
+  return Object.freeze({
+    browser: typeof diracSecurityAlertBrowserV321 === 'function' ? diracSecurityAlertBrowserV321(userAgent) : 'Tidak dikenali',
+    device: diracSecurityMailDeviceV327(userAgent),
+    operatingSystem: diracSecurityMailOsV327(userAgent),
+    maskedIp: typeof diracSecurityAlertMaskIpV320 === 'function' ? diracSecurityAlertMaskIpV320(ip) : 'unavailable',
+    location: locationParts.join(', ') || 'Tidak tersedia',
+    locationSource: vercelTrusted ? 'Perkiraan metadata edge, bukan GPS' : 'Tidak tersedia'
+  });
+}
+
+function diracSecurityMailRowsHtmlV327(rows) {
+  return (Array.isArray(rows) ? rows : []).slice(0, 40).map((row, index, all) => {
+    const label = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(row && row[0], 100));
+    const value = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(row && row[1], 500));
+    const border = index < all.length - 1 ? 'border-bottom:1px solid #2c3544;' : '';
+    return `<tr><td style="padding:16px 20px;${border}"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.13em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">${label}</div><div style="margin-top:6px;font-size:15px;line-height:1.55;font-weight:700;word-break:break-word;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${value || 'Tidak tersedia'}</div></div></div></td></tr>`;
+  }).join('');
+}
+
+function diracSecurityMailTraceHtmlV327(trace) {
+  const entries = (Array.isArray(trace) ? trace : []).slice(0, 12);
+  if (!entries.length) return '';
+  const rows = entries.map((entry, index) => {
+    const stage = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(entry && entry.stage, 100));
+    const result = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(entry && entry.result, 60));
+    const duration = Math.max(0, Math.min(300000, Number(entry && entry.duration_ms || 0)));
+    return `<tr><td width="38" valign="top" style="padding:0 0 ${index === entries.length - 1 ? '0' : '13px'}"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:14px;line-height:1.55;font-weight:800;color:#9eb6ff!important;-webkit-text-fill-color:#9eb6ff!important;mso-color-alt:#9eb6ff">${String(index + 1).padStart(2, '0')}</div></div></div></td><td valign="top" style="padding:0 0 ${index === entries.length - 1 ? '0' : '13px'}"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:14px;line-height:1.55;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6"><b>${stage || 'unavailable'}</b> &rarr; ${result || 'unavailable'} <span style="color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important">(${duration} ms)</span></div></div></div></td></tr>`;
+  }).join('');
+  return `<div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="margin-top:28px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">JEJAK CENTRAL GUARD</div></div></div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:14px 0 27px;border-collapse:collapse">${rows}</table>`;
+}
+
+function diracSecurityMailBannerUrlV327() {
+  const fallback = diracRoleOriginV250('recovery') + '/mmmail.webp';
+  const raw = String(
+    process.env.DIRAC_RECOVERY_EMAIL_BANNER_URL
+    || process.env.DIRAC_LOST_PASSKEY_EMAIL_BANNER_URL
+    || fallback
+  ).trim();
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.toLowerCase();
+    const base = diracBaseDomainV250();
+    if (url.protocol !== 'https:') return fallback;
+    if (!(host === base || host.endsWith('.' + base))) return fallback;
+    return url.toString();
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function diracSecurityCorporateEmailHtmlV327(input = {}) {
+  const preheader = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.preheader || input.title || 'Notifikasi keamanan Dirac Group.', 180));
+  const bannerUrl = diracSecurityMailEscapeV327(diracSecurityMailBannerUrlV327());
+  const brandLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.brandLabel || 'SECURE ACCOUNT RECOVERY', 80));
+  const eyebrow = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.eyebrow || 'SECURITY ACTIVITY NOTICE', 90));
+  const titleLines = String(input.title || 'Aktivitas Keamanan\nTerdeteksi').split(/\n+/).slice(0, 3)
+    .map((line) => diracSecurityMailEscapeV327(diracSecurityMailCleanV327(line, 90))).filter(Boolean).join('<br>');
+  const greeting = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.greeting || 'Yth. Pengguna Dirac Group,', 160));
+  const summary = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.summary || '', 700));
+  const statusLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.statusLabel || 'STATUS KEAMANAN', 100));
+  const statusValue = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.statusValue || 'TERLINDUNGI', 180));
+  const statusNote = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.statusNote || '', 400));
+  const detailsLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.detailsLabel || 'DETAIL AKTIVITAS', 100));
+  const warningTitle = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warningTitle || 'PERINGATAN KEAMANAN', 100));
+  const warning = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warning || 'Jika aktivitas ini bukan dilakukan oleh Anda, segera amankan akun dan hubungi bantuan resmi Dirac Group.', 700));
+  const supportLead = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.supportLead || 'Butuh bantuan untuk memeriksa aktivitas keamanan? Hubungi tim support melalui kanal resmi berikut.', 300));
+  const actionFallback = diracRoleOriginV250('security') + '/keamanan.html';
+  const actionUrl = diracSecurityMailEscapeV327(diracSecurityMailOfficialUrlV327(input.actionUrl || actionFallback, actionFallback));
+  const actionText = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.actionText || 'BUKA PUSAT KEAMANAN', 80));
+  const rowsHtml = diracSecurityMailRowsHtmlV327(input.rows);
+  const traceHtml = diracSecurityMailTraceHtmlV327(input.trace);
+  return `<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="supported-color-schemes" content="dark">
+  <title>Dirac Group Secure Security Notification</title>
+  <style>
+    :root { color-scheme:dark; supported-color-schemes:dark; }
+    body { margin:0!important; padding:0!important; }
+    .dirac-preheader { display:none!important; max-height:0!important; max-width:0!important; opacity:0!important; overflow:hidden!important; mso-hide:all!important; }
+    u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+    u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
+    a[x-apple-data-detectors], .x-gmail-data-detectors, .ii a[href] { text-decoration:none!important; }
+    @media only screen and (max-width:620px) {
+      .dirac-outer-pad { padding:0!important; }
+      .dirac-shell { width:100%!important; max-width:100%!important; }
+      .dirac-pad { padding-left:24px!important; padding-right:24px!important; }
+      .dirac-title { font-size:32px!important; line-height:1.18!important; }
+      .dirac-button a { display:block!important; padding:17px 14px!important; }
+      .dirac-footer-pad { padding-left:18px!important; padding-right:18px!important; }
+    }
+  </style>
+</head>
+<body class="body" bgcolor="#090c12" style="margin:0!important;padding:0!important;background:#090c12;background-color:#090c12;background-image:linear-gradient(#090c12,#090c12);font-family:Arial,Helvetica,sans-serif;color:#f4f6f9">
+  <div class="dirac-preheader">${preheader}</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#090c12" style="width:100%;margin:0;padding:0;background:#090c12;background-color:#090c12;background-image:linear-gradient(#090c12,#090c12)">
+    <tr><td class="dirac-outer-pad" align="center" bgcolor="#090c12" style="padding:18px 12px;background:#090c12;background-color:#090c12;background-image:linear-gradient(#090c12,#090c12)">
+      <table class="dirac-shell" role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#141820" style="width:100%;max-width:600px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:18px;overflow:hidden;box-shadow:0 18px 48px rgba(0,0,0,.24);background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
+        <tr><td style="padding:0;line-height:0;font-size:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="50%" height="4" bgcolor="#5276e8" style="height:4px;line-height:4px;font-size:0;background:#5276e8;background-color:#5276e8">&nbsp;</td><td width="30%" height="4" bgcolor="#148ba4" style="height:4px;line-height:4px;font-size:0;background:#148ba4;background-color:#148ba4">&nbsp;</td><td width="20%" height="4" bgcolor="#9a741f" style="height:4px;line-height:4px;font-size:0;background:#9a741f;background-color:#9a741f">&nbsp;</td></tr></table></td></tr>
+        <tr><td bgcolor="#10151e" style="padding:0;line-height:0;font-size:0;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><img src="${bannerUrl}" width="600" alt="Dirac Group Secure Security" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;background:#10151e;background-color:#10151e"></td></tr>
+        <tr><td class="dirac-pad" bgcolor="#141820" style="padding:27px 32px 13px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:21px;line-height:1.2;font-weight:800;letter-spacing:.14em;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">DIRAC GROUP</div><div style="margin-top:7px;font-size:11px;line-height:1.4;font-weight:700;letter-spacing:.2em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${brandLabel}</div></div></div></td></tr>
+        <tr><td class="dirac-pad" bgcolor="#141820" style="padding:24px 32px 32px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#9eb6ff!important;-webkit-text-fill-color:#9eb6ff!important;mso-color-alt:#9eb6ff">${eyebrow}</div><div class="dirac-title" style="margin-top:13px;font-size:38px;line-height:1.16;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${titleLines}</div><p style="margin:25px 0 0;font-size:17px;line-height:1.55;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${greeting}</p><p style="margin:12px 0 0;font-size:16px;line-height:1.65;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">${summary}</p></div></div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1a1f29" style="width:100%;margin:24px 0 18px;border-collapse:separate;border-spacing:0;border:1px solid #303a49;border-radius:14px;overflow:hidden;box-shadow:0 8px 22px rgba(0,0,0,.12);background:#1a1f29;background-color:#1a1f29;background-image:linear-gradient(#1a1f29,#1a1f29)"><tr><td style="padding:18px 20px;border-left:4px solid #5276e8"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#9eb6ff!important;-webkit-text-fill-color:#9eb6ff!important;mso-color-alt:#9eb6ff">${statusLabel}</div><div style="margin-top:8px;font-size:19px;line-height:1.45;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${statusValue}</div>${statusNote ? `<div style="margin-top:7px;font-size:13px;line-height:1.55;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${statusNote}</div>` : ''}</div></div></td></tr></table>
+          <table class="dirac-button" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:0 0 9px;border-collapse:separate"><tr><td align="center" bgcolor="#5276e8" style="border-radius:10px;background:#5276e8;background-color:#5276e8"><a href="${actionUrl}" style="display:block;padding:17px 18px;font-size:15px;line-height:1.2;font-weight:800;letter-spacing:.04em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;text-decoration:none;border-radius:10px">${actionText}</a></td></tr></table>
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="margin:0 0 25px;text-align:center;font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tujuan resmi: ${diracSecurityMailEscapeV327(new URL(actionUrl).hostname)}</div><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${detailsLabel}</div></div></div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:13px 0 0;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">${rowsHtml}</table>
+          ${traceHtml}
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1d1b17" style="width:100%;margin:28px 0;border-collapse:separate;border-spacing:0;border:1px solid #4a4030;border-radius:14px;overflow:hidden;background:#1d1b17;background-color:#1d1b17;background-image:linear-gradient(#1d1b17,#1d1b17)"><tr><td style="padding:18px 20px;border-left:4px solid #9a741f"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.14em;color:#f0c86c!important;-webkit-text-fill-color:#f0c86c!important;mso-color-alt:#f0c86c">${warningTitle}</div><p style="margin:10px 0 0;font-size:14px;line-height:1.65;color:#e8ebef!important;-webkit-text-fill-color:#e8ebef!important;mso-color-alt:#e8ebef">${warning}</p></div></div></td></tr></table>
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI DIRAC GROUP</div><p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${supportLead}</p></div></div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:0 0 13px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
+            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WHATSAPP</div><a href="https://wa.me/6287892523968" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">0878 9252 3968</a></div></div></td></tr>
+            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL SUPPORT</div><a href="mailto:support@diracgroup.store" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">support@diracgroup.store</a></div></div></td></tr>
+            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL PERUSAHAAN</div><a href="mailto:companydirac@gmail.com" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">companydirac@gmail.com</a></div></div></td></tr>
+            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">INSTAGRAM</div><a href="https://www.instagram.com/diraccorp/" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">@diraccorp</a></div></div></td></tr>
+          </table>
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><p style="margin:0;font-size:12px;line-height:1.65;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tim Dirac Group tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui WhatsApp, Instagram, telepon, maupun balasan email.</p></div></div>
+        </td></tr>
+        <tr><td class="dirac-footer-pad" bgcolor="#b9dcff" style="padding:24px 26px 26px;border-top:1px solid #79aee5;background:#b9dcff;background-color:#b9dcff;background-image:linear-gradient(#b9dcff,#b9dcff)"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10213a" style="width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24466c;border-radius:16px;overflow:hidden;box-shadow:0 10px 24px rgba(14,42,72,.18);background:#10213a;background-color:#10213a;background-image:linear-gradient(#10213a,#10213a)"><tr><td style="padding:22px 24px 23px;border-left:4px solid #27a2bd"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:18px;line-height:1.3;font-weight:800;letter-spacing:.14em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">DIRAC GROUP</div><div style="margin-top:7px;font-size:11px;line-height:1.5;font-weight:700;letter-spacing:.13em;color:#d9e8ff!important;-webkit-text-fill-color:#d9e8ff!important;mso-color-alt:#d9e8ff">RECOVERY &bull; PRIVACY &bull; SECURITY</div><div style="margin-top:14px;font-size:13px;line-height:1.55;color:#d7e7f8!important;-webkit-text-fill-color:#d7e7f8!important;mso-color-alt:#d7e7f8">Secure Recovery &middot; Protected Delivery</div><p style="margin:17px 0 0;font-size:11px;line-height:1.65;color:#bfd0e3!important;-webkit-text-fill-color:#bfd0e3!important;mso-color-alt:#bfd0e3">Email ini dibuat otomatis oleh sistem Dirac Group. Mohon tidak membalas dan jangan meneruskan material keamanan kepada pihak lain.</p></div></div></td></tr></table></td></tr>
+        <tr><td style="padding:0;line-height:0;font-size:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="50%" height="4" bgcolor="#5276e8" style="height:4px;line-height:4px;font-size:0;background:#5276e8;background-color:#5276e8">&nbsp;</td><td width="30%" height="4" bgcolor="#148ba4" style="height:4px;line-height:4px;font-size:0;background:#148ba4;background-color:#148ba4">&nbsp;</td><td width="20%" height="4" bgcolor="#9a741f" style="height:4px;line-height:4px;font-size:0;background:#9a741f;background-color:#9a741f">&nbsp;</td></tr></table></td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+function diracSecurityMailTextV327(input = {}) {
+  const rows = (Array.isArray(input.rows) ? input.rows : []).slice(0, 40)
+    .map((row) => diracSecurityMailCleanV327(row && row[0], 100) + ': ' + diracSecurityMailCleanV327(row && row[1], 500));
+  const trace = (Array.isArray(input.trace) ? input.trace : []).slice(0, 12)
+    .map((entry, index) => String(index + 1) + '. ' + diracSecurityMailCleanV327(entry && entry.stage, 100) + ' -> ' + diracSecurityMailCleanV327(entry && entry.result, 60) + ' (' + Math.max(0, Number(entry && entry.duration_ms || 0)) + ' ms)');
+  return [
+    'DIRAC GROUP - ' + diracSecurityMailCleanV327(input.eyebrow || 'SECURITY ACTIVITY NOTICE', 100),
+    '',
+    diracSecurityMailCleanV327(String(input.title || '').replace(/\n+/g, ' '), 200),
+    '',
+    diracSecurityMailCleanV327(input.greeting || '', 160),
+    diracSecurityMailCleanV327(input.summary || '', 700),
+    '',
+    diracSecurityMailCleanV327(input.statusLabel || 'STATUS KEAMANAN', 100) + ': ' + diracSecurityMailCleanV327(input.statusValue || '', 200),
+    diracSecurityMailCleanV327(input.statusNote || '', 400),
+    '',
+    ...rows,
+    ...(trace.length ? ['', 'Jejak Central Guard:', ...trace] : []),
+    '',
+    diracSecurityMailCleanV327(input.warning || '', 700),
+    '',
+    'Pusat keamanan: ' + diracSecurityMailOfficialUrlV327(input.actionUrl || (diracRoleOriginV250('security') + '/keamanan.html'), diracRoleOriginV250('security') + '/keamanan.html'),
+    'WhatsApp: 0878 9252 3968',
+    'Email Support: support@diracgroup.store',
+    'Email Perusahaan: companydirac@gmail.com',
+    'Instagram: @diraccorp',
+    '',
+    'Dirac Group tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui telepon, chat, atau balasan email.'
+  ].filter((line, index, all) => line !== '' || (index > 0 && all[index - 1] !== '')).join('\r\n');
+}
+
+function diracUserSecurityResolveEventV327(req, payload, action) {
+  const normalizedAction = diracV110NormalizeAction(String(action || ''));
+  const client = diracSecurityMailClientContextV327(req);
+  const nowWib = typeof formatDiracWibTime === 'function' ? formatDiracWibTime(Date.now()) : new Date().toISOString();
+  const cached = req && req.__diracPasswordArgon2V4Body && typeof req.__diracPasswordArgon2V4Body === 'object' ? req.__diracPasswordArgon2V4Body : {};
+  const payloadUser = payload && payload.user && typeof payload.user === 'object' ? payload.user : {};
+  const passwordMarker = req && req.__diracUserSecurityPasswordChangedV327 && typeof req.__diracUserSecurityPasswordChangedV327 === 'object'
+    ? req.__diracUserSecurityPasswordChangedV327 : null;
+  const passkeyMarker = req && req.__diracUserSecurityPasskeyEventV327 && typeof req.__diracUserSecurityPasskeyEventV327 === 'object'
+    ? req.__diracUserSecurityPasskeyEventV327 : null;
+  let email = diracSecurityMailEmailV327(passwordMarker && passwordMarker.email || passkeyMarker && passkeyMarker.email || payloadUser.email || cached.email || '');
+  if (!email) return null;
+  let kind = '';
+  let title = '';
+  let eyebrow = '';
+  let summary = '';
+  let statusValue = 'BERHASIL / TERLINDUNGI';
+  let statusNote = 'Aktivitas berhasil melewati seluruh pemeriksaan keamanan yang diwajibkan.';
+  let activity = '';
+  let method = '';
+  if (normalizedAction === 'domain_login') {
+    if (passwordMarker && passwordMarker.changed === true) {
+      kind = 'password_changed';
+      title = 'Perubahan Password\nTerdeteksi';
+      eyebrow = 'PASSWORD SECURITY NOTICE';
+      summary = 'Password akun Anda terdeteksi telah berubah dan tahap autentikasi password terbaru berhasil diverifikasi oleh sistem Dirac Group.';
+      activity = 'Perubahan password terverifikasi';
+      method = 'Email dan password';
+    } else {
+      return null;
+    }
+  } else if (normalizedAction === 'dirac_mfa_passkey_verify' && passkeyMarker) {
+    if (String(passkeyMarker.mode || '') === 'registration') {
+      kind = 'passkey_changed';
+      const replaced = passkeyMarker.recoveryReplacement === true;
+      title = replaced ? 'Passkey Berhasil\nDiganti' : (passkeyMarker.registeredNow === true ? 'Passkey Berhasil\nDiaktifkan' : 'Passkey Berhasil\nDiperbarui');
+      eyebrow = 'PASSKEY SECURITY NOTICE';
+      summary = replaced
+        ? 'Passkey lama telah diganti melalui alur recovery yang terverifikasi. Passkey baru kini menjadi kredensial aktif akun Anda.'
+        : 'Passkey akun Anda berhasil diaktifkan atau diperbarui setelah verifikasi keamanan selesai.';
+      activity = replaced ? 'Penggantian Passkey melalui recovery' : 'Aktivasi atau pembaruan Passkey';
+      method = 'WebAuthn Passkey';
+    } else if (String(passkeyMarker.mode || '') === 'authentication') {
+      kind = 'login_passkey';
+      title = 'Login Passkey\nBerhasil';
+      eyebrow = 'SECURE PASSKEY LOGIN';
+      summary = 'Login menggunakan Passkey berhasil dan sesi perangkat telah diverifikasi oleh sistem keamanan Dirac Group.';
+      activity = 'Login akun berhasil';
+      method = 'WebAuthn Passkey';
+    }
+  }
+  if (!kind) return null;
+  const reference = diracSecurityMailReferenceV327(kind, req, email);
+  const actionUrl = diracRoleOriginV250('security') + '/keamanan.html';
+  const rows = [
+    ['AKTIVITAS', activity],
+    ['METODE', method],
+    ['WAKTU WIB', nowWib],
+    ['PERANGKAT', client.device],
+    ['SISTEM OPERASI', client.operatingSystem],
+    ['BROWSER', client.browser],
+    ['IP TERSAMAR', client.maskedIp],
+    ['PERKIRAAN LOKASI', client.location],
+    ['SUMBER LOKASI', client.locationSource],
+    ['REFERENSI', reference]
+  ];
+  const warning = 'Jika Anda tidak melakukan aktivitas ini, segera buka Pusat Keamanan, ganti password, tinjau Passkey dan sesi aktif, lalu hubungi bantuan resmi Dirac Group. Jangan membalas email ini dengan password, OTP, token, atau data rahasia.';
+  const htmlInput = {
+    preheader: String(title || '').replace(/\n/g, ' ') + ' - Referensi ' + reference,
+    brandLabel: 'SECURE ACCOUNT SECURITY',
+    eyebrow,
+    title,
+    greeting: 'Yth. Pengguna Dirac Group,',
+    summary,
+    statusLabel: 'STATUS KEAMANAN',
+    statusValue,
+    statusNote,
+    detailsLabel: 'DETAIL AKTIVITAS',
+    rows,
+    actionUrl,
+    actionText: 'BUKA PUSAT KEAMANAN',
+    warningTitle: 'PERINGATAN KEAMANAN',
+    warning,
+    supportLead: 'Butuh bantuan untuk memeriksa aktivitas akun? Hubungi tim support melalui kanal resmi berikut.'
+  };
+  return Object.freeze({
+    kind,
+    email,
+    reference,
+    subject: 'DiracGroup Security - ' + String(title || '').replace(/\n+/g, ' ') + ' [' + reference + ']',
+    html: diracSecurityCorporateEmailHtmlV327(htmlInput),
+    text: diracSecurityMailTextV327(htmlInput)
+  });
+}
+
+function diracUserSecurityMimeV327(event, config) {
+  const boundary = 'dirac-user-security-' + crypto.randomBytes(16).toString('hex');
+  const senderDomain = String(config.smtpUser || '').split('@')[1] || 'gmail.com';
+  const messageId = crypto.createHash('sha256').update(event.reference + '|' + event.kind + '|' + Date.now()).digest('hex').slice(0, 32) + '@' + senderDomain;
+  return [
+    'From: ' + diracSecurityAlertMimeHeaderV320('Dirac Secure') + ' <' + config.smtpUser + '>',
+    'To: ' + event.email,
+    'Reply-To: ' + config.replyTo,
+    'Subject: ' + diracSecurityAlertMimeHeaderV320(event.subject),
+    'Date: ' + new Date().toUTCString(),
+    'Message-ID: <' + messageId + '>',
+    'Auto-Submitted: auto-generated',
+    'X-Dirac-User-Security: v327',
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/alternative; boundary="' + boundary + '"',
+    '',
+    '--' + boundary,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    diracSecurityAlertBase64LinesV320(event.text),
+    '--' + boundary,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    diracSecurityAlertBase64LinesV320(event.html),
+    '--' + boundary + '--',
+    ''
+  ].join('\r\n');
+}
+
+async function diracUserSecuritySendSmtpV327(event, config) {
+  let socket = null;
+  let reader = null;
+  let authBytes = null;
+  const deadline = Date.now() + Number(config.timeoutMs || 7000);
+  try {
+    socket = await diracCentralOpenSmtpSocketV230(config.smtpHost, config.smtpPort, true, config.timeoutMs);
+    reader = diracSecurityAlertSmtpReaderV321(socket);
+    if (typeof socket.setTimeout === 'function') socket.setTimeout(Math.max(1, deadline - Date.now()));
+    await diracSecurityAlertSmtpCommandV320(socket, reader, null, 220, deadline);
+    await diracSecurityAlertSmtpCommandV320(socket, reader, 'EHLO ' + diracBaseDomainV250(), 250, deadline);
+    authBytes = Buffer.from('\u0000' + config.smtpUser + '\u0000' + config.smtpAppPassword, 'utf8');
+    await diracSecurityAlertSmtpCommandV320(socket, reader, 'AUTH PLAIN ' + authBytes.toString('base64'), 235, deadline);
+    await diracSecurityAlertSmtpCommandV320(socket, reader, 'MAIL FROM:<' + config.smtpUser + '>', 250, deadline);
+    await diracSecurityAlertSmtpCommandV320(socket, reader, 'RCPT TO:<' + event.email + '>', [250, 251], deadline);
+    await diracSecurityAlertSmtpCommandV320(socket, reader, 'DATA', 354, deadline);
+    await diracSecurityAlertSmtpCommandV320(socket, reader, diracSecurityAlertDotStuffV320(diracUserSecurityMimeV327(event, config)) + '\r\n.', 250, deadline);
+    try { socket.write('QUIT\r\n'); } catch (_) {}
+    return Object.freeze({ ok: true, provider: 'gmail_smtp', status: 250 });
+  } catch (error) {
+    return Object.freeze({ ok: false, provider: 'gmail_smtp', status: Number(error && error.smtpCode || 0), code: String(error && error.code || 'USER_SECURITY_SMTP_DELIVERY_FAILED').slice(0, 100) });
+  } finally {
+    if (authBytes) authBytes.fill(0);
+    if (reader) reader.close();
+    try { if (socket) socket.end(); } catch (_) {}
+    try { if (socket) socket.destroy(); } catch (_) {}
+  }
+}
+
+function diracUserSecurityShouldUseSmtpFallbackV327(result) {
+  return Boolean(result && result.ok !== true && Number(result.status || 0) === 429);
+}
+
+async function diracUserSecuritySendV327(event, config) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), config.timeoutMs) : null;
+  let resendResult;
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + config.resendApiKey,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'Idempotency-Key': ('dirac-user-security-' + event.kind + '-' + event.reference).slice(0, 256)
+      },
+      body: JSON.stringify({
+        from: 'Dirac Secure <' + config.resendFromEmail + '>',
+        to: [event.email],
+        reply_to: config.replyTo,
+        subject: event.subject,
+        text: event.text,
+        html: event.html
+      }),
+      signal: controller ? controller.signal : undefined
+    });
+    const responseStatus = Number(response && response.status || 0);
+    const responseOk = Boolean(response && response.ok);
+    try {
+      if (response && typeof parseFetchResponse === 'function') {
+        await parseFetchResponse(response, 64 * 1024).catch(() => ({}));
+      } else if (response && response.body && typeof response.body.cancel === 'function') {
+        await Promise.resolve(response.body.cancel()).catch(() => false);
+      }
+    } catch (resendBodyCleanupErrorV329) {
+      if (typeof diracCentralRecordSuppressedExceptionV221 === 'function') diracCentralRecordSuppressedExceptionV221(resendBodyCleanupErrorV329);
+    }
+    resendResult = Object.freeze({ ok: responseOk, provider: 'resend', status: responseStatus });
+  } catch (error) {
+    resendResult = Object.freeze({ ok: false, provider: 'resend', status: 0, code: String(error && error.name || error && error.code || 'RESEND_REQUEST_FAILED').slice(0, 100) });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  if (resendResult.ok) return resendResult;
+  if (diracUserSecurityShouldUseSmtpFallbackV327(resendResult)) return diracUserSecuritySendSmtpV327(event, config);
+  return resendResult;
+}
+
+function diracUserSecurityLocalLogV327(event, result) {
+  const payload = {
+    event: diracSecurityMailCleanV327(event && event.kind || 'user_security_notification', 80),
+    reference: diracSecurityMailCleanV327(event && event.reference || '', 20),
+    provider: diracSecurityMailCleanV327(result && result.provider || 'unknown', 40),
+    status: Math.max(0, Number(result && result.status || 0)),
+    code: diracSecurityMailCleanV327(result && result.code || '', 100)
+  };
+  try { console.error('[dirac-user-security-mail-v327]', JSON.stringify(payload)); }
+  catch (_) { return false; }
+  return true;
+}
+
+function diracUserSecurityKeepAliveV327(req, promise) {
+  const tracked = Promise.resolve(promise).catch((error) => ({ ok: false, provider: 'internal', status: 0, code: String(error && error.code || 'USER_SECURITY_DELIVERY_EXCEPTION') }));
+  let attached = false;
+  try {
+    if (req && typeof req.waitUntil === 'function') {
+      req.waitUntil(tracked);
+      attached = true;
+    }
+  } catch (_) {}
+  try {
+    if (!attached && typeof globalThis.waitUntil === 'function') {
+      globalThis.waitUntil(tracked);
+      attached = true;
+    }
+  } catch (_) {}
+  DIRAC_USER_SECURITY_NOTIFICATION_STATE_V327.pending.add(tracked);
+  tracked.finally(() => DIRAC_USER_SECURITY_NOTIFICATION_STATE_V327.pending.delete(tracked));
+  return Object.freeze({ attached, promise: tracked });
+}
+
+function diracSecurityMailActionV327(req) {
+  const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
+  const raw = String(ctx && (ctx.action || ctx.rawAction) || req && req.query && req.query.action || '').trim();
+  return diracV110NormalizeAction(raw);
+}
+
+const DIRAC_SECURITY_NOTIFICATION_READINESS_PATCH_V328 = 'dirac-security-notification-readiness-v328';
+
+function diracSecurityMailExplicitEnvV328(name) {
+  if (!Object.prototype.hasOwnProperty.call(process.env, name)) return '';
+  return String(process.env[name] == null ? '' : process.env[name]).trim();
+}
+
+function diracSecurityMailExplicitIntegerV328(name, minimum, maximum) {
+  const raw = diracSecurityMailExplicitEnvV328(name);
+  if (!/^(?:0|[1-9]\d*)$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= minimum && value <= maximum ? value : null;
+}
+
+function diracSecurityMailSecretIndependentV328(secretText, comparisons) {
+  const secret = Buffer.from(String(secretText || ''), 'utf8');
+  try {
+    if (secret.length < 32 || diracSecurityMailPlaceholderV327(secretText)) return false;
+    const secretDigest = crypto.createHash('sha256').update(secret).digest();
+    for (const candidate of Array.isArray(comparisons) ? comparisons : []) {
+      const text = String(candidate || '');
+      if (!text) continue;
+      const digest = crypto.createHash('sha256').update(Buffer.from(text, 'utf8')).digest();
+      const equal = digest.length === secretDigest.length && crypto.timingSafeEqual(secretDigest, digest);
+      digest.fill(0);
+      if (equal) {
+        secretDigest.fill(0);
+        return false;
+      }
+    }
+    secretDigest.fill(0);
+    return true;
+  } finally {
+    secret.fill(0);
+  }
+}
+
+function diracSecurityAlertExplicitReadyV328() {
+  const enabled = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_ENABLED').toLowerCase() === 'true';
+  const host = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_SMTP_HOST').toLowerCase();
+  const port = diracSecurityMailExplicitIntegerV328('DIRAC_SECURITY_ALERT_SMTP_PORT', 465, 465);
+  const secure = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_SMTP_SECURE').toLowerCase() === 'true';
+  const userRaw = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_SMTP_USER');
+  const user = diracSecurityMailEmailV327(userRaw);
+  const appPasswordRaw = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_SMTP_APP_PASSWORD');
+  const appPassword = appPasswordRaw.replace(/\s+/g, '');
+  const fromEmailRaw = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_FROM_EMAIL');
+  const fromEmail = diracSecurityMailEmailV327(fromEmailRaw);
+  const fromName = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_FROM_NAME');
+  const recipientRaw = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_TO');
+  const recipientTokens = recipientRaw ? recipientRaw.split(/[;,\s]+/).filter(Boolean) : [];
+  const recipients = recipientTokens.map(diracSecurityMailEmailV327);
+  const hmacSecret = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_HMAC_SECRET');
+  const timeoutMs = diracSecurityMailExplicitIntegerV328('DIRAC_SECURITY_ALERT_TIMEOUT_MS', 3000, 15000);
+  const cooldownMs = diracSecurityMailExplicitIntegerV328('DIRAC_SECURITY_ALERT_COOLDOWN_MS', 30000, 3600000);
+  const queueMax = diracSecurityMailExplicitIntegerV328('DIRAC_SECURITY_ALERT_QUEUE_MAX', 1, 100);
+  const maxRetries = diracSecurityMailExplicitIntegerV328('DIRAC_SECURITY_ALERT_MAX_RETRIES', 0, 2);
+  const retryBaseMs = diracSecurityMailExplicitIntegerV328('DIRAC_SECURITY_ALERT_RETRY_BASE_MS', 250, 5000);
+  const maxPerWindow = diracSecurityMailExplicitIntegerV328('DIRAC_SECURITY_ALERT_MAX_PER_WINDOW', 1, 100);
+  const windowMs = diracSecurityMailExplicitIntegerV328('DIRAC_SECURITY_ALERT_WINDOW_MS', 60000, 3600000);
+  const independentSecret = diracSecurityMailSecretIndependentV328(hmacSecret, [
+    process.env.DIRAC_SECURITY_ROOT_SECRET,
+    appPasswordRaw,
+    appPassword,
+    process.env.DIRAC_USER_SECURITY_RESEND_API_KEY,
+    process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD,
+    String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '')
+  ]);
+  const valid = enabled
+    && host === 'smtp.gmail.com'
+    && port === 465
+    && secure
+    && Boolean(user)
+    && !diracSecurityMailPlaceholderV327(userRaw)
+    && /^[A-Za-z0-9]{16,128}$/.test(appPassword)
+    && !diracSecurityMailPlaceholderV327(appPasswordRaw)
+    && Boolean(fromEmail)
+    && fromEmail === user
+    && !diracSecurityMailPlaceholderV327(fromEmailRaw)
+    && fromName.length >= 1
+    && fromName.length <= 80
+    && !/[\r\n<>]/.test(fromName)
+    && !diracSecurityMailPlaceholderV327(fromName)
+    && recipientTokens.length >= 1
+    && recipientTokens.length <= 5
+    && recipients.every(Boolean)
+    && recipients.length === recipientTokens.length
+    && recipientTokens.every((value) => !diracSecurityMailPlaceholderV327(value))
+    && new Set(recipients).size === recipients.length
+    && independentSecret
+    && timeoutMs !== null
+    && cooldownMs !== null
+    && queueMax !== null
+    && maxRetries !== null
+    && retryBaseMs !== null
+    && maxPerWindow !== null
+    && windowMs !== null;
+  return Object.freeze({ valid });
+}
+
+function diracUserSecurityExplicitReadyV328() {
+  const enabled = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_EMAIL_ENABLED').toLowerCase() === 'true';
+  const resendApiKey = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_RESEND_API_KEY');
+  const resendFromRaw = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_RESEND_FROM_EMAIL');
+  const resendFromEmail = diracSecurityMailEmailV327(resendFromRaw);
+  const replyToRaw = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_REPLY_TO');
+  const replyTo = diracSecurityMailEmailV327(replyToRaw);
+  const timeoutMs = diracSecurityMailExplicitIntegerV328('DIRAC_USER_SECURITY_TIMEOUT_MS', 3000, 15000);
+  const smtpHost = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SMTP_HOST').toLowerCase();
+  const smtpPort = diracSecurityMailExplicitIntegerV328('DIRAC_USER_SECURITY_SMTP_PORT', 465, 465);
+  const smtpSecure = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SMTP_SECURE').toLowerCase() === 'true';
+  const smtpUserRaw = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SMTP_USER');
+  const smtpUser = diracSecurityMailEmailV327(smtpUserRaw);
+  const smtpAppPasswordRaw = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SMTP_APP_PASSWORD');
+  const smtpAppPassword = smtpAppPasswordRaw.replace(/\s+/g, '');
+  const senderDomain = resendFromEmail.split('@')[1] || '';
+  let officialSender = false;
+  try {
+    const baseDomain = diracBaseDomainV250();
+    officialSender = Boolean(senderDomain && (senderDomain === baseDomain || senderDomain.endsWith('.' + baseDomain)));
+  } catch (_) { officialSender = false; }
+  const valid = enabled
+    && /^re_[A-Za-z0-9_-]{16,252}$/.test(resendApiKey)
+    && !diracSecurityMailPlaceholderV327(resendApiKey)
+    && Boolean(resendFromEmail)
+    && officialSender
+    && !diracSecurityMailPlaceholderV327(resendFromRaw)
+    && Boolean(replyTo)
+    && !diracSecurityMailPlaceholderV327(replyToRaw)
+    && timeoutMs !== null
+    && smtpHost === 'smtp.gmail.com'
+    && smtpPort === 465
+    && smtpSecure
+    && Boolean(smtpUser)
+    && !diracSecurityMailPlaceholderV327(smtpUserRaw)
+    && /^[A-Za-z0-9]{16,128}$/.test(smtpAppPassword)
+    && !diracSecurityMailPlaceholderV327(smtpAppPasswordRaw);
+  return Object.freeze({ valid });
+}
+
+const originalSecurityAlertConfigV328 = diracSecurityAlertConfigV320;
+diracSecurityAlertConfigV320 = function diracSecurityAlertConfigExplicitV328() {
+  if (!diracSecurityAlertExplicitReadyV328().valid) return null;
+  return originalSecurityAlertConfigV328();
+};
+
+function diracUserSecurityConfigurationRequiredV327() {
+  const userReady = diracUserSecurityExplicitReadyV328().valid;
+  const ownerReady = diracSecurityAlertExplicitReadyV328().valid;
+  const user = userReady ? diracUserSecurityConfigV327() : null;
+  const owner = ownerReady && typeof diracSecurityAlertConfigV320 === 'function' ? diracSecurityAlertConfigV320() : null;
+  return Object.freeze({ ok: Boolean(userReady && ownerReady && user && owner), user, owner });
+}
+
+try {
+  const originalPasswordPersistV327 = typeof diracPasswordArgon2V4PersistAfterVerifiedAuth === 'function'
+    ? diracPasswordArgon2V4PersistAfterVerifiedAuth
+    : null;
+  if (originalPasswordPersistV327 && !originalPasswordPersistV327.__diracUserSecurityPasswordDetectionV327) {
+    diracPasswordArgon2V4PersistAfterVerifiedAuth = async function diracPasswordArgon2PersistWithSecurityMailDetectionV327(req, payload, action) {
+      if (diracV110NormalizeAction(String(action || '')) === 'domain_login') {
+        try {
+          const cached = req && req.__diracPasswordArgon2V4Body && typeof req.__diracPasswordArgon2V4Body === 'object' ? req.__diracPasswordArgon2V4Body : {};
+          const password = String(cached.password || '');
+          const user = payload && payload.user && typeof payload.user === 'object' ? payload.user : null;
+          const authUserId = diracPasswordArgon2V4ExtractUserId(user, payload);
+          const email = diracSecurityMailEmailV327(cached.email || user && user.email || '');
+          if (password && diracPasswordArgon2V4LooksLikeUuid(authUserId) && email) {
+            const active = await diracPasswordArgon2V4ReadActive(authUserId).catch(() => null);
+            if (active && diracPasswordArgon2V4LooksLikeUuid(active.customer_id) && String(active.password_hash || '').startsWith('$argon2id$')) {
+              let verified = null;
+              try {
+                verified = await diracV110VerifyArgon2ShadowPassword(password, active.password_hash, {
+                  authUserId,
+                  customerId: String(active.customer_id),
+                  email
+                });
+              } catch (_) { verified = null; }
+              if (verified === false) {
+                Object.defineProperty(req, '__diracUserSecurityPasswordChangedV327', {
+                  value: Object.freeze({ changed: true, email, detectedAt: Date.now() }),
+                  writable: false,
+                  configurable: false,
+                  enumerable: false
+                });
+              }
+            }
+          }
+        } catch (passwordDetectionErrorV327) {
+          if (typeof diracCentralRecordSuppressedExceptionV221 === 'function') diracCentralRecordSuppressedExceptionV221(passwordDetectionErrorV327);
+        }
+      }
+      return originalPasswordPersistV327(req, payload, action);
+    };
+    Object.defineProperty(diracPasswordArgon2V4PersistAfterVerifiedAuth, '__diracUserSecurityPasswordDetectionV327', { value: true, enumerable: false });
+  }
+} catch (passwordWrapperInstallErrorV327) {
+  if (typeof diracCentralRecordSuppressedExceptionV221 === 'function') diracCentralRecordSuppressedExceptionV221(passwordWrapperInstallErrorV327);
+}
+
+const originalSecurityAlertShouldSendV327 = diracSecurityAlertShouldSendV320;
+diracSecurityAlertShouldSendV320 = function diracSecurityAlertShouldSendCorporateV327(event) {
+  return String(event || '').toLowerCase() === 'persistent_ban_written'
+    || originalSecurityAlertShouldSendV327(event);
+};
+
+const originalSecurityAlertPriorityV327 = diracSecurityAlertPriorityV321;
+diracSecurityAlertPriorityV321 = function diracSecurityAlertPriorityCorporateV327(event) {
+  return String(event || '').toLowerCase() === 'persistent_ban_written'
+    || originalSecurityAlertPriorityV327(event);
+};
+
+const originalSecurityAlertSnapshotV327 = diracSecurityAlertSnapshotV320;
+diracSecurityAlertSnapshotV320 = function diracSecurityAlertSnapshotCorporateV327(ctx, event, extra) {
+  const base = originalSecurityAlertSnapshotV327(ctx, event, extra);
+  const direct = extra && typeof extra === 'object' ? extra : {};
+  const nested = direct.extra && typeof direct.extra === 'object' ? direct.extra : direct;
+  const reasonRaw = String(ctx && ctx.failureReasonV211 || direct.reason || nested.reason || event || 'central_guard_security_event');
+  const reasonCode = typeof diracSecurityAlertCodeV321 === 'function'
+    ? diracSecurityAlertCodeV321(reasonRaw, 'withheld', 120)
+    : diracSecurityMailCleanV327(reasonRaw, 120);
+  const blockedUntilMs = Number(nested.blocked_until_ms || direct.blocked_until_ms || 0);
+  const ttlSeconds = Math.max(0, Math.min(315360000, Number(nested.ttl_seconds || direct.ttl_seconds || 0)));
+  const banType = typeof diracSecurityAlertCodeV321 === 'function'
+    ? diracSecurityAlertCodeV321(nested.ban_type || direct.ban_type || '', 'unavailable', 120)
+    : diracSecurityMailCleanV327(nested.ban_type || direct.ban_type || '', 120);
+  const normalizedEvent = String(event || '').toLowerCase();
+  const centralBanWritten = nested.persistent_ban_written === true || normalizedEvent === 'persistent_ban_written';
+  let centralBanStatus = 'REQUEST DIBLOKIR';
+  if (centralBanWritten) centralBanStatus = 'PERSISTENT BAN DITULIS / AKTIF';
+  else if (normalizedEvent === 'persistent_ban_write_failed') centralBanStatus = 'PERSISTENT BAN GAGAL DITULIS';
+  else if (normalizedEvent === 'account_or_device_ban_enforced') centralBanStatus = 'BAN AKUN / PERANGKAT DIBERLAKUKAN';
+  const blockedUntil = Number.isFinite(blockedUntilMs) && blockedUntilMs > 0
+    ? (typeof formatDiracWibTime === 'function' ? formatDiracWibTime(blockedUntilMs) : new Date(blockedUntilMs).toISOString())
+    : base.blocked_until;
+  return Object.freeze({
+    ...base,
+    reason_code: reasonCode,
+    central_ban_written: centralBanWritten,
+    central_ban_status: centralBanStatus,
+    ban_type: banType,
+    ban_ttl_seconds: ttlSeconds,
+    blocked_until: blockedUntil || 'unavailable'
+  });
+};
+
+function diracSecurityAlertCorporateMimeV327(snapshot, config) {
+  const event = String(snapshot && snapshot.event || '').toLowerCase();
+  const isPersistent = event === 'persistent_ban_written' || snapshot.central_ban_written === true;
+  const writeFailed = event === 'persistent_ban_write_failed';
+  const title = isPersistent
+    ? 'Central Ban Telah\nDitulis'
+    : (writeFailed ? 'Penulisan Central Ban\nGagal' : 'Percobaan Serangan\nBerhasil Diblokir');
+  const reference = crypto.createHash('sha256').update([
+    snapshot.failure_id,
+    snapshot.request_id,
+    snapshot.timestamp_utc,
+    snapshot.event
+  ].join('|')).digest('hex').slice(0, 10).toUpperCase();
+  const location = [snapshot.city, snapshot.region, snapshot.country].filter((item) => item && item !== 'unavailable').join(', ') || 'Tidak tersedia';
+  const rows = [
+    ['STATUS', 'BLOCKED / FAIL-CLOSED'],
+    ['CENTRAL BAN', snapshot.central_ban_status || 'REQUEST DIBLOKIR'],
+    ['JENIS BAN', snapshot.ban_type || 'unavailable'],
+    ['TTL BAN', snapshot.ban_ttl_seconds ? String(snapshot.ban_ttl_seconds) + ' detik' : 'unavailable'],
+    ['BLOK SAMPAI', snapshot.blocked_until || 'unavailable'],
+    ['KLASIFIKASI', snapshot.threat_class],
+    ['SEVERITY', snapshot.severity],
+    ['EVENT', snapshot.event],
+    ['REASON CODE', snapshot.reason_code || snapshot.reason],
+    ['ACTION', snapshot.action],
+    ['METHOD / PATH', snapshot.method + ' ' + snapshot.path],
+    ['STAGE', snapshot.stage],
+    ['FAILURE ID', snapshot.failure_id],
+    ['REQUEST ID', snapshot.request_id],
+    ['WAKTU WIB', snapshot.timestamp_wib],
+    ['WAKTU UTC', snapshot.timestamp_utc],
+    ['IP TERSAMAR', snapshot.masked_ip],
+    ['IP FINGERPRINT', snapshot.ip_fingerprint],
+    ['ACCOUNT FINGERPRINT', snapshot.account_fingerprint],
+    ['DEVICE FINGERPRINT', snapshot.device_fingerprint],
+    ['BROWSER', snapshot.browser],
+    ['PERKIRAAN LOKASI', location],
+    ['SUMBER LOKASI', snapshot.location_source],
+    ['JUMLAH PERCOBAAN', String(snapshot.attempt_count || 0)],
+    ['SCOPE BLOK', snapshot.matched_scope],
+    ['REFERENSI EMAIL', reference]
+  ];
+  const warning = 'Central Guard telah menolak request secara fail-closed. Email ini tidak memuat password, OTP, token, cookie, raw request body, alamat lengkap, atau IP penuh. Cocokkan referensi dengan log produksi sebelum melakukan investigasi lanjutan.';
+  const htmlInput = {
+    preheader: String(title).replace(/\n/g, ' ') + ' - ' + snapshot.threat_class,
+    brandLabel: 'CENTRAL GUARD SECURITY',
+    eyebrow: 'CENTRAL GUARD SECURITY ALERT',
+    title,
+    greeting: 'Yth. Owner dan Tim Cyber Dirac Group,',
+    summary: isPersistent
+      ? 'Central Guard mendeteksi pelanggaran keamanan terkonfirmasi, menolak request, dan berhasil menulis persistent ban sesuai kebijakan fail-closed.'
+      : (writeFailed
+        ? 'Central Guard menolak request, tetapi penulisan persistent ban tidak berhasil diselesaikan. Sistem tetap fail-closed dan memerlukan pemeriksaan owner atau tim cyber.'
+        : 'Central Guard mendeteksi indikasi serangan atau percobaan akses berbahaya dan menolak request secara otomatis.'),
+    statusLabel: 'CENTRAL GUARD STATUS',
+    statusValue: snapshot.central_ban_status || 'BLOCKED / FAIL-CLOSED',
+    statusNote: snapshot.threat_class + ' · Severity ' + snapshot.severity,
+    detailsLabel: 'DETAIL INSIDEN',
+    rows,
+    trace: snapshot.trace,
+    actionUrl: diracRoleOriginV250('security') + '/keamanan.html',
+    actionText: 'BUKA PUSAT KEAMANAN',
+    warningTitle: 'PRIVASI DAN RESPONS INSIDEN',
+    warning,
+    supportLead: 'Untuk koordinasi respons insiden, gunakan kanal resmi Dirac Group berikut dan jangan meneruskan data sensitif melalui email.'
+  };
+  const subject = '[DIRAC ' + snapshot.severity + '] ' + String(title).replace(/\n/g, ' ') + ' [' + reference + ']';
+  const htmlBody = diracSecurityCorporateEmailHtmlV327(htmlInput);
+  const textBody = diracSecurityMailTextV327(htmlInput);
+  const boundary = 'dirac-alert-v327-' + crypto.randomBytes(16).toString('hex');
+  const senderDomain = String(config.fromEmail || '').split('@')[1] || 'gmail.com';
+  const messageId = diracSecurityAlertHmacV320('message-id-v327', snapshot.request_id + '|' + snapshot.timestamp_utc + '|' + reference) + '@' + senderDomain;
+  return [
+    'From: ' + diracSecurityAlertMimeHeaderV320(config.fromName) + ' <' + config.fromEmail + '>',
+    'To: ' + config.recipients.join(', '),
+    'Subject: ' + diracSecurityAlertMimeHeaderV320(subject),
+    'Date: ' + new Date().toUTCString(),
+    'Message-ID: <' + messageId + '>',
+    'Auto-Submitted: auto-generated',
+    'X-Dirac-Security-Alert: v327',
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/alternative; boundary="' + boundary + '"',
+    '',
+    '--' + boundary,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    diracSecurityAlertBase64LinesV320(textBody),
+    '--' + boundary,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    diracSecurityAlertBase64LinesV320(htmlBody),
+    '--' + boundary + '--',
+    ''
+  ].join('\r\n');
+}
+
+diracSecurityAlertMessageV320 = function diracSecurityAlertMessageCorporateV327(snapshot, config) {
+  return diracSecurityAlertCorporateMimeV327(snapshot, config);
+};
+
+__diracV202RegisterMiddleware(async function diracSecurityNotificationMailWrapperV327(req, res, nextHandlerV202) {
+  const method = String(req && req.method || '').toUpperCase();
+  const action = diracSecurityMailActionV327(req);
+  const gatedAction = method === 'POST' && new Set(['domain_login', 'domain_register', 'dirac_mfa_passkey_verify']).has(action);
+  if (!gatedAction) return nextHandlerV202(req, res);
+
+  const configuration = diracUserSecurityConfigurationRequiredV327();
+  if (!configuration.ok) {
+    try { if (typeof diracApplySecurityResponseHeaders === 'function') diracApplySecurityResponseHeaders(res); } catch (_) {}
+    try { if (res && typeof res.setHeader === 'function') res.setHeader('Cache-Control', 'no-store'); } catch (_) {}
+    return res.status(503).json({
+      ok: false,
+      code: 'DIRAC_SECURITY_EMAIL_CONFIGURATION_REQUIRED',
+      message: 'Konfigurasi notifikasi keamanan belum lengkap. Login, register, dan perubahan Passkey dihentikan secara fail-closed.'
+    });
+  }
+
+  if (action === 'domain_register') return nextHandlerV202(req, res);
+  const originalStatus = typeof res.status === 'function' ? res.status.bind(res) : null;
+  const originalJson = typeof res.json === 'function' ? res.json.bind(res) : null;
+  if (!originalJson) return nextHandlerV202(req, res);
+  let capturedStatus = Number(res.statusCode || 200);
+  let notificationScheduled = false;
+
+  res.status = function diracSecurityNotificationMailStatusV327(code) {
+    capturedStatus = Number(code || capturedStatus || 200);
+    if (originalStatus) return originalStatus(code);
+    res.statusCode = capturedStatus;
+    return res;
+  };
+
+  res.json = async function diracSecurityNotificationMailJsonV327(payload) {
+    const httpStatus = Number(capturedStatus || res.statusCode || 200);
+    const event = !notificationScheduled && httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true
+      ? diracUserSecurityResolveEventV327(req, payload, action)
+      : null;
+    const forwarded = await originalJson(payload);
+    if (event && !notificationScheduled) {
+      notificationScheduled = true;
+      const delivery = diracUserSecurityKeepAliveV327(req, diracUserSecuritySendV327(event, configuration.user));
+      const completed = delivery.attached ? null : await delivery.promise;
+      if (completed && completed.ok !== true) diracUserSecurityLocalLogV327(event, completed);
+      if (delivery.attached) {
+        delivery.promise.then((result) => {
+          if (!result || result.ok !== true) diracUserSecurityLocalLogV327(event, result || {});
+        }).catch(() => false);
+      }
+    }
+    return forwarded;
+  };
+
+  return nextHandlerV202(req, res);
+}, 'diracSecurityNotificationMailWrapperV327');
+
+/* ============================================================
    DIRAC CENTRAL SECURITY GUARD v146 - FINAL CENTRAL FLOW
    Pusat guard /api/health:
    - Exact action whitelist sebelum handler lama.
@@ -53990,7 +54965,7 @@ function diracCentralEgressRouteAllowedV228(url, method, ctx, options) {
     }
   };
 
-  const emailActions = [/^domain_register$/, /^domain_checkout$/, /^create_payment$/, /^midtrans_webhook$/, /^customer_security_/, /^admin_/, /^domain_login$/];
+  const emailActions = [/^domain_register$/, /^domain_checkout$/, /^create_payment$/, /^midtrans_webhook$/, /^customer_security_/, /^admin_/, /^domain_login$/, /^dirac_mfa_passkey_verify$/, /^domain_mfa_passkey_verify$/];
   const resend = exact('api.resend.com', '/emails', ['POST'], emailActions, 'resend_email');
   if (resend) return resend;
   const brevo = exact('api.brevo.com', '/v3/smtp/email', ['POST'], emailActions, 'brevo_email');
