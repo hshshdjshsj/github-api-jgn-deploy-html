@@ -46924,15 +46924,7 @@ __diracV202RegisterMiddleware(async function diracSecurityNotificationMailWrappe
   if (!gatedAction) return nextHandlerV202(req, res);
 
   const configuration = diracUserSecurityConfigurationRequiredV327();
-  if (!configuration.ok) {
-    try { if (typeof diracApplySecurityResponseHeaders === 'function') diracApplySecurityResponseHeaders(res); } catch (_) {}
-    try { if (res && typeof res.setHeader === 'function') res.setHeader('Cache-Control', 'no-store'); } catch (_) {}
-    return res.status(503).json({
-      ok: false,
-      code: 'DIRAC_SECURITY_EMAIL_CONFIGURATION_REQUIRED',
-      message: 'Konfigurasi notifikasi keamanan belum lengkap. Login, register, dan perubahan Passkey dihentikan secara fail-closed.'
-    });
-  }
+  if (!configuration.ok) return nextHandlerV202(req, res);
 
   if (action === 'domain_register') return nextHandlerV202(req, res);
   const originalStatus = typeof res.status === 'function' ? res.status.bind(res) : null;
