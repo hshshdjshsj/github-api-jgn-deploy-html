@@ -4,7 +4,7 @@ const crypto = require('crypto');
 
 /* ============================================================
    DIRAC LOGIN FATAL DIAGNOSTIC v324
-   Production-safe breadcrumbs for POST domain_login only.
+   Production-safe breadcrumbs for POST domain_login/domain_register only.
    No request body, credential, token, cookie, IP, email, UUID,
    database query, SMTP address, or ENV value is logged.
    ============================================================ */
@@ -19,10 +19,17 @@ const DIRAC_LOGIN_FATAL_STATE_V324 = globalThis.__DIRAC_LOGIN_FATAL_STATE_V324__
 };
 globalThis.__DIRAC_LOGIN_FATAL_STATE_V324__ = DIRAC_LOGIN_FATAL_STATE_V324;
 
-function diracLoginFatalIsRequestV324(req) {
+function diracLoginFatalActionV324(req) {
   const action = String(req && req.query && req.query.action || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (action === 'login_domain') return 'domain_login';
+  if (action === 'register_domain') return 'domain_register';
+  return action;
+}
+
+function diracLoginFatalIsRequestV324(req) {
+  const action = diracLoginFatalActionV324(req);
   return String(req && req.method || '').toUpperCase() === 'POST'
-    && (action === 'domain_login' || action === 'login_domain');
+    && (action === 'domain_login' || action === 'domain_register');
 }
 
 function diracLoginFatalSafeTokenV324(value, fallback, maximum) {
@@ -165,6 +172,7 @@ function diracLoginFatalBeginV324(req, res) {
     phase: 'request.enter',
     dbOrdinal: 0,
     finished: false,
+    action: diracLoginFatalActionV324(req),
     vercelRequestId: diracLoginFatalSafeTokenV324(req && req.headers && req.headers['x-vercel-id'], 'unavailable', 120),
     buildSha256: diracLoginFatalBuildShaV324()
   };
@@ -206,7 +214,7 @@ function diracLoginFatalMarkIdV324(traceId, phase, state, meta, res) {
     trace_id: trace.traceId,
     vercel_request_id: trace.vercelRequestId,
     build_sha256: trace.buildSha256,
-    action: 'domain_login',
+    action: trace.action,
     method: 'POST',
     sequence: trace.sequence,
     phase: trace.phase,
@@ -237,7 +245,7 @@ function diracLoginFatalDatabaseRouteV324(path) {
 }
 
 function diracLoginFatalDatabaseStartV324(ctx, path, options) {
-  if (!ctx || String(ctx.action || '') !== 'domain_login' || !ctx.req) return null;
+  if (!ctx || (String(ctx.action || '') !== 'domain_login' && String(ctx.action || '') !== 'domain_register') || !ctx.req) return null;
   const trace = diracLoginFatalTraceV324(ctx.req);
   if (!trace) return null;
   trace.dbOrdinal += 1;
@@ -2762,7 +2770,7 @@ async function domainRegister(req, res, preloadedBody) {
       });
     }
   } else {
-    clearSessionCookies(res);
+    clearCurrentRequestSessionCookiesV235(req, res);
     if (signupSessionOffered) {
       return res.status(502).json({
         ok: false,
@@ -46966,7 +46974,7 @@ __diracV202RegisterMiddleware(async function diracSecurityNotificationMailWrappe
 /* ============================================================
    DIRAC SECURITY MAIL PROVIDER CASCADE v330 - APPEND ONLY
    Exact delivery order for user-security notifications and owner/cyber alerts:
-   SendPulse -> Brevo -> Resend -> Gmail SMTP.
+   Brevo -> Resend -> Gmail SMTP.
    A provider is skipped only after a confirmed provider limit/quota response.
    Authentication, configuration, timeout, DNS, TLS, or other delivery failures
    remain fail-closed and do not silently fall through to another provider.
@@ -47062,18 +47070,6 @@ diracCentralEgressRouteAllowedV228 = function diracCentralEgressRouteAllowedWith
   return diracCentralEgressRouteAllowedBeforeSecurityMailV330(url, method, ctx, options);
 };
 
-const diracCentralAllowedEgressHostBeforeSecurityMailV330 = diracCentralAllowedEgressHostV146;
-diracCentralAllowedEgressHostV146 = function diracCentralAllowedEgressHostWithSendPulseV330(host) {
-  if (String(host || '').trim().toLowerCase() === 'api.sendpulse.com') return true;
-  return diracCentralAllowedEgressHostBeforeSecurityMailV330(host);
-};
-
-const diracCentralEgressResponseMaxBytesBeforeSecurityMailV330 = diracCentralEgressResponseMaxBytesV228;
-diracCentralEgressResponseMaxBytesV228 = function diracCentralEgressResponseMaxBytesWithSendPulseV330(host) {
-  if (String(host || '').trim().toLowerCase() === 'api.sendpulse.com') return 2 * 1024 * 1024;
-  return diracCentralEgressResponseMaxBytesBeforeSecurityMailV330(host);
-};
-
 function diracSecurityMailProviderResultCodeV330(body) {
   const candidates = [
     body && body.code,
@@ -47091,27 +47087,14 @@ function diracSecurityMailProviderResultCodeV330(body) {
 }
 
 function diracSecurityMailProviderLimitedV330(provider, status, body) {
+  const statusCode = Number(status || 0);
   const code = String(diracSecurityMailProviderResultCodeV330(body) || '').toLowerCase();
-  if (Number(status || 0) === 429) return true;
-  if (provider === 'sendpulse') {
-    const numericCodes = new Set([707, 708, 905, 2020202020]);
-    const values = [
-      body && body.code,
-      body && body.error_code,
-      body && body.error && body.error.code,
-      body && body.data && body.data.code
-    ].map((value) => Number(value)).filter(Number.isFinite);
-    return values.some((value) => numericCodes.has(value));
-  }
-  if (provider === 'brevo') return code === 'not_enough_credits';
-  if (provider === 'resend') {
-    return new Set(['daily_quota_exceeded', 'monthly_quota_exceeded', 'rate_limit_exceeded']).has(code);
-  }
+  if (statusCode === 429) return true;
+  if (provider === 'brevo') return statusCode === 402 && code === 'not_enough_credits';
   return false;
 }
 
 const DIRAC_SECURITY_MAIL_PROVIDER_ENDPOINTS_V330 = Object.freeze({
-  sendpulse: 'https://api.sendpulse.com/smtp/emails',
   brevo: 'https://api.brevo.com/v3/smtp/email',
   resend: 'https://api.resend.com/emails'
 });
@@ -47169,9 +47152,7 @@ async function diracSecurityMailProviderHttpV330(provider, targetUrl, headers, b
       responseBody = {};
     }
     const status = Number(response && response.status || 0);
-    const sendPulseAccepted = provider !== 'sendpulse'
-      || Boolean(responseBody && (responseBody.result === true || responseBody.id || responseBody.message_id));
-    const ok = Boolean(response && response.ok && sendPulseAccepted);
+    const ok = Boolean(response && response.ok);
     const limited = !ok && diracSecurityMailProviderLimitedV330(provider, status, responseBody);
     const code = diracSecurityMailProviderResultCodeV330(responseBody)
       || (ok ? '' : String(provider || 'provider').toUpperCase() + '_HTTP_' + String(status || 0));
@@ -47190,22 +47171,6 @@ async function diracSecurityMailProviderHttpV330(provider, targetUrl, headers, b
       try { await Promise.resolve(response.body.cancel()).catch(() => false); } catch (_) {}
     }
   }
-}
-
-async function diracSecurityMailSendPulseV330(message, config) {
-  const email = {
-    html: Buffer.from(String(message.html || ''), 'utf8').toString('base64'),
-    text: String(message.text || ''),
-    subject: String(message.subject || ''),
-    from: { name: String(message.fromName || 'Dirac Group'), email: config.sendpulseFromEmail },
-    to: message.recipients.map((emailAddress) => ({ email: emailAddress }))
-  };
-  if (message.replyTo) email.reply_to = { name: 'Dirac Support', email: message.replyTo };
-  return diracSecurityMailProviderHttpV330('sendpulse', 'https://api.sendpulse.com/smtp/emails', {
-    Authorization: 'Bearer ' + config.sendpulseApiKey,
-    'Content-Type': 'application/json',
-    Accept: 'application/json'
-  }, JSON.stringify({ email }), config.timeoutMs);
 }
 
 async function diracSecurityMailBrevoV330(message, config) {
@@ -47244,7 +47209,6 @@ async function diracSecurityMailResendV330(message, config) {
 
 async function diracSecurityMailProviderCascadeV330(message, config, smtpSender) {
   const senders = [
-    () => diracSecurityMailSendPulseV330(message, config),
     () => diracSecurityMailBrevoV330(message, config),
     () => diracSecurityMailResendV330(message, config)
   ];
@@ -47259,26 +47223,20 @@ async function diracSecurityMailProviderCascadeV330(message, config, smtpSender)
 const diracUserSecurityExplicitReadyBeforeCascadeV330 = diracUserSecurityExplicitReadyV328;
 diracUserSecurityExplicitReadyV328 = function diracUserSecurityExplicitReadyCascadeV330() {
   const previous = diracUserSecurityExplicitReadyBeforeCascadeV330();
-  const sendpulseApiKey = diracSecurityMailProviderKeyV330(diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SENDPULSE_API_KEY'), 32, 4096);
-  const sendpulseFromEmail = diracSecurityMailProviderEmailV330(diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SENDPULSE_FROM_EMAIL'));
   const brevoApiKey = diracSecurityMailProviderKeyV330(diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_BREVO_API_KEY'), 24, 2048);
   const brevoFromEmail = diracSecurityMailProviderEmailV330(diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_BREVO_FROM_EMAIL'));
   const resendApiKey = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_RESEND_API_KEY');
   const smtpPassword = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SMTP_APP_PASSWORD').replace(/\s+/g, '');
   const valid = Boolean(previous && previous.valid)
-    && Boolean(sendpulseApiKey)
-    && Boolean(sendpulseFromEmail)
     && Boolean(brevoApiKey)
     && Boolean(brevoFromEmail)
-    && diracSecurityMailProviderKeysDistinctV330([sendpulseApiKey, brevoApiKey, resendApiKey, smtpPassword]);
+    && diracSecurityMailProviderKeysDistinctV330([brevoApiKey, resendApiKey, smtpPassword]);
   return Object.freeze({ valid });
 };
 
 const diracSecurityAlertExplicitReadyBeforeCascadeV330 = diracSecurityAlertExplicitReadyV328;
 diracSecurityAlertExplicitReadyV328 = function diracSecurityAlertExplicitReadyCascadeV330() {
   const previous = diracSecurityAlertExplicitReadyBeforeCascadeV330();
-  const sendpulseApiKey = diracSecurityMailProviderKeyV330(diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_SENDPULSE_API_KEY'), 32, 4096);
-  const sendpulseFromEmail = diracSecurityMailProviderEmailV330(diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_SENDPULSE_FROM_EMAIL'));
   const brevoApiKey = diracSecurityMailProviderKeyV330(diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_BREVO_API_KEY'), 24, 2048);
   const brevoFromEmail = diracSecurityMailProviderEmailV330(diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_BREVO_FROM_EMAIL'));
   const resendApiKey = diracSecurityMailProviderKeyV330(diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_RESEND_API_KEY'), 20, 512);
@@ -47289,25 +47247,21 @@ diracSecurityAlertExplicitReadyV328 = function diracSecurityAlertExplicitReadyCa
     process.env.DIRAC_SECURITY_ROOT_SECRET,
     smtpPasswordRaw,
     smtpPasswordRaw.replace(/\s+/g, ''),
-    sendpulseApiKey,
     brevoApiKey,
     resendApiKey,
-    process.env.DIRAC_USER_SECURITY_SENDPULSE_API_KEY,
     process.env.DIRAC_USER_SECURITY_BREVO_API_KEY,
     process.env.DIRAC_USER_SECURITY_RESEND_API_KEY,
     process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD,
     String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '')
   ]);
   const valid = Boolean(previous && previous.valid)
-    && Boolean(sendpulseApiKey)
-    && Boolean(sendpulseFromEmail)
     && Boolean(brevoApiKey)
     && Boolean(brevoFromEmail)
     && /^re_[A-Za-z0-9_-]{16,252}$/.test(resendApiKey)
     && !diracSecurityMailPlaceholderV327(resendApiKey)
     && Boolean(resendFromEmail)
     && independent
-    && diracSecurityMailProviderKeysDistinctV330([sendpulseApiKey, brevoApiKey, resendApiKey, smtpPasswordRaw.replace(/\s+/g, '')]);
+    && diracSecurityMailProviderKeysDistinctV330([brevoApiKey, resendApiKey, smtpPasswordRaw.replace(/\s+/g, '')]);
   return Object.freeze({ valid });
 };
 
@@ -47317,8 +47271,6 @@ diracUserSecurityConfigV327 = function diracUserSecurityConfigCascadeV330() {
   if (!base || !diracUserSecurityExplicitReadyV328().valid) return null;
   return Object.freeze({
     ...base,
-    sendpulseApiKey: diracSecurityMailProviderKeyV330(process.env.DIRAC_USER_SECURITY_SENDPULSE_API_KEY, 32, 4096),
-    sendpulseFromEmail: diracSecurityMailProviderEmailV330(process.env.DIRAC_USER_SECURITY_SENDPULSE_FROM_EMAIL),
     brevoApiKey: diracSecurityMailProviderKeyV330(process.env.DIRAC_USER_SECURITY_BREVO_API_KEY, 24, 2048),
     brevoFromEmail: diracSecurityMailProviderEmailV330(process.env.DIRAC_USER_SECURITY_BREVO_FROM_EMAIL)
   });
@@ -47330,8 +47282,6 @@ diracSecurityAlertConfigV320 = function diracSecurityAlertConfigCascadeV330() {
   if (!base || !diracSecurityAlertExplicitReadyV328().valid) return null;
   return Object.freeze({
     ...base,
-    sendpulseApiKey: diracSecurityMailProviderKeyV330(process.env.DIRAC_SECURITY_ALERT_SENDPULSE_API_KEY, 32, 4096),
-    sendpulseFromEmail: diracSecurityMailProviderEmailV330(process.env.DIRAC_SECURITY_ALERT_SENDPULSE_FROM_EMAIL),
     brevoApiKey: diracSecurityMailProviderKeyV330(process.env.DIRAC_SECURITY_ALERT_BREVO_API_KEY, 24, 2048),
     brevoFromEmail: diracSecurityMailProviderEmailV330(process.env.DIRAC_SECURITY_ALERT_BREVO_FROM_EMAIL),
     resendApiKey: diracSecurityMailProviderKeyV330(process.env.DIRAC_SECURITY_ALERT_RESEND_API_KEY, 20, 512),
