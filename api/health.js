@@ -2700,7 +2700,7 @@ async function domainRegister(req, res, preloadedBody) {
     // Fail closed: kegagalan pengiriman email tidak pernah boleh mengonfirmasi atau membuat
     // akun lewat service role dari input registrasi yang belum membuktikan akses inbox.
     if (isSupabaseRegisterEmailDeliveryError(result.data)) {
-      clearSessionCookies(res);
+      if (!diracDashboardClearProvenStaleBindingV312(req, res)) clearSessionCookies(res);
       return res.status(503).json({
         ok: false,
         code: 'REGISTER_EMAIL_DELIVERY_FAILED',
@@ -29378,11 +29378,16 @@ function diracV101ValidateServiceRoleSupabasePath(path, options = {}) {
   if (!raw || /https?:\/\//i.test(raw) || /(?:\.\.|\\|\u0000)/.test(raw)) {
     return { ok: false, code: 'SERVICE_ROLE_PATH_INVALID' };
   }
-  if (diracV101FindSqlInjectionThreat([raw], { source: 'service_role_path' }).detected) {
+  const method = String(options.method || 'GET').toUpperCase();
+  const canonicalSqlmapBanRead = method === 'GET'
+    && options.body === undefined
+    && !options.prefer
+    && /^\/rest\/v1\/dirac_persistent_bans\?select=security_key,record_json,blocked_until_ms,expires_at&security_key=eq\.sqlmap-ban%3A[a-f0-9]{64}&limit=1$/i.test(raw);
+  const pathThreat = diracV101FindSqlInjectionThreat([raw], { source: 'service_role_path' });
+  if (pathThreat.detected && !(canonicalSqlmapBanRead && pathThreat.kind === 'sqlmap_marker')) {
     return { ok: false, code: 'SERVICE_ROLE_PATH_REJECTED' };
   }
 
-  const method = String(options.method || 'GET').toUpperCase();
   if (!['GET', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(method)) {
     return { ok: false, code: 'SERVICE_ROLE_METHOD_REJECTED' };
   }
@@ -46932,7 +46937,7 @@ __diracV202RegisterMiddleware(async function diracSecurityNotificationMailWrappe
   if (!gatedAction) return nextHandlerV202(req, res);
 
   const configuration = diracUserSecurityConfigurationRequiredV327();
-  if (!configuration.ok) return nextHandlerV202(req, res);
+  if (!configuration.user) return nextHandlerV202(req, res);
 
   if (action === 'domain_register') return nextHandlerV202(req, res);
   const originalStatus = typeof res.status === 'function' ? res.status.bind(res) : null;
