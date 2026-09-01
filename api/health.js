@@ -2582,6 +2582,594 @@ async function notifyLoginSecurityIncidentSafe(incident) {
   }
 }
 
+const DIRAC_REGISTER_EMAIL_VERIFICATION_PATCH_V331 = 'dirac-register-email-verification-v331';
+const DIRAC_REGISTER_EMAIL_CHALLENGE_COOKIE_V331 = '__Host-dirac_register_email_v331';
+const DIRAC_REGISTER_EMAIL_CHALLENGE_TYPE_V331 = 'dirac-register-email-challenge-v331';
+const DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331 = 10 * 60;
+const DIRAC_REGISTER_EMAIL_AUTHORITY_V331 = new WeakMap();
+
+function diracRegisterEmailGuardContextV331(req) {
+  const ctx = typeof diracCentralCurrentContextV149 === 'function'
+    ? diracCentralCurrentContextV149()
+    : null;
+  if (!ctx
+      || String(ctx.action || '') !== 'domain_register'
+      || String(ctx.method || '').toUpperCase() !== 'POST'
+      || typeof diracCentralHandlerContextFullyPassedV211 !== 'function'
+      || diracCentralHandlerContextFullyPassedV211(ctx, req) !== true
+      || !ctx.identity
+      || !String(ctx.identity.key || '')) {
+    const error = new Error('REGISTER_EMAIL_FULL_CENTRAL_GUARD_REQUIRED');
+    error.code = 'REGISTER_EMAIL_FULL_CENTRAL_GUARD_REQUIRED';
+    error.statusCode = 403;
+    throw error;
+  }
+  return ctx;
+}
+
+function diracRegisterEmailRequestHashV331(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const canonical = JSON.stringify([
+    DIRAC_REGISTER_EMAIL_VERIFICATION_PATCH_V331,
+    'domain_register',
+    normalizeAuthEmail(source.email || ''),
+    String(source.password || ''),
+    String(source.fullName || '').trim(),
+    String(source.whatsapp || '').trim()
+  ]);
+  return crypto.createHmac('sha256', diracCentralDeriveSecretV146('register-email-request-v331'))
+    .update(canonical, 'utf8').digest('hex');
+}
+
+function diracRegisterEmailBindingHashV331(req) {
+  const ctx = diracRegisterEmailGuardContextV331(req);
+  const canonical = JSON.stringify([
+    DIRAC_REGISTER_EMAIL_VERIFICATION_PATCH_V331,
+    String(ctx.action || ''),
+    String(ctx.method || '').toUpperCase(),
+    String(ctx.identity && ctx.identity.key || ''),
+    String(ctx.userAgentHash || ''),
+    String(ctx.identity && ctx.identity.parts && ctx.identity.parts.origin || '')
+  ]);
+  return crypto.createHmac('sha256', diracCentralDeriveSecretV146('register-email-binding-v331'))
+    .update(canonical, 'utf8').digest('hex');
+}
+
+function diracRegisterEmailProofHashV331(jti, requestHash, bindingHash, proof) {
+  return crypto.createHmac('sha256', diracCentralDeriveSecretV146('register-email-proof-v331'))
+    .update(JSON.stringify([String(jti || ''), String(requestHash || ''), String(bindingHash || ''), String(proof || '')]), 'utf8')
+    .digest('hex');
+}
+
+function diracRegisterEmailSignChallengeV331(payload) {
+  const body = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const signature = crypto.createHmac('sha256', diracCentralDeriveSecretV146('register-email-token-v331'))
+    .update(body, 'ascii').digest('base64url');
+  return body + '.' + signature;
+}
+
+function diracRegisterEmailDecodeChallengeV331(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.length > 2048) return null;
+  const parts = raw.split('.');
+  if (parts.length !== 2
+      || !/^[A-Za-z0-9_-]{40,1800}$/.test(parts[0])
+      || !/^[A-Za-z0-9_-]{43}$/.test(parts[1])) return null;
+  const expected = crypto.createHmac('sha256', diracCentralDeriveSecretV146('register-email-token-v331'))
+    .update(parts[0], 'ascii').digest('base64url');
+  if (!safeEqual(parts[1], expected)) return null;
+  let payload = null;
+  try {
+    const decoded = Buffer.from(parts[0], 'base64url');
+    if (!decoded.length || decoded.length > 1024) return null;
+    payload = JSON.parse(decoded.toString('utf8'));
+  } catch (_) {
+    return null;
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const keys = Object.keys(payload).sort().join(',');
+  if (keys !== 'binding_hash,exp,iat,jti,proof_hash,request_hash,typ') return null;
+  const now = Math.floor(Date.now() / 1000);
+  const iat = Number(payload.iat || 0);
+  const exp = Number(payload.exp || 0);
+  if (payload.typ !== DIRAC_REGISTER_EMAIL_CHALLENGE_TYPE_V331
+      || !Number.isSafeInteger(iat)
+      || !Number.isSafeInteger(exp)
+      || iat > now + 30
+      || exp !== iat + DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331
+      || exp <= now
+      || !/^[A-Za-z0-9_-]{32}$/.test(String(payload.jti || ''))
+      || !/^[a-f0-9]{64}$/.test(String(payload.request_hash || ''))
+      || !/^[a-f0-9]{64}$/.test(String(payload.binding_hash || ''))
+      || !/^[a-f0-9]{64}$/.test(String(payload.proof_hash || ''))) return null;
+  return payload;
+}
+
+function diracRegisterEmailCreateChallengeV331(req, input) {
+  diracRegisterEmailGuardContextV331(req);
+  const now = Math.floor(Date.now() / 1000);
+  const proof = crypto.randomBytes(32).toString('base64url');
+  const jti = crypto.randomBytes(24).toString('base64url');
+  const requestHash = diracRegisterEmailRequestHashV331(input);
+  const bindingHash = diracRegisterEmailBindingHashV331(req);
+  const payload = Object.freeze({
+    typ: DIRAC_REGISTER_EMAIL_CHALLENGE_TYPE_V331,
+    iat: now,
+    exp: now + DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331,
+    jti,
+    request_hash: requestHash,
+    binding_hash: bindingHash,
+    proof_hash: diracRegisterEmailProofHashV331(jti, requestHash, bindingHash, proof)
+  });
+  return Object.freeze({
+    proof,
+    payload,
+    token: diracRegisterEmailSignChallengeV331(payload),
+    reference: crypto.createHash('sha256').update(jti + '|' + requestHash).digest('hex').slice(0, 12).toUpperCase()
+  });
+}
+
+function diracRegisterEmailChallengeCookieV331(value, maxAge) {
+  const age = Math.max(0, Math.min(DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331, Math.floor(Number(maxAge || 0))));
+  const parts = [
+    DIRAC_REGISTER_EMAIL_CHALLENGE_COOKIE_V331 + '=' + encodeURIComponent(String(value || '')),
+    'Path=/',
+    'HttpOnly',
+    'Secure',
+    'SameSite=Strict',
+    'Priority=High',
+    'Max-Age=' + String(age)
+  ];
+  if (age === 0) parts.push('Expires=Thu, 01 Jan 1970 00:00:00 GMT');
+  return parts.join('; ');
+}
+
+function diracRegisterEmailSetChallengeCookieV331(res, token) {
+  return replaceResponseCookieByNameV229(
+    res,
+    DIRAC_REGISTER_EMAIL_CHALLENGE_COOKIE_V331,
+    diracRegisterEmailChallengeCookieV331(token, DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331)
+  );
+}
+
+function diracRegisterEmailClearChallengeCookieV331(res) {
+  return replaceResponseCookieByNameV229(
+    res,
+    DIRAC_REGISTER_EMAIL_CHALLENGE_COOKIE_V331,
+    diracRegisterEmailChallengeCookieV331('', 0)
+  );
+}
+
+function diracRegisterEmailReadChallengeV331(req) {
+  const cookies = parseCookies(req);
+  const values = cookies && cookies.__all && Array.isArray(cookies.__all[DIRAC_REGISTER_EMAIL_CHALLENGE_COOKIE_V331])
+    ? cookies.__all[DIRAC_REGISTER_EMAIL_CHALLENGE_COOKIE_V331]
+    : [];
+  return values.length === 1 ? String(values[0] || '') : '';
+}
+
+function diracRegisterEmailVerifyProofV331(req, input, proof) {
+  diracRegisterEmailGuardContextV331(req);
+  const candidate = String(proof || '').trim();
+  if (!/^[A-Za-z0-9_-]{43}$/.test(candidate)) {
+    return { ok: false, status: 400, code: 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID', restart: false };
+  }
+  const token = diracRegisterEmailReadChallengeV331(req);
+  const payload = token ? diracRegisterEmailDecodeChallengeV331(token) : null;
+  if (!payload) {
+    return { ok: false, status: 409, code: 'REGISTER_EMAIL_VERIFICATION_RESTART_REQUIRED', restart: true };
+  }
+  const requestHash = diracRegisterEmailRequestHashV331(input);
+  const bindingHash = diracRegisterEmailBindingHashV331(req);
+  if (!safeEqual(payload.request_hash, requestHash) || !safeEqual(payload.binding_hash, bindingHash)) {
+    return { ok: false, status: 409, code: 'REGISTER_EMAIL_VERIFICATION_RESTART_REQUIRED', restart: true };
+  }
+  const expectedProofHash = diracRegisterEmailProofHashV331(payload.jti, requestHash, bindingHash, candidate);
+  if (!safeEqual(payload.proof_hash, expectedProofHash)) {
+    return { ok: false, status: 401, code: 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID', restart: false };
+  }
+  return { ok: true, payload, requestHash, bindingHash };
+}
+
+async function diracRegisterEmailConsumeProofV331(req, input, verified) {
+  if (!verified || verified.ok !== true || !verified.payload) return { ok: false };
+  const consumeContext = crypto.createHmac('sha256', diracCentralDeriveSecretV146('register-email-consume-v331'))
+    .update(JSON.stringify([
+      verified.payload.request_hash,
+      verified.payload.binding_hash,
+      verified.payload.proof_hash
+    ]), 'utf8').digest('hex');
+  const consumed = await diracCentralAtomicConsumeV230({
+    namespace: 'register_email_v331',
+    jti: verified.payload.jti,
+    expiresAt: verified.payload.exp,
+    contextHash: consumeContext
+  });
+  if (!consumed || consumed.ok !== true) return { ok: false };
+  DIRAC_REGISTER_EMAIL_AUTHORITY_V331.set(req, Object.freeze({
+    requestHash: diracRegisterEmailRequestHashV331(input),
+    jti: verified.payload.jti
+  }));
+  return { ok: true };
+}
+
+function diracRegisterEmailHasAuthorityV331(req, input) {
+  const authority = req && DIRAC_REGISTER_EMAIL_AUTHORITY_V331.get(req);
+  return Boolean(authority
+    && /^[A-Za-z0-9_-]{32}$/.test(String(authority.jti || ''))
+    && safeEqual(authority.requestHash, diracRegisterEmailRequestHashV331(input)));
+}
+
+function diracRegisterEmailConfigV331() {
+  const host = String(process.env.DIRAC_REGISTER_SMTP_HOST || '').trim().toLowerCase();
+  const user1Raw = String(process.env.DIRAC_REGISTER_SMTP_USER_1 || '').trim();
+  const user2Raw = String(process.env.DIRAC_REGISTER_SMTP_USER_2 || '').trim();
+  const user1 = diracSecurityMailEmailV327(user1Raw);
+  const user2 = diracSecurityMailEmailV327(user2Raw);
+  const password1Raw = String(process.env.DIRAC_REGISTER_SMTP_APP_PASSWORD_1 || '');
+  const password2Raw = String(process.env.DIRAC_REGISTER_SMTP_APP_PASSWORD_2 || '');
+  const password1 = password1Raw.replace(/\s+/g, '');
+  const password2 = password2Raw.replace(/\s+/g, '');
+  const valid = host === 'smtp.gmail.com'
+    && Boolean(user1 && user2 && user1 !== user2)
+    && !diracSecurityMailPlaceholderV327(user1Raw)
+    && !diracSecurityMailPlaceholderV327(user2Raw)
+    && /^[A-Za-z0-9]{16}$/.test(password1)
+    && /^[A-Za-z0-9]{16}$/.test(password2)
+    && !diracSecurityMailPlaceholderV327(password1Raw)
+    && !diracSecurityMailPlaceholderV327(password2Raw)
+    && !safeEqual(password1, password2);
+  if (!valid) return null;
+  return Object.freeze({
+    host,
+    port: 465,
+    timeoutMs: 10_000,
+    accounts: Object.freeze([
+      Object.freeze({ provider: 'google_smtp_1', user: user1, appPassword: password1 }),
+      Object.freeze({ provider: 'google_smtp_2', user: user2, appPassword: password2 })
+    ])
+  });
+}
+
+function diracRegisterEmailQuotaLineV331(code, line, enhanced545Seen) {
+  if (Number(code || 0) !== 550 || enhanced545Seen !== true) return false;
+  const clean = String(line || '').replace(/(?:^|\n)\d{3}[ -]?/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  return clean.includes('daily user sending limit exceeded')
+    || clean.includes('daily user sending quota exceeded')
+    || clean.includes('daily smtp relay limit exceeded for user');
+}
+
+function diracRegisterEmailSmtpReaderV331(socket) {
+  let buffer = '';
+  let multilineCode = 0;
+  let responseBytes = 0;
+  let responseText = '';
+  let enhanced545Seen = false;
+  let terminalError = null;
+  let closed = false;
+  const queued = [];
+  const waiters = [];
+  const safeError = (error, fallback) => error instanceof Error
+    ? error
+    : Object.assign(new Error(fallback), { code: fallback });
+  const settle = (waiter, error, value) => {
+    if (!waiter) return;
+    clearTimeout(waiter.timer);
+    if (error) waiter.reject(error);
+    else waiter.resolve(value);
+  };
+  const fail = (error) => {
+    if (terminalError) return;
+    terminalError = safeError(error, 'REGISTER_SMTP_CONNECTION_CLOSED');
+    while (waiters.length) settle(waiters.shift(), terminalError);
+  };
+  const dispatch = (response) => {
+    if (waiters.length) settle(waiters.shift(), null, response);
+    else if (queued.length < 16) queued.push(response);
+    else fail(Object.assign(new Error('REGISTER_SMTP_RESPONSE_QUEUE_OVERFLOW'), { code: 'REGISTER_SMTP_RESPONSE_QUEUE_OVERFLOW' }));
+  };
+  const onData = (chunk) => {
+    if (closed || terminalError) return;
+    buffer += Buffer.from(chunk).toString('utf8');
+    if (Buffer.byteLength(buffer, 'utf8') + responseBytes > 64 * 1024) {
+      fail(Object.assign(new Error('REGISTER_SMTP_RESPONSE_TOO_LARGE'), { code: 'REGISTER_SMTP_RESPONSE_TOO_LARGE' }));
+      return;
+    }
+    let lineEnd;
+    while ((lineEnd = buffer.indexOf('\n')) !== -1) {
+      const rawLine = buffer.slice(0, lineEnd + 1);
+      buffer = buffer.slice(lineEnd + 1);
+      responseBytes += Buffer.byteLength(rawLine, 'utf8');
+      if (responseBytes > 64 * 1024) {
+        fail(Object.assign(new Error('REGISTER_SMTP_RESPONSE_TOO_LARGE'), { code: 'REGISTER_SMTP_RESPONSE_TOO_LARGE' }));
+        return;
+      }
+      const line = rawLine.replace(/\r?\n$/, '');
+      const match = line.match(/^(\d{3})(?:([ -])|$)/);
+      if (!match) {
+        fail(Object.assign(new Error('REGISTER_SMTP_RESPONSE_INVALID'), { code: 'REGISTER_SMTP_RESPONSE_INVALID' }));
+        return;
+      }
+      const code = Number(match[1]);
+      const separator = match[2] || ' ';
+      if (multilineCode && code !== multilineCode) {
+        fail(Object.assign(new Error('REGISTER_SMTP_MULTILINE_CODE_MISMATCH'), { code: 'REGISTER_SMTP_MULTILINE_CODE_MISMATCH' }));
+        return;
+      }
+      if (responseText.length < 2048) {
+        const fragment = line.replace(/^\d{3}[ -]?/, '').trim();
+        if (code === 550 && /^5\.4\.5(?:\s|$)/i.test(fragment)) enhanced545Seen = true;
+        responseText = (responseText + ' ' + fragment).slice(0, 2048);
+      }
+      if (separator === '-') {
+        multilineCode = multilineCode || code;
+        continue;
+      }
+      const response = Object.freeze({ code, senderQuotaLimited: diracRegisterEmailQuotaLineV331(code, responseText, enhanced545Seen) });
+      multilineCode = 0;
+      responseBytes = 0;
+      responseText = '';
+      enhanced545Seen = false;
+      dispatch(response);
+      if (terminalError) return;
+    }
+  };
+  const onError = (error) => fail(error);
+  const onTimeout = () => fail(Object.assign(new Error('REGISTER_SMTP_TIMEOUT'), { code: 'REGISTER_SMTP_TIMEOUT' }));
+  const onEnd = () => fail(Object.assign(new Error('REGISTER_SMTP_CONNECTION_ENDED'), { code: 'REGISTER_SMTP_CONNECTION_ENDED' }));
+  const onClose = () => fail(Object.assign(new Error('REGISTER_SMTP_CONNECTION_CLOSED'), { code: 'REGISTER_SMTP_CONNECTION_CLOSED' }));
+  socket.on('data', onData);
+  socket.on('error', onError);
+  socket.on('timeout', onTimeout);
+  socket.on('end', onEnd);
+  socket.on('close', onClose);
+  const bridged = socket.__diracSmtpSocketErrorBridgeV323
+    && typeof socket.__diracSmtpSocketErrorBridgeV323.take === 'function'
+    ? socket.__diracSmtpSocketErrorBridgeV323.take()
+    : null;
+  if (bridged) fail(bridged);
+  return Object.freeze({
+    next(deadlineMs) {
+      if (queued.length) return Promise.resolve(queued.shift());
+      if (terminalError) return Promise.reject(terminalError);
+      const remaining = Math.max(0, Number(deadlineMs || 0) - Date.now());
+      if (remaining < 1) return Promise.reject(Object.assign(new Error('REGISTER_SMTP_DEADLINE_EXCEEDED'), { code: 'REGISTER_SMTP_DEADLINE_EXCEEDED' }));
+      return new Promise((resolve, reject) => {
+        const waiter = { resolve, reject, timer: null };
+        waiter.timer = setTimeout(() => {
+          const index = waiters.indexOf(waiter);
+          if (index >= 0) waiters.splice(index, 1);
+          reject(Object.assign(new Error('REGISTER_SMTP_DEADLINE_EXCEEDED'), { code: 'REGISTER_SMTP_DEADLINE_EXCEEDED' }));
+        }, remaining);
+        waiters.push(waiter);
+      });
+    },
+    fail,
+    close() {
+      if (closed) return;
+      closed = true;
+      socket.off('data', onData);
+      socket.off('timeout', onTimeout);
+      socket.off('end', onEnd);
+      socket.off('close', onClose);
+      fail(Object.assign(new Error('REGISTER_SMTP_READER_CLOSED'), { code: 'REGISTER_SMTP_READER_CLOSED' }));
+      buffer = '';
+      queued.length = 0;
+    }
+  });
+}
+
+async function diracRegisterEmailSmtpCommandV331(socket, reader, command, allowedCodes, deadlineMs) {
+  const pending = reader.next(deadlineMs);
+  let writeCompleted = command === null || command === undefined;
+  if (command !== null && command !== undefined) {
+    try {
+      socket.write(String(command) + '\r\n');
+      writeCompleted = true;
+    } catch (error) {
+      reader.fail(error);
+    }
+  }
+  let response;
+  try {
+    response = await pending;
+  } catch (error) {
+    if (error && typeof error === 'object') error.smtpWriteCompleted = writeCompleted;
+    throw error;
+  }
+  const allowed = Array.isArray(allowedCodes) ? allowedCodes : [allowedCodes];
+  if (!allowed.includes(response.code)) {
+    throw Object.assign(new Error('REGISTER_SMTP_UNEXPECTED_RESPONSE'), {
+      code: 'REGISTER_SMTP_UNEXPECTED_RESPONSE',
+      smtpCode: response.code,
+      senderQuotaLimited: response.senderQuotaLimited === true
+    });
+  }
+  return response;
+}
+
+function diracRegisterEmailMimeV331(message, account) {
+  const boundary = 'dirac-register-' + crypto.randomBytes(16).toString('hex');
+  const proof = String(message.proof || '');
+  const reference = String(message.reference || '');
+  const text = [
+    'Verifikasi Email Pendaftaran Dirac Group',
+    '',
+    'Salin kode verifikasi berikut ke halaman pendaftaran:',
+    proof,
+    '',
+    'Kode berlaku 10 menit dan hanya dapat digunakan satu kali.',
+    'Jangan berikan kode ini, password, token, atau data rahasia kepada siapa pun.',
+    'Referensi: ' + reference
+  ].join('\n');
+  const htmlProof = diracSecurityMailEscapeV327(proof);
+  const htmlReference = diracSecurityMailEscapeV327(reference);
+  const html = '<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+    + '<body style="margin:0;background:#090c12;color:#f4f6f9;font-family:Arial,Helvetica,sans-serif">'
+    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#090c12;padding:24px 12px"><tr><td align="center">'
+    + '<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="width:100%;max-width:600px;background:#141820;border:1px solid #2c3544;border-radius:18px">'
+    + '<tr><td style="padding:32px"><div style="font-size:12px;font-weight:800;letter-spacing:.15em;color:#9eb6ff">DIRAC GROUP SECURE REGISTER</div>'
+    + '<h1 style="margin:14px 0 12px;font-size:30px;line-height:1.2;color:#fff">Verifikasi email pendaftaran</h1>'
+    + '<p style="margin:0;color:#c5ccd6;font-size:16px;line-height:1.65">Salin kode berikut ke halaman pendaftaran. Kode ini berlaku 10 menit dan hanya dapat digunakan satu kali.</p>'
+    + '<div style="margin:24px 0;padding:18px;border:1px solid #5276e8;border-radius:14px;background:#0f172a;color:#fff;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:18px;font-weight:800;letter-spacing:.04em;word-break:break-all">' + htmlProof + '</div>'
+    + '<p style="margin:0;color:#f5c66a;font-size:14px;line-height:1.6">Jangan berikan kode ini, password, token, atau data rahasia kepada siapa pun.</p>'
+    + '<p style="margin:20px 0 0;color:#8f99a7;font-size:12px">Referensi: ' + htmlReference + '</p>'
+    + '</td></tr></table></td></tr></table></body></html>';
+  const messageId = crypto.createHash('sha256').update(proof + '|' + reference + '|register-email-v331').digest('hex') + '@' + diracBaseDomainV250();
+  return [
+    'From: ' + diracSecurityAlertMimeHeaderV320('Dirac Secure') + ' <' + account.user + '>',
+    'To: ' + message.email,
+    'Subject: Kode verifikasi pendaftaran Dirac Group [' + reference + ']',
+    'Date: ' + new Date(Number(message.createdAtMs || Date.now())).toUTCString(),
+    'Message-ID: <' + messageId + '>',
+    'Auto-Submitted: auto-generated',
+    'X-Dirac-Register-Verification: v331',
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/alternative; boundary="' + boundary + '"',
+    '',
+    '--' + boundary,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    diracSecurityAlertBase64LinesV320(text),
+    '--' + boundary,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    diracSecurityAlertBase64LinesV320(html),
+    '--' + boundary + '--',
+    ''
+  ].join('\r\n');
+}
+
+async function diracRegisterEmailSendAccountV331(message, config, account) {
+  let socket = null;
+  let reader = null;
+  let authBytes = null;
+  let stage = 'connect';
+  const deadline = Date.now() + Number(config.timeoutMs || 10_000);
+  try {
+    socket = await diracCentralOpenSmtpSocketV230(config.host, config.port, true, config.timeoutMs);
+    reader = diracRegisterEmailSmtpReaderV331(socket);
+    if (typeof socket.setTimeout === 'function') socket.setTimeout(Math.max(1, deadline - Date.now()));
+    stage = 'greeting';
+    await diracRegisterEmailSmtpCommandV331(socket, reader, null, 220, deadline);
+    stage = 'ehlo';
+    await diracRegisterEmailSmtpCommandV331(socket, reader, 'EHLO ' + diracBaseDomainV250(), 250, deadline);
+    authBytes = Buffer.from('\u0000' + account.user + '\u0000' + account.appPassword, 'utf8');
+    stage = 'auth';
+    await diracRegisterEmailSmtpCommandV331(socket, reader, 'AUTH PLAIN ' + authBytes.toString('base64'), 235, deadline);
+    stage = 'mail_from';
+    await diracRegisterEmailSmtpCommandV331(socket, reader, 'MAIL FROM:<' + account.user + '>', 250, deadline);
+    stage = 'recipient';
+    await diracRegisterEmailSmtpCommandV331(socket, reader, 'RCPT TO:<' + message.email + '>', [250, 251], deadline);
+    stage = 'data';
+    await diracRegisterEmailSmtpCommandV331(socket, reader, 'DATA', 354, deadline);
+    stage = 'submit';
+    try {
+      await diracRegisterEmailSmtpCommandV331(
+        socket,
+        reader,
+        diracSecurityAlertDotStuffV320(diracRegisterEmailMimeV331(message, account)) + '\r\n.',
+        250,
+        deadline
+      );
+    } catch (error) {
+      if (error && typeof error === 'object' && !Number(error.smtpCode || 0) && error.smtpWriteCompleted === true) {
+        error.deliveryAmbiguous = true;
+      }
+      throw error;
+    }
+    try { socket.write('QUIT\r\n'); } catch (_) {}
+    return Object.freeze({ ok: true, provider: account.provider, smtpCode: 250, quotaLimited: false, deliveryAmbiguous: false, stage: 'done' });
+  } catch (error) {
+    return Object.freeze({
+      ok: false,
+      provider: account.provider,
+      smtpCode: Number(error && error.smtpCode || 0),
+      quotaLimited: Boolean(error && error.senderQuotaLimited === true && error.deliveryAmbiguous !== true),
+      deliveryAmbiguous: Boolean(error && error.deliveryAmbiguous === true),
+      stage,
+      code: String(error && error.code || 'REGISTER_SMTP_DELIVERY_FAILED').replace(/[^A-Za-z0-9_.:-]+/g, '_').slice(0, 100)
+    });
+  } finally {
+    if (authBytes) authBytes.fill(0);
+    if (reader) reader.close();
+    try { if (socket) socket.end(); } catch (_) {}
+    try { if (socket) socket.destroy(); } catch (_) {}
+  }
+}
+
+function diracRegisterEmailDiagnosticV331(event, result) {
+  try {
+    const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
+    console.error('[dirac-register-email-v331]', JSON.stringify({
+      patch: DIRAC_REGISTER_EMAIL_VERIFICATION_PATCH_V331,
+      event: String(event || '').replace(/[^A-Za-z0-9_.:-]+/g, '_').slice(0, 80),
+      request_id: String(ctx && ctx.requestId || '').slice(0, 64),
+      provider: String(result && result.provider || '').slice(0, 32),
+      stage: String(result && result.stage || '').slice(0, 32),
+      smtp_code: Number(result && result.smtpCode || 0),
+      quota_limited: Boolean(result && result.quotaLimited),
+      delivery_ambiguous: Boolean(result && result.deliveryAmbiguous),
+      error_code: String(result && result.code || '').slice(0, 100)
+    }));
+  } catch (_) {}
+}
+
+async function diracRegisterEmailDeliverV331(message, config) {
+  const primary = await diracRegisterEmailSendAccountV331(message, config, config.accounts[0]);
+  if (primary.ok) return primary;
+  if (!primary.quotaLimited || primary.deliveryAmbiguous) {
+    diracRegisterEmailDiagnosticV331('primary_failed_no_failover', primary);
+    return primary;
+  }
+  diracRegisterEmailDiagnosticV331('primary_quota_failover', primary);
+  const secondary = await diracRegisterEmailSendAccountV331(message, config, config.accounts[1]);
+  if (!secondary.ok) diracRegisterEmailDiagnosticV331('secondary_failed', secondary);
+  return secondary;
+}
+
+async function diracRegisterEmailFindAuthUserV331(req, input) {
+  if (!diracRegisterEmailHasAuthorityV331(req, input)) return { ok: false, status: 403, code: 'REGISTER_EMAIL_AUTHORITY_REQUIRED' };
+  const lookup = await findSupabaseAuthUserByEmail(input.email);
+  if (!lookup || lookup.checked !== true) return { ok: false, status: 503, code: 'REGISTER_AUTH_LOOKUP_UNAVAILABLE' };
+  return { ok: true, exists: lookup.exists === true };
+}
+
+async function diracRegisterEmailCreateAuthUserV331(req, input, userData) {
+  if (!diracRegisterEmailHasAuthorityV331(req, input)) return { ok: false, status: 403, code: 'REGISTER_EMAIL_AUTHORITY_REQUIRED' };
+  const createBody = {
+    email: input.email,
+    password: input.password,
+    email_confirm: true
+  };
+  if (userData && Object.keys(userData).length) createBody.user_metadata = userData;
+  const result = await supabaseFetch('/auth/v1/admin/users', {
+    method: 'POST',
+    auth: 'service',
+    body: createBody
+  });
+  if (!result || result.ok !== true) {
+    return {
+      ok: false,
+      status: Number(result && result.status || 502),
+      duplicate: isSupabaseRegisterDuplicateEmailError(result && result.data),
+      code: 'REGISTER_VERIFIED_AUTH_CREATE_FAILED'
+    };
+  }
+  const user = normalizeSupabaseAdminUser(result.data);
+  const userId = String(user && (user.id || user.user_id || user.sub) || '').trim();
+  const userEmail = normalizeAuthEmail(user && user.email || '');
+  const confirmedAt = String(user && (user.email_confirmed_at || user.confirmed_at) || '').trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId)
+      || userEmail !== input.email
+      || !confirmedAt) {
+    return { ok: false, status: 502, code: 'REGISTER_VERIFIED_AUTH_IDENTITY_INVALID' };
+  }
+  return { ok: true, user };
+}
+
 async function domainRegister(req, res, preloadedBody) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, message: 'Gunakan POST.' });
 
@@ -2675,118 +3263,164 @@ async function domainRegister(req, res, preloadedBody) {
   }
   if (whatsapp) userData.whatsapp = whatsapp;
 
-  const signupBody = { email, password };
-  if (Object.keys(userData).length) signupBody.data = userData;
+  const registrationInput = Object.freeze({ email, password, fullName, whatsapp });
+  const verificationTokenPresent = Object.prototype.hasOwnProperty.call(body, 'email_verification_token');
 
-  // Register duplicate check v2:
-  // cek backend-only memakai service role sebelum signup.
-  // Tidak menyentuh domainLogin(), hash, A2F/MFA, cookie, token, dashboard, checkout, atau order.
-  const existingAuthUser = await findSupabaseAuthUserByEmail(email);
-  if (existingAuthUser && existingAuthUser.exists === true) {
-    return res.status(409).json(buildDomainRegisterDuplicateEmailBody());
-  }
-
-  const result = await supabaseFetch('/auth/v1/signup', {
-    method: 'POST',
-    auth: 'anon',
-    body: signupBody
-  });
-
-  if (!result.ok) {
-    if (isSupabaseRegisterDuplicateEmailError(result.data)) {
-      return res.status(409).json(buildDomainRegisterDuplicateEmailBody());
+  if (!verificationTokenPresent) {
+    const smtpConfig = diracRegisterEmailConfigV331();
+    if (!smtpConfig) {
+      diracRegisterEmailClearChallengeCookieV331(res);
+      diracRegisterEmailDiagnosticV331('configuration_invalid', { code: 'REGISTER_SMTP_CONFIGURATION_INVALID' });
+      return res.status(503).json({
+        ok: false,
+        code: 'REGISTER_SMTP_CONFIGURATION_INVALID',
+        message: 'Layanan verifikasi email pendaftaran belum dikonfigurasi dengan benar.'
+      });
     }
-
-    // Fail closed: kegagalan pengiriman email tidak pernah boleh mengonfirmasi atau membuat
-    // akun lewat service role dari input registrasi yang belum membuktikan akses inbox.
-    if (isSupabaseRegisterEmailDeliveryError(result.data)) {
-      if (!diracDashboardClearProvenStaleBindingV312(req, res)) clearSessionCookies(res);
+    const challenge = diracRegisterEmailCreateChallengeV331(req, registrationInput);
+    const delivery = await diracRegisterEmailDeliverV331(Object.freeze({
+      email,
+      proof: challenge.proof,
+      reference: challenge.reference,
+      createdAtMs: Date.now()
+    }), smtpConfig);
+    if (!delivery || delivery.ok !== true) {
+      diracRegisterEmailClearChallengeCookieV331(res);
       return res.status(503).json({
         ok: false,
         code: 'REGISTER_EMAIL_DELIVERY_FAILED',
-        message: 'Pendaftaran belum bisa diselesaikan karena layanan email verifikasi sedang bermasalah. Silakan coba lagi sebentar lagi.'
+        message: 'Kode verifikasi belum dapat dikirim. Silakan coba lagi sebentar lagi.'
       });
     }
-
-    return res.status(result.status).json({
+    if (!diracRegisterEmailSetChallengeCookieV331(res, challenge.token)) {
+      diracRegisterEmailDiagnosticV331('challenge_cookie_failed', { code: 'REGISTER_EMAIL_CHALLENGE_COOKIE_FAILED' });
+      return res.status(503).json({
+        ok: false,
+        code: 'REGISTER_EMAIL_CHALLENGE_COOKIE_FAILED',
+        message: 'Kode terkirim, tetapi sesi verifikasi tidak dapat diterbitkan secara aman. Silakan mulai ulang pendaftaran.'
+      });
+    }
+    return res.status(202).json({
       ok: false,
-      message: result.data.error_description || result.data.msg || result.data.message || 'Pendaftaran gagal.'
+      code: 'REGISTER_EMAIL_VERIFICATION_REQUIRED',
+      registration_stage: 'verify_email',
+      verification_required: true,
+      verification_sent: true,
+      verification_token_length: 43,
+      expires_in_seconds: DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331,
+      message: 'Kode verifikasi telah dikirim ke email Anda. Masukkan kode tersebut untuk menyelesaikan pendaftaran.'
     });
   }
 
-  const signupData = result.data && typeof result.data === 'object' ? result.data : {};
-
-  // Supabase Auth dengan email confirmation aktif dapat mengembalikan HTTP 200
-  // untuk email yang sudah terdaftar, tetapi user.identities kosong.
-  // Kondisi ini tidak boleh ditampilkan sebagai akun baru berhasil dibuat.
-  if (isSupabaseRegisterExistingAccountResponse(signupData, { email, precheck: existingAuthUser })) {
-    return res.status(409).json(buildDomainRegisterDuplicateEmailBody());
+  const verifiedEmailProof = diracRegisterEmailVerifyProofV331(
+    req,
+    registrationInput,
+    body.email_verification_token
+  );
+  if (!verifiedEmailProof.ok) {
+    if (verifiedEmailProof.restart) diracRegisterEmailClearChallengeCookieV331(res);
+    return res.status(verifiedEmailProof.status).json({
+      ok: false,
+      code: verifiedEmailProof.code,
+      verification_required: true,
+      restart_verification: Boolean(verifiedEmailProof.restart),
+      message: verifiedEmailProof.restart
+        ? 'Sesi verifikasi tidak lagi valid. Kirim kode baru untuk melanjutkan.'
+        : 'Kode verifikasi email tidak valid.'
+    });
   }
 
-  if (!hasSupabaseRegisterNewAccountEvidence(signupData, { email, precheck: existingAuthUser })) {
-    // Supabase kadang menyamarkan signup email lama sebagai respons tidak jelas.
-    // Untuk halaman customer, jangan tampilkan pesan ambigu dan jangan klaim akun baru dibuat.
-    // Treat as already registered agar user diarahkan masuk / lupa password / email lain.
-    return res.status(409).json(buildDomainRegisterDuplicateEmailBody());
+  const consumedEmailProof = await diracRegisterEmailConsumeProofV331(req, registrationInput, verifiedEmailProof);
+  if (!consumedEmailProof.ok) {
+    diracRegisterEmailClearChallengeCookieV331(res);
+    return res.status(503).json({
+      ok: false,
+      code: 'REGISTER_EMAIL_VERIFICATION_COMMIT_FAILED',
+      restart_verification: true,
+      message: 'Bukti verifikasi tidak dapat dikunci sebagai sekali pakai. Silakan kirim kode baru.'
+    });
+  }
+  diracRegisterEmailClearChallengeCookieV331(res);
+
+  const existingAuthUser = await diracRegisterEmailFindAuthUserV331(req, registrationInput);
+  if (!existingAuthUser.ok) {
+    return res.status(existingAuthUser.status).json({
+      ok: false,
+      code: existingAuthUser.code,
+      message: 'Status akun belum dapat diperiksa. Silakan coba pendaftaran kembali.'
+    });
+  }
+  if (existingAuthUser.exists) return res.status(409).json(buildDomainRegisterDuplicateEmailBody());
+
+  const createdAuthUser = await diracRegisterEmailCreateAuthUserV331(req, registrationInput, userData);
+  if (!createdAuthUser.ok) {
+    if (createdAuthUser.duplicate) return res.status(409).json(buildDomainRegisterDuplicateEmailBody());
+    return res.status(createdAuthUser.status).json({
+      ok: false,
+      code: createdAuthUser.code,
+      message: 'Email sudah terverifikasi, tetapi akun belum dapat dibuat dengan aman. Silakan coba login atau hubungi bantuan.'
+    });
   }
 
-  const signupSessionOffered = hasValidDomainSessionTokens(signupData)
-    || hasValidDomainSessionTokens(signupData.session);
+  if (!diracRegisterEmailHasAuthorityV331(req, registrationInput)) {
+    return res.status(403).json({
+      ok: false,
+      code: 'REGISTER_EMAIL_AUTHORITY_REQUIRED',
+      message: 'Otoritas verifikasi email tidak tersedia.'
+    });
+  }
   const verifiedSignupLogin = await loginSupabaseAuthUserAfterRegisterRecovery(
     email,
     password,
-    signupData.user
+    createdAuthUser.user
   );
   const signupSession = verifiedSignupLogin && verifiedSignupLogin.ok === true
     ? verifiedSignupLogin.session
     : null;
   const signupHasSession = hasValidDomainSessionTokens(signupSession);
 
-  if (signupHasSession) {
-    const registerBanDecisionV321 = await domainLoginEffectiveAccessBlockV320(req, signupSession)
-      .catch(() => ({ ok: false }));
-    if (!registerBanDecisionV321 || registerBanDecisionV321.ok !== true) {
-      clearSessionCookies(res);
-      return res.status(503).json({
-        ok: false,
-        code: 'REGISTER_SESSION_BAN_CHECK_UNAVAILABLE',
-        message: 'Akun dibuat, tetapi status blokir sesi tidak dapat dibuktikan. Login otomatis tidak diterbitkan.'
-      });
-    }
-    if (registerBanDecisionV321.blocked) {
-      clearSessionCookies(res);
-      return res.status(403).json({
-        ok: false,
-        code: 'REGISTER_ACCOUNT_BLOCKED',
-        message: 'Akun dibuat, tetapi aksesnya diblokir oleh kebijakan keamanan.'
-      });
-    }
-    const signupSessionCookiesPublished = setSessionCookies(res, signupSession);
-    if (signupSessionCookiesPublished !== true) {
-      return res.status(502).json({
-        ok: false,
-        code: 'REGISTER_SESSION_COOKIE_PUBLICATION_FAILED',
-        message: 'Akun berhasil dibuat, tetapi sesi perangkat tidak dapat diterbitkan secara aman. Silakan login ulang.'
-      });
-    }
-  } else {
+  if (!signupHasSession) {
     clearCurrentRequestSessionCookiesV235(req, res);
-    if (signupSessionOffered) {
-      return res.status(502).json({
-        ok: false,
-        code: 'REGISTER_SESSION_VERIFICATION_FAILED',
-        message: 'Akun berhasil dibuat, tetapi sesi hasil pendaftaran gagal diverifikasi ulang. Silakan login ulang.'
-      });
-    }
+    return res.status(502).json({
+      ok: false,
+      code: 'REGISTER_VERIFIED_SESSION_FAILED',
+      message: 'Akun telah dibuat setelah email terverifikasi, tetapi sesi login aman belum dapat dibuktikan. Silakan login ulang.'
+    });
+  }
+
+  const registerBanDecisionV321 = await domainLoginEffectiveAccessBlockV320(req, signupSession)
+    .catch(() => ({ ok: false }));
+  if (!registerBanDecisionV321 || registerBanDecisionV321.ok !== true) {
+    clearSessionCookies(res);
+    return res.status(503).json({
+      ok: false,
+      code: 'REGISTER_SESSION_BAN_CHECK_UNAVAILABLE',
+      message: 'Akun dibuat, tetapi status blokir sesi tidak dapat dibuktikan. Login otomatis tidak diterbitkan.'
+    });
+  }
+  if (registerBanDecisionV321.blocked) {
+    clearSessionCookies(res);
+    return res.status(403).json({
+      ok: false,
+      code: 'REGISTER_ACCOUNT_BLOCKED',
+      message: 'Akun dibuat, tetapi aksesnya diblokir oleh kebijakan keamanan.'
+    });
+  }
+  const signupSessionCookiesPublished = setSessionCookies(res, signupSession);
+  if (signupSessionCookiesPublished !== true) {
+    return res.status(502).json({
+      ok: false,
+      code: 'REGISTER_SESSION_COOKIE_PUBLICATION_FAILED',
+      message: 'Akun berhasil dibuat, tetapi sesi perangkat tidak dapat diterbitkan secara aman. Silakan login ulang.'
+    });
   }
 
   return res.status(200).json({
     ok: true,
-    message: signupHasSession
-      ? 'Akun berhasil dibuat dan login otomatis.'
-      : 'Akun berhasil dibuat. Silakan cek email verifikasi jika diperlukan.',
-    needs_email_confirmation: !signupHasSession,
-    user: sanitizeUser(verifiedSignupLogin && verifiedSignupLogin.user || signupData.user),
+    message: 'Email terverifikasi, akun berhasil dibuat, dan login otomatis aktif.',
+    needs_email_confirmation: false,
+    email_verified: true,
+    user: sanitizeUser(verifiedSignupLogin.user),
     session: buildDomainAuthSessionPayload(signupSession)
   });
 }
@@ -57267,7 +57901,7 @@ function diracCentralContractForActionV146(action) {
   const recoveryLinkPostV251 = { methods:['POST'], allowed:['action','rid','token'], required:['action','rid','token'], maxBodyBytes:16*1024, maxFieldBytes:8192, mutation:true, allowProtectedFields:false };
   const recoveryHpkeV251 = { methods:['HEAD','POST'], allowed:['action','aead_nonce','ciphertext','enc','expires_at_ms','hpke_key_id','hpke_suite','mlkem_key_id','request_id','sent_at_ms','version'], required:[], maxBodyBytes:64*1024, maxFieldBytes:64*1024, mutation:true, allowProtectedFields:false };
   const authLoginPost = { methods: ['POST'], allowed: ['email', 'password', 'fullName', 'full_name', 'name', 'phone'], required: ['email', 'password'], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
-  const authRegisterPost = { methods: ['POST'], allowed: ['email', 'password', 'fullName', 'full_name', 'name', 'phone'], required: ['email', 'password'], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
+  const authRegisterPost = { methods: ['POST'], allowed: ['email', 'password', 'fullName', 'full_name', 'name', 'phone', 'email_verification_token'], required: ['email', 'password'], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
   const contracts = {
     domain_health: { ...getOnly, allowed: commonGet.concat(['_csrf_bootstrap']) },
     hostinger_check: { ...getOnly, required: ['domain'] },
@@ -57397,6 +58031,7 @@ function diracCentralValidateFieldFormatV146(key, value) {
   const text = String(value === undefined || value === null ? '' : value).trim();
   if (!text) return { ok: true };
   if (clean === 'email' && !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(text)) return { ok: false, reason: 'email_format_invalid' };
+  if (clean === 'email_verification_token' && !/^[A-Za-z0-9_-]{43}$/.test(text)) return { ok: false, reason: 'email_verification_token_format_invalid' };
   if (/domain/.test(clean) && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(text)) return { ok: false, reason: 'domain_format_invalid' };
   if (/uuid|customer_id|user_id|auth_user_id|owner_user_id|session_id|recovery_code_id|credential_id|project_id|document_id|item_id/.test(clean) && !diracCentralLooksLikeUuidV146(text)) {
     if (/_id$/.test(clean)) return { ok: false, reason: clean + '_format_invalid' };
