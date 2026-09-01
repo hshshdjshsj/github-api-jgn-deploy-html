@@ -2992,29 +2992,31 @@ function diracRegisterEmailMimeV331(message, account) {
   const boundary = 'dirac-register-' + crypto.randomBytes(16).toString('hex');
   const proof = String(message.proof || '');
   const reference = String(message.reference || '');
-  const text = [
-    'Verifikasi Email Pendaftaran Dirac Group',
-    '',
-    'Salin kode verifikasi berikut ke halaman pendaftaran:',
-    proof,
-    '',
-    'Kode berlaku 10 menit dan hanya dapat digunakan satu kali.',
-    'Jangan berikan kode ini, password, token, atau data rahasia kepada siapa pun.',
-    'Referensi: ' + reference
-  ].join('\n');
-  const htmlProof = diracSecurityMailEscapeV327(proof);
-  const htmlReference = diracSecurityMailEscapeV327(reference);
-  const html = '<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>'
-    + '<body style="margin:0;background:#090c12;color:#f4f6f9;font-family:Arial,Helvetica,sans-serif">'
-    + '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#090c12;padding:24px 12px"><tr><td align="center">'
-    + '<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="width:100%;max-width:600px;background:#141820;border:1px solid #2c3544;border-radius:18px">'
-    + '<tr><td style="padding:32px"><div style="font-size:12px;font-weight:800;letter-spacing:.15em;color:#9eb6ff">DIRAC GROUP SECURE REGISTER</div>'
-    + '<h1 style="margin:14px 0 12px;font-size:30px;line-height:1.2;color:#fff">Verifikasi email pendaftaran</h1>'
-    + '<p style="margin:0;color:#c5ccd6;font-size:16px;line-height:1.65">Salin kode berikut ke halaman pendaftaran. Kode ini berlaku 10 menit dan hanya dapat digunakan satu kali.</p>'
-    + '<div style="margin:24px 0;padding:18px;border:1px solid #5276e8;border-radius:14px;background:#0f172a;color:#fff;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:18px;font-weight:800;letter-spacing:.04em;word-break:break-all">' + htmlProof + '</div>'
-    + '<p style="margin:0;color:#f5c66a;font-size:14px;line-height:1.6">Jangan berikan kode ini, password, token, atau data rahasia kepada siapa pun.</p>'
-    + '<p style="margin:20px 0 0;color:#8f99a7;font-size:12px">Referensi: ' + htmlReference + '</p>'
-    + '</td></tr></table></td></tr></table></body></html>';
+  const htmlInput = {
+    preheader: 'Kode verifikasi email untuk menyelesaikan pendaftaran Dirac Group.',
+    brandLabel: 'SECURE ACCOUNT REGISTRATION',
+    eyebrow: 'EMAIL REGISTRATION VERIFICATION',
+    title: 'Verifikasi Email\nPendaftaran',
+    greeting: 'Yth. Calon Customer Dirac Group,',
+    summary: 'Email ini dikirim karena alamat Anda digunakan untuk memulai pendaftaran. Salin kode verifikasi ke halaman pendaftaran yang masih terbuka.',
+    statusLabel: 'STATUS VERIFIKASI',
+    statusValue: 'MENUNGGU KONFIRMASI',
+    statusNote: 'Kode berlaku selama 10 menit dan hanya dapat digunakan satu kali.',
+    detailsLabel: 'DETAIL VERIFIKASI',
+    rows: [
+      ['KODE VERIFIKASI', proof],
+      ['MASA BERLAKU', '10 menit'],
+      ['PENGGUNAAN', 'Sekali pakai'],
+      ['REFERENSI', reference]
+    ],
+    actionUrl: diracRoleOriginV250('auth') + '/masuk.html',
+    actionText: 'BUKA HALAMAN PENDAFTARAN',
+    warningTitle: 'JAGA KERAHASIAAN KODE',
+    warning: 'Jangan berikan kode ini, password, token, cookie, atau data rahasia kepada siapa pun. Jika Anda tidak memulai pendaftaran, abaikan email ini.',
+    supportLead: 'Jika membutuhkan bantuan terkait pendaftaran, gunakan kanal resmi Dirac Group berikut.'
+  };
+  const text = diracSecurityMailTextV327(htmlInput);
+  const html = diracSecurityCorporateEmailHtmlV327(htmlInput);
   const messageId = crypto.createHash('sha256').update(proof + '|' + reference + '|register-email-v331').digest('hex') + '@' + diracBaseDomainV250();
   return [
     'From: ' + diracSecurityAlertMimeHeaderV320('Dirac Secure') + ' <' + account.user + '>',
@@ -7755,7 +7757,7 @@ async function customerSecurityBootstrapWrapRegisterResponse(req, res, runPrevio
       diracLoginFatalMarkV324(req, 'response.bootstrap', 'begin', { status: httpStatus }, res);
       if (!payload.user || !payload.user.id) {
         const reason = await customerSecurityBootstrapHardFail(req, null, 'missing_user_id');
-        clearSessionCookies(res);
+        customerSecurityBootstrapClearAuthPublicationV332(req, res);
         if (originalStatus) originalStatus(403); else res.statusCode = 403;
         diracLoginFatalMarkV324(req, 'response.bootstrap', 'blocked', {
           status: 403,
@@ -7772,7 +7774,7 @@ async function customerSecurityBootstrapWrapRegisterResponse(req, res, runPrevio
       }
       if (!customerSecurityBootstrapReady(bootstrap)) {
         const reason = await customerSecurityBootstrapHardFail(req, bootstrap, 'not_ready');
-        clearSessionCookies(res);
+        customerSecurityBootstrapClearAuthPublicationV332(req, res);
         if (originalStatus) originalStatus(403); else res.statusCode = 403;
         diracLoginFatalMarkV324(req, 'response.bootstrap', 'blocked', {
           status: 403,
@@ -7797,6 +7799,75 @@ async function customerSecurityBootstrapWrapRegisterResponse(req, res, runPrevio
   };
 
   return runPreviousHandler();
+}
+
+function customerSecurityBootstrapClearAuthPublicationV332(req, res) {
+  diracDiscardAuthPublicationV321(req);
+  const authHeaderNames = [
+    'X-Domain-Access-Token',
+    'X-Domain-Refresh-Token',
+    'X-Domain-Token-Refreshed',
+    'X-Domain-Signed-Session'
+  ];
+  if (res && typeof res.removeHeader === 'function') {
+    authHeaderNames.forEach((name) => {
+      try { res.removeHeader(name); } catch (_) {}
+    });
+  }
+  if (!res || typeof res.getHeader !== 'function' || typeof res.setHeader !== 'function') {
+    clearSessionCookies(res);
+    return false;
+  }
+  const baseNames = [
+    ACCESS_COOKIE,
+    REFRESH_COOKIE,
+    CUSTOMER_MFA_COOKIE,
+    DOMAIN_SIGNED_SESSION_COOKIE,
+    diracCentralDeviceSessionCookieNameV223(),
+    diracCentralDeviceCookieNameV221()
+  ];
+  const clearNames = baseNames.flatMap((name) => [name, name + '__0']);
+  const targetNames = new Set(baseNames.flatMap((name) => [
+    name,
+    ...Array.from({ length: DOMAIN_COOKIE_MAX_CHUNKS }, (_, index) => name + '__' + index)
+  ]));
+  const previousRaw = res.getHeader('Set-Cookie');
+  const previous = Array.isArray(previousRaw)
+    ? previousRaw.map(String)
+    : previousRaw
+      ? [String(previousRaw)]
+      : [];
+  const retained = previous.filter((row) => {
+    const first = String(row || '').split(';', 1)[0];
+    const separator = first.indexOf('=');
+    const name = String(separator === -1 ? first : first.slice(0, separator)).trim();
+    return !targetNames.has(name);
+  });
+  const clears = clearNames.flatMap((name) => makeCompactClearCookie(name));
+  try {
+    res.setHeader('Set-Cookie', retained.concat(clears));
+    const publishedRaw = res.getHeader('Set-Cookie');
+    const published = Array.isArray(publishedRaw)
+      ? publishedRaw.map(String)
+      : publishedRaw
+        ? [String(publishedRaw)]
+        : [];
+    const valid = published.length === retained.length + clearNames.length
+      && retained.every((row, index) => published[index] === row)
+      && clearNames.every((name) => published.filter((row) =>
+        String(row || '').startsWith(name + '=')
+        && /;\s*Max-Age=0(?:;|$)/i.test(row)
+        && /;\s*Expires=Thu, 01 Jan 1970 00:00:00 GMT(?:;|$)/i.test(row)
+        && /;\s*Path=\/(?:;|$)/i.test(row)
+        && /;\s*HttpOnly(?:;|$)/i.test(row)
+        && /;\s*Secure(?:;|$)/i.test(row)
+        && !/;\s*Domain=/i.test(row)
+      ).length === 1);
+    if (valid) return true;
+  } catch (_) {}
+  try { res.setHeader('Set-Cookie', previous); } catch (_) {}
+  clearSessionCookies(res);
+  return false;
 }
 
 function customerSecurityBootstrapReady(bootstrap) {
@@ -7922,13 +7993,74 @@ async function customerSecurityFindOrCreateCustomer({ email, fullName, phone }) 
     body: [body]
   });
 
-  if (!created.ok) return { ok: false, reason: 'customer_create_failed', status: created.status };
+  if (!created.ok) {
+    if (Number(created.status || 0) === 404) customerSecurityCustomerCreateDiagnosticV332(created);
+    return { ok: false, reason: 'customer_create_failed', status: created.status };
+  }
 
   const createdRows = Array.isArray(created.data) ? created.data : [];
   const row = createdRows[0] || created.data;
   if (!row || !row.id) return { ok: false, reason: 'customer_create_no_id' };
 
   return { ok: true, customer_id: row.id, created: true };
+}
+
+function customerSecurityCustomerCreateDiagnosticV332(result) {
+  try {
+    const response = result && typeof result === 'object' ? result : {};
+    const data = response.data && typeof response.data === 'object' && !Array.isArray(response.data)
+      ? response.data
+      : {};
+    const rawCode = String(data.code || data.error_code || '').trim().slice(0, 32).toUpperCase();
+    const providerCode = new Set(['PGRST125', 'PGRST202', 'PGRST205', '42P01', '42883', 'PT404']).has(rawCode)
+      ? rawCode
+      : 'UNAVAILABLE';
+    const classification = providerCode === 'PGRST205'
+      ? 'postgrest_customers_schema_cache_missing'
+      : providerCode === 'PGRST202'
+        ? 'postgrest_function_schema_cache_missing_unexpected'
+        : providerCode === 'PGRST125'
+          ? 'postgrest_invalid_path'
+          : providerCode === '42P01'
+            ? 'postgres_undefined_table_during_customers_insert'
+            : providerCode === '42883'
+              ? 'postgres_undefined_function_during_customers_insert'
+              : providerCode === 'PT404'
+                ? 'postgres_custom_404_during_customers_insert'
+                : 'customers_post_404_unclassified';
+    const targetKey = resolveDiracSupabaseTargetKey('/rest/v1/customers', { auth: 'service' });
+    let resolvedTargetKey = targetKey;
+    let fallback = false;
+    try {
+      const target = readDiracSupabaseCredentials(targetKey);
+      resolvedTargetKey = DIRAC_SUPABASE_TARGET_ENVS[target && target.targetKey]
+        ? target.targetKey
+        : targetKey;
+      fallback = Boolean(target && target.fallback === true);
+    } catch (_) {}
+    const context = typeof diracCentralCurrentContextV149 === 'function'
+      ? diracCentralCurrentContextV149()
+      : null;
+    const trace = context && context.req ? diracLoginFatalTraceV324(context.req) : null;
+    console.error('[dirac-register-customer-db-v332]', {
+      patch: 'dirac-register-customer-db-diagnostic-v332',
+      trace_id: trace ? trace.traceId : 'unavailable',
+      vercel_request_id: trace ? trace.vercelRequestId : 'unavailable',
+      build_sha256: trace ? trace.buildSha256 : diracLoginFatalBuildShaV324(),
+      action: context ? context.action : 'domain_register',
+      route: 'table:customers',
+      method: 'POST',
+      target_key: targetKey,
+      resolved_target_key: resolvedTargetKey,
+      router_enabled: Boolean(shouldUseDiracMultiDbRouter()),
+      strict_router: Boolean(shouldUseStrictDiracMultiDbRouter()),
+      fallback,
+      status: Number(response.status || 0),
+      provider_code: providerCode,
+      result_class: classification,
+      secrets_logged: false
+    });
+  } catch (_) {}
 }
 
 async function customerSecurityFetchCustomerByEmail(email) {
