@@ -7989,6 +7989,7 @@ async function customerSecurityFindOrCreateCustomer({ email, fullName, phone }) 
   const created = await supabaseFetch('/rest/v1/customers', {
     method: 'POST',
     auth: 'service',
+    db: 'core',
     prefer: 'return=representation',
     body: [body]
   });
