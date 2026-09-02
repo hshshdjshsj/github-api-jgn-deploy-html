@@ -46961,7 +46961,7 @@ function diracSecurityMailClientContextV327(req) {
 }
 
 function diracSecurityMailRowsHtmlV327(rows) {
-  return (Array.isArray(rows) ? rows : []).slice(0, 40).map((row, index, all) => {
+  return (Array.isArray(rows) ? rows : []).slice(0, 60).map((row, index, all) => {
     const label = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(row && row[0], 100));
     const value = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(row && row[1], 500));
     const border = index < all.length - 1 ? 'border-bottom:1px solid #2c3544;' : '';
@@ -46970,7 +46970,7 @@ function diracSecurityMailRowsHtmlV327(rows) {
 }
 
 function diracSecurityMailTraceHtmlV327(trace) {
-  const entries = (Array.isArray(trace) ? trace : []).slice(0, 12);
+  const entries = (Array.isArray(trace) ? trace : []).slice(0, 30);
   if (!entries.length) return '';
   const rows = entries.map((entry, index) => {
     const stage = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(entry && entry.stage, 100));
@@ -47066,9 +47066,9 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
 }
 
 function diracSecurityMailTextV327(input = {}) {
-  const rows = (Array.isArray(input.rows) ? input.rows : []).slice(0, 40)
+  const rows = (Array.isArray(input.rows) ? input.rows : []).slice(0, 60)
     .map((row) => diracSecurityMailCleanV327(row && row[0], 100) + ': ' + diracSecurityMailCleanV327(row && row[1], 500));
-  const trace = (Array.isArray(input.trace) ? input.trace : []).slice(0, 12)
+  const trace = (Array.isArray(input.trace) ? input.trace : []).slice(0, 30)
     .map((entry, index) => String(index + 1) + '. ' + diracSecurityMailCleanV327(entry && entry.stage, 100) + ' -> ' + diracSecurityMailCleanV327(entry && entry.result, 60) + ' (' + Math.max(0, Number(entry && entry.duration_ms || 0)) + ' ms)');
   return [
     'DIRAC GROUP - ' + diracSecurityMailCleanV327(input.eyebrow || 'SECURITY ACTIVITY NOTICE', 100),
@@ -47551,11 +47551,62 @@ diracSecurityAlertPriorityV321 = function diracSecurityAlertPriorityCorporateV32
     || originalSecurityAlertPriorityV327(event);
 };
 
+function diracSecurityAlertCorrelationReferenceV333(failureId, requestId) {
+  const failure = String(failureId || '').trim().slice(0, 100);
+  const request = String(requestId || '').trim().slice(0, 80);
+  if (!failure && !request) return 'UNAVAILABLE';
+  return crypto.createHash('sha256')
+    .update(['dirac-central-alert-correlation-v333', failure, request].join('|'))
+    .digest('hex').slice(0, 10).toUpperCase();
+}
+
+const diracPersistentSecurityJsonBeforeAlertCorrelationV333 = writePersistentSecurityJsonRequiredV194;
+writePersistentSecurityJsonRequiredV194 = async function writePersistentSecurityJsonWithAlertCorrelationV333(securityKey, record, blockedUntilMs, ttlSeconds) {
+  let nextRecord = record;
+  const type = String(record && record.type || '');
+  if (record && typeof record === 'object'
+      && (type === 'central_guard_transient_persistent_ban_v284' || type === 'central_guard_global_ban_v146')) {
+    const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
+    const requestId = String(ctx && ctx.requestId || '').slice(0, 64);
+    const failureId = typeof diracCentralFailureIdV211 === 'function' ? String(diracCentralFailureIdV211(ctx) || '').slice(0, 100) : '';
+    nextRecord = {
+      ...record,
+      request_id: requestId,
+      failure_id: failureId,
+      alert_tracking_id: failureId,
+      alert_email_reference: diracSecurityAlertCorrelationReferenceV333(failureId, requestId)
+    };
+  }
+  return diracPersistentSecurityJsonBeforeAlertCorrelationV333(securityKey, nextRecord, blockedUntilMs, ttlSeconds);
+};
+
+function diracSecurityAlertOwnerSafeUrlV333(value, includePath) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'unavailable';
+  try {
+    const parsed = new URL(raw);
+    if (!new Set(['http:', 'https:']).has(parsed.protocol) || parsed.username || parsed.password) return 'unavailable';
+    const safe = parsed.origin + (includePath ? String(parsed.pathname || '/').slice(0, 500) : '');
+    return diracSecurityMailCleanV327(safe, 500) || 'unavailable';
+  } catch (_) {
+    return 'unavailable';
+  }
+}
+
+function diracSecurityAlertOwnerExactIpV333(req) {
+  const value = typeof getLoginSecurityIp === 'function' ? String(getLoginSecurityIp(req || {})).trim() : '';
+  if (!value) return 'unavailable';
+  try { return require('net').isIP(value) ? value.slice(0, 64) : 'unavailable'; }
+  catch (_) { return 'unavailable'; }
+}
+
 const originalSecurityAlertSnapshotV327 = diracSecurityAlertSnapshotV320;
 diracSecurityAlertSnapshotV320 = function diracSecurityAlertSnapshotCorporateV327(ctx, event, extra) {
   const base = originalSecurityAlertSnapshotV327(ctx, event, extra);
   const direct = extra && typeof extra === 'object' ? extra : {};
   const nested = direct.extra && typeof direct.extra === 'object' ? direct.extra : direct;
+  const req = ctx && ctx.req && typeof ctx.req === 'object' ? ctx.req : null;
+  const headers = req && req.headers && typeof req.headers === 'object' ? req.headers : {};
   const reasonRaw = String(ctx && ctx.failureReasonV211 || direct.reason || nested.reason || event || 'central_guard_security_event');
   const reasonCode = typeof diracSecurityAlertCodeV321 === 'function'
     ? diracSecurityAlertCodeV321(reasonRaw, 'withheld', 120)
@@ -47574,14 +47625,55 @@ diracSecurityAlertSnapshotV320 = function diracSecurityAlertSnapshotCorporateV32
   const blockedUntil = Number.isFinite(blockedUntilMs) && blockedUntilMs > 0
     ? (typeof formatDiracWibTime === 'function' ? formatDiracWibTime(blockedUntilMs) : new Date(blockedUntilMs).toISOString())
     : base.blocked_until;
+  const requestId = typeof diracSecurityAlertCodeV321 === 'function'
+    ? diracSecurityAlertCodeV321(direct.request_id || ctx && ctx.requestId || '', 'unavailable', 80)
+    : diracSecurityMailCleanV327(direct.request_id || ctx && ctx.requestId || '', 80);
+  const failureIdRaw = direct.failure_id || (typeof diracCentralFailureIdV211 === 'function' ? diracCentralFailureIdV211(ctx) : '');
+  const failureId = typeof diracSecurityAlertCodeV321 === 'function'
+    ? diracSecurityAlertCodeV321(failureIdRaw, 'unavailable', 100)
+    : diracSecurityMailCleanV327(failureIdRaw, 100);
+  const directTrace = Array.isArray(direct.trace)
+    ? direct.trace.slice(-30).map((entry) => Object.freeze({
+        stage: diracSecurityMailCleanV327(entry && entry.stage || 'unavailable', 100) || 'unavailable',
+        result: diracSecurityMailCleanV327(entry && entry.result || 'unavailable', 60) || 'unavailable',
+        duration_ms: Math.max(0, Math.min(300000, Number(entry && entry.duration_ms || 0)))
+      }))
+    : base.trace;
+  const pipelineHashRaw = String(direct.pipeline_hash || '').trim();
+  const pipelineHash = /^[a-f0-9]{64}$/i.test(pipelineHashRaw) ? pipelineHashRaw.toLowerCase() : 'unavailable';
+  const passportRaw = String(direct.passport_hex || '').trim();
+  const passportHex = /^[a-f0-9]{1,128}$/i.test(passportRaw) ? passportRaw.toLowerCase() : 'unavailable';
+  const stageIndexRaw = Number(direct.stage_index);
+  const stageIndex = Number.isInteger(stageIndexRaw) && stageIndexRaw >= -1 && stageIndexRaw <= 256 ? stageIndexRaw : -1;
   return Object.freeze({
     ...base,
+    request_id: requestId,
+    failure_id: failureId,
     reason_code: reasonCode,
     central_ban_written: centralBanWritten,
     central_ban_status: centralBanStatus,
     ban_type: banType,
     ban_ttl_seconds: ttlSeconds,
-    blocked_until: blockedUntil || 'unavailable'
+    blocked_until: blockedUntil || 'unavailable',
+    phase: diracSecurityMailCleanV327(direct.phase || ctx && ctx.executionPhaseV211 || 'unavailable', 60) || 'unavailable',
+    stage_index: stageIndex,
+    failed_stage: diracSecurityMailCleanV327(direct.failed_stage || ctx && ctx.failedStageV211 || 'unavailable', 100) || 'unavailable',
+    duration_ms: Math.max(0, Math.min(3600000, Number(direct.duration_ms || 0))),
+    hardening_patch: diracSecurityMailCleanV327(direct.hardening_patch || 'unavailable', 120) || 'unavailable',
+    pipeline_hash: pipelineHash,
+    passport_hex: passportHex,
+    diagnostic_code: diracSecurityMailCleanV327(direct.diagnostic_code || 'unavailable', 160) || 'unavailable',
+    failure_point: diracSecurityMailCleanV327(direct.failure_point || 'unavailable', 180) || 'unavailable',
+    ip_address: diracSecurityAlertOwnerExactIpV333(req),
+    user_agent: diracSecurityMailCleanV327(headers['user-agent'] || 'unavailable', 500) || 'unavailable',
+    origin: diracSecurityAlertOwnerSafeUrlV333(headers.origin || '', false),
+    referer: diracSecurityAlertOwnerSafeUrlV333(headers.referer || headers.referrer || '', true),
+    accept_language: diracSecurityMailCleanV327(headers['accept-language'] || 'unavailable', 160) || 'unavailable',
+    client_platform: diracSecurityMailCleanV327(headers['sec-ch-ua-platform'] || 'unavailable', 100) || 'unavailable',
+    client_hints: diracSecurityMailCleanV327(headers['sec-ch-ua'] || 'unavailable', 300) || 'unavailable',
+    api_host: diracSecurityMailCleanV327(headers.host || 'unavailable', 160) || 'unavailable',
+    runtime_region: diracSecurityMailCleanV327(String(headers['x-vercel-id'] || '').split('::')[0] || 'unavailable', 80) || 'unavailable',
+    trace: directTrace
   });
 };
 
@@ -47592,16 +47684,18 @@ function diracSecurityAlertCorporateMimeV327(snapshot, config) {
   const title = isPersistent
     ? 'Central Ban Telah\nDitulis'
     : (writeFailed ? 'Penulisan Central Ban\nGagal' : 'Percobaan Serangan\nBerhasil Diblokir');
-  const reference = crypto.createHash('sha256').update([
+  const reference = diracSecurityAlertCorrelationReferenceV333(
     snapshot.failure_id,
-    snapshot.request_id,
-    snapshot.timestamp_utc,
-    snapshot.event
-  ].join('|')).digest('hex').slice(0, 10).toUpperCase();
+    snapshot.request_id
+  );
+  const trackingId = /^DG-CENTRAL-[A-Z0-9_-]{8,80}$/.test(String(snapshot.failure_id || ''))
+    ? String(snapshot.failure_id)
+    : reference;
   const location = [snapshot.city, snapshot.region, snapshot.country].filter((item) => item && item !== 'unavailable').join(', ') || 'Tidak tersedia';
   const rows = [
     ['STATUS', 'BLOCKED / FAIL-CLOSED'],
     ['CENTRAL BAN', snapshot.central_ban_status || 'REQUEST DIBLOKIR'],
+    ['BAN TRACKING ID', trackingId],
     ['JENIS BAN', snapshot.ban_type || 'unavailable'],
     ['TTL BAN', snapshot.ban_ttl_seconds ? String(snapshot.ban_ttl_seconds) + ' detik' : 'unavailable'],
     ['BLOK SAMPAI', snapshot.blocked_until || 'unavailable'],
@@ -47611,23 +47705,40 @@ function diracSecurityAlertCorporateMimeV327(snapshot, config) {
     ['REASON CODE', snapshot.reason_code || snapshot.reason],
     ['ACTION', snapshot.action],
     ['METHOD / PATH', snapshot.method + ' ' + snapshot.path],
+    ['PHASE', snapshot.phase],
+    ['STAGE INDEX', String(snapshot.stage_index)],
     ['STAGE', snapshot.stage],
+    ['FAILED STAGE', snapshot.failed_stage],
+    ['DURASI REQUEST', String(snapshot.duration_ms || 0) + ' ms'],
     ['FAILURE ID', snapshot.failure_id],
     ['REQUEST ID', snapshot.request_id],
+    ['HARDENING PATCH', snapshot.hardening_patch],
+    ['PIPELINE HASH', snapshot.pipeline_hash],
+    ['PASSPORT HEX', snapshot.passport_hex],
+    ['DIAGNOSTIC CODE', snapshot.diagnostic_code],
+    ['FAILURE POINT', snapshot.failure_point],
     ['WAKTU WIB', snapshot.timestamp_wib],
     ['WAKTU UTC', snapshot.timestamp_utc],
-    ['IP TERSAMAR', snapshot.masked_ip],
+    ['IP ADDRESS', snapshot.ip_address],
     ['IP FINGERPRINT', snapshot.ip_fingerprint],
     ['ACCOUNT FINGERPRINT', snapshot.account_fingerprint],
     ['DEVICE FINGERPRINT', snapshot.device_fingerprint],
     ['BROWSER', snapshot.browser],
+    ['USER AGENT', snapshot.user_agent],
+    ['ORIGIN', snapshot.origin],
+    ['REFERER', snapshot.referer],
+    ['ACCEPT-LANGUAGE', snapshot.accept_language],
+    ['CLIENT PLATFORM', snapshot.client_platform],
+    ['CLIENT HINTS', snapshot.client_hints],
+    ['API HOST', snapshot.api_host],
+    ['RUNTIME REGION', snapshot.runtime_region],
     ['PERKIRAAN LOKASI', location],
     ['SUMBER LOKASI', snapshot.location_source],
     ['JUMLAH PERCOBAAN', String(snapshot.attempt_count || 0)],
     ['SCOPE BLOK', snapshot.matched_scope],
     ['REFERENSI EMAIL', reference]
   ];
-  const warning = 'Central Guard telah menolak request secara fail-closed. Email ini tidak memuat password, OTP, token, cookie, raw request body, alamat lengkap, atau IP penuh. Cocokkan referensi dengan log produksi sebelum melakukan investigasi lanjutan.';
+  const warning = 'Email owner/cyber ini memuat metadata forensik operasional yang diperlukan untuk korelasi insiden, termasuk IP request dan identitas request/failure. Password, OTP, PIN, CVV, cookie, token, Authorization, API key, secret, raw request body, dan material autentikasi tetap tidak pernah dimasukkan ke email.';
   const htmlInput = {
     preheader: String(title).replace(/\n/g, ' ') + ' - ' + snapshot.threat_class,
     brandLabel: 'CENTRAL GUARD SECURITY',
@@ -47651,7 +47762,7 @@ function diracSecurityAlertCorporateMimeV327(snapshot, config) {
     warning,
     supportLead: 'Untuk koordinasi respons insiden, gunakan kanal resmi Dirac Group berikut dan jangan meneruskan data sensitif melalui email.'
   };
-  const subject = '[DIRAC ' + snapshot.severity + '] ' + String(title).replace(/\n/g, ' ') + ' [' + reference + ']';
+  const subject = '[DIRAC ' + snapshot.severity + '] ' + String(title).replace(/\n/g, ' ') + ' [' + trackingId + '] [' + reference + ']';
   const htmlBody = diracSecurityCorporateEmailHtmlV327(htmlInput);
   const textBody = diracSecurityMailTextV327(htmlInput);
   const boundary = 'dirac-alert-v327-' + crypto.randomBytes(16).toString('hex');
@@ -48308,6 +48419,9 @@ diracSecurityAlertSendV320 = async function diracSecurityAlertSendCascadeV330(sn
     console.error('[dirac-security-alert-delivery-v332]', JSON.stringify({
       patch: DIRAC_SECURITY_ALERT_READINESS_DIAGNOSTIC_V332,
       event: diracSecurityMailCleanV327(snapshot && snapshot.event || 'security_alert', 80),
+      alert_reference: diracSecurityAlertCorrelationReferenceV333(snapshot && snapshot.failure_id, snapshot && snapshot.request_id),
+      failure_id: diracSecurityMailCleanV327(snapshot && snapshot.failure_id || 'unavailable', 100),
+      request_id: diracSecurityMailCleanV327(snapshot && snapshot.request_id || 'unavailable', 80),
       ok: Boolean(result && result.ok === true),
       provider: diracSecurityMailCleanV327(result && result.provider || 'unknown', 40),
       status: Math.max(0, Number(result && result.status || 0)),
@@ -57472,7 +57586,8 @@ function diracSecurityAlertScheduleV320(ctx, event, extra) {
     snapshot.reason,
     snapshot.ip_fingerprint,
     snapshot.account_fingerprint,
-    snapshot.device_fingerprint
+    snapshot.device_fingerprint,
+    snapshot.event === 'persistent_ban_written' ? snapshot.request_id : ''
   ].join('|'));
   if (Number(DIRAC_SECURITY_ALERT_STATE_V320.dedupe.get(dedupeKey) || 0) > now) return false;
   if (!DIRAC_SECURITY_ALERT_STATE_V320.dedupe.has(dedupeKey)
