@@ -54007,6 +54007,66 @@ function diracCentralAdvancedBrowserSignalV146(req, ctx, ua, headers) {
   return { ok: true };
 }
 
+const DIRAC_CENTRAL_DEVICE_CONSISTENCY_SIGNED_RECONCILE_V325 = 'dirac-central-device-consistency-signed-reconcile-v325';
+
+function diracCentralDeviceConsistencySignedReconcileV325(req, sessionKey, currentHash, previous) {
+  try {
+    const now = Date.now();
+    const key = String(sessionKey || '');
+    const nextHash = String(currentHash || '');
+    const previousHash = String(previous && previous.hash || '');
+    const until = Number(previous && previous.until || 0);
+    if (!/^[a-f0-9]{64}$/.test(key)
+        || !/^[a-f0-9]{64}$/.test(nextHash)
+        || !/^[a-f0-9]{64}$/.test(previousHash)
+        || safeEqual(previousHash, nextHash)
+        || !Number.isSafeInteger(until) || until <= now) return false;
+
+    const boundSession = diracCentralVerifyDeviceSessionCookieV223(req);
+    const binding = String(boundSession && boundSession.binding || '');
+    const identity = boundSession && boundSession.identity;
+    if (!/^[a-f0-9]{64}$/.test(binding)
+        || !identity || !String(identity.userId || '').trim()
+        || !normalizeAuthEmail(identity.email || '')) return false;
+
+    const cookies = typeof parseCookies === 'function' ? parseCookies(req) : {};
+    const credentialName = diracCentralDeviceCookieNameV221();
+    const candidates = typeof readCookieTokenCandidates === 'function'
+      ? readCookieTokenCandidates(cookies, credentialName).slice(0, 2)
+      : [cookies && cookies[credentialName]].filter(Boolean);
+    if (candidates.length !== 1) return false;
+
+    const verified = diracCentralVerifyDeviceTokenV221(req, candidates[0]);
+    const payload = verified && verified.payload;
+    if (!verified || verified.ok !== true || verified.upgrade === true
+        || !payload || Number(payload.sbv || 0) !== 2
+        || !safeEqual(String(payload.session || ''), binding)
+        || !safeEqual(String(payload.device || ''), diracCentralDeviceFingerprintV221(req))) return false;
+
+    const issuedAt = Number(payload.iat || 0);
+    const expiresAt = Number(payload.exp || 0);
+    if (!Number.isSafeInteger(issuedAt) || !Number.isSafeInteger(expiresAt)
+        || issuedAt > now + 60 * 1000 || expiresAt <= now
+        || expiresAt - issuedAt <= 0
+        || expiresAt - issuedAt > 24 * 60 * 60 * 1000 + 60 * 1000) return false;
+
+    const observed = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(key);
+    if (!observed || Number(observed.until || 0) !== until
+        || !safeEqual(String(observed.hash || ''), previousHash)) return false;
+
+    DIRAC_CENTRAL_DEVICE_BINDINGS_V146.set(key, { hash: nextHash, until });
+    const committed = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(key);
+    if (!committed || Number(committed.until || 0) !== until
+        || !safeEqual(String(committed.hash || ''), nextHash)) {
+      DIRAC_CENTRAL_DEVICE_BINDINGS_V146.set(key, observed);
+      return false;
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function diracCentralDeviceConsistencyGuardV146(req, ctx) {
   if (!DIRAC_CENTRAL_USER_DATA_ACTIONS_V146.has(ctx.action) && !/^domain_dashboard|^customer_security|^admin_security/.test(ctx.action)) return { ok: true };
   const sessionKey = diracCentralRequestSessionHashV146(req);
@@ -54039,7 +54099,12 @@ function diracCentralDeviceConsistencyGuardV146(req, ctx) {
     DIRAC_CENTRAL_DEVICE_BINDINGS_V146.set(sessionKey, { hash: current, until: Date.now() + 24 * 60 * 60 * 1000 });
     return { ok: true };
   }
-  if (previous.hash !== current) return { ok: false, reason: 'device_consistency_changed' };
+  if (previous.hash !== current) {
+    if (diracCentralDeviceConsistencySignedReconcileV325(req, sessionKey, current, previous)) {
+      return { ok: true };
+    }
+    return { ok: false, reason: 'device_consistency_changed' };
+  }
   return { ok: true };
 }
 
