@@ -2,6 +2,21 @@
 
 const crypto = require('crypto');
 
+function diracSmtpHeaderImageUrlV332() {
+  const expected = diracRoleOriginV250('www') + '/headerstp.webp';
+  try {
+    const url = new URL(expected);
+    const base = diracBaseDomainV250();
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== 'https:' || url.port || url.username || url.password
+        || url.pathname !== '/headerstp.webp' || url.search || url.hash
+        || !(host === base || host === 'www.' + base)) return '';
+    return url.toString();
+  } catch (_) {
+    return '';
+  }
+}
+
 /* ============================================================
    DIRAC LOGIN FATAL DIAGNOSTIC v324
    Production-safe breadcrumbs for POST domain_login/domain_register only.
@@ -27179,7 +27194,7 @@ function orderMailHtmlShell(title, body, options = {}) {
   const whatsappUrl = 'https://wa.me/6287892523968';
   const companyEmail = 'companydirac@gmail.com';
   const instagramUrl = 'https://www.instagram.com/diraccorp/';
-  const bannerImage = diracRoleOriginV250('www') + '/email.webp';
+  const bannerImage = diracSmtpHeaderImageUrlV332();
   const showActions = options.showActions !== false;
   const showBanner = options.showPromoImage !== false;
   const paidBadge = String(options.badge || '').toUpperCase() === 'PAID';
@@ -42503,17 +42518,7 @@ function customerSecurityLostPasskeyEmailEscapeHtmlV157(value) {
 
 /* RECO donor source lines 4429-4441 */
 function customerSecurityLostPasskeyRecoveryEmailBannerUrlV172() {
-  const fallback = diracRoleOriginV250('recovery') + '/mmmail.webp';
-  const raw = String(process.env.DIRAC_RECOVERY_EMAIL_BANNER_URL || process.env.DIRAC_LOST_PASSKEY_EMAIL_BANNER_URL || fallback).trim();
-  try {
-    const url = new URL(raw);
-    const host = url.hostname.toLowerCase();
-    if (url.protocol !== 'https:') return fallback;
-    if (!new Set(Array.from(diracUniversalBrowserOriginsV250(), (origin) => new URL(origin).hostname.toLowerCase()).filter((candidate) => candidate === diracBaseDomainV250() || candidate.endsWith('.' + diracBaseDomainV250()))).has(host)) return fallback;
-    return url.toString();
-  } catch (_) {
-    return fallback;
-  }
+  return diracSmtpHeaderImageUrlV332();
 }
 
 /* RECO donor source lines 4444-4488 */
@@ -46977,22 +46982,7 @@ function diracSecurityMailTraceHtmlV327(trace) {
 }
 
 function diracSecurityMailBannerUrlV327() {
-  const fallback = diracRoleOriginV250('recovery') + '/mmmail.webp';
-  const raw = String(
-    process.env.DIRAC_RECOVERY_EMAIL_BANNER_URL
-    || process.env.DIRAC_LOST_PASSKEY_EMAIL_BANNER_URL
-    || fallback
-  ).trim();
-  try {
-    const url = new URL(raw);
-    const host = url.hostname.toLowerCase();
-    const base = diracBaseDomainV250();
-    if (url.protocol !== 'https:') return fallback;
-    if (!(host === base || host.endsWith('.' + base))) return fallback;
-    return url.toString();
-  } catch (_) {
-    return fallback;
-  }
+  return diracSmtpHeaderImageUrlV332();
 }
 
 function diracSecurityCorporateEmailHtmlV327(input = {}) {
@@ -48077,6 +48067,143 @@ diracSecurityAlertConfigV320 = function diracSecurityAlertConfigCascadeV330() {
   });
 };
 
+
+const DIRAC_SECURITY_ALERT_READINESS_DIAGNOSTIC_V332 = 'dirac-security-alert-readiness-diagnostic-v332';
+let DIRAC_SECURITY_ALERT_READINESS_DIAGNOSTIC_LOGGED_V332 = false;
+
+function diracSecurityAlertReadinessDiagnosticV332() {
+  const failures = [];
+  const env = (name) => diracSecurityMailExplicitEnvV328(name);
+
+  const enabledRaw = env('DIRAC_SECURITY_ALERT_ENABLED');
+  if (!enabledRaw) failures.push('DIRAC_SECURITY_ALERT_ENABLED_MISSING');
+  else if (enabledRaw.toLowerCase() !== 'true') failures.push('DIRAC_SECURITY_ALERT_ENABLED_NOT_TRUE');
+
+  const hostRaw = env('DIRAC_SECURITY_ALERT_SMTP_HOST');
+  if (!hostRaw) failures.push('DIRAC_SECURITY_ALERT_SMTP_HOST_MISSING');
+  else if (hostRaw.toLowerCase() !== 'smtp.gmail.com') failures.push('DIRAC_SECURITY_ALERT_SMTP_HOST_INVALID');
+
+  const portRaw = env('DIRAC_SECURITY_ALERT_SMTP_PORT');
+  if (!portRaw) failures.push('DIRAC_SECURITY_ALERT_SMTP_PORT_MISSING');
+  else if (diracSecurityMailExplicitIntegerV328('DIRAC_SECURITY_ALERT_SMTP_PORT', 465, 465) !== 465) failures.push('DIRAC_SECURITY_ALERT_SMTP_PORT_INVALID');
+
+  const secureRaw = env('DIRAC_SECURITY_ALERT_SMTP_SECURE');
+  if (!secureRaw) failures.push('DIRAC_SECURITY_ALERT_SMTP_SECURE_MISSING');
+  else if (secureRaw.toLowerCase() !== 'true') failures.push('DIRAC_SECURITY_ALERT_SMTP_SECURE_NOT_TRUE');
+
+  const userRaw = env('DIRAC_SECURITY_ALERT_SMTP_USER');
+  const user = diracSecurityMailEmailV327(userRaw);
+  if (!userRaw) failures.push('DIRAC_SECURITY_ALERT_SMTP_USER_MISSING');
+  else if (!user || diracSecurityMailPlaceholderV327(userRaw)) failures.push('DIRAC_SECURITY_ALERT_SMTP_USER_INVALID');
+
+  const passwordRaw = env('DIRAC_SECURITY_ALERT_SMTP_APP_PASSWORD');
+  const password = passwordRaw.replace(/\s+/g, '');
+  if (!passwordRaw) failures.push('DIRAC_SECURITY_ALERT_SMTP_APP_PASSWORD_MISSING');
+  else if (!/^[A-Za-z0-9]{16,128}$/.test(password) || diracSecurityMailPlaceholderV327(passwordRaw)) failures.push('DIRAC_SECURITY_ALERT_SMTP_APP_PASSWORD_INVALID');
+
+  const fromRaw = env('DIRAC_SECURITY_ALERT_FROM_EMAIL');
+  const fromEmail = diracSecurityMailEmailV327(fromRaw);
+  if (!fromRaw) failures.push('DIRAC_SECURITY_ALERT_FROM_EMAIL_MISSING');
+  else if (!fromEmail || !user || fromEmail !== user || diracSecurityMailPlaceholderV327(fromRaw)) failures.push('DIRAC_SECURITY_ALERT_FROM_EMAIL_INVALID_OR_MISMATCH');
+
+  const fromName = env('DIRAC_SECURITY_ALERT_FROM_NAME');
+  if (!fromName) failures.push('DIRAC_SECURITY_ALERT_FROM_NAME_MISSING');
+  else if (fromName.length > 80 || /[\r\n<>]/.test(fromName) || diracSecurityMailPlaceholderV327(fromName)) failures.push('DIRAC_SECURITY_ALERT_FROM_NAME_INVALID');
+
+  const toRaw = env('DIRAC_SECURITY_ALERT_TO');
+  const tokens = toRaw ? toRaw.split(/[;,\s]+/).filter(Boolean) : [];
+  const recipients = tokens.map(diracSecurityMailEmailV327);
+  if (!toRaw) failures.push('DIRAC_SECURITY_ALERT_TO_MISSING');
+  else if (tokens.length < 1 || tokens.length > 5 || recipients.some((value) => !value)
+      || tokens.some((value) => diracSecurityMailPlaceholderV327(value))
+      || new Set(recipients).size !== recipients.length) failures.push('DIRAC_SECURITY_ALERT_TO_INVALID');
+
+  const hmacRaw = env('DIRAC_SECURITY_ALERT_HMAC_SECRET');
+  if (!hmacRaw) failures.push('DIRAC_SECURITY_ALERT_HMAC_SECRET_MISSING');
+  else if (!diracSecurityMailSecretIndependentV328(hmacRaw, [
+    process.env.DIRAC_SECURITY_ROOT_SECRET,
+    passwordRaw,
+    password,
+    process.env.DIRAC_SECURITY_ALERT_BREVO_API_KEY,
+    process.env.DIRAC_SECURITY_ALERT_RESEND_API_KEY,
+    process.env.DIRAC_USER_SECURITY_BREVO_API_KEY,
+    process.env.DIRAC_USER_SECURITY_RESEND_API_KEY,
+    process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD,
+    String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '')
+  ])) failures.push('DIRAC_SECURITY_ALERT_HMAC_SECRET_INVALID_OR_NOT_INDEPENDENT');
+
+  for (const check of [
+    ['DIRAC_SECURITY_ALERT_TIMEOUT_MS', 3000, 15000],
+    ['DIRAC_SECURITY_ALERT_COOLDOWN_MS', 30000, 3600000],
+    ['DIRAC_SECURITY_ALERT_QUEUE_MAX', 1, 100],
+    ['DIRAC_SECURITY_ALERT_MAX_RETRIES', 0, 2],
+    ['DIRAC_SECURITY_ALERT_RETRY_BASE_MS', 250, 5000],
+    ['DIRAC_SECURITY_ALERT_MAX_PER_WINDOW', 1, 100],
+    ['DIRAC_SECURITY_ALERT_WINDOW_MS', 60000, 3600000]
+  ]) {
+    const raw = env(check[0]);
+    if (!raw) failures.push(check[0] + '_MISSING');
+    else if (diracSecurityMailExplicitIntegerV328(check[0], check[1], check[2]) === null) failures.push(check[0] + '_INVALID');
+  }
+
+  const brevoKeyRaw = env('DIRAC_SECURITY_ALERT_BREVO_API_KEY');
+  const brevoFromRaw = env('DIRAC_SECURITY_ALERT_BREVO_FROM_EMAIL');
+  const brevoConfigured = Boolean(brevoKeyRaw || brevoFromRaw);
+  const brevoKey = diracSecurityMailProviderKeyV330(brevoKeyRaw, 24, 2048);
+  const brevoFrom = diracSecurityMailProviderEmailV330(brevoFromRaw);
+  const brevoReady = !brevoConfigured || Boolean(brevoKey && brevoFrom);
+  if (!brevoReady) failures.push('DIRAC_SECURITY_ALERT_BREVO_PARTIAL_OR_INVALID');
+
+  const resendKeyRaw = env('DIRAC_SECURITY_ALERT_RESEND_API_KEY');
+  const resendFromRaw = env('DIRAC_SECURITY_ALERT_RESEND_FROM_EMAIL');
+  const resendConfigured = Boolean(resendKeyRaw || resendFromRaw);
+  const resendKey = diracSecurityMailProviderKeyV330(resendKeyRaw, 20, 512);
+  const resendFrom = diracSecurityMailProviderEmailV330(resendFromRaw);
+  const resendReady = !resendConfigured || Boolean(
+    /^re_[A-Za-z0-9_-]{16,252}$/.test(resendKey)
+    && !diracSecurityMailPlaceholderV327(resendKey)
+    && resendFrom
+  );
+  if (!resendReady) failures.push('DIRAC_SECURITY_ALERT_RESEND_PARTIAL_OR_INVALID');
+
+  const providerSecrets = [password];
+  if (brevoConfigured && brevoReady) providerSecrets.push(brevoKey);
+  if (resendConfigured && resendReady) providerSecrets.push(resendKey);
+  if (password && !diracSecurityMailProviderKeysDistinctV330(providerSecrets)) failures.push('DIRAC_SECURITY_ALERT_PROVIDER_SECRET_COLLISION');
+
+  let explicitReady = false;
+  try { explicitReady = diracSecurityAlertExplicitReadyV328().valid === true; }
+  catch (_) { failures.push('DIRAC_SECURITY_ALERT_READINESS_EXCEPTION'); }
+
+  return Object.freeze({
+    patch: DIRAC_SECURITY_ALERT_READINESS_DIAGNOSTIC_V332,
+    ready: explicitReady && failures.length === 0,
+    failure_codes: Array.from(new Set(failures)).slice(0, 40),
+    gmail_smtp_expected: true,
+    brevo_configured: brevoConfigured,
+    brevo_ready: brevoReady,
+    resend_configured: resendConfigured,
+    resend_ready: resendReady,
+    secret_values_logged: false
+  });
+}
+
+const diracSecurityAlertConfigBeforeDiagnosticV332 = diracSecurityAlertConfigV320;
+diracSecurityAlertConfigV320 = function diracSecurityAlertConfigDiagnosticV332() {
+  const config = diracSecurityAlertConfigBeforeDiagnosticV332();
+  if (!DIRAC_SECURITY_ALERT_READINESS_DIAGNOSTIC_LOGGED_V332) {
+    DIRAC_SECURITY_ALERT_READINESS_DIAGNOSTIC_LOGGED_V332 = true;
+    try {
+      const diagnosticV332 = diracSecurityAlertReadinessDiagnosticV332();
+      console.error('[dirac-security-alert-readiness-v332]', JSON.stringify({
+        ...diagnosticV332,
+        config_available: Boolean(config)
+      }));
+    } catch (_) { void 0; }
+  }
+  return config;
+};
+
 function diracSecurityMailDecodeMimeWordV330(value) {
   const raw = String(value || '').trim();
   const match = raw.match(/^=\?UTF-8\?B\?([A-Za-z0-9+/=]+)\?=$/i);
@@ -48177,6 +48304,18 @@ diracSecurityAlertSendV320 = async function diracSecurityAlertSendCascadeV330(sn
     });
   };
   const result = await diracSecurityMailProviderCascadeV330(message, config, smtpSender);
+  try {
+    console.error('[dirac-security-alert-delivery-v332]', JSON.stringify({
+      patch: DIRAC_SECURITY_ALERT_READINESS_DIAGNOSTIC_V332,
+      event: diracSecurityMailCleanV327(snapshot && snapshot.event || 'security_alert', 80),
+      ok: Boolean(result && result.ok === true),
+      provider: diracSecurityMailCleanV327(result && result.provider || 'unknown', 40),
+      status: Math.max(0, Number(result && result.status || 0)),
+      code: diracSecurityMailCleanV327(result && result.code || '', 100),
+      smtp_code: Math.max(0, Number(result && result.error && result.error.smtpCode || 0)),
+      secret_values_logged: false
+    }));
+  } catch (_) { void 0; }
   if (result && result.ok === true) return true;
   const error = result && result.error instanceof Error
     ? result.error
