@@ -130,6 +130,19 @@ async function keamananHandler(req, res) {
     return reject(res, 403, parsed.code);
   }
 
+  if (parsed.reset && parsed.method === 'OPTIONS') {
+    const originalUrl = req.url;
+    const originalQuery = req.query;
+    try {
+      req.url = CENTRAL_ROUTE_PATH + '?action=domain_health&_dirac_page_nonce_for=' + encodeURIComponent(parsed.action);
+      req.query = Object.assign({}, req.query || {}, { action: 'domain_health', _dirac_page_nonce_for: parsed.action });
+      return await centralHandler(req, res);
+    } finally {
+      try { req.url = originalUrl; } catch (_) {}
+      try { req.query = originalQuery; } catch (_) {}
+    }
+  }
+
   let targetHandler = centralHandler;
   if (parsed.reset) {
     try { targetHandler = resetHandler(); }
