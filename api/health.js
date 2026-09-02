@@ -47980,10 +47980,13 @@ async function diracSecurityMailResendV330(message, config) {
 }
 
 async function diracSecurityMailProviderCascadeV330(message, config, smtpSender) {
-  const senders = [
-    () => diracSecurityMailBrevoV330(message, config),
-    () => diracSecurityMailResendV330(message, config)
-  ];
+  const senders = [];
+  if (config && config.brevoApiKey && config.brevoFromEmail) {
+    senders.push(() => diracSecurityMailBrevoV330(message, config));
+  }
+  if (config && config.resendApiKey && config.resendFromEmail) {
+    senders.push(() => diracSecurityMailResendV330(message, config));
+  }
   for (const send of senders) {
     const result = await send();
     if (result && result.ok === true) return result;
@@ -48009,16 +48012,29 @@ diracUserSecurityExplicitReadyV328 = function diracUserSecurityExplicitReadyCasc
 const diracSecurityAlertExplicitReadyBeforeCascadeV330 = diracSecurityAlertExplicitReadyV328;
 diracSecurityAlertExplicitReadyV328 = function diracSecurityAlertExplicitReadyCascadeV330() {
   const previous = diracSecurityAlertExplicitReadyBeforeCascadeV330();
-  const brevoApiKey = diracSecurityMailProviderKeyV330(diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_BREVO_API_KEY'), 24, 2048);
-  const brevoFromEmail = diracSecurityMailProviderEmailV330(diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_BREVO_FROM_EMAIL'));
-  const resendApiKey = diracSecurityMailProviderKeyV330(diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_RESEND_API_KEY'), 20, 512);
-  const resendFromEmail = diracSecurityMailProviderEmailV330(diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_RESEND_FROM_EMAIL'));
+  const brevoApiKeyRaw = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_BREVO_API_KEY');
+  const brevoFromEmailRaw = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_BREVO_FROM_EMAIL');
+  const resendApiKeyRaw = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_RESEND_API_KEY');
+  const resendFromEmailRaw = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_RESEND_FROM_EMAIL');
+  const brevoApiKey = diracSecurityMailProviderKeyV330(brevoApiKeyRaw, 24, 2048);
+  const brevoFromEmail = diracSecurityMailProviderEmailV330(brevoFromEmailRaw);
+  const resendApiKey = diracSecurityMailProviderKeyV330(resendApiKeyRaw, 20, 512);
+  const resendFromEmail = diracSecurityMailProviderEmailV330(resendFromEmailRaw);
   const hmacSecret = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_HMAC_SECRET');
   const smtpPasswordRaw = diracSecurityMailExplicitEnvV328('DIRAC_SECURITY_ALERT_SMTP_APP_PASSWORD');
+  const smtpPassword = smtpPasswordRaw.replace(/\s+/g, '');
+  const brevoConfigured = Boolean(brevoApiKeyRaw || brevoFromEmailRaw);
+  const resendConfigured = Boolean(resendApiKeyRaw || resendFromEmailRaw);
+  const brevoReady = !brevoConfigured || Boolean(brevoApiKey && brevoFromEmail);
+  const resendReady = !resendConfigured || Boolean(
+    /^re_[A-Za-z0-9_-]{16,252}$/.test(resendApiKey)
+    && !diracSecurityMailPlaceholderV327(resendApiKey)
+    && resendFromEmail
+  );
   const independent = diracSecurityMailSecretIndependentV328(hmacSecret, [
     process.env.DIRAC_SECURITY_ROOT_SECRET,
     smtpPasswordRaw,
-    smtpPasswordRaw.replace(/\s+/g, ''),
+    smtpPassword,
     brevoApiKey,
     resendApiKey,
     process.env.DIRAC_USER_SECURITY_BREVO_API_KEY,
@@ -48026,14 +48042,14 @@ diracSecurityAlertExplicitReadyV328 = function diracSecurityAlertExplicitReadyCa
     process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD,
     String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '')
   ]);
+  const providerSecrets = [smtpPassword];
+  if (brevoConfigured && brevoReady) providerSecrets.push(brevoApiKey);
+  if (resendConfigured && resendReady) providerSecrets.push(resendApiKey);
   const valid = Boolean(previous && previous.valid)
-    && Boolean(brevoApiKey)
-    && Boolean(brevoFromEmail)
-    && /^re_[A-Za-z0-9_-]{16,252}$/.test(resendApiKey)
-    && !diracSecurityMailPlaceholderV327(resendApiKey)
-    && Boolean(resendFromEmail)
+    && brevoReady
+    && resendReady
     && independent
-    && diracSecurityMailProviderKeysDistinctV330([brevoApiKey, resendApiKey, smtpPasswordRaw.replace(/\s+/g, '')]);
+    && diracSecurityMailProviderKeysDistinctV330(providerSecrets);
   return Object.freeze({ valid });
 };
 
@@ -57837,14 +57853,22 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
   }
   DIRAC_CENTRAL_NEGATIVE_BAN_V146.delete(identityKey);
   diracCentralSetMemoryBanV146(ctx.identity, blockedUntilMs, record.reason);
+  let persistentBanAlertDrainV331 = null;
   try {
-    if (typeof diracCentralEmitDebugV211 === 'function') diracCentralEmitDebugV211(ctx, 'persistent_ban_written', {
-      persistent_ban_written: true,
-      ban_type: record.type,
-      ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000),
-      blocked_until_ms: blockedUntilMs
-    });
+    if (typeof diracCentralEmitDebugV211 === 'function') {
+      diracCentralEmitDebugV211(ctx, 'persistent_ban_written', {
+        persistent_ban_written: true,
+        ban_type: record.type,
+        ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000),
+        blocked_until_ms: blockedUntilMs
+      });
+      persistentBanAlertDrainV331 = DIRAC_SECURITY_ALERT_STATE_V320 && DIRAC_SECURITY_ALERT_STATE_V320.drainPromise;
+    }
   } catch (suppressedErrorV284) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV284); }
+  if (persistentBanAlertDrainV331 && typeof persistentBanAlertDrainV331.then === 'function') {
+    try { await persistentBanAlertDrainV331; }
+    catch (persistentBanAlertWaitErrorV331) { diracSecurityAlertLocalLogV321('persistent_ban_delivery_wait_failed', persistentBanAlertWaitErrorV331); }
+  }
   return { ok: true, blockedUntilMs };
 }
 
