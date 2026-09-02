@@ -2,16 +2,48 @@
 
 const centralHandler = require('./health.js');
 
-if (typeof centralHandler !== 'function'
-    || Object.isFrozen(centralHandler) !== true
-    || centralHandler.__diracCentralSecurityGuardV146 !== true
-    || centralHandler.__diracCentralArchitectureConsolidationV202 !== true
-    || centralHandler.__diracCentralBackendComplianceV230 !== true) {
+function hasCentralSecurityParity(handler) {
+  return typeof handler === 'function'
+    && Object.isFrozen(handler) === true
+    && handler.__diracCentralSecurityGuardV146 === true
+    && handler.__diracCentralArchitectureConsolidationV202 === true
+    && handler.__diracCentralHardeningV221 === true
+    && handler.__diracCentralSecurityScoreV221 === 100
+    && typeof handler.__diracCentralPipelineHashV221 === 'string'
+    && handler.__diracCentralPipelineHashV221.length > 0
+    && handler.__diracCentralSelfTestV221
+    && handler.__diracCentralSelfTestV221.ok === true
+    && handler.__diracCentralDeviceAuthBootstrapV224 === true
+    && handler.__diracCentralOwaspHardeningV228 === true
+    && handler.__diracCentralBackendComplianceV230 === true
+    && handler.__diracCentralBackendStaticGateV230
+    && handler.__diracCentralBackendStaticGateV230.ok === true
+    && handler.__diracCentralRuntimeLockV230
+    && handler.__diracCentralRuntimeLockV230.ok === true;
+}
+
+if (!hasCentralSecurityParity(centralHandler)) {
   throw new Error('DIRAC_SECURITY_ROUTE_CENTRAL_HANDLER_INVALID');
 }
 
 const SECURITY_ROUTE_PATH = '/api/keamanan';
 const CENTRAL_ROUTE_PATH = '/api/health';
+const RESET_ROUTE_PATH = '/api/chat.js';
+const RESET_ACTIONS = Object.freeze(new Set(['request_password_reset', 'confirm_password_reset']));
+let resetHandlerCache = null;
+
+function resetHandler() {
+  if (resetHandlerCache) return resetHandlerCache;
+  let handler;
+  try { handler = require('./chat.js'); }
+  catch (_) { throw new Error('DIRAC_SECURITY_RESET_HANDLER_UNAVAILABLE'); }
+  if (!hasCentralSecurityParity(handler)
+      || handler.__diracCentralPipelineHashV221 !== centralHandler.__diracCentralPipelineHashV221) {
+    throw new Error('DIRAC_SECURITY_RESET_HANDLER_CENTRAL_PARITY_INVALID');
+  }
+  resetHandlerCache = handler;
+  return resetHandlerCache;
+}
 
 const ACTION_METHODS = Object.freeze({
   security_report: Object.freeze(new Set(['POST', 'OPTIONS'])),
@@ -25,7 +57,9 @@ const ACTION_METHODS = Object.freeze({
   customer_security_account_request: Object.freeze(new Set(['POST', 'OPTIONS'])),
   customer_security_recovery_codes_generate: Object.freeze(new Set(['POST', 'OPTIONS'])),
   customer_security_trust_current_device: Object.freeze(new Set(['POST', 'OPTIONS'])),
-  customer_security_untrust_device: Object.freeze(new Set(['POST', 'OPTIONS']))
+  customer_security_untrust_device: Object.freeze(new Set(['POST', 'OPTIONS'])),
+  request_password_reset: Object.freeze(new Set(['POST', 'OPTIONS'])),
+  confirm_password_reset: Object.freeze(new Set(['POST', 'OPTIONS']))
 });
 
 function reject(res, status, code) {
@@ -82,7 +116,8 @@ function parseExactRequest(req) {
     ok: true,
     action,
     method,
-    canonicalUrl: CENTRAL_ROUTE_PATH + (rawQuery ? '?' + rawQuery : '')
+    canonicalUrl: (RESET_ACTIONS.has(action) ? RESET_ROUTE_PATH : CENTRAL_ROUTE_PATH) + (rawQuery ? '?' + rawQuery : ''),
+    reset: RESET_ACTIONS.has(action)
   };
 }
 
@@ -96,10 +131,16 @@ async function keamananHandler(req, res) {
     return reject(res, 403, parsed.code);
   }
 
+  let targetHandler = centralHandler;
+  if (parsed.reset) {
+    try { targetHandler = resetHandler(); }
+    catch (_) { return reject(res, 503, 'SECURITY_RESET_HANDLER_INVALID'); }
+  }
+
   const originalUrl = req.url;
   try {
     req.url = parsed.canonicalUrl;
-    return await centralHandler(req, res);
+    return await targetHandler(req, res);
   } finally {
     try { req.url = originalUrl; } catch (_) {}
   }
@@ -111,10 +152,24 @@ Object.defineProperty(keamananHandler, 'config', {
   writable: false,
   configurable: false
 });
-Object.defineProperty(keamananHandler, '__diracCentralSecurityGuardV146', { value: true, enumerable: false });
-Object.defineProperty(keamananHandler, '__diracCentralArchitectureConsolidationV202', { value: true, enumerable: false });
-Object.defineProperty(keamananHandler, '__diracCentralBackendComplianceV230', { value: true, enumerable: false });
-Object.defineProperty(keamananHandler, '__diracSecurityRouteAliasV1', { value: true, enumerable: false });
+[
+  '__diracCentralSecurityGuardV146',
+  '__diracCentralArchitectureConsolidationV202',
+  '__diracCentralHardeningV221',
+  '__diracCentralSecurityScoreV221',
+  '__diracCentralPipelineHashV221',
+  '__diracCentralSelfTestV221',
+  '__diracCentralPatchTargetCountV221',
+  '__diracCentralPatchTargetsV221',
+  '__diracCentralDeviceAuthBootstrapV224',
+  '__diracCentralOwaspHardeningV228',
+  '__diracCentralBackendComplianceV230',
+  '__diracCentralBackendStaticGateV230',
+  '__diracCentralRuntimeLockV230'
+].forEach((name) => {
+  Object.defineProperty(keamananHandler, name, { value: centralHandler[name], enumerable: false });
+});
+Object.defineProperty(keamananHandler, '__diracSecurityRouteAliasV2', { value: true, enumerable: false });
 Object.freeze(keamananHandler);
 
 module.exports = keamananHandler;
