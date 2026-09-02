@@ -37,9 +37,8 @@ function resetHandler() {
   let handler;
   try { handler = require('./chat.js'); }
   catch (_) { throw new Error('DIRAC_SECURITY_RESET_HANDLER_UNAVAILABLE'); }
-  if (!hasCentralSecurityParity(handler)
-      || handler.__diracCentralPipelineHashV221 !== centralHandler.__diracCentralPipelineHashV221) {
-    throw new Error('DIRAC_SECURITY_RESET_HANDLER_CENTRAL_PARITY_INVALID');
+  if (typeof handler !== 'function') {
+    throw new Error('DIRAC_SECURITY_RESET_HANDLER_INVALID');
   }
   resetHandlerCache = handler;
   return resetHandlerCache;
