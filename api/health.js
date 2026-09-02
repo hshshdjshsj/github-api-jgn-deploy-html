@@ -29088,6 +29088,10 @@ function diracUltraRedactPayload(payload, depth = 0, parentKey = '') {
       out[cleanKey] = value;
       continue;
     }
+    if (diracUltraIsSafeWebAuthnBinaryIdV333(payload, cleanKey, value)) {
+      out[cleanKey] = value;
+      continue;
+    }
 
     if (/password|passwd|pwd|secret|service_role|service-key|apikey|api_key|authorization|access_token|refresh_token|id_token|set-cookie|raw_cookie|cookie_header|signature_key|server_key|private_key|client_secret|smtp_pass|smtp_password/i.test(lower)) {
       out[cleanKey] = '[redacted]';
@@ -29130,6 +29134,41 @@ function diracUltraCanonicalBase64UrlV191(value, minBytes, maxBytes) {
   } finally {
     if (decoded) decoded.fill(0);
   }
+}
+
+function diracUltraIsSafeWebAuthnBinaryIdV333(container, key, value) {
+  if (!container || typeof container !== 'object' || Array.isArray(container)
+      || String(key || '').toLowerCase() !== 'id' || typeof value !== 'string') return false;
+
+  const keys = Object.keys(container).sort();
+  const isUserDescriptor = keys.length === 3
+    && keys[0] === 'displayName'
+    && keys[1] === 'id'
+    && keys[2] === 'name'
+    && typeof container.name === 'string'
+    && typeof container.displayName === 'string'
+    && container.name === container.displayName
+    && container.name.length > 2
+    && container.name.length <= 320
+    && /^[^\s@]+@[^\s@]+$/.test(container.name);
+
+  if (isUserDescriptor) {
+    return diracUltraCanonicalBase64UrlV191(value, 32, 32);
+  }
+
+  const isCredentialDescriptor = (keys.length === 2 || keys.length === 3)
+    && keys[0] === 'id'
+    && (keys.length === 2
+      ? keys[1] === 'type'
+      : keys[1] === 'transports' && keys[2] === 'type')
+    && container.type === 'public-key'
+    && (container.transports === undefined
+      || (Array.isArray(container.transports)
+        && container.transports.length <= 16
+        && container.transports.every((item) => /^[a-z0-9-]{1,32}$/.test(String(item || '')))));
+
+  return isCredentialDescriptor
+    && diracUltraCanonicalBase64UrlV191(value, 1, 1024);
 }
 
 function diracUltraPreserveRecoveryHpkeProofResponseV191(payload, layer) {
@@ -53332,6 +53371,10 @@ function diracCentralSanitizeOutputV146(value, depth) {
       const cleanKey = String(key || '').replace(/[\u0000-\u001f\u007f<>]/g, '').slice(0, 120);
       if (!cleanKey || /^(?:__proto__|prototype|constructor)$/i.test(cleanKey)) return;
       if (/secret|service_role|authorization|access_token|refresh_token|password|cookie|apikey|api_key|private_key|client_secret|signature_key/i.test(cleanKey)) return;
+      if (diracUltraIsSafeWebAuthnBinaryIdV333(value, cleanKey, child)) {
+        out[cleanKey] = child;
+        return;
+      }
       out[cleanKey] = diracCentralSanitizeOutputV146(child, depth + 1);
     });
     return out;
