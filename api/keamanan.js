@@ -550,7 +550,7 @@ function securityResetVerifyCentralPageNonceV334(req, token, action) {
   if (!Number.isSafeInteger(Number(payload.iat)) || !Number.isSafeInteger(Number(payload.exp))
       || Number(payload.exp) - Number(payload.iat) !== 300 || Number(payload.iat) > now + 30 || Number(payload.iat) < now - 600
       || Number(payload.exp) <= now || !/^[A-Za-z0-9_-]{32}$/.test(String(payload.jti || ''))
-      || String(payload.act || '') !== String(action || '') || String(payload.mth || '').toUpperCase() !== 'POST'
+      || String(payload.act || '') !== String(action || '') || String(payload.mth || '').toUpperCase() !== (String(action || '') === 'domain_health' ? 'GET' : 'POST')
       || !/^[a-f0-9]{64}$/.test(String(payload.sid || '')) || !/^[a-f0-9]{64}$/.test(String(payload.oh || ''))) return null;
   const expectedSid = securityResetCentralSessionHashV334(req);
   const expectedOriginHash = diracCentralHashV146(requestOrigin(req));
