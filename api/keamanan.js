@@ -41,7 +41,7 @@ function resetWorkerMain() {
   const { Readable } = require('stream');
 
   function secureHandler(handler) {
-    return typeof handler === 'function'
+    const exportParity = typeof handler === 'function'
       && Object.isFrozen(handler) === true
       && handler.__diracCentralSecurityGuardV146 === true
       && handler.__diracCentralArchitectureConsolidationV202 === true
@@ -58,6 +58,17 @@ function resetWorkerMain() {
       && handler.__diracCentralBackendStaticGateV230.ok === true
       && handler.__diracCentralRuntimeLockV230
       && handler.__diracCentralRuntimeLockV230.ok === true;
+    if (exportParity) return true;
+    if (typeof handler !== 'function') return false;
+    const egressFlag = Object.getOwnPropertyDescriptor(globalThis, '__DIRAC_V202_SECURE_EGRESS_GATEWAY__');
+    const runtimeFlag = Object.getOwnPropertyDescriptor(globalThis, '__DIRAC_V230_RUNTIME_READY__');
+    const fetchLock = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+    return Boolean(
+      egressFlag && egressFlag.value === true && egressFlag.writable === false && egressFlag.configurable === false
+      && runtimeFlag && runtimeFlag.value === true && runtimeFlag.writable === false && runtimeFlag.configurable === false
+      && fetchLock && typeof fetchLock.value === 'function' && fetchLock.writable === false && fetchLock.configurable === false
+      && String(fetchLock.value.name || '') === 'fetchV202Gateway'
+    );
   }
 
   function normalizeHeaders(headers) {
