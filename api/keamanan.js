@@ -504,14 +504,69 @@ function securityResetVerifyCsrfV334(req, token) {
       && safeEqual(String(p.oh || ''), b.oh) && safeEqual(String(p.rb || ''), b.rb)) return true;
   return securityResetVerifyCentralCsrfV334(req, token);
 }
+function securityResetCentralCookieValueV334(req, name) {
+  const cleanName = String(name || '').trim();
+  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/.test(cleanName)) return null;
+  const values = [];
+  for (const part of securityResetHeaderV334(req, 'cookie').split(';')) {
+    const index = part.indexOf('=');
+    if (index < 1 || part.slice(0, index).trim() !== cleanName) continue;
+    let value;
+    try { value = decodeURIComponent(part.slice(index + 1).trim()); } catch (_) { value = part.slice(index + 1).trim(); }
+    if (!values.includes(value)) values.push(value);
+  }
+  return values.length <= 1 ? String(values[0] || '') : null;
+}
+function securityResetCentralSessionHashV334(req) {
+  const names = [
+    String(process.env.DOMAIN_SESSION_COOKIE || 'dirac_domain_session'),
+    String(process.env.DOMAIN_SIGNED_SESSION_COOKIE || 'dirac_domain_signed_session'),
+    'sb_access_token'
+  ];
+  const values = [];
+  for (const name of names) {
+    const value = securityResetCentralCookieValueV334(req, name);
+    if (value === null) return '';
+    if (value) values.push(value);
+  }
+  return diracCentralHashV146(values.join('|'));
+}
+function securityResetVerifyCentralPageNonceV334(req, token, action) {
+  const parts = String(token || '').trim().split('.');
+  if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]{43}$/.test(parts[1])) return null;
+  const secret = diracCentralDeriveSecretV146('central-v146');
+  let expected;
+  try { expected = crypto.createHmac('sha256', secret).update(parts[0]).digest('base64url'); }
+  finally { secret.fill(0); }
+  if (!safeEqual(expected, parts[1])) return null;
+  let payload;
+  try {
+    const raw = Buffer.from(parts[0], 'base64url');
+    if (!raw.length || raw.length > 4096 || raw.toString('base64url') !== parts[0]) return null;
+    payload = JSON.parse(raw.toString('utf8'));
+  } catch (_) { return null; }
+  if (!exactKeys(payload, ['typ','iat','exp','jti','act','mth','sid','oh']) || payload.typ !== 'dirac-page-nonce-v1') return null;
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isSafeInteger(Number(payload.iat)) || !Number.isSafeInteger(Number(payload.exp))
+      || Number(payload.exp) - Number(payload.iat) !== 300 || Number(payload.iat) > now + 30 || Number(payload.iat) < now - 600
+      || Number(payload.exp) <= now || !/^[A-Za-z0-9_-]{32}$/.test(String(payload.jti || ''))
+      || String(payload.act || '') !== String(action || '') || String(payload.mth || '').toUpperCase() !== 'POST'
+      || !/^[a-f0-9]{64}$/.test(String(payload.sid || '')) || !/^[a-f0-9]{64}$/.test(String(payload.oh || ''))) return null;
+  const expectedSid = securityResetCentralSessionHashV334(req);
+  const expectedOriginHash = diracCentralHashV146(requestOrigin(req));
+  if (!/^[a-f0-9]{64}$/.test(expectedSid) || !safeEqual(String(payload.sid), expectedSid) || !safeEqual(String(payload.oh), expectedOriginHash)) return null;
+  return { ...payload, __diracPageNonceSourceV334: 'central' };
+}
 function securityResetVerifyPageNonceV334(req, token, action) {
   const p = securityResetTokenDecodeV334(token, 'keamanan-reset-page-nonce-v1');
   const now = Math.floor(Date.now() / 1000); const b = securityResetBindingPayloadV334(req);
-  if (!p || p.typ !== 'dirac-keamanan-reset-page-nonce-v1' || p.act !== action || p.mth !== 'POST'
-      || !Number.isSafeInteger(Number(p.iat)) || !Number.isSafeInteger(Number(p.exp)) || Number(p.iat) > now + 30 || Number(p.exp) <= now
-      || Number(p.exp) > Number(p.iat) + SECURITY_RESET_PAGE_NONCE_TTL_S_V334 || !/^[A-Za-z0-9_-]{32}$/.test(String(p.jti || ''))
-      || !safeEqual(String(p.sid || ''), b.sid) || !safeEqual(String(p.oh || ''), b.oh) || !safeEqual(String(p.rb || ''), b.rb)) return null;
-  return p;
+  if (p && p.typ === 'dirac-keamanan-reset-page-nonce-v1' && p.act === action && p.mth === 'POST'
+      && Number.isSafeInteger(Number(p.iat)) && Number.isSafeInteger(Number(p.exp)) && Number(p.iat) <= now + 30 && Number(p.exp) > now
+      && Number(p.exp) <= Number(p.iat) + SECURITY_RESET_PAGE_NONCE_TTL_S_V334 && /^[A-Za-z0-9_-]{32}$/.test(String(p.jti || ''))
+      && safeEqual(String(p.sid || ''), b.sid) && safeEqual(String(p.oh || ''), b.oh) && safeEqual(String(p.rb || ''), b.rb)) {
+    return { ...p, __diracPageNonceSourceV334: 'standalone' };
+  }
+  return securityResetVerifyCentralPageNonceV334(req, token, action);
 }
 function securityResetApplyHeadersV334(req, res, origin) {
   const allowed = String(origin || requestOrigin(req) || '');
@@ -1467,7 +1522,8 @@ async function handleStandaloneResetPostV334(req,res,parsed){
   const body=await securityResetReadJsonV334(req); const bodyAction=String(body.action||'').trim().toLowerCase().replace(/-/g,'_');
   if(bodyAction!==parsed.action) throw resetError('SECURITY_RESET_ACTION_MISMATCH',400);
   await securityResetRateLimitV334(req,parsed.action);
-  const consumed=await diracCentralAtomicConsumeV230({namespace:'pwd_reset_page_nonce',jti:String(nonce.jti),expiresAt:Number(nonce.exp),contextHash:[nonce.act,nonce.sid,nonce.oh,nonce.mth,nonce.rb].join('|')});
+  const centralPageNonce=nonce.__diracPageNonceSourceV334==='central';
+  const consumed=await diracCentralAtomicConsumeV230({namespace:centralPageNonce?'page_nonce':'pwd_reset_page_nonce',jti:String(nonce.jti),expiresAt:Number(nonce.exp),contextHash:centralPageNonce?[nonce.act,nonce.sid,nonce.oh,nonce.mth].join('|'):[nonce.act,nonce.sid,nonce.oh,nonce.mth,nonce.rb].join('|')});
   if(!consumed.ok) throw resetError('SECURITY_RESET_PAGE_NONCE_REPLAY',409);
   return await passwordResetEngine(req,res,diracPasswordResetOpsV333(req),body);
 }
