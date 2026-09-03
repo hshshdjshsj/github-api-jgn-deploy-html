@@ -456,14 +456,53 @@ function securityResetIssuePageNonceV334(req, action) {
   const b = securityResetBindingPayloadV334(req);
   return securityResetTokenSignV334({ typ:'dirac-keamanan-reset-page-nonce-v1', iat:now, exp:now + SECURITY_RESET_PAGE_NONCE_TTL_S_V334, jti:randomToken(24), act:String(action), mth:'POST', sid:b.sid, oh:b.oh, rb:b.rb }, 'keamanan-reset-page-nonce-v1');
 }
+function securityResetCentralCsrfCookieV334(req, token, origin) {
+  const raw = securityResetHeaderV334(req, 'cookie');
+  const base = String(process.env.DIRAC_CSRF_COOKIE || '__Host-dirac_csrf_hmac').trim();
+  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/.test(base)) return false;
+  const scoped = base + '__' + crypto.createHash('sha256').update('dirac-csrf-origin-scoped-cookie-v327\n' + String(origin || ''), 'utf8').digest('hex').slice(0,16);
+  const values = (name) => {
+    const found = [];
+    for (const part of raw.split(';')) {
+      const i = part.indexOf('='); if (i < 1 || part.slice(0,i).trim() !== name) continue;
+      let value; try { value = decodeURIComponent(part.slice(i+1).trim()); } catch (_) { value = part.slice(i+1).trim(); }
+      if (value && !found.includes(value)) found.push(value);
+    }
+    return found;
+  };
+  const scopedValues = values(scoped);
+  if (scopedValues.length === 1) return safeEqual(scopedValues[0], token);
+  if (scopedValues.length > 1) return false;
+  const legacyValues = values(base);
+  return legacyValues.length === 1 && safeEqual(legacyValues[0], token);
+}
+function securityResetVerifyCentralCsrfV334(req, token) {
+  const parts = String(token || '').trim().split('.');
+  if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]{43}$/.test(parts[1])) return false;
+  const secret = diracCentralDeriveSecretV146('csrf-v119').toString('base64url');
+  const expected = crypto.createHmac('sha256', secret).update(parts[0]).digest('base64url');
+  if (!safeEqual(expected, parts[1])) return false;
+  let payload;
+  try { payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8')); } catch (_) { return false; }
+  if (!exactKeys(payload, ['typ','iat','exp','n','sid','oh']) || payload.typ !== 'dirac-csrf-hmac-v1') return false;
+  const now = Math.floor(Date.now()/1000);
+  const maxAge = Math.max(300, Math.min(86400, Number(process.env.DIRAC_CSRF_MAX_AGE_SECONDS || 7200)));
+  if (!Number.isSafeInteger(Number(payload.iat)) || !Number.isSafeInteger(Number(payload.exp)) || Number(payload.exp) <= Number(payload.iat)
+      || Number(payload.exp) - Number(payload.iat) !== maxAge || Number(payload.iat) > now + 60 || Number(payload.exp) + 60 < now
+      || !/^[A-Za-z0-9_-]{24}$/.test(String(payload.n || '')) || !/^[a-f0-9]{64}$/.test(String(payload.sid || ''))
+      || !/^[a-f0-9]{64}$/.test(String(payload.oh || ''))) return false;
+  const origin = requestOrigin(req);
+  const expectedOriginHash = crypto.createHash('sha256').update('origin|' + origin).digest('hex');
+  return safeEqual(String(payload.oh), expectedOriginHash) && securityResetCentralCsrfCookieV334(req, token, origin);
+}
 function securityResetVerifyCsrfV334(req, token) {
   const p = securityResetTokenDecodeV334(token, 'keamanan-reset-csrf-v1');
   const now = Math.floor(Date.now() / 1000); const b = securityResetBindingPayloadV334(req);
-  if (!p || p.typ !== 'dirac-keamanan-reset-csrf-v1' || !Number.isSafeInteger(Number(p.iat)) || !Number.isSafeInteger(Number(p.exp))
-      || Number(p.iat) > now + 30 || Number(p.exp) <= now || Number(p.exp) > Number(p.iat) + SECURITY_RESET_CSRF_TTL_S_V334
-      || !/^[A-Za-z0-9_-]{24}$/.test(String(p.n || '')) || !safeEqual(String(p.sid || ''), b.sid)
-      || !safeEqual(String(p.oh || ''), b.oh) || !safeEqual(String(p.rb || ''), b.rb)) return false;
-  return true;
+  if (p && p.typ === 'dirac-keamanan-reset-csrf-v1' && Number.isSafeInteger(Number(p.iat)) && Number.isSafeInteger(Number(p.exp))
+      && Number(p.iat) <= now + 30 && Number(p.exp) > now && Number(p.exp) <= Number(p.iat) + SECURITY_RESET_CSRF_TTL_S_V334
+      && /^[A-Za-z0-9_-]{24}$/.test(String(p.n || '')) && safeEqual(String(p.sid || ''), b.sid)
+      && safeEqual(String(p.oh || ''), b.oh) && safeEqual(String(p.rb || ''), b.rb)) return true;
+  return securityResetVerifyCentralCsrfV334(req, token);
 }
 function securityResetVerifyPageNonceV334(req, token, action) {
   const p = securityResetTokenDecodeV334(token, 'keamanan-reset-page-nonce-v1');
