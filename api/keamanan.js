@@ -221,14 +221,18 @@ function resetResponse(res, status, body) {
 async function passwordResetEngine(req, res, ops, body) {
   const action = String(req && req.query && req.query.action || '').trim().toLowerCase();
   const input = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  diracResetDiagnosticV335(req, 'engine.enter', 'begin', { body_keys: Object.keys(input).sort() });
   if (action === 'request_password_reset') {
     if (!exactKeys(input, ['action', 'email'])
         || String(input.action || '').trim().toLowerCase().replace(/-/g, '_') !== action
         || String(input.email || '') !== RESET_PROFILE_CARRIER) {
       return resetResponse(res, 400, { ok: false, code: 'PASSWORD_RESET_PROFILE_REQUEST_INVALID' });
     }
+    diracResetDiagnosticV335(req, 'profile.issue', 'begin', { carrier_valid: true, subtle_available: Boolean(subtle) });
     const profile = await ops.issueProfile();
+    diracResetDiagnosticV335(req, 'profile.issue', 'success', { key_id_length: String(profile && profile.key_id || '').length, x25519_public_key_length: String(profile && profile.x25519_public_key_b64url || '').length, signing_public_key_length: String(profile && profile.profile_signing_public_key_b64url || '').length, signature_length: String(profile && profile.signature_b64url || '').length, expires_in_ms: Number(profile && profile.expires_at_ms || 0) - Number(profile && profile.issued_at_ms || 0) });
     const challenge = 'd10p.' + b64uEncode(Buffer.from(canonical(profile), 'utf8'));
+    diracResetDiagnosticV335(req, 'profile.response', 'success', { http_status: 200, encrypted: true, challenge_length: challenge.length });
     return resetResponse(res, 200, { ok: true, encrypted: true, protocol: D10.protocol, challenge });
   }
   if (action !== 'confirm_password_reset') throw resetError('PASSWORD_RESET_ACTION_INVALID', 400);
@@ -237,19 +241,25 @@ async function passwordResetEngine(req, res, ops, body) {
       || input.code !== RESET_CONFIRM_MARKER) {
     return resetResponse(res, 400, { ok: false, code: 'PASSWORD_RESET_ENVELOPE_REQUEST_INVALID' });
   }
+  diracResetDiagnosticV335(req, 'd10.open', 'begin', { carrier_length: String(input.resetToken || '').length });
   const opened = await openD10Request(input.resetToken, ops);
   const inner = opened.inner;
+  diracResetDiagnosticV335(req, 'd10.open', 'success', { op: String(inner && inner.op || ''), request_id_hash: crypto.createHash('sha256').update(String(inner && inner.request_id || '')).digest('hex').slice(0, 20), key_id_length: String(opened && opened.context && opened.context.keyId || '').length });
   let payload;
   try {
     const bindingNow = String(await ops.requestBinding());
     const browserHash = String(await ops.hashBinding('browser', inner.browser_binding));
     const keyId = opened.context.keyId;
+    diracResetDiagnosticV335(req, 'confirm.binding', 'success', { op: String(inner.op || ''), request_binding_length: bindingNow.length, browser_hash_length: browserHash.length, key_id_length: String(keyId || '').length });
     if (inner.op === 'start') {
+      diracResetDiagnosticV335(req, 'start', 'begin', {});
       if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','email'])) throw resetError('PASSWORD_RESET_START_FIELDS_INVALID', 400);
       const email = String(inner.email || '').trim().toLowerCase();
       if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) || email.length > 120) throw resetError('PASSWORD_RESET_EMAIL_INVALID', 400);
       const rpId = String(await ops.rpId());
+      diracResetDiagnosticV335(req, 'start.challenge_issue', 'begin', { rp_id: rpId, email_binding_hash: diracPasswordResetBindingHashV333('diag-email', email).slice(0, 20) });
       const issued = await ops.issueChallenge({ email, browserHash, requestBinding: bindingNow, keyId, rpId });
+      diracResetDiagnosticV335(req, 'start.challenge_issue', 'success', { challenge_id_length: String(issued && issued.challenge_id || '').length, challenge_length: String(issued && issued.challenge || '').length, expires_in_ms: Number(issued && issued.expires_at_ms || 0) - Date.now() });
       if (!issued || !/^[A-Za-z0-9_-]{43,86}$/.test(String(issued.challenge_id || ''))
           || !/^[A-Za-z0-9_-]{43}$/.test(String(issued.challenge || ''))
           || Number(issued.expires_at_ms || 0) <= Date.now()) throw resetError('PASSWORD_RESET_CHALLENGE_ISSUE_FAILED', 503);
@@ -264,38 +274,56 @@ async function passwordResetEngine(req, res, ops, body) {
           device_binding_policy: 'webcrypto-nonextractable-v1'
         }
       };
+      diracResetDiagnosticV335(req, 'start', 'success', { rp_id: rpId, user_verification: 'required', device_binding_required: true });
     } else if (inner.op === 'verify') {
+      diracResetDiagnosticV335(req, 'verify', 'begin', {});
       if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','challenge_id','credential','device_binding'])) throw resetError('PASSWORD_RESET_VERIFY_FIELDS_INVALID', 400);
       const challengeId = String(inner.challenge_id || '');
+      diracResetDiagnosticV335(req, 'verify.challenge_read', 'begin', { challenge_id_hash: crypto.createHash('sha256').update(challengeId).digest('hex').slice(0, 20) });
       const state = await ops.readChallenge(challengeId, { browserHash, requestBinding: bindingNow, keyId, rpId: String(await ops.rpId()) });
+      diracResetDiagnosticV335(req, 'verify.challenge_read', 'success', { state_kind: String(state && state.kind || ''), expires_in_ms: Number(state && state.expires_at_ms || 0) - Date.now() });
       if (!state || state.kind !== 'challenge' || Number(state.expires_at_ms || 0) <= Date.now()) {
         throw resetError('PASSWORD_RESET_CHALLENGE_BINDING_INVALID', 403);
       }
+      diracResetDiagnosticV335(req, 'verify.passkey', 'begin', { credential_present: Boolean(inner.credential), device_binding_present: Boolean(inner.device_binding) });
       const verified = await ops.verifyPasskey(state, {
         challenge_id: challengeId,
         credential: inner.credential,
         device_binding: String(inner.device_binding || '')
       });
+      diracResetDiagnosticV335(req, 'verify.passkey', 'success', { owner_bound: true, security_epoch: Number(verified && verified.security_epoch || 0), device_binding_key_id_present: Boolean(verified && verified.device_binding_key_id) });
+      diracResetDiagnosticV335(req, 'verify.grant_issue', 'begin', {});
       const grant = await ops.issueGrant(verified, { browserHash, requestBinding: bindingNow, keyId });
+      diracResetDiagnosticV335(req, 'verify.grant_issue', 'success', { grant_length: String(grant || '').length });
       if (!/^[A-Za-z0-9_-]{43,256}$/.test(String(grant || ''))) throw resetError('PASSWORD_RESET_GRANT_ISSUE_FAILED', 503);
       payload = { ok: true, op: 'verify', passkey_verified: true, owner_bound: true, reset_grant: String(grant) };
+      diracResetDiagnosticV335(req, 'verify', 'success', { passkey_verified: true, owner_bound: true });
     } else if (inner.op === 'commit') {
+      diracResetDiagnosticV335(req, 'commit', 'begin', {});
       if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','reset_grant','new_password','confirm_password'])) throw resetError('PASSWORD_RESET_COMMIT_FIELDS_INVALID', 400);
       const grantId = String(inner.reset_grant || '');
+      diracResetDiagnosticV335(req, 'commit.grant_read', 'begin', { grant_hash: crypto.createHash('sha256').update(grantId).digest('hex').slice(0, 20) });
       const state = await ops.readGrant(grantId, { browserHash, requestBinding: bindingNow, keyId });
+      diracResetDiagnosticV335(req, 'commit.grant_read', 'success', { state_kind: String(state && state.kind || ''), expires_in_ms: Number(state && state.expires_at_ms || 0) - Date.now(), security_epoch: Number(state && state.security_epoch || 0) });
       if (!state || state.kind !== 'grant' || Number(state.expires_at_ms || 0) <= Date.now()) {
         throw resetError('PASSWORD_RESET_GRANT_BINDING_INVALID', 403);
       }
+      diracResetDiagnosticV335(req, 'commit.password', 'begin', { password_present: Boolean(inner.new_password), confirmation_present: Boolean(inner.confirm_password) });
       const result = await ops.commitPassword(state, String(inner.new_password || ''), String(inner.confirm_password || ''), grantId);
+      diracResetDiagnosticV335(req, 'commit.password', 'success', { password_changed: result && result.password_changed === true, sessions_revoked: result && result.sessions_revoked === true, login_required: result && result.login_required === true });
       payload = { ok: true, op: 'commit', password_changed: result.password_changed === true, passkey_verified: true, owner_bound: true, sessions_revoked: result.sessions_revoked === true, login_required: result.login_required === true };
       if (!payload.password_changed || !payload.sessions_revoked || !payload.login_required) throw resetError('PASSWORD_RESET_COMMIT_POSTCONDITION_FAILED', 503);
+      diracResetDiagnosticV335(req, 'commit', 'success', { password_changed: true, sessions_revoked: true, login_required: true });
     } else {
       throw resetError('PASSWORD_RESET_OPERATION_INVALID', 400);
     }
   } catch (error) {
+    diracResetDiagnosticV335(req, 'confirm.operation', 'error', { op: String(inner.op || '') }, error);
     payload = { ok: false, op: String(inner.op || ''), code: String(error && error.code || 'PASSWORD_RESET_REQUEST_REJECTED'), message: 'Permintaan lost password tidak dapat diproses.' };
   }
+  diracResetDiagnosticV335(req, 'd10.seal', 'begin', { op: String(inner.op || ''), payload_ok: payload && payload.ok === true, payload_code: String(payload && payload.code || '') });
   const challenge = await sealD10Response(payload, opened.context);
+  diracResetDiagnosticV335(req, 'd10.seal', 'success', { op: String(inner.op || ''), carrier_length: challenge.length, http_status: 200 });
   return resetResponse(res, 200, { ok: true, encrypted: true, protocol: D10.protocol, challenge });
 }
 
@@ -387,6 +415,62 @@ function securityResetHeaderV334(req, name) {
   const lower = String(name || '').toLowerCase();
   const value = h[lower] !== undefined ? h[lower] : h[name];
   return Array.isArray(value) ? value.join(',') : String(value || '');
+}
+
+const DIRAC_RESET_DIAGNOSTIC_VERSION_V335 = 'dirac-reset-diagnostic-v335';
+const DIRAC_RESET_DIAGNOSTIC_TRACE_V335 = new WeakMap();
+function diracResetDiagnosticTraceIdV335(req) {
+  if (!req || typeof req !== 'object') return 'no-request';
+  const existing = DIRAC_RESET_DIAGNOSTIC_TRACE_V335.get(req); if (existing) return existing;
+  const headers = req.headers && typeof req.headers === 'object' ? req.headers : {};
+  const source = String(headers['x-vercel-id'] || headers['x-request-id'] || headers['x-vercel-request-id'] || '').trim();
+  const traceId = source ? crypto.createHash('sha256').update(source).digest('hex').slice(0, 20) : crypto.randomBytes(10).toString('hex');
+  try { DIRAC_RESET_DIAGNOSTIC_TRACE_V335.set(req, traceId); } catch (_) {}
+  return traceId;
+}
+function diracResetDiagnosticCookieNamesV335(req) {
+  return securityResetHeaderV334(req, 'cookie').split(';').map((part) => part.split('=')[0].trim()).filter((name) => /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/.test(name)).slice(0, 32).sort();
+}
+function diracResetDiagnosticErrorV335(error) {
+  if (!error) return null;
+  return {
+    name: String(error.name || 'Error').slice(0, 120),
+    code: String(error.code || 'UNEXPECTED_ERROR').slice(0, 160),
+    status: Math.max(0, Math.min(599, Number(error.statusCode || error.status || 0) || 0)),
+    stack: String(error.stack || '').split('\n').slice(0, 12).map((line) => line.trim()).filter(Boolean)
+  };
+}
+function diracResetDiagnosticV335(req, stage, outcome, details, error) {
+  try {
+    const record = {
+      v: DIRAC_RESET_DIAGNOSTIC_VERSION_V335,
+      ts: new Date().toISOString(),
+      trace_id: diracResetDiagnosticTraceIdV335(req),
+      stage: String(stage || 'unknown').slice(0, 180),
+      outcome: String(outcome || 'info').slice(0, 40),
+      action: String(req && req.query && req.query.action || '').slice(0, 80),
+      method: String(req && req.method || '').toUpperCase().slice(0, 12),
+      runtime: { node: process.version, node_env: String(process.env.NODE_ENV || '') },
+      request: req ? {
+        host: securityResetHeaderV334(req, 'host').slice(0, 180),
+        origin: requestOrigin(req).slice(0, 300),
+        referer: securityResetHeaderV334(req, 'referer').slice(0, 500),
+        fetch_site: securityResetHeaderV334(req, 'sec-fetch-site').slice(0, 40),
+        fetch_mode: securityResetHeaderV334(req, 'sec-fetch-mode').slice(0, 40),
+        fetch_dest: securityResetHeaderV334(req, 'sec-fetch-dest').slice(0, 40),
+        content_type: securityResetHeaderV334(req, 'content-type').slice(0, 120),
+        content_length: securityResetHeaderV334(req, 'content-length').slice(0, 40),
+        cookie_names: diracResetDiagnosticCookieNamesV335(req),
+        csrf_header_present: Boolean(securityResetHeaderV334(req, 'x-dirac-csrf-token') || securityResetHeaderV334(req, 'x-csrf-token')),
+        page_nonce_header_present: Boolean(securityResetHeaderV334(req, 'x-dirac-page-nonce') || securityResetHeaderV334(req, 'x-page-nonce')),
+        reset_nonce_cookie_present: Boolean(securityResetCentralCookieValueV334(req, '__Host-dirac_reset_page_nonce_v334'))
+      } : null,
+      details: details && typeof details === 'object' && !Array.isArray(details) ? details : {},
+      error: diracResetDiagnosticErrorV335(error)
+    };
+    const line = '[dirac-reset-diagnostic-v335] ' + JSON.stringify(record);
+    if (outcome === 'error' || outcome === 'rejected') console.error(line); else console.info(line);
+  } catch (_) {}
 }
 function securityResetCookieMapV334(req) {
   const out = Object.create(null);
@@ -662,6 +746,14 @@ function securitySupabaseCredentialsV334(target) {
   if (u.username || u.password || u.search || u.hash || (u.port && u.port !== '443')) throw resetError('SECURITY_RESET_DB_URL_INVALID', 503);
   return { url:u.origin, anon, service };
 }
+function securityResetDiagnosticDbRouteV335(cleanPath) {
+  try {
+    const u = new URL('https://diag.invalid' + String(cleanPath || ''));
+    let pathname = u.pathname;
+    pathname = pathname.replace(/^\/auth\/v1\/admin\/users\/[^/]+$/, '/auth/v1/admin/users/:id');
+    return { pathname: pathname.slice(0, 240), query_keys: Array.from(new Set(Array.from(u.searchParams.keys()))).sort().slice(0, 40) };
+  } catch (_) { return { pathname: 'invalid', query_keys: [] }; }
+}
 async function supabaseFetch(path, options = {}) {
   if (!SECURITY_NATIVE_FETCH_V334) throw resetError('SECURITY_RESET_NATIVE_FETCH_UNAVAILABLE', 503);
   const cleanPath = String(path || '');
@@ -669,18 +761,21 @@ async function supabaseFetch(path, options = {}) {
   const method = String(options.method || 'GET').toUpperCase();
   if (!['GET','HEAD','POST','PATCH','PUT','DELETE'].includes(method)) throw resetError('SECURITY_RESET_DB_METHOD_INVALID', 405);
   const target = securitySupabaseTargetV334(cleanPath); const c = securitySupabaseCredentialsV334(target);
+  const route = securityResetDiagnosticDbRouteV335(cleanPath); const callId = crypto.randomBytes(6).toString('hex');
   const headers = { Accept:'application/json', apikey: options.auth === 'service' ? c.service : c.anon };
   headers.Authorization = 'Bearer ' + (options.bearer ? String(options.bearer) : (options.auth === 'service' ? c.service : c.anon));
   if (options.prefer) headers.Prefer = String(options.prefer);
   let body;
   if (options.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(options.body); if (Buffer.byteLength(body) > 262144) throw resetError('SECURITY_RESET_DB_BODY_TOO_LARGE', 413); }
+  diracResetDiagnosticV335(null, 'external.call', 'begin', { call_id: callId, method, target, auth_mode: options.bearer ? 'bearer' : String(options.auth || 'anon'), pathname: route.pathname, query_keys: route.query_keys, body_present: body !== undefined, body_bytes: body === undefined ? 0 : Buffer.byteLength(body), timeout_ms: 6500 });
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 6500); if (timer.unref) timer.unref();
   let response;
   try { response = await SECURITY_NATIVE_FETCH_V334(c.url + cleanPath, { method, headers, body, redirect:'error', signal:controller.signal }); }
-  catch (_) { throw resetError('SECURITY_RESET_DB_NETWORK_FAILED', 503); }
+  catch (cause) { const error = resetError('SECURITY_RESET_DB_NETWORK_FAILED', 503); diracResetDiagnosticV335(null, 'external.call', 'error', { call_id: callId, method, target, pathname: route.pathname, query_keys: route.query_keys, cause_name: String(cause && cause.name || ''), cause_code: String(cause && cause.code || '') }, error); throw error; }
   finally { clearTimeout(timer); }
   let data = null; const text = await response.text().catch(() => '');
   if (text) { try { data = JSON.parse(text); } catch (_) { data = text.slice(0,1024); } }
+  diracResetDiagnosticV335(null, 'external.call', response.ok ? 'success' : 'error', { call_id: callId, method, target, pathname: route.pathname, query_keys: route.query_keys, http_status: Number(response.status || 0), response_ok: response.ok === true, response_bytes: Buffer.byteLength(text || ''), response_type: Array.isArray(data) ? 'array' : (data === null ? 'null' : typeof data), row_count: Array.isArray(data) ? data.length : -1 });
   return { ok:response.ok, status:response.status, data };
 }
 async function diracCentralAtomicConsumeV230({ namespace, jti, expiresAt, contextHash }) {
@@ -753,25 +848,31 @@ function diracPasswordResetErrorV333(code, statusCode, message) {
   return error;
 }
 
-function diracPasswordResetSigningKeyV333() {
+function diracPasswordResetSigningKeyV333(req) {
   const raw = String(process.env.DIRAC_RECOVERY_FILE_SIGNING_PRIVATE_KEY || '').trim();
-  if (!raw) throw diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_UNAVAILABLE', 503);
+  const representation = raw.includes('-----BEGIN') ? 'pem' : (raw ? 'base64-or-der' : 'missing');
+  diracResetDiagnosticV335(req, 'profile.signing_key.load', 'begin', { env_name: 'DIRAC_RECOVERY_FILE_SIGNING_PRIVATE_KEY', env_present: Boolean(raw), raw_length: raw.length, representation, expected_fingerprint: DIRAC_PASSWORD_RESET_V333.profilePinSha512B64u });
+  if (!raw) { const error = diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_UNAVAILABLE', 503); diracResetDiagnosticV335(req, 'profile.signing_key.load', 'error', { env_present: false }, error); throw error; }
   let privateKey;
+  let decodedLength = 0;
+  let parsePath = '';
   try {
-    if (raw.includes('-----BEGIN')) privateKey = crypto.createPrivateKey(raw.replace(/\\n/g, '\n'));
+    if (raw.includes('-----BEGIN')) { parsePath = 'pem-direct'; privateKey = crypto.createPrivateKey(raw.replace(/\\n/g, '\n')); }
     else {
-      const decoded = Buffer.from(raw, 'base64');
-      try { privateKey = crypto.createPrivateKey({ key: decoded, format: 'der', type: 'pkcs8' }); }
-      catch (_) { privateKey = crypto.createPrivateKey(decoded.toString('utf8').replace(/\\n/g, '\n')); }
+      const decoded = Buffer.from(raw, 'base64'); decodedLength = decoded.length;
+      try { parsePath = 'pkcs8-der-base64'; privateKey = crypto.createPrivateKey({ key: decoded, format: 'der', type: 'pkcs8' }); }
+      catch (_) { parsePath = 'pem-base64'; privateKey = crypto.createPrivateKey(decoded.toString('utf8').replace(/\\n/g, '\n')); }
     }
-  } catch (_) { throw diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_INVALID', 503); }
-  if (!privateKey || privateKey.asymmetricKeyType !== 'ed25519') throw diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_TYPE_INVALID', 503);
+  } catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_INVALID', 503); diracResetDiagnosticV335(req, 'profile.signing_key.parse', 'error', { representation, raw_length: raw.length, decoded_length: decodedLength, parse_path: parsePath, cause_name: String(cause && cause.name || ''), cause_code: String(cause && cause.code || '') }, error); throw error; }
+  const keyType = String(privateKey && privateKey.asymmetricKeyType || '');
+  diracResetDiagnosticV335(req, 'profile.signing_key.parse', 'success', { representation, raw_length: raw.length, decoded_length: decodedLength, parse_path: parsePath, asymmetric_key_type: keyType });
+  if (!privateKey || privateKey.asymmetricKeyType !== 'ed25519') { const error = diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_TYPE_INVALID', 503); diracResetDiagnosticV335(req, 'profile.signing_key.type', 'error', { asymmetric_key_type: keyType }, error); throw error; }
   const publicKey = crypto.createPublicKey(privateKey);
   const publicDer = Buffer.from(publicKey.export({ format: 'der', type: 'spki' }));
   const fingerprint = crypto.createHash('sha512').update(publicDer).digest('base64url');
-  if (!safeEqual(fingerprint, DIRAC_PASSWORD_RESET_V333.profilePinSha512B64u)) {
-    throw diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_PIN_MISMATCH', 503);
-  }
+  const pinMatch = safeEqual(fingerprint, DIRAC_PASSWORD_RESET_V333.profilePinSha512B64u);
+  diracResetDiagnosticV335(req, 'profile.signing_key.pin', pinMatch ? 'success' : 'error', { asymmetric_key_type: keyType, public_der_length: publicDer.length, derived_fingerprint: fingerprint, expected_fingerprint: DIRAC_PASSWORD_RESET_V333.profilePinSha512B64u, pin_match: pinMatch });
+  if (!pinMatch) throw diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_PIN_MISMATCH', 503);
   return { privateKey, publicDer, fingerprint };
 }
 
@@ -825,16 +926,22 @@ function diracPasswordResetUnsealX25519PrivateV333(keyId) {
   }
 }
 
-function diracPasswordResetIssueProfileV333() {
-  const signing = diracPasswordResetSigningKeyV333();
+function diracPasswordResetIssueProfileV333(req) {
+  diracResetDiagnosticV335(req, 'profile.crypto', 'begin', { x25519_supported: typeof crypto.generateKeyPairSync === 'function' });
+  const signing = diracPasswordResetSigningKeyV333(req);
   let pair;
-  try { pair = crypto.generateKeyPairSync('x25519'); } catch (_) { throw diracPasswordResetErrorV333('DIRAC_D10_X25519_UNAVAILABLE', 503); }
+  try { pair = crypto.generateKeyPairSync('x25519'); }
+  catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_X25519_UNAVAILABLE', 503); diracResetDiagnosticV335(req, 'profile.x25519.generate', 'error', { cause_name: String(cause && cause.name || ''), cause_code: String(cause && cause.code || '') }, error); throw error; }
+  diracResetDiagnosticV335(req, 'profile.x25519.generate', 'success', { private_key_type: String(pair && pair.privateKey && pair.privateKey.asymmetricKeyType || ''), public_key_type: String(pair && pair.publicKey && pair.publicKey.asymmetricKeyType || '') });
   let privateJwk;
-  try { privateJwk = pair.privateKey.export({ format: 'jwk' }); } catch (_) { throw diracPasswordResetErrorV333('DIRAC_D10_X25519_EXPORT_FAILED', 503); }
+  try { privateJwk = pair.privateKey.export({ format: 'jwk' }); }
+  catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_X25519_EXPORT_FAILED', 503); diracResetDiagnosticV335(req, 'profile.x25519.export', 'error', { cause_name: String(cause && cause.name || ''), cause_code: String(cause && cause.code || '') }, error); throw error; }
   let rawPrivate;
   try { rawPrivate = Buffer.from(String(privateJwk && privateJwk.d || ''), 'base64url'); } catch (_) { rawPrivate = Buffer.alloc(0); }
-  if (rawPrivate.length !== 32) throw diracPasswordResetErrorV333('DIRAC_D10_X25519_PRIVATE_INVALID', 503);
+  if (rawPrivate.length !== 32) { const error = diracPasswordResetErrorV333('DIRAC_D10_X25519_PRIVATE_INVALID', 503); diracResetDiagnosticV335(req, 'profile.x25519.export', 'error', { raw_private_length: rawPrivate.length }, error); throw error; }
+  diracResetDiagnosticV335(req, 'profile.x25519.export', 'success', { raw_private_length: rawPrivate.length });
   const keyId = diracPasswordResetSealX25519PrivateV333(rawPrivate);
+  diracResetDiagnosticV335(req, 'profile.x25519.seal', 'success', { key_id_length: String(keyId || '').length });
   rawPrivate.fill(0);
   const issuedAt = Date.now();
   const unsigned = {
@@ -848,8 +955,11 @@ function diracPasswordResetIssueProfileV333() {
     profile_signing_public_key_b64url: signing.publicDer.toString('base64url'),
     profile_signing_fingerprint_sha512_b64url: signing.fingerprint
   };
-  const signature = crypto.sign(null, Buffer.from(diracPasswordResetCanonicalV333(unsigned), 'utf8'), signing.privateKey).toString('base64url');
-  if (!/^[A-Za-z0-9_-]{86}$/.test(signature)) throw diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNATURE_INVALID', 503);
+  let signature;
+  try { signature = crypto.sign(null, Buffer.from(diracPasswordResetCanonicalV333(unsigned), 'utf8'), signing.privateKey).toString('base64url'); }
+  catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNATURE_INVALID', 503); diracResetDiagnosticV335(req, 'profile.sign', 'error', { cause_name: String(cause && cause.name || ''), cause_code: String(cause && cause.code || '') }, error); throw error; }
+  if (!/^[A-Za-z0-9_-]{86}$/.test(signature)) { const error = diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNATURE_INVALID', 503); diracResetDiagnosticV335(req, 'profile.sign', 'error', { signature_length: String(signature || '').length }, error); throw error; }
+  diracResetDiagnosticV335(req, 'profile.sign', 'success', { algorithm: 'Ed25519', signature_length: signature.length, fingerprint: signing.fingerprint });
   return { ...unsigned, signature_algorithm: 'Ed25519', signature_b64url: signature };
 }
 
@@ -1179,13 +1289,17 @@ async function diracPasswordResetRevokeReplayCredentialV333(row, owner) {
 }
 
 async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
+  diracResetDiagnosticV335(req, 'verify.passkey.server', 'begin', { state_kind: String(state && state.kind || ''), state_expires_in_ms: Number(state && state.expires_at_ms || 0) - Date.now() });
   const credential = input && input.credential && typeof input.credential === 'object' ? input.credential : null;
   const response = credential && credential.response && typeof credential.response === 'object' ? credential.response : null;
   const credentialId = diracPasskeyA2FCredentialId(credential);
   if (!credential || !response || !credentialId || !/^[A-Za-z0-9_-]{16,4096}$/.test(credentialId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_RESPONSE_INVALID', 400);
   if (credential.rawId && !safeEqual(String(credential.rawId), credentialId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_CREDENTIAL_ID_MISMATCH', 403);
+  diracResetDiagnosticV335(req, 'verify.passkey.credential', 'validated', { credential_id_hash: crypto.createHash('sha256').update(credentialId).digest('hex').slice(0, 20), raw_id_present: Boolean(credential.rawId), response_fields: Object.keys(response).sort() });
   const row = await diracPasswordResetFetchCredentialByIdV333(credentialId, '');
+  diracResetDiagnosticV335(req, 'verify.passkey.credential_read', 'success', { row_present: Boolean(row), sign_count: Number(row && row.sign_count || 0), is_active: row && row.is_active === true, rotation_state: String(row && row.rotation_state || '') });
   const owner = await diracPasswordResetResolveOwnerV333(req, row, diracPasswordResetBindingHashV333('email', normalizeAuthEmail(row && row.email || '')));
+  diracResetDiagnosticV335(req, 'verify.passkey.owner', 'success', { owner_bound: Boolean(owner), auth_user_id_hash: crypto.createHash('sha256').update(String(owner && owner.authUserId || '')).digest('hex').slice(0, 20), customer_id_hash: crypto.createHash('sha256').update(String(owner && owner.customerId || '')).digest('hex').slice(0, 20) });
   if (!diracPasswordResetChallengeOwnerValidV333(state, owner.email)) throw diracPasswordResetErrorV333('PASSWORD_RESET_EMAIL_PASSKEY_MISMATCH', 403);
   if (!safeEqual(String(row.user_id || ''), owner.customerId) || !safeEqual(normalizeAuthEmail(row.email || ''), owner.email)) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_OWNER_INVALID', 403);
 
@@ -1201,6 +1315,7 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
   if (!safeEqual(String(state.rp_id || ''), rpId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_WEBAUTHN_RP_ID_INVALID', 403);
   const payload = { challenge: String(state.challenge || ''), rpId };
   const assertion = diracPasskeyA2FValidateAuthenticationResponse({ row, response, payload, clientData, req });
+  diracResetDiagnosticV335(req, 'verify.passkey.webauthn', assertion.ok ? 'success' : 'rejected', { reason: String(assertion && assertion.reason || ''), sign_count: Number(assertion && assertion.signCount || 0), backup_eligible: assertion && assertion.backupEligible === true, backup_state: assertion && assertion.backupState === true, device_bound: assertion && assertion.deviceBound === true });
   if (!assertion.ok) {
     if (assertion.reason === 'passkey_sign_count_replay') {
       await diracPasswordResetConsumeStateV333('challenge', input.challenge_id, state.expires_at_ms, state.consume_binding);
@@ -1216,9 +1331,12 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
     payload,
     credentialId
   });
+  diracResetDiagnosticV335(req, 'verify.passkey.device_binding', deviceBinding.ok ? 'success' : 'rejected', { reason: String(deviceBinding && deviceBinding.reason || ''), key_id_present: Boolean(deviceBinding && deviceBinding.keyId) });
   if (!deviceBinding.ok) throw diracPasswordResetErrorV333(String(deviceBinding.reason || 'DEVICE_BINDING_AUTHENTICATION_INVALID').toUpperCase(), 403);
 
+  diracResetDiagnosticV335(req, 'verify.challenge_consume', 'begin', {});
   await diracPasswordResetConsumeStateV333('challenge', input.challenge_id, state.expires_at_ms, state.consume_binding);
+  diracResetDiagnosticV335(req, 'verify.challenge_consume', 'success', {});
   const previousSignCount = Math.max(0, Number(row.sign_count || 0));
   const nextSignCount = Math.max(0, Number(assertion.signCount || diracPasskeyA2FSignCount(response) || 0));
   if (!Number.isSafeInteger(previousSignCount) || !Number.isSafeInteger(nextSignCount) || nextSignCount < previousSignCount) throw diracPasswordResetErrorV333('PASSWORD_RESET_SIGN_COUNT_INVALID', 503);
@@ -1253,6 +1371,7 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
     body: { sign_count: nextSignCount, credential_json: updatedJson, last_used_at: nowIso, updated_at: nowIso }
   });
   const patchedRows = patched && patched.ok === true && Array.isArray(patched.data) ? patched.data : [];
+  diracResetDiagnosticV335(req, 'verify.passkey.sign_count_cas', patched && patched.ok === true ? 'success' : 'error', { http_status: Number(patched && patched.status || 0), row_count: patchedRows.length, previous_sign_count: previousSignCount, next_sign_count: nextSignCount });
   if (!patched || patched.ok !== true || patchedRows.length !== 1
       || !safeEqual(String(patchedRows[0].id || ''), String(row.id || ''))
       || Number(patchedRows[0].sign_count || 0) !== nextSignCount
@@ -1260,6 +1379,7 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
     throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_USAGE_POSTCONDITION_FAILED', 503);
   }
   const securityEpoch = await diracPasskeyA2FReadSecurityEpoch(owner);
+  diracResetDiagnosticV335(req, 'verify.passkey.security_epoch', 'success', { security_epoch: Number(securityEpoch || 0) });
   if (!Number.isSafeInteger(securityEpoch) || securityEpoch < 1) throw diracPasswordResetErrorV333('PASSWORD_RESET_SECURITY_EPOCH_INVALID', 503);
   return Object.freeze({
     auth_user_id: owner.authUserId,
@@ -1286,6 +1406,7 @@ function diracPasswordResetStrongPasswordV333(password, email) {
 }
 
 async function diracPasswordResetCommitPasswordV333(req, state, password, confirmation, grantId) {
+  diracResetDiagnosticV335(req, 'commit.server', 'begin', { grant_hash: crypto.createHash('sha256').update(String(grantId || '')).digest('hex').slice(0, 20), security_epoch: Number(state && state.security_epoch || 0), password_present: Boolean(password), confirmation_present: Boolean(confirmation) });
   if (!safeEqual(String(password || ''), String(confirmation || ''))) throw diracPasswordResetErrorV333('PASSWORD_CONFIRMATION_MISMATCH', 400);
   const ctx = diracCentralCurrentContextV149();
   const customerId = String(state.customer_id || '');
@@ -1298,19 +1419,26 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
     ctx.__diracPasswordResetGrantOwnerV333 = Object.freeze({ customerId, authUserId, passkeyId });
   }
   const row = await diracPasswordResetFetchCredentialByRowIdV333(passkeyId, customerId);
+  diracResetDiagnosticV335(req, 'commit.passkey_readback_before_update', 'success', { row_present: Boolean(row), is_active: row && row.is_active === true, rotation_state: String(row && row.rotation_state || '') });
   const credentialId = String(row && row.credential_id || '');
   if (!credentialId || !safeEqual(String(row.id || ''), passkeyId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_GRANT_PASSKEY_CHANGED', 409);
   const owner = await diracPasswordResetResolveOwnerV333(req, row, state.email_hash);
+  diracResetDiagnosticV335(req, 'commit.owner', 'success', { auth_user_id_hash: crypto.createHash('sha256').update(String(owner && owner.authUserId || '')).digest('hex').slice(0, 20), customer_id_hash: crypto.createHash('sha256').update(String(owner && owner.customerId || '')).digest('hex').slice(0, 20) });
   if (!safeEqual(owner.authUserId, authUserId) || !safeEqual(owner.customerId, customerId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_GRANT_OWNER_CHANGED', 409);
   const epoch = await diracPasskeyA2FReadSecurityEpoch(owner);
+  diracResetDiagnosticV335(req, 'commit.security_epoch', 'success', { current_security_epoch: Number(epoch || 0), grant_security_epoch: Number(state.security_epoch || 0), match: Number(epoch) === Number(state.security_epoch) });
   if (!Number.isSafeInteger(epoch) || epoch !== Number(state.security_epoch)) throw diracPasswordResetErrorV333('PASSWORD_RESET_SECURITY_EPOCH_CHANGED', 409);
   const cleanPassword = diracPasswordResetStrongPasswordV333(password, owner.email);
+  diracResetDiagnosticV335(req, 'commit.password_policy', 'success', { policy_passed: true });
+  diracResetDiagnosticV335(req, 'commit.grant_consume', 'begin', {});
   await diracPasswordResetConsumeStateV333('grant', grantId, state.expires_at_ms, state.consume_binding);
+  diracResetDiagnosticV335(req, 'commit.grant_consume', 'success', {});
 
   const providerUpdate = await supabaseFetch('/auth/v1/admin/users/' + encodeURIComponent(authUserId), {
     method: 'PUT', auth: 'service', body: { password: cleanPassword }
   });
   const updatedUser = providerUpdate && providerUpdate.ok === true && providerUpdate.data ? normalizeSupabaseAdminUser(providerUpdate.data) : null;
+  diracResetDiagnosticV335(req, 'commit.provider_update', providerUpdate && providerUpdate.ok === true ? 'success' : 'error', { http_status: Number(providerUpdate && providerUpdate.status || 0), response_user_present: Boolean(updatedUser), id_match: Boolean(updatedUser && safeEqual(String(updatedUser.id || ''), authUserId)), email_match: Boolean(updatedUser && safeEqual(normalizeAuthEmail(updatedUser.email || ''), owner.email)) });
   if (!providerUpdate || providerUpdate.ok !== true || !updatedUser
       || !safeEqual(String(updatedUser.id || ''), authUserId)
       || !safeEqual(normalizeAuthEmail(updatedUser.email || ''), owner.email)) {
@@ -1322,6 +1450,7 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
   });
   const verifiedUser = verified && verified.ok === true && verified.data && verified.data.user ? verified.data.user : null;
   const accessToken = String(verified && verified.data && verified.data.access_token || '');
+  diracResetDiagnosticV335(req, 'commit.provider_verify', verified && verified.ok === true ? 'success' : 'error', { http_status: Number(verified && verified.status || 0), verified_user_present: Boolean(verifiedUser), access_token_present: Boolean(accessToken), id_match: Boolean(verifiedUser && safeEqual(String(verifiedUser.id || ''), authUserId)), email_match: Boolean(verifiedUser && safeEqual(normalizeAuthEmail(verifiedUser.email || ''), owner.email)) });
   if (!verified || verified.ok !== true || !verifiedUser || !accessToken
       || !safeEqual(String(verifiedUser.id || ''), authUserId)
       || !safeEqual(normalizeAuthEmail(verifiedUser.email || ''), owner.email)) {
@@ -1331,7 +1460,8 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
   const nowIso = new Date().toISOString();
   const params = diracPasswordArgon2V4Params();
   let passwordHash = '';
-  try { passwordHash = await diracPasswordArgon2V4Hash(cleanPassword, { authUserId, customerId, email: owner.email }); } catch (_) { passwordHash = ''; }
+  try { passwordHash = await diracPasswordArgon2V4Hash(cleanPassword, { authUserId, customerId, email: owner.email }); diracResetDiagnosticV335(req, 'commit.argon2', 'success', { hash_format_valid: String(passwordHash || '').startsWith('$argon2id$'), hash_length: String(passwordHash || '').length, memory_kib: params.memoryCost, time_cost: params.timeCost, parallelism: params.parallelism, configured_hash_length: params.hashLength }); }
+  catch (argonError) { passwordHash = ''; diracResetDiagnosticV335(req, 'commit.argon2', 'error', { memory_kib: params.memoryCost, time_cost: params.timeCost, parallelism: params.parallelism, configured_hash_length: params.hashLength }, argonError); }
   const activeOnlyRow = {
     auth_user_id: authUserId,
     customer_id: customerId,
@@ -1356,7 +1486,10 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
     updated_at: nowIso
   };
   if (String(passwordHash || '').startsWith('$argon2id$')) {
-    await diracPasswordArgon2ActiveOnlyV120UpsertCurrent(authUserId, activeOnlyRow, nowIso).catch(() => null);
+    const shadow = await diracPasswordArgon2ActiveOnlyV120UpsertCurrent(authUserId, activeOnlyRow, nowIso).catch((shadowError) => { diracResetDiagnosticV335(req, 'commit.argon2_shadow', 'error', {}, shadowError); return null; });
+    diracResetDiagnosticV335(req, 'commit.argon2_shadow', shadow && shadow.ok === true ? 'success' : 'error', { ok: Boolean(shadow && shadow.ok === true) });
+  } else {
+    diracResetDiagnosticV335(req, 'commit.argon2_shadow', 'skipped', { reason: 'argon2_hash_unavailable' });
   }
 
   const sessionPatchPath = '/rest/v1/security_customer_sessions?select=' + encodeURIComponent('id,customer_id,status,revoked_at,revoke_reason')
@@ -1365,29 +1498,34 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
     method: 'PATCH', auth: 'service', prefer: 'return=representation',
     body: { status: 'revoked', revoked_at: nowIso, revoke_reason: 'password_reset_passkey' }
   });
+  diracResetDiagnosticV335(req, 'commit.session_revoke', sessions && sessions.ok === true ? 'success' : 'error', { http_status: Number(sessions && sessions.status || 0), revoked_row_count: Array.isArray(sessions && sessions.data) ? sessions.data.length : -1 });
   if (!sessions || sessions.ok !== true || !Array.isArray(sessions.data)) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_REVOCATION_FAILED', 503);
 
   const logout = await supabaseFetch('/auth/v1/logout?scope=global', {
     method: 'POST', auth: 'anon', bearer: accessToken
   });
+  diracResetDiagnosticV335(req, 'commit.provider_logout', logout && logout.ok === true ? 'success' : 'error', { http_status: Number(logout && logout.status || 0) });
   if (!logout || logout.ok !== true) throw diracPasswordResetErrorV333('PASSWORD_RESET_PROVIDER_SESSION_REVOCATION_FAILED', 503);
 
   const activeSessions = await supabaseFetch('/rest/v1/security_customer_sessions?select=id&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null&limit=2', {
     method: 'GET', auth: 'service'
   });
+  diracResetDiagnosticV335(req, 'commit.session_postcondition', activeSessions && activeSessions.ok === true ? 'success' : 'error', { http_status: Number(activeSessions && activeSessions.status || 0), active_session_count: Array.isArray(activeSessions && activeSessions.data) ? activeSessions.data.length : -1 });
   if (!activeSessions || activeSessions.ok !== true || !Array.isArray(activeSessions.data) || activeSessions.data.length !== 0) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_POSTCONDITION_FAILED', 503);
 
   const passkeyReadback = await diracPasswordResetFetchCredentialByIdV333(credentialId, customerId);
+  diracResetDiagnosticV335(req, 'commit.passkey_postcondition', passkeyReadback && passkeyReadback.is_active === true && String(passkeyReadback.rotation_state || '') === 'active' ? 'success' : 'error', { is_active: passkeyReadback && passkeyReadback.is_active === true, rotation_state: String(passkeyReadback && passkeyReadback.rotation_state || ''), row_id_match: Boolean(passkeyReadback && safeEqual(String(passkeyReadback.id || ''), String(state.passkey_id || ''))) });
   if (!passkeyReadback || passkeyReadback.is_active !== true || String(passkeyReadback.rotation_state || '') !== 'active'
       || !safeEqual(String(passkeyReadback.id || ''), String(state.passkey_id || ''))) {
     throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_POSTCONDITION_FAILED', 503);
   }
+  diracResetDiagnosticV335(req, 'commit.server', 'success', { password_changed: true, sessions_revoked: true, login_required: true });
   return Object.freeze({ password_changed: true, sessions_revoked: true, login_required: true });
 }
 
 function diracPasswordResetOpsV333(req) {
   return Object.freeze({
-    issueProfile: diracPasswordResetIssueProfileV333,
+    issueProfile: () => diracPasswordResetIssueProfileV333(req),
     unsealPrivateKey: diracPasswordResetUnsealX25519PrivateV333,
     hashBinding: diracPasswordResetBindingHashV333,
     requestBinding: () => diracPasswordResetRequestBindingV333(req),
@@ -1510,36 +1648,58 @@ function securityResetBootstrapTargetV334(req) {
   return target;
 }
 async function handleResetBootstrapV334(req,res,targetAction){
+  diracResetDiagnosticV335(req, 'bootstrap', 'begin', { target_action: String(targetAction || '') });
   const origin=securityResetValidateBrowserV334(req,'GET');
+  diracResetDiagnosticV335(req, 'bootstrap.browser', 'success', { target_action: String(targetAction || ''), origin });
   if (String(req&&req.method||'').toUpperCase()!=='GET') return reject(res,405,'SECURITY_RESET_BOOTSTRAP_METHOD_INVALID');
   const bootstrapParams=new URLSearchParams(String(req&&req.url||'').split('?').slice(1).join('?'));
   const bootstrapProbeMs=Number(bootstrapParams.get('_csrf_probe'));
   const bootstrapNowMs=Date.now();
   if(!Number.isSafeInteger(bootstrapProbeMs)||bootstrapProbeMs<bootstrapNowMs-30000||bootstrapProbeMs>bootstrapNowMs+5000) return reject(res,403,'SECURITY_RESET_BOOTSTRAP_PROBE_INVALID');
+  diracResetDiagnosticV335(req, 'bootstrap.probe', 'success', { probe_age_ms: bootstrapNowMs - bootstrapProbeMs });
+  diracResetDiagnosticV335(req, 'bootstrap.rate_limit', 'begin', { bucket: 'bootstrap_'+targetAction });
   await securityResetRateLimitV334(req,'bootstrap_'+targetAction);
+  diracResetDiagnosticV335(req, 'bootstrap.rate_limit', 'success', { bucket: 'bootstrap_'+targetAction });
   const csrf=securityResetIssueCsrfV334(req),nonce=securityResetIssuePageNonceV334(req,targetAction);
+  diracResetDiagnosticV335(req, 'bootstrap.tokens', 'issued', { csrf_length: csrf.length, page_nonce_length: nonce.length, target_action: String(targetAction || '') });
   securityResetApplyHeadersV334(req,res,origin);
   res.setHeader('X-Dirac-CSRF-Token',csrf); res.setHeader('X-CSRF-Token',csrf);
   res.setHeader('X-Dirac-Page-Nonce',nonce); res.setHeader('X-Page-Nonce',nonce);
   const resetNonceCookie='__Host-dirac_reset_page_nonce_v334='+encodeURIComponent(nonce)+'; Path=/; Max-Age='+SECURITY_RESET_PAGE_NONCE_TTL_S_V334+'; HttpOnly; Secure; SameSite=Strict; Priority=High';
   const existingSetCookie=typeof res.getHeader==='function'?res.getHeader('Set-Cookie'):null;
   res.setHeader('Set-Cookie',(Array.isArray(existingSetCookie)?existingSetCookie:(existingSetCookie?[existingSetCookie]:[])).concat(resetNonceCookie));
+  diracResetDiagnosticV335(req, 'bootstrap', 'success', { http_status: 200, target_action: String(targetAction || ''), reset_nonce_cookie_set: true });
   return res.status(200).json({ok:true,security_reset_bootstrap:true});
 }
 async function handleStandaloneResetPostV334(req,res,parsed){
+  diracResetDiagnosticV335(req, 'post', 'begin', { parsed_action: String(parsed && parsed.action || ''), parsed_method: String(parsed && parsed.method || '') });
   const origin=securityResetValidateBrowserV334(req,'POST'); securityResetApplyHeadersV334(req,res,origin);
+  diracResetDiagnosticV335(req, 'post.browser', 'success', { origin });
   const ct=securityResetHeaderV334(req,'content-type').toLowerCase(); if(!ct.startsWith('application/json')) throw resetError('SECURITY_RESET_CONTENT_TYPE_INVALID',415);
+  diracResetDiagnosticV335(req, 'post.content_type', 'success', { content_type: ct.slice(0,120) });
   const primary=securityResetHeaderV334(req,'x-dirac-csrf-token').trim(),compat=securityResetHeaderV334(req,'x-csrf-token').trim();
   if(!primary||!compat||!safeEqual(primary,compat)||!securityResetVerifyCsrfV334(req,primary)) throw resetError('SECURITY_RESET_CSRF_INVALID',403);
+  const standaloneCsrfPayload=securityResetTokenDecodeV334(primary,'keamanan-reset-csrf-v1');
+  diracResetDiagnosticV335(req, 'post.csrf', 'success', { source: standaloneCsrfPayload && standaloneCsrfPayload.typ==='dirac-keamanan-reset-csrf-v1' ? 'standalone' : 'central', primary_length: primary.length, compat_length: compat.length, equal: safeEqual(primary,compat) });
   const nonceText=(securityResetHeaderV334(req,'x-dirac-page-nonce')||securityResetHeaderV334(req,'x-page-nonce')).trim();
   const nonce=securityResetVerifyPageNonceV334(req,nonceText,parsed.action); if(!nonce) throw resetError('SECURITY_RESET_PAGE_NONCE_INVALID',403);
+  diracResetDiagnosticV335(req, 'post.page_nonce', 'success', { source: String(nonce.__diracPageNonceSourceV334 || ''), act: String(nonce.act || ''), mth: String(nonce.mth || ''), expires_in_s: Number(nonce.exp || 0) - Math.floor(Date.now()/1000), nonce_length: nonceText.length });
   const body=await securityResetReadJsonV334(req); const bodyAction=String(body.action||'').trim().toLowerCase().replace(/-/g,'_');
+  diracResetDiagnosticV335(req, 'post.body', 'success', { body_keys: Object.keys(body).sort(), body_action: bodyAction });
   if(bodyAction!==parsed.action) throw resetError('SECURITY_RESET_ACTION_MISMATCH',400);
+  diracResetDiagnosticV335(req, 'post.rate_limit', 'begin', { bucket: parsed.action });
   await securityResetRateLimitV334(req,parsed.action);
+  diracResetDiagnosticV335(req, 'post.rate_limit', 'success', { bucket: parsed.action });
   const centralPageNonce=nonce.__diracPageNonceSourceV334==='central';
-  const consumed=await diracCentralAtomicConsumeV230({namespace:centralPageNonce?'page_nonce':'pwd_reset_page_nonce',jti:String(nonce.jti),expiresAt:Number(nonce.exp),contextHash:centralPageNonce?[nonce.act,nonce.sid,nonce.oh,nonce.mth].join('|'):[nonce.act,nonce.sid,nonce.oh,nonce.mth,nonce.rb].join('|')});
+  const consumeNamespace=centralPageNonce?'page_nonce':'pwd_reset_page_nonce';
+  diracResetDiagnosticV335(req, 'post.page_nonce_consume', 'begin', { namespace: consumeNamespace, source: String(nonce.__diracPageNonceSourceV334 || '') });
+  const consumed=await diracCentralAtomicConsumeV230({namespace:consumeNamespace,jti:String(nonce.jti),expiresAt:Number(nonce.exp),contextHash:centralPageNonce?[nonce.act,nonce.sid,nonce.oh,nonce.mth].join('|'):[nonce.act,nonce.sid,nonce.oh,nonce.mth,nonce.rb].join('|')});
+  diracResetDiagnosticV335(req, 'post.page_nonce_consume', consumed && consumed.ok === true ? 'success' : 'rejected', { namespace: consumeNamespace, consumed: Boolean(consumed && consumed.ok === true) });
   if(!consumed.ok) throw resetError('SECURITY_RESET_PAGE_NONCE_REPLAY',409);
-  return await passwordResetEngine(req,res,diracPasswordResetOpsV333(req),body);
+  diracResetDiagnosticV335(req, 'post.engine', 'begin', { action: parsed.action });
+  const result=await passwordResetEngine(req,res,diracPasswordResetOpsV333(req),body);
+  diracResetDiagnosticV335(req, 'post.engine', 'success', { action: parsed.action, response_status: Number(res && res.statusCode || 0) });
+  return result;
 }
 
 function parseExactRequest(req) {
@@ -1590,7 +1750,7 @@ async function keamananHandler(req, res) {
   const bootstrapTarget = securityResetBootstrapTargetV334(req);
   if (bootstrapTarget && String(req && req.method || 'GET').toUpperCase() === 'GET') {
     try { return await handleResetBootstrapV334(req, res, bootstrapTarget); }
-    catch (error) { securityResetApplyHeadersV334(req, res, requestOrigin(req)); return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_RESET_BOOTSTRAP_FAILED'), message:'Permintaan keamanan ditolak.' }); }
+    catch (error) { diracResetDiagnosticV335(req, 'bootstrap', 'error', { target_action: bootstrapTarget }, error); securityResetApplyHeadersV334(req, res, requestOrigin(req)); return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_RESET_BOOTSTRAP_FAILED'), message:'Permintaan keamanan ditolak.' }); }
   }
   const parsed = parseExactRequest(req);
   if (!parsed.ok) {
@@ -1600,7 +1760,7 @@ async function keamananHandler(req, res) {
   if (parsed.reset && parsed.method === 'OPTIONS') return handleResetPreflight(req, res);
   if (parsed.reset && parsed.method === 'POST') {
     try { return await handleStandaloneResetPostV334(req, res, parsed); }
-    catch (error) { securityResetApplyHeadersV334(req, res, requestOrigin(req)); return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'PASSWORD_RESET_ENGINE_FAILED'), message:'Pemulihan password ditolak oleh sistem keamanan.' }); }
+    catch (error) { diracResetDiagnosticV335(req, 'post', 'error', { parsed_action: parsed.action, parsed_method: parsed.method }, error); securityResetApplyHeadersV334(req, res, requestOrigin(req)); return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'PASSWORD_RESET_ENGINE_FAILED'), message:'Pemulihan password ditolak oleh sistem keamanan.' }); }
   }
   return invokeCentral(req, res, parsed);
 }
