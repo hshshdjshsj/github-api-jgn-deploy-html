@@ -756,9 +756,15 @@ function diracPasswordResetErrorV333(code, statusCode, message) {
 function diracPasswordResetSigningKeyV333() {
   const raw = String(process.env.DIRAC_RECOVERY_FILE_SIGNING_PRIVATE_KEY || '').trim();
   if (!raw) throw diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_UNAVAILABLE', 503);
-  const pem = raw.includes('-----BEGIN') ? raw.replace(/\\n/g, '\n') : Buffer.from(raw, 'base64').toString('utf8');
   let privateKey;
-  try { privateKey = crypto.createPrivateKey(pem); } catch (_) { throw diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_INVALID', 503); }
+  try {
+    if (raw.includes('-----BEGIN')) privateKey = crypto.createPrivateKey(raw.replace(/\\n/g, '\n'));
+    else {
+      const decoded = Buffer.from(raw, 'base64');
+      try { privateKey = crypto.createPrivateKey({ key: decoded, format: 'der', type: 'pkcs8' }); }
+      catch (_) { privateKey = crypto.createPrivateKey(decoded.toString('utf8').replace(/\\n/g, '\n')); }
+    }
+  } catch (_) { throw diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_INVALID', 503); }
   if (!privateKey || privateKey.asymmetricKeyType !== 'ed25519') throw diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_TYPE_INVALID', 503);
   const publicKey = crypto.createPublicKey(privateKey);
   const publicDer = Buffer.from(publicKey.export({ format: 'der', type: 'spki' }));
