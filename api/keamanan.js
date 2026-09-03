@@ -647,6 +647,43 @@ function resetBootstrapCanonicalUrl(req, parsed) {
   return RESET_ROUTE_PATH + '?' + rawQuery.replace(/(^|&)action=domain_health(?=&|$)/, '$1action=chat_health');
 }
 
+function resetInProcessHandlerHasSecurityParity(handler) {
+  if (hasCentralSecurityParity(handler)) return true;
+  if (typeof handler !== 'function') return false;
+  const egressFlag = Object.getOwnPropertyDescriptor(globalThis, '__DIRAC_V202_SECURE_EGRESS_GATEWAY__');
+  const runtimeFlag = Object.getOwnPropertyDescriptor(globalThis, '__DIRAC_V230_RUNTIME_READY__');
+  const fetchLock = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+  return Boolean(
+    egressFlag && egressFlag.value === true && egressFlag.writable === false && egressFlag.configurable === false
+    && runtimeFlag && runtimeFlag.value === true && runtimeFlag.writable === false && runtimeFlag.configurable === false
+    && fetchLock && typeof fetchLock.value === 'function' && fetchLock.writable === false && fetchLock.configurable === false
+    && String(fetchLock.value.name || '') === 'fetchV202Gateway'
+  );
+}
+
+async function invokeResetHandlerInProcess(req, res, parsed) {
+  let handler;
+  try { handler = require('./chat.js'); }
+  catch (_) { return reject(res, 503, 'SECURITY_RESET_HANDLER_UNAVAILABLE'); }
+  if (!resetInProcessHandlerHasSecurityParity(handler)) {
+    return reject(res, 503, 'SECURITY_RESET_HANDLER_CENTRAL_PARITY_INVALID');
+  }
+  const canonicalUrl = String(parsed && parsed.canonicalUrl || '');
+  if (!canonicalUrl.startsWith(RESET_ROUTE_PATH + '?')) {
+    return reject(res, 503, 'SECURITY_RESET_CANONICAL_URL_INVALID');
+  }
+  const originalUrl = req.url;
+  try {
+    req.url = canonicalUrl;
+    return await handler(req, res);
+  } catch (_) {
+    if (res && (res.headersSent || res.writableEnded)) return;
+    return reject(res, 503, 'SECURITY_RESET_HANDLER_EXECUTION_FAILED');
+  } finally {
+    try { req.url = originalUrl; } catch (_) {}
+  }
+}
+
 async function keamananHandler(req, res) {
   const parsed = parseExactRequest(req);
   if (!parsed.ok) {
@@ -663,7 +700,7 @@ async function keamananHandler(req, res) {
   if (resetBootstrapUrl) {
     return invokeResetHandler(req, res, Object.assign({}, parsed, { canonicalUrl: resetBootstrapUrl, reset: true }));
   }
-  if (parsed.reset) return invokeResetHandler(req, res, parsed);
+  if (parsed.reset) return invokeResetHandlerInProcess(req, res, parsed);
 
   const originalUrl = req.url;
   try {
