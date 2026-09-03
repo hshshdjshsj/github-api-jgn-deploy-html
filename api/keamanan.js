@@ -1407,7 +1407,10 @@ function securityResetBootstrapTargetV334(req) {
 async function handleResetBootstrapV334(req,res,targetAction){
   const origin=securityResetValidateBrowserV334(req,'GET');
   if (String(req&&req.method||'').toUpperCase()!=='GET') return reject(res,405,'SECURITY_RESET_BOOTSTRAP_METHOD_INVALID');
-  if (securityResetHeaderV334(req,'x-dirac-csrf-probe').trim()!=='security-reset-v143') return reject(res,403,'SECURITY_RESET_BOOTSTRAP_PROBE_INVALID');
+  const bootstrapParams=new URLSearchParams(String(req&&req.url||'').split('?').slice(1).join('?'));
+  const bootstrapProbeMs=Number(bootstrapParams.get('_csrf_probe'));
+  const bootstrapNowMs=Date.now();
+  if(!Number.isSafeInteger(bootstrapProbeMs)||bootstrapProbeMs<bootstrapNowMs-30000||bootstrapProbeMs>bootstrapNowMs+5000) return reject(res,403,'SECURITY_RESET_BOOTSTRAP_PROBE_INVALID');
   await securityResetRateLimitV334(req,'bootstrap_'+targetAction);
   const csrf=securityResetIssueCsrfV334(req),nonce=securityResetIssuePageNonceV334(req,targetAction);
   securityResetApplyHeadersV334(req,res,origin);
