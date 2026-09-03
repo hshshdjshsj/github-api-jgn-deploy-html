@@ -673,14 +673,31 @@ async function invokeResetHandlerInProcess(req, res, parsed) {
     return reject(res, 503, 'SECURITY_RESET_CANONICAL_URL_INVALID');
   }
   const originalUrl = req.url;
+  const hadOriginalUrl = Object.prototype.hasOwnProperty.call(req, 'originalUrl');
+  const originalOriginalUrl = req.originalUrl;
+  const hadPath = Object.prototype.hasOwnProperty.call(req, 'path');
+  const originalPath = req.path;
   try {
     req.url = canonicalUrl;
+    req.originalUrl = canonicalUrl;
+    req.path = RESET_ROUTE_PATH;
+    if (req.url !== canonicalUrl || req.originalUrl !== canonicalUrl || req.path !== RESET_ROUTE_PATH) {
+      return reject(res, 503, 'SECURITY_RESET_CANONICAL_CONTEXT_INVALID');
+    }
     return await handler(req, res);
   } catch (_) {
     if (res && (res.headersSent || res.writableEnded)) return;
     return reject(res, 503, 'SECURITY_RESET_HANDLER_EXECUTION_FAILED');
   } finally {
     try { req.url = originalUrl; } catch (_) {}
+    try {
+      if (hadOriginalUrl) req.originalUrl = originalOriginalUrl;
+      else delete req.originalUrl;
+    } catch (_) {}
+    try {
+      if (hadPath) req.path = originalPath;
+      else delete req.path;
+    } catch (_) {}
   }
 }
 
