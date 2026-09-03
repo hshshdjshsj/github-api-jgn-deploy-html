@@ -566,7 +566,12 @@ function securityResetVerifyPageNonceV334(req, token, action) {
       && safeEqual(String(p.sid || ''), b.sid) && safeEqual(String(p.oh || ''), b.oh) && safeEqual(String(p.rb || ''), b.rb)) {
     return { ...p, __diracPageNonceSourceV334: 'standalone' };
   }
-  return securityResetVerifyCentralPageNonceV334(req, token, action);
+  const central = securityResetVerifyCentralPageNonceV334(req, token, action);
+  if (central) return central;
+  if (!RESET_ACTIONS.has(String(action || '')) || !securityResetVerifyCentralPageNonceV334(req, token, 'domain_health')) return null;
+  const proofToken = securityResetCentralCookieValueV334(req, '__Host-dirac_reset_page_nonce_v334');
+  if (!securityResetTokenDecodeV334(proofToken, 'keamanan-reset-page-nonce-v1')) return null;
+  return securityResetVerifyPageNonceV334(req, proofToken, action);
 }
 function securityResetApplyHeadersV334(req, res, origin) {
   const allowed = String(origin || requestOrigin(req) || '');
@@ -1510,6 +1515,9 @@ async function handleResetBootstrapV334(req,res,targetAction){
   securityResetApplyHeadersV334(req,res,origin);
   res.setHeader('X-Dirac-CSRF-Token',csrf); res.setHeader('X-CSRF-Token',csrf);
   res.setHeader('X-Dirac-Page-Nonce',nonce); res.setHeader('X-Page-Nonce',nonce);
+  const resetNonceCookie='__Host-dirac_reset_page_nonce_v334='+encodeURIComponent(nonce)+'; Path=/; Max-Age='+SECURITY_RESET_PAGE_NONCE_TTL_S_V334+'; HttpOnly; Secure; SameSite=Strict; Priority=High';
+  const existingSetCookie=typeof res.getHeader==='function'?res.getHeader('Set-Cookie'):null;
+  res.setHeader('Set-Cookie',(Array.isArray(existingSetCookie)?existingSetCookie:(existingSetCookie?[existingSetCookie]:[])).concat(resetNonceCookie));
   return res.status(200).json({ok:true,security_reset_bootstrap:true});
 }
 async function handleStandaloneResetPostV334(req,res,parsed){
