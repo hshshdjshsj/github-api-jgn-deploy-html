@@ -490,6 +490,97 @@ function reject(res, status, code) {
   });
 }
 
+const RESET_PREFLIGHT_ALLOWED_HEADERS = Object.freeze(new Set([
+  'accept',
+  'content-type',
+  'x-csrf-token',
+  'x-dirac-csrf-token',
+  'x-dirac-page-nonce',
+  'x-page-nonce',
+  'x-requested-with'
+]));
+
+function resetPreflightHeader(req, name) {
+  const headers = req && req.headers && typeof req.headers === 'object' ? req.headers : {};
+  const lower = String(name || '').toLowerCase();
+  const value = headers[lower] !== undefined ? headers[lower] : headers[name];
+  return Array.isArray(value) ? value.join(',') : String(value || '');
+}
+
+function resetPreflightBaseDomain() {
+  const value = String(process.env.DIRAC_BASE_DOMAIN || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+  return /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value) ? value : '';
+}
+
+function handleResetPreflight(req, res) {
+  const baseDomain = resetPreflightBaseDomain();
+  if (!baseDomain) return reject(res, 503, 'SECURITY_RESET_PREFLIGHT_DOMAIN_INVALID');
+
+  const origin = resetPreflightHeader(req, 'origin').trim().toLowerCase();
+  const allowedOrigins = new Set(['https://' + baseDomain, 'https://auth.' + baseDomain]);
+  if (!allowedOrigins.has(origin)) return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_ORIGIN_INVALID');
+
+  const expectedHost = 'api.' + baseDomain;
+  const forwardedHost = resetPreflightHeader(req, 'x-forwarded-host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
+  const directHost = resetPreflightHeader(req, 'host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
+  if (directHost !== expectedHost || (forwardedHost && forwardedHost !== expectedHost)) {
+    return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_HOST_INVALID');
+  }
+
+  const forwardedProto = resetPreflightHeader(req, 'x-forwarded-proto').split(',')[0].trim().toLowerCase();
+  if (process.env.NODE_ENV === 'production' ? forwardedProto !== 'https' : (forwardedProto && forwardedProto !== 'https')) {
+    return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_HTTPS_REQUIRED');
+  }
+
+  const requestedMethod = resetPreflightHeader(req, 'access-control-request-method').trim().toUpperCase();
+  if (requestedMethod !== 'POST') return reject(res, 405, 'SECURITY_RESET_PREFLIGHT_METHOD_INVALID');
+
+  const requestedHeaders = Array.from(new Set(
+    resetPreflightHeader(req, 'access-control-request-headers')
+      .split(',')
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean)
+  ));
+  if (requestedHeaders.length > RESET_PREFLIGHT_ALLOWED_HEADERS.size
+      || requestedHeaders.some((name) => !/^[a-z0-9-]{1,64}$/.test(name) || !RESET_PREFLIGHT_ALLOWED_HEADERS.has(name))) {
+    return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_HEADER_INVALID');
+  }
+
+  if (resetPreflightHeader(req, 'access-control-request-private-network').trim().toLowerCase() === 'true') {
+    return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_PRIVATE_NETWORK_REJECTED');
+  }
+  if (resetPreflightHeader(req, 'authorization').trim() || resetPreflightHeader(req, 'cookie').trim()) {
+    return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_CREDENTIALS_REJECTED');
+  }
+  const contentLength = resetPreflightHeader(req, 'content-length').trim();
+  if ((contentLength && contentLength !== '0') || resetPreflightHeader(req, 'transfer-encoding').trim()) {
+    return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_BODY_REJECTED');
+  }
+
+  const fetchSite = resetPreflightHeader(req, 'sec-fetch-site').trim().toLowerCase();
+  const fetchMode = resetPreflightHeader(req, 'sec-fetch-mode').trim().toLowerCase();
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'same-site') {
+    return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_FETCH_SITE_INVALID');
+  }
+  if (fetchMode && fetchMode !== 'cors') return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_FETCH_MODE_INVALID');
+
+  try {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    if (requestedHeaders.length) res.setHeader('Access-Control-Allow-Headers', requestedHeaders.join(', '));
+    res.setHeader('Access-Control-Max-Age', '0');
+    res.setHeader('Vary', 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+  } catch (_) {
+    return reject(res, 503, 'SECURITY_RESET_PREFLIGHT_RESPONSE_INVALID');
+  }
+  return res.status(200).end();
+}
+
 function parseExactRequest(req) {
   const rawUrl = String(req && req.url || '');
   if (!rawUrl || rawUrl.length > 1800 || /[\u0000-\u001f\u007f]/.test(rawUrl)) {
@@ -565,6 +656,8 @@ async function keamananHandler(req, res) {
     }
     return reject(res, 403, parsed.code);
   }
+
+  if (parsed.reset && parsed.method === 'OPTIONS') return handleResetPreflight(req, res);
 
   const resetBootstrapUrl = resetBootstrapCanonicalUrl(req, parsed);
   if (resetBootstrapUrl) {
