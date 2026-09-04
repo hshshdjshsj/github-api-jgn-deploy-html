@@ -6,6 +6,7 @@ const subtle = crypto.webcrypto && crypto.webcrypto.subtle;
 const SECURITY_ROUTE_PATH = '/api/keamanan';
 const CENTRAL_ROUTE_PATH = '/api/health';
 const RESET_ACTIONS = Object.freeze(new Set(['request_password_reset', 'confirm_password_reset']));
+const PASSWORD_CHANGE_ACTIONS = Object.freeze(new Set(['request_password_change', 'confirm_password_change']));
 const RESET_PROFILE_CARRIER = 'd10.profile@recovery.dirac';
 const RESET_CONFIRM_MARKER = 'D10_PASSKEY_V1';
 const D10 = Object.freeze({
@@ -328,6 +329,7 @@ async function passwordResetEngine(req, res, ops, body) {
 }
 
 const RESET_GATEWAY_TOKEN = Object.freeze({ version: 'dirac-keamanan-reset-gateway-v333' });
+const PASSWORD_CHANGE_GATEWAY_TOKEN = Object.freeze({ version: 'dirac-keamanan-password-change-gateway-v1' });
 
 
 /* ============================================================
@@ -1309,7 +1311,7 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
       || !safeEqual(String(clientData.challenge || ''), String(state.challenge || ''))
       || clientData.crossOrigin === true) throw diracPasswordResetErrorV333('PASSWORD_RESET_WEBAUTHN_CLIENT_DATA_INVALID', 403);
   const clientOrigin = normalizeDashboardMfaOrigin(clientData.origin || '');
-  const expectedOrigin = normalizeDashboardMfaOrigin(diracRoleOriginV250('auth'));
+  const expectedOrigin = normalizeDashboardMfaOrigin(req && req.__diracKeamananPasswordChangeGatewayV1 === PASSWORD_CHANGE_GATEWAY_TOKEN ? ('https://security.' + diracBaseDomainV250()) : diracRoleOriginV250('auth'));
   if (!clientOrigin || !expectedOrigin || !safeEqual(clientOrigin, expectedOrigin)) throw diracPasswordResetErrorV333('PASSWORD_RESET_WEBAUTHN_ORIGIN_INVALID', 403);
   if (clientData.topOrigin && !safeEqual(normalizeDashboardMfaOrigin(clientData.topOrigin), expectedOrigin)) throw diracPasswordResetErrorV333('PASSWORD_RESET_WEBAUTHN_TOP_ORIGIN_INVALID', 403);
   const rpId = diracPasskeyA2FRpId(req);
@@ -1505,7 +1507,7 @@ function diracPasswordResetStrongPasswordV333(password, email) {
   const local = normalizedEmail.split('@')[0] || '';
   if (value.length < 12) throw diracPasswordResetErrorV333('PASSWORD_TOO_SHORT', 400);
   if (Buffer.byteLength(value, 'utf8') > 512 || /[\0\r\n]/.test(value)) throw diracPasswordResetErrorV333('PASSWORD_FORMAT_INVALID', 400);
-  if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/[0-9]/.test(value) || !/[^A-Za-z0-9]/.test(value)) throw diracPasswordResetErrorV333('PASSWORD_COMPLEXITY_REQUIRED', 400);
+  if (!/[A-Z]/.test(value) || !/[0-9]/.test(value) || !/[!@#$%^&*()_+\-=\[\]{};:'",.<>?\/\\|~:]/.test(value)) throw diracPasswordResetErrorV333('PASSWORD_COMPLEXITY_REQUIRED', 400);
   if (/password|qwerty|123456|dirac|admin|welcome/i.test(value)) throw diracPasswordResetErrorV333('PASSWORD_TOO_COMMON', 400);
   if (local.length >= 3 && value.toLowerCase().includes(local.toLowerCase())) throw diracPasswordResetErrorV333('PASSWORD_CONTAINS_ACCOUNT_IDENTIFIER', 400);
   return value;
@@ -1583,7 +1585,7 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
       pepper: 'env',
       auth_user_bound: true,
       customer_bound: true,
-      source_action: 'confirm_password_reset',
+      source_action: req && req.__diracKeamananPasswordChangeGatewayV1 === PASSWORD_CHANGE_GATEWAY_TOKEN ? 'confirm_password_change' : 'confirm_password_reset',
       active_only: true,
       old_hash_retention: 'none',
       rewritten_on_successful_auth: false
@@ -1602,7 +1604,7 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
     + '&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null';
   const sessions = await supabaseFetch(sessionPatchPath, {
     method: 'PATCH', auth: 'service', prefer: 'return=representation',
-    body: { status: 'revoked', revoked_at: nowIso, revoke_reason: 'password_reset_passkey' }
+    body: { status: 'revoked', revoked_at: nowIso, revoke_reason: req && req.__diracKeamananPasswordChangeGatewayV1 === PASSWORD_CHANGE_GATEWAY_TOKEN ? 'password_change_passkey' : 'password_reset_passkey' }
   });
   diracResetDiagnosticV335(req, 'commit.session_revoke', sessions && sessions.ok === true ? 'success' : 'error', { http_status: Number(sessions && sessions.status || 0), revoked_row_count: Array.isArray(sessions && sessions.data) ? sessions.data.length : -1 });
   if (!sessions || sessions.ok !== true || !Array.isArray(sessions.data)) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_REVOCATION_FAILED', 503);
@@ -1642,7 +1644,7 @@ function diracPasswordResetOpsV333(req) {
     verifyPasskey: (state, input) => diracPasswordResetVerifyPasskeyV333(req, state, input),
     commitPassword: (state, password, confirmation, grantId) => diracPasswordResetCommitPasswordV333(req, state, password, confirmation, grantId),
     rpId: () => diracPasskeyA2FRpId(req),
-    authOrigin: () => diracRoleOriginV250('auth')
+    authOrigin: () => req && req.__diracKeamananPasswordChangeGatewayV1 === PASSWORD_CHANGE_GATEWAY_TOKEN ? ('https://security.' + diracBaseDomainV250()) : diracRoleOriginV250('auth')
   });
 }
 
@@ -1680,7 +1682,9 @@ const ACTION_METHODS = Object.freeze({
   customer_security_trust_current_device: Object.freeze(new Set(['POST', 'OPTIONS'])),
   customer_security_untrust_device: Object.freeze(new Set(['POST', 'OPTIONS'])),
   request_password_reset: Object.freeze(new Set(['POST', 'OPTIONS'])),
-  confirm_password_reset: Object.freeze(new Set(['POST', 'OPTIONS']))
+  confirm_password_reset: Object.freeze(new Set(['POST', 'OPTIONS'])),
+  request_password_change: Object.freeze(new Set(['POST', 'OPTIONS'])),
+  confirm_password_change: Object.freeze(new Set(['POST', 'OPTIONS']))
 });
 
 function reject(res, status, code) {
@@ -1741,6 +1745,193 @@ function handleResetPreflight(req, res) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
   } catch (_) { return reject(res, 503, 'SECURITY_RESET_PREFLIGHT_RESPONSE_INVALID'); }
   return res.status(200).end();
+}
+
+
+function securityPasswordChangeValidateBrowserV1(req, method) {
+  const baseDomain = diracBaseDomainV250();
+  const expectedOrigin = 'https://security.' + baseDomain;
+  const origin = requestOrigin(req);
+  if (!safeEqual(origin, expectedOrigin)) throw resetError('SECURITY_PASSWORD_CHANGE_ORIGIN_INVALID', 403);
+  const host = securityResetHeaderV334(req, 'host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
+  const xhost = securityResetHeaderV334(req, 'x-forwarded-host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
+  if (host !== 'api.' + baseDomain || (xhost && xhost !== 'api.' + baseDomain)) throw resetError('SECURITY_PASSWORD_CHANGE_HOST_INVALID', 403);
+  const proto = securityResetHeaderV334(req, 'x-forwarded-proto').split(',')[0].trim().toLowerCase();
+  if (process.env.NODE_ENV === 'production' ? proto !== 'https' : (proto && proto !== 'https')) throw resetError('SECURITY_PASSWORD_CHANGE_HTTPS_REQUIRED', 403);
+  const referer = securityResetHeaderV334(req, 'referer').trim();
+  if (!referer) throw resetError('SECURITY_PASSWORD_CHANGE_REFERER_REQUIRED', 403);
+  let ref;
+  try { ref = new URL(referer); } catch (_) { throw resetError('SECURITY_PASSWORD_CHANGE_REFERER_INVALID', 403); }
+  if (!safeEqual(ref.origin.toLowerCase(), expectedOrigin) || ref.pathname !== '/keamanan.html' || ref.search || ref.hash || ref.username || ref.password) throw resetError('SECURITY_PASSWORD_CHANGE_REFERER_INVALID', 403);
+  const site = securityResetHeaderV334(req, 'sec-fetch-site').trim().toLowerCase();
+  const mode = securityResetHeaderV334(req, 'sec-fetch-mode').trim().toLowerCase();
+  const dest = securityResetHeaderV334(req, 'sec-fetch-dest').trim().toLowerCase();
+  if (site && site !== 'same-site' && site !== 'same-origin') throw resetError('SECURITY_PASSWORD_CHANGE_FETCH_SITE_INVALID', 403);
+  if (method === 'POST' && mode && mode !== 'cors' && mode !== 'same-origin') throw resetError('SECURITY_PASSWORD_CHANGE_FETCH_MODE_INVALID', 403);
+  if (method === 'POST' && dest && dest !== 'empty') throw resetError('SECURITY_PASSWORD_CHANGE_FETCH_DEST_INVALID', 403);
+  if (securityResetHeaderV334(req, 'authorization').trim()) throw resetError('SECURITY_PASSWORD_CHANGE_AUTHORIZATION_HEADER_REJECTED', 403);
+  return expectedOrigin;
+}
+
+function securityPasswordChangePreflightV1(req, res) {
+  const baseDomain = diracBaseDomainV250();
+  const expectedOrigin = 'https://security.' + baseDomain;
+  const origin = securityResetHeaderV334(req, 'origin').trim().toLowerCase();
+  if (!safeEqual(origin, expectedOrigin)) return reject(res, 403, 'SECURITY_PASSWORD_CHANGE_PREFLIGHT_ORIGIN_INVALID');
+  const expectedHost = 'api.' + baseDomain;
+  const forwardedHost = resetPreflightHeader(req, 'x-forwarded-host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
+  const directHost = resetPreflightHeader(req, 'host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
+  if (directHost !== expectedHost || (forwardedHost && forwardedHost !== expectedHost)) return reject(res, 403, 'SECURITY_PASSWORD_CHANGE_PREFLIGHT_HOST_INVALID');
+  const forwardedProto = resetPreflightHeader(req, 'x-forwarded-proto').split(',')[0].trim().toLowerCase();
+  if (process.env.NODE_ENV === 'production' ? forwardedProto !== 'https' : (forwardedProto && forwardedProto !== 'https')) return reject(res, 403, 'SECURITY_PASSWORD_CHANGE_PREFLIGHT_HTTPS_REQUIRED');
+  if (resetPreflightHeader(req, 'access-control-request-method').trim().toUpperCase() !== 'POST') return reject(res, 405, 'SECURITY_PASSWORD_CHANGE_PREFLIGHT_METHOD_INVALID');
+  const requestedHeaders = Array.from(new Set(resetPreflightHeader(req, 'access-control-request-headers').split(',').map((v) => v.trim().toLowerCase()).filter(Boolean)));
+  if (requestedHeaders.length > RESET_PREFLIGHT_ALLOWED_HEADERS.size || requestedHeaders.some((name) => !/^[a-z0-9-]{1,64}$/.test(name) || !RESET_PREFLIGHT_ALLOWED_HEADERS.has(name))) return reject(res, 403, 'SECURITY_PASSWORD_CHANGE_PREFLIGHT_HEADER_INVALID');
+  if (resetPreflightHeader(req, 'access-control-request-private-network').trim().toLowerCase() === 'true') return reject(res, 403, 'SECURITY_PASSWORD_CHANGE_PREFLIGHT_PRIVATE_NETWORK_REJECTED');
+  if (resetPreflightHeader(req, 'authorization').trim() || resetPreflightHeader(req, 'cookie').trim()) return reject(res, 403, 'SECURITY_PASSWORD_CHANGE_PREFLIGHT_CREDENTIALS_REJECTED');
+  const contentLength = resetPreflightHeader(req, 'content-length').trim();
+  if ((contentLength && contentLength !== '0') || resetPreflightHeader(req, 'transfer-encoding').trim()) return reject(res, 403, 'SECURITY_PASSWORD_CHANGE_PREFLIGHT_BODY_REJECTED');
+  const fetchSite = resetPreflightHeader(req, 'sec-fetch-site').trim().toLowerCase();
+  const fetchMode = resetPreflightHeader(req, 'sec-fetch-mode').trim().toLowerCase();
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'same-site') return reject(res, 403, 'SECURITY_PASSWORD_CHANGE_PREFLIGHT_FETCH_SITE_INVALID');
+  if (fetchMode && fetchMode !== 'cors') return reject(res, 403, 'SECURITY_PASSWORD_CHANGE_PREFLIGHT_FETCH_MODE_INVALID');
+  try {
+    res.setHeader('Access-Control-Allow-Origin', expectedOrigin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    if (requestedHeaders.length) res.setHeader('Access-Control-Allow-Headers', requestedHeaders.join(', '));
+    res.setHeader('Access-Control-Max-Age', '0');
+    res.setHeader('Vary', 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+  } catch (_) { return reject(res, 503, 'SECURITY_PASSWORD_CHANGE_PREFLIGHT_RESPONSE_INVALID'); }
+  return res.status(200).end();
+}
+
+function securityPasswordChangeCentralProbeResponseV1() {
+  const headers = new Map();
+  return {
+    statusCode: 200, headersSent: false, writableEnded: false, body: null,
+    locals: Object.create(null),
+    setHeader(name, value) { headers.set(String(name).toLowerCase(), value); return this; },
+    getHeader(name) { return headers.get(String(name).toLowerCase()); },
+    removeHeader(name) { headers.delete(String(name).toLowerCase()); },
+    append(name, value) {
+      const key = String(name).toLowerCase(); const current = headers.get(key);
+      headers.set(key, current === undefined ? value : (Array.isArray(current) ? current.concat(value) : [current].concat(value))); return this;
+    },
+    status(code) { this.statusCode = Number(code) || 500; return this; },
+    json(value) { this.body = value; this.headersSent = true; this.writableEnded = true; return this; },
+    send(value) { this.body = value; this.headersSent = true; this.writableEnded = true; return this; },
+    end(value) { if (value !== undefined) this.body = value; this.headersSent = true; this.writableEnded = true; return this; },
+    writeHead(code, values) { this.statusCode = Number(code) || 500; if (values && typeof values === 'object') Object.keys(values).forEach((key) => this.setHeader(key, values[key])); this.headersSent = true; return this; },
+    write() { this.headersSent = true; return true; },
+    cookie() { return this; },
+    clearCookie() { return this; }
+  };
+}
+
+async function securityPasswordChangeRequireCentralGuardV1(req) {
+  const original = {
+    url: req.url, method: req.method, query: req.query, headers: req.headers,
+    hadOriginalUrl: Object.prototype.hasOwnProperty.call(req, 'originalUrl'), originalUrl: req.originalUrl,
+    hadPath: Object.prototype.hasOwnProperty.call(req, 'path'), path: req.path
+  };
+  const probeRes = securityPasswordChangeCentralProbeResponseV1();
+  try {
+    req.url = CENTRAL_ROUTE_PATH + '?action=customer_security_guard_status';
+    req.originalUrl = req.url;
+    req.path = CENTRAL_ROUTE_PATH;
+    req.method = 'GET';
+    req.query = { action: 'customer_security_guard_status' };
+    req.headers = { ...(req.headers && typeof req.headers === 'object' ? req.headers : {}) };
+    delete req.headers['content-length'];
+    delete req.headers['transfer-encoding'];
+    delete req.headers['content-type'];
+    delete req.headers['content-encoding'];
+    await centralHandler(req, probeRes);
+  } finally {
+    try { req.url = original.url; } catch (_) {}
+    try { req.method = original.method; } catch (_) {}
+    try { req.query = original.query; } catch (_) {}
+    try { req.headers = original.headers; } catch (_) {}
+    try { if (original.hadOriginalUrl) req.originalUrl = original.originalUrl; else delete req.originalUrl; } catch (_) {}
+    try { if (original.hadPath) req.path = original.path; else delete req.path; } catch (_) {}
+  }
+  const data = probeRes.body && typeof probeRes.body === 'object' && !Array.isArray(probeRes.body) ? probeRes.body : null;
+  if (Number(probeRes.statusCode) !== 200 || !data || data.ok !== true || data.endpoint !== 'customer_security_guard_status'
+      || data.linked !== true || data.mfa_required_for_page !== true || data.mfa_required_for_write !== true
+      || data.mfa_active_now !== true || data.guarded_actions_ready !== true || data.write_guard !== 'mfa_required'
+      || data.direct_frontend_table_access !== false || data.customer_id_source !== 'security_customer_auth_links') {
+    throw resetError('SECURITY_PASSWORD_CHANGE_CENTRAL_GUARD_REQUIRED', Number(probeRes.statusCode) >= 400 && Number(probeRes.statusCode) <= 599 ? Number(probeRes.statusCode) : 403);
+  }
+  return true;
+}
+
+function securityPasswordChangeBootstrapTargetV1(req) {
+  const raw = String(req && req.url || '');
+  const q = raw.indexOf('?'); if (q < 0 || raw.slice(0, q) !== SECURITY_ROUTE_PATH) return '';
+  let params; try { params = new URLSearchParams(raw.slice(q + 1)); } catch (_) { return ''; }
+  if (params.getAll('action').length !== 1 || params.get('action') !== 'domain_health' || params.getAll('_dirac_page_nonce_for').length !== 1) return '';
+  const target = String(params.get('_dirac_page_nonce_for') || '').trim().toLowerCase();
+  if (!PASSWORD_CHANGE_ACTIONS.has(target) || params.getAll('_csrf_probe').length !== 1 || !/^\d{10,17}$/.test(String(params.get('_csrf_probe') || ''))) return '';
+  return target;
+}
+
+async function handlePasswordChangeBootstrapV1(req, res, targetAction) {
+  const origin = securityPasswordChangeValidateBrowserV1(req, 'GET');
+  if (String(req && req.method || '').toUpperCase() !== 'GET') return reject(res, 405, 'SECURITY_PASSWORD_CHANGE_BOOTSTRAP_METHOD_INVALID');
+  const params = new URLSearchParams(String(req && req.url || '').split('?').slice(1).join('?'));
+  const probeMs = Number(params.get('_csrf_probe'));
+  const nowMs = Date.now();
+  if (!Number.isSafeInteger(probeMs) || probeMs < nowMs - 30000 || probeMs > nowMs + 5000) return reject(res, 403, 'SECURITY_PASSWORD_CHANGE_BOOTSTRAP_PROBE_INVALID');
+  await securityPasswordChangeRequireCentralGuardV1(req);
+  await securityResetRateLimitV334(req, 'password_change_bootstrap_' + targetAction);
+  const csrf = securityResetIssueCsrfV334(req);
+  const nonce = securityResetIssuePageNonceV334(req, targetAction);
+  securityResetApplyHeadersV334(req, res, origin);
+  res.setHeader('X-Dirac-CSRF-Token', csrf); res.setHeader('X-CSRF-Token', csrf);
+  res.setHeader('X-Dirac-Page-Nonce', nonce); res.setHeader('X-Page-Nonce', nonce);
+  return res.status(200).json({ ok:true, security_password_change_bootstrap:true, central_guard_verified:true });
+}
+
+async function securityPasswordChangeRunResetEngineV1(req, res, parsed, body) {
+  const mappedAction = parsed.action === 'request_password_change' ? 'request_password_reset' : 'confirm_password_reset';
+  const mappedBody = { ...body, action: mappedAction };
+  const hadMarker = Object.prototype.hasOwnProperty.call(req, '__diracKeamananPasswordChangeGatewayV1');
+  const previousMarker = req.__diracKeamananPasswordChangeGatewayV1;
+  const originalQuery = req.query;
+  try {
+    req.__diracKeamananPasswordChangeGatewayV1 = PASSWORD_CHANGE_GATEWAY_TOKEN;
+    req.query = { action: mappedAction };
+    return await passwordResetEngine(req, res, diracPasswordResetOpsV333(req), mappedBody);
+  } finally {
+    try { req.query = originalQuery; } catch (_) {}
+    try { if (hadMarker) req.__diracKeamananPasswordChangeGatewayV1 = previousMarker; else delete req.__diracKeamananPasswordChangeGatewayV1; } catch (_) {}
+  }
+}
+
+async function handlePasswordChangePostV1(req, res, parsed) {
+  const origin = securityPasswordChangeValidateBrowserV1(req, 'POST');
+  securityResetApplyHeadersV334(req, res, origin);
+  await securityPasswordChangeRequireCentralGuardV1(req);
+  const contentType = securityResetHeaderV334(req, 'content-type').toLowerCase();
+  if (!contentType.startsWith('application/json')) throw resetError('SECURITY_PASSWORD_CHANGE_CONTENT_TYPE_INVALID', 415);
+  const primary = securityResetHeaderV334(req, 'x-dirac-csrf-token').trim();
+  const compat = securityResetHeaderV334(req, 'x-csrf-token').trim();
+  if (!primary || !compat || !safeEqual(primary, compat) || !securityResetVerifyCsrfV334(req, primary)) throw resetError('SECURITY_PASSWORD_CHANGE_CSRF_INVALID', 403);
+  const nonceText = (securityResetHeaderV334(req, 'x-dirac-page-nonce') || securityResetHeaderV334(req, 'x-page-nonce')).trim();
+  const nonce = securityResetVerifyPageNonceV334(req, nonceText, parsed.action);
+  if (!nonce || nonce.__diracPageNonceSourceV334 !== 'standalone') throw resetError('SECURITY_PASSWORD_CHANGE_PAGE_NONCE_INVALID', 403);
+  const body = await securityResetReadJsonV334(req);
+  const bodyAction = String(body.action || '').trim().toLowerCase().replace(/-/g, '_');
+  if (bodyAction !== parsed.action) throw resetError('SECURITY_PASSWORD_CHANGE_ACTION_MISMATCH', 400);
+  await securityResetRateLimitV334(req, 'password_change_' + parsed.action);
+  const consumed = await diracCentralAtomicConsumeV230({ namespace:'pwd_change_page_nonce', jti:String(nonce.jti), expiresAt:Number(nonce.exp), contextHash:[nonce.act,nonce.sid,nonce.oh,nonce.mth,nonce.rb].join('|') });
+  if (!consumed || consumed.ok !== true) throw resetError('SECURITY_PASSWORD_CHANGE_PAGE_NONCE_REPLAY', 409);
+  return securityPasswordChangeRunResetEngineV1(req, res, parsed, body);
 }
 
 
@@ -1827,7 +2018,7 @@ function parseExactRequest(req) {
   }
   const method = String(req && req.method || 'GET').toUpperCase();
   if (!ACTION_METHODS[action].has(method)) return { ok: false, code: 'SECURITY_ROUTE_METHOD_NOT_ALLOWED', allow: Array.from(ACTION_METHODS[action]).filter((v) => v !== 'OPTIONS') };
-  return { ok: true, action, method, canonicalUrl: CENTRAL_ROUTE_PATH + (rawQuery ? '?' + rawQuery : ''), reset: RESET_ACTIONS.has(action) };
+  return { ok: true, action, method, canonicalUrl: CENTRAL_ROUTE_PATH + (rawQuery ? '?' + rawQuery : ''), reset: RESET_ACTIONS.has(action), passwordChange: PASSWORD_CHANGE_ACTIONS.has(action) };
 }
 
 async function invokeCentral(req, res, parsed) {
@@ -1853,6 +2044,11 @@ async function invokeCentral(req, res, parsed) {
 }
 
 async function keamananHandler(req, res) {
+  const passwordChangeBootstrapTarget = securityPasswordChangeBootstrapTargetV1(req);
+  if (passwordChangeBootstrapTarget && String(req && req.method || 'GET').toUpperCase() === 'GET') {
+    try { return await handlePasswordChangeBootstrapV1(req, res, passwordChangeBootstrapTarget); }
+    catch (error) { securityResetApplyHeadersV334(req, res, requestOrigin(req)); return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_PASSWORD_CHANGE_BOOTSTRAP_FAILED'), message:'Perubahan password ditolak oleh sistem keamanan.' }); }
+  }
   const bootstrapTarget = securityResetBootstrapTargetV334(req);
   if (bootstrapTarget && String(req && req.method || 'GET').toUpperCase() === 'GET') {
     try { return await handleResetBootstrapV334(req, res, bootstrapTarget); }
@@ -1862,6 +2058,11 @@ async function keamananHandler(req, res) {
   if (!parsed.ok) {
     if (parsed.allow && parsed.allow.length) { try { res.setHeader('Allow', parsed.allow.join(', ')); } catch (_) {} return reject(res, 405, parsed.code); }
     return reject(res, 403, parsed.code);
+  }
+  if (parsed.passwordChange && parsed.method === 'OPTIONS') return securityPasswordChangePreflightV1(req, res);
+  if (parsed.passwordChange && parsed.method === 'POST') {
+    try { return await handlePasswordChangePostV1(req, res, parsed); }
+    catch (error) { securityResetApplyHeadersV334(req, res, requestOrigin(req)); return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_PASSWORD_CHANGE_FAILED'), message:'Perubahan password ditolak oleh sistem keamanan.' }); }
   }
   if (parsed.reset && parsed.method === 'OPTIONS') return handleResetPreflight(req, res);
   if (parsed.reset && parsed.method === 'POST') {
@@ -1878,3 +2079,21 @@ Object.defineProperty(keamananHandler, 'config', { value: centralHandler.config,
 Object.defineProperty(keamananHandler, '__diracSecurityRouteAliasV2', { value: true, enumerable: false });
 Object.freeze(keamananHandler);
 module.exports = keamananHandler;
+
+
+/* DIRAC APPEND-ONLY REVISION 2026-09-04: reset-password policy parity with registration. */
+/* Existing reset validation is not removed; this override synchronizes the requested 12/1-uppercase/1-digit/1-symbol composition rule. */
+diracPasswordResetStrongPasswordV333 = function diracPasswordResetStrongPasswordV333Parity20260904(password, email) {
+  const value = String(password || '');
+  const normalizedEmail = normalizeAuthEmail(email || '');
+  const local = normalizedEmail.split('@')[0] || '';
+  const specialCount = (value.match(/[!@#$%^&*()_+\-=\[\]{};:'",.<>?\/\\|~:]/g) || []).length;
+  const uppercaseCount = (value.match(/[A-Z]/g) || []).length;
+  const digitCount = (value.match(/[0-9]/g) || []).length;
+  if (value.length < 12) throw diracPasswordResetErrorV333('PASSWORD_TOO_SHORT', 400);
+  if (value.length > 128 || Buffer.byteLength(value, 'utf8') > 512 || /[\0\r\n]/.test(value)) throw diracPasswordResetErrorV333('PASSWORD_FORMAT_INVALID', 400);
+  if (uppercaseCount < 1 || digitCount < 1 || specialCount < 1) throw diracPasswordResetErrorV333('PASSWORD_COMPLEXITY_REQUIRED', 400);
+  if (/password|qwerty|123456|dirac|admin|welcome/i.test(value)) throw diracPasswordResetErrorV333('PASSWORD_TOO_COMMON', 400);
+  if (local.length >= 3 && value.toLowerCase().includes(local.toLowerCase())) throw diracPasswordResetErrorV333('PASSWORD_CONTAINS_ACCOUNT_IDENTIFIER', 400);
+  return value;
+};
