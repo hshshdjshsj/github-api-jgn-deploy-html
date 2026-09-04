@@ -725,6 +725,7 @@ const SECURITY_SUPABASE_TARGETS_V334 = Object.freeze({
 function securityEnvTrueV334(name) { return /^(1|true|yes|on)$/i.test(String(process.env[name] || '').trim()); }
 function securitySupabaseTargetV334(path) {
   if (path === '/rest/v1/rpc/dirac_central_atomic_consume_v230' || path === '/rest/v1/rpc/dirac_central_atomic_rate_limit_v230' || path.startsWith('/rest/v1/dirac_persistent_bans')) return 'security';
+  if (path === '/rest/v1/rpc/dirac_passkey_record_assertion_v237') return 'legacy';
   if (path.startsWith('/rest/v1/domain_passkeys')) return securityEnvTrueV334('DIRAC_ENABLE_MULTI_DB_ROUTER') || securityEnvTrueV334('DIRAC_MULTI_DB_ROUTER_ENABLED') ? 'domain' : 'legacy';
   if (/^\/rest\/v1\/security_customer_(auth_links|password_hashes|sessions|settings)/.test(path)) return securityEnvTrueV334('DIRAC_ENABLE_MULTI_DB_ROUTER') || securityEnvTrueV334('DIRAC_MULTI_DB_ROUTER_ENABLED') ? 'customerSecurity' : 'legacy';
   if (path.startsWith('/auth/v1/')) return 'legacy';
@@ -1360,27 +1361,40 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
     },
     last_authentication: { verified_at: nowIso, purpose: 'password_reset_passkey' }
   };
-  const patchPath = '/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,email,credential_id,sign_count,is_active,rotation_state,credential_json,last_used_at')
-    + '&id=eq.' + encodeURIComponent(row.id)
-    + '&user_id=eq.' + encodeURIComponent(owner.customerId)
-    + '&credential_id=eq.' + encodeURIComponent(credentialId)
-    + '&sign_count=eq.' + encodeURIComponent(String(previousSignCount))
-    + '&is_active=eq.true&rotation_state=eq.active';
-  const patched = await supabaseFetch(patchPath, {
-    method: 'PATCH', auth: 'service', prefer: 'return=representation',
-    body: { sign_count: nextSignCount, credential_json: updatedJson, last_used_at: nowIso, updated_at: nowIso }
-  });
-  const patchedRows = patched && patched.ok === true && Array.isArray(patched.data) ? patched.data : [];
-  diracResetDiagnosticV335(req, 'verify.passkey.sign_count_cas', patched && patched.ok === true ? 'success' : 'error', { http_status: Number(patched && patched.status || 0), row_count: patchedRows.length, previous_sign_count: previousSignCount, next_sign_count: nextSignCount });
-  if (!patched || patched.ok !== true || patchedRows.length !== 1
-      || !safeEqual(String(patchedRows[0].id || ''), String(row.id || ''))
-      || Number(patchedRows[0].sign_count || 0) !== nextSignCount
-      || patchedRows[0].is_active !== true || String(patchedRows[0].rotation_state || '') !== 'active') {
-    throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_USAGE_POSTCONDITION_FAILED', 503);
-  }
   const securityEpoch = await diracPasskeyA2FReadSecurityEpoch(owner);
   diracResetDiagnosticV335(req, 'verify.passkey.security_epoch', 'success', { security_epoch: Number(securityEpoch || 0) });
   if (!Number.isSafeInteger(securityEpoch) || securityEpoch < 1) throw diracPasswordResetErrorV333('PASSWORD_RESET_SECURITY_EPOCH_INVALID', 503);
+  const currentAuthSessionId = String(row.current_auth_session_id || '').trim();
+  if (!customerSecurityLooksLikeUuid(currentAuthSessionId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_SESSION_BINDING_INVALID', 503);
+  const recorded = await supabaseFetch('/rest/v1/rpc/dirac_passkey_record_assertion_v237', {
+    method: 'POST', auth: 'service', prefer: 'return=representation',
+    body: {
+      p_customer_id: owner.customerId,
+      p_passkey_id: String(row.id || ''),
+      p_expected_sign_count: previousSignCount,
+      p_new_sign_count: nextSignCount,
+      p_backup_state: assertion.backupState === true,
+      p_credential_json: updatedJson,
+      p_confirm_pending: false,
+      p_auth_user_id: owner.authUserId,
+      p_assertion_purpose: 'login',
+      p_rotation_id: null,
+      p_expected_security_epoch: securityEpoch,
+      p_current_auth_session_id: currentAuthSessionId
+    }
+  });
+  let recordedRow = null;
+  if (recorded && recorded.ok === true) recordedRow = await diracPasswordResetFetchCredentialByRowIdV333(String(row.id || ''), owner.customerId);
+  diracResetDiagnosticV335(req, 'verify.passkey.sign_count_cas', recorded && recorded.ok === true ? 'success' : 'error', { http_status: Number(recorded && recorded.status || 0), row_count: recordedRow ? 1 : 0, previous_sign_count: previousSignCount, next_sign_count: nextSignCount });
+  if (!recorded || recorded.ok !== true || !recordedRow
+      || !safeEqual(String(recordedRow.id || ''), String(row.id || ''))
+      || !safeEqual(String(recordedRow.user_id || ''), owner.customerId)
+      || !safeEqual(String(recordedRow.credential_id || ''), credentialId)
+      || Number(recordedRow.sign_count || 0) !== nextSignCount
+      || recordedRow.backup_state !== (assertion.backupState === true)
+      || recordedRow.is_active !== true || String(recordedRow.rotation_state || '') !== 'active') {
+    throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_USAGE_POSTCONDITION_FAILED', 503);
+  }
   return Object.freeze({
     auth_user_id: owner.authUserId,
     customer_id: owner.customerId,
