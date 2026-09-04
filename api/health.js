@@ -34355,20 +34355,80 @@ try {
 } catch (_) {}
 
 async function diracPasswordArgon2ActiveOnlyV120PersistAfterVerifiedAuth(req, payload, action) {
-  if (diracPasswordArgon2V4EnvTrue('DIRAC_PASSWORD_ARGON2_DISABLED')) return { ok: false, skipped: 'disabled' };
+  let activeRows = null;
+  let activeRowsRead = false;
+  let detectionCandidate = null;
+  let detectionAttempted = false;
+  let detectionVerified = null;
+  let detectionPassword = '';
+  let detectionAuthUserId = '';
+  let detectionEmail = '';
+  const verifyCandidate = async function diracPasswordArgon2VerifyCandidateV334(candidate, candidatePassword, candidateAuthUserId, candidateEmail) {
+    try {
+      const verified = await diracV110VerifyArgon2ShadowPassword(
+        candidatePassword,
+        candidate.password_hash,
+        { authUserId: candidateAuthUserId, customerId: String(candidate.customer_id), email: candidateEmail }
+      );
+      return verified === true ? true : verified === false ? false : null;
+    } catch (_) {
+      return null;
+    }
+  };
 
+  try {
+    const detectionAction = diracV110NormalizeAction(String(action || ''));
+    if (detectionAction === 'domain_login') {
+      const detectionCached = req && req.__diracPasswordArgon2V4Body && typeof req.__diracPasswordArgon2V4Body === 'object'
+        ? req.__diracPasswordArgon2V4Body
+        : {};
+      detectionPassword = String(detectionCached.password || '');
+      const detectionUser = payload && payload.user && typeof payload.user === 'object' ? payload.user : null;
+      detectionAuthUserId = diracPasswordArgon2V4ExtractUserId(detectionUser, payload);
+      detectionEmail = typeof diracSecurityMailEmailV327 === 'function'
+        ? diracSecurityMailEmailV327(detectionCached.email || detectionUser && detectionUser.email || '')
+        : normalizeAuthEmail(detectionCached.email || detectionUser && detectionUser.email || '');
+      if (detectionPassword && diracPasswordArgon2V4LooksLikeUuid(detectionAuthUserId) && detectionEmail) {
+        activeRows = await diracPasswordArgon2ActiveOnlyV120ReadActiveRows(detectionAuthUserId).catch(() => null);
+        activeRowsRead = Array.isArray(activeRows);
+        detectionCandidate = activeRowsRead && activeRows.length ? activeRows[0] : null;
+        if (detectionCandidate
+            && diracPasswordArgon2V4LooksLikeUuid(detectionCandidate.customer_id)
+            && String(detectionCandidate.password_hash || '').startsWith('$argon2id$')
+            && typeof diracV110VerifyArgon2ShadowPassword === 'function') {
+          detectionAttempted = true;
+          detectionVerified = await verifyCandidate(detectionCandidate, detectionPassword, detectionAuthUserId, detectionEmail);
+          if (detectionVerified === false && req && !req.__diracUserSecurityPasswordChangedV327) {
+            try {
+              Object.defineProperty(req, '__diracUserSecurityPasswordChangedV327', {
+                value: Object.freeze({ changed: true, email: detectionEmail, detectedAt: Date.now() }),
+                writable: false,
+                configurable: false,
+                enumerable: false
+              });
+            } catch (_) {}
+          }
+        }
+      }
+    }
+  } catch (passwordDetectionErrorV334) {
+    if (typeof diracCentralRecordSuppressedExceptionV221 === 'function') diracCentralRecordSuppressedExceptionV221(passwordDetectionErrorV334);
+  }
+
+  if (diracPasswordArgon2V4EnvTrue('DIRAC_PASSWORD_ARGON2_DISABLED')) return { ok: false, skipped: 'disabled' };
   const cached = req && req.__diracPasswordArgon2V4Body && typeof req.__diracPasswordArgon2V4Body === 'object'
     ? req.__diracPasswordArgon2V4Body
     : {};
   const password = String(cached.password || '');
   if (!password || password.length < 6) return { ok: false, skipped: 'no_password' };
-
   const user = payload && payload.user && typeof payload.user === 'object' ? payload.user : null;
   const authUserId = diracPasswordArgon2V4ExtractUserId(user, payload);
   if (!diracPasswordArgon2V4LooksLikeUuid(authUserId)) return { ok: false, skipped: 'no_auth_user_id' };
 
   const email = normalizeAuthEmail(cached.email || user && user.email || '');
   if (!email || (typeof isStrictDomainLoginEmail === 'function' && !isStrictDomainLoginEmail(email))) return { ok: false, skipped: 'invalid_email' };
+  let normalizedAction = String(action || '').trim().toLowerCase();
+  try { normalizedAction = diracV110NormalizeAction(normalizedAction); } catch (_) {}
 
   let customerId = '';
   if (typeof customerSecurityBootstrapRegisteredUser === 'function') {
@@ -34385,20 +34445,42 @@ async function diracPasswordArgon2ActiveOnlyV120PersistAfterVerifiedAuth(req, pa
   }
 
   const params = diracPasswordArgon2V4Params();
-  const activeRows = await diracPasswordArgon2ActiveOnlyV120ReadActiveRows(authUserId).catch(() => null);
+  if (!activeRowsRead) {
+    activeRows = await diracPasswordArgon2ActiveOnlyV120ReadActiveRows(authUserId).catch(() => null);
+    activeRowsRead = Array.isArray(activeRows);
+  }
   const active = Array.isArray(activeRows) && activeRows.length === 1 ? activeRows[0] : null;
   if (active && active.id && active.customer_id === customerId
       && active.status === 'active'
       && String(active.password_hash || '').startsWith('$argon2id$')
-      && diracPasswordArgon2ActiveOnlyV120CurrentProfile(active.password_hash, params)
       && typeof diracV110VerifyArgon2ShadowPassword === 'function') {
-    const matchesCurrentPassword = await diracV110VerifyArgon2ShadowPassword(
-      password,
-      active.password_hash,
-      { authUserId, customerId, email }
-    ).catch(() => false);
-    if (matchesCurrentPassword) {
+    const activeProfileIsCurrent = diracPasswordArgon2ActiveOnlyV120CurrentProfile(active.password_hash, params);
+    let matchesCurrentPassword = null;
+    const sameDetectionCandidate = detectionAttempted
+      && detectionCandidate === active
+      && detectionPassword === password
+      && detectionAuthUserId === authUserId
+      && String(detectionCandidate.customer_id) === customerId
+      && detectionEmail === email;
+    if (sameDetectionCandidate) {
+      matchesCurrentPassword = detectionVerified;
+    } else if (activeProfileIsCurrent) {
+      matchesCurrentPassword = await verifyCandidate(active, password, authUserId, email);
+    }
+    if (matchesCurrentPassword === true && activeProfileIsCurrent) {
       return { ok: true, skipped: 'active_argon2id_matches_current_password' };
+    }
+    if (matchesCurrentPassword === false
+        && normalizedAction === 'domain_login'
+        && req && !req.__diracUserSecurityPasswordChangedV327) {
+      try {
+        Object.defineProperty(req, '__diracUserSecurityPasswordChangedV327', {
+          value: Object.freeze({ changed: true, email, detectedAt: Date.now() }),
+          writable: false,
+          configurable: false,
+          enumerable: false
+        });
+      } catch (_) {}
     }
   }
 
@@ -34509,7 +34591,7 @@ async function diracPasswordArgon2ActiveOnlyV120ReadActiveRows(authUserId) {
     method: 'GET',
     auth: 'service'
   });
-  if (!result || !result.ok || !Array.isArray(result.data)) return [];
+  if (!result || !result.ok || !Array.isArray(result.data)) return null;
   return result.data;
 }
 
@@ -47740,38 +47822,6 @@ try {
     : null;
   if (originalPasswordPersistV327 && !originalPasswordPersistV327.__diracUserSecurityPasswordDetectionV327) {
     diracPasswordArgon2V4PersistAfterVerifiedAuth = async function diracPasswordArgon2PersistWithSecurityMailDetectionV327(req, payload, action) {
-      if (diracV110NormalizeAction(String(action || '')) === 'domain_login') {
-        try {
-          const cached = req && req.__diracPasswordArgon2V4Body && typeof req.__diracPasswordArgon2V4Body === 'object' ? req.__diracPasswordArgon2V4Body : {};
-          const password = String(cached.password || '');
-          const user = payload && payload.user && typeof payload.user === 'object' ? payload.user : null;
-          const authUserId = diracPasswordArgon2V4ExtractUserId(user, payload);
-          const email = diracSecurityMailEmailV327(cached.email || user && user.email || '');
-          if (password && diracPasswordArgon2V4LooksLikeUuid(authUserId) && email) {
-            const active = await diracPasswordArgon2V4ReadActive(authUserId).catch(() => null);
-            if (active && diracPasswordArgon2V4LooksLikeUuid(active.customer_id) && String(active.password_hash || '').startsWith('$argon2id$')) {
-              let verified = null;
-              try {
-                verified = await diracV110VerifyArgon2ShadowPassword(password, active.password_hash, {
-                  authUserId,
-                  customerId: String(active.customer_id),
-                  email
-                });
-              } catch (_) { verified = null; }
-              if (verified === false) {
-                Object.defineProperty(req, '__diracUserSecurityPasswordChangedV327', {
-                  value: Object.freeze({ changed: true, email, detectedAt: Date.now() }),
-                  writable: false,
-                  configurable: false,
-                  enumerable: false
-                });
-              }
-            }
-          }
-        } catch (passwordDetectionErrorV327) {
-          if (typeof diracCentralRecordSuppressedExceptionV221 === 'function') diracCentralRecordSuppressedExceptionV221(passwordDetectionErrorV327);
-        }
-      }
       return originalPasswordPersistV327(req, payload, action);
     };
     Object.defineProperty(diracPasswordArgon2V4PersistAfterVerifiedAuth, '__diracUserSecurityPasswordDetectionV327', { value: true, enumerable: false });
@@ -57034,6 +57084,9 @@ function diracCentralGuardEgressResponseV228(response, host) {
 
 const DIRAC_CENTRAL_NATIVE_HTTP_REQUEST_V230 = require('http').request;
 const DIRAC_CENTRAL_NATIVE_HTTPS_REQUEST_V230 = require('https').request;
+const DIRAC_CENTRAL_NATIVE_HTTPS_AGENT_V334 = require('https').Agent;
+const DIRAC_CENTRAL_PINNED_HTTPS_AGENTS_V334 = new Map();
+const DIRAC_CENTRAL_PINNED_HTTPS_AGENT_LIMIT_V334 = 16;
 const DIRAC_CENTRAL_NATIVE_NET_SOCKET_V230 = require('net').Socket;
 const DIRAC_CENTRAL_NATIVE_NET_SOCKET_CONNECT_V230 = DIRAC_CENTRAL_NATIVE_NET_SOCKET_V230.prototype.connect;
 const DIRAC_CENTRAL_NATIVE_NET_CONNECT_V230 = function diracCentralNativeNetConnectV230(options) {
@@ -57046,6 +57099,26 @@ const DIRAC_CENTRAL_NATIVE_DNS_RESOLVE4_V230 = DIRAC_CENTRAL_NATIVE_DNS_PROMISES
 const DIRAC_CENTRAL_NATIVE_DNS_RESOLVE6_V230 = DIRAC_CENTRAL_NATIVE_DNS_PROMISES_V230.resolve6.bind(DIRAC_CENTRAL_NATIVE_DNS_PROMISES_V230);
 const DIRAC_CENTRAL_NATIVE_DNS_RESOLVE_CNAME_V230 = DIRAC_CENTRAL_NATIVE_DNS_PROMISES_V230.resolveCname.bind(DIRAC_CENTRAL_NATIVE_DNS_PROMISES_V230);
 const DIRAC_CENTRAL_NATIVE_DNS_LOOKUP_V230 = DIRAC_CENTRAL_NATIVE_DNS_PROMISES_V230.lookup.bind(DIRAC_CENTRAL_NATIVE_DNS_PROMISES_V230);
+
+function diracCentralPinnedHttpsAgentV334(hostname, port, pinnedIp) {
+  const host = String(hostname || '').trim().toLowerCase();
+  const cleanPort = Number(port);
+  const ip = String(pinnedIp || '').trim().toLowerCase();
+  if (!host || !Number.isSafeInteger(cleanPort) || cleanPort < 1 || cleanPort > 65535 || !ip) return false;
+  const key = host + '|' + cleanPort + '|' + ip;
+  const existing = DIRAC_CENTRAL_PINNED_HTTPS_AGENTS_V334.get(key);
+  if (existing) return existing;
+  if (DIRAC_CENTRAL_PINNED_HTTPS_AGENTS_V334.size >= DIRAC_CENTRAL_PINNED_HTTPS_AGENT_LIMIT_V334) return false;
+  const agent = new DIRAC_CENTRAL_NATIVE_HTTPS_AGENT_V334({
+    keepAlive: true,
+    keepAliveMsecs: 1000,
+    maxSockets: 8,
+    maxFreeSockets: 2,
+    scheduling: 'lifo'
+  });
+  DIRAC_CENTRAL_PINNED_HTTPS_AGENTS_V334.set(key, agent);
+  return agent;
+}
 
 function diracCentralBoundedReadableStreamV230(incoming, request, maximumBytes) {
   const { Transform } = require('stream');
@@ -57085,6 +57158,8 @@ async function diracCentralPinnedHttpsFetchV230(
   const ips = Array.from(new Set((verifiedIps || []).map(String))).filter((ip) => net.isIP(ip) && !diracCentralIsUnsafeIpV146(ip));
   if (!ips.length) throw Object.assign(new Error('DIRAC_PINNED_DNS_IP_REQUIRED'), { code: 'DIRAC_PINNED_DNS_IP_REQUIRED' });
   const pinnedIp = ips.sort()[0];
+  const pinnedPort = Number(parsedUrl.port || 443);
+  const pinnedAgent = diracCentralPinnedHttpsAgentV334(parsedUrl.hostname, pinnedPort, pinnedIp);
   const method = String(options && options.method || 'GET').toUpperCase();
   const headers = diracCentralHeaderObjectV230(options && options.headers);
   const body = diracCentralBodyBytesV230(options && options.body);
@@ -57106,9 +57181,9 @@ async function diracCentralPinnedHttpsFetchV230(
   return await new Promise((resolve, reject) => {
     let settled = false;
     const request = DIRAC_CENTRAL_NATIVE_HTTPS_REQUEST_V230({
-      protocol: 'https:', hostname: parsedUrl.hostname, port: Number(parsedUrl.port || 443),
+      protocol: 'https:', hostname: parsedUrl.hostname, port: pinnedPort,
       servername: parsedUrl.hostname, method, path: parsedUrl.pathname + parsedUrl.search,
-      headers, agent: false, rejectUnauthorized: true, minVersion: 'TLSv1.2',
+      headers, agent: pinnedAgent, rejectUnauthorized: true, minVersion: 'TLSv1.2',
       lookup(_hostname, lookupOptions, callback) {
         const pinnedFamily = net.isIP(pinnedIp);
         if (lookupOptions && lookupOptions.all === true) {
@@ -62024,9 +62099,29 @@ supabaseFetch = async function supabaseFetchV202Gateway(path, options = {}) {
   const preSanitizeAuthAudit = String(options && options.method || 'GET').toUpperCase() === 'POST'
     && options && options.auth === 'service'
     && /^\/rest\/v1\/(?:security_customer_login_logs|security_customer_events)$/.test(cleanPath);
-  const safeOptions = preSanitizeAuthAudit && typeof diracUltraXssV2SanitizeSupabaseSecurityWrite === 'function'
+  let safeOptions = preSanitizeAuthAudit && typeof diracUltraXssV2SanitizeSupabaseSecurityWrite === 'function'
     ? diracUltraXssV2SanitizeSupabaseSecurityWrite(cleanPath, options)
     : options;
+  if (preSanitizeAuthAudit
+      && Array.isArray(options.body) && options.body.length === 1
+      && Array.isArray(safeOptions.body) && safeOptions.body.length === 1) {
+    const originalRow = options.body[0];
+    const sanitizedRow = safeOptions.body[0];
+    const sanitizerInjectedIpHash = originalRow && typeof originalRow === 'object'
+      && !Object.prototype.hasOwnProperty.call(originalRow, 'ip_hash')
+      && sanitizedRow && typeof sanitizedRow === 'object'
+      && /^[a-f0-9]{64}$/.test(String(sanitizedRow.ip_hash || ''));
+    if (sanitizerInjectedIpHash) {
+      const { ip_hash: injectedIpHash, ...compatibleRow } = sanitizedRow;
+      compatibleRow.metadata = {
+        ...(compatibleRow.metadata && typeof compatibleRow.metadata === 'object' && !Array.isArray(compatibleRow.metadata)
+          ? compatibleRow.metadata
+          : {}),
+        ip_hash: injectedIpHash
+      };
+      safeOptions = { ...safeOptions, body: [compatibleRow] };
+    }
+  }
   return secureDatabaseGateway(diracCentralCurrentContextV149(), { path: cleanPath, options: safeOptions });
 };
 Object.defineProperty(supabaseFetch, '__diracV202SecureDatabaseGateway', { value: true, enumerable: false });
@@ -62393,6 +62488,7 @@ function diracCentralBackendComplianceStaticGateV230() {
   expect(DIRAC_CENTRAL_RUNTIME_LOCK_V230.mode === 'native_network_integrity_non_invasive_v231', 'runtime_network_mode_invalid');
   expect(diracCentralNativeNetworkSurfaceIntactV231(), 'native_network_surface_mutated');
   expect(DIRAC_CENTRAL_NATIVE_HTTPS_REQUEST_V230 === DIRAC_CENTRAL_NATIVE_NETWORK_SURFACE_V231.httpsRequest, 'pinned_https_native_reference_invalid');
+  expect(DIRAC_CENTRAL_NATIVE_HTTPS_AGENT_V334 === DIRAC_CENTRAL_NATIVE_NETWORK_SURFACE_V231.httpsAgent, 'pinned_https_agent_native_reference_invalid');
   expect(DIRAC_CENTRAL_NATIVE_TLS_CONNECT_V230 === DIRAC_CENTRAL_NATIVE_NETWORK_SURFACE_V231.tlsConnect, 'pinned_tls_native_reference_invalid');
   expect(DIRAC_CENTRAL_NATIVE_NET_SOCKET_CONNECT_V230 === DIRAC_CENTRAL_NATIVE_NETWORK_SURFACE_V231.netSocketConnect, 'pinned_tcp_native_reference_invalid');
   expect(Boolean(DIRAC_CENTRAL_ASYNC_CONTEXT_V149), 'async_local_storage_missing');
@@ -62535,24 +62631,33 @@ async function diracCentralBackendComplianceGateV230() {
           }
         }
         if (!first || first.ok !== true || first.data !== true || !second || second.ok !== true || second.data !== false) throw new Error('DIRAC_BACKEND_ATOMIC_CONSUME_GATE_FAILED');
-        gateStageV231 = 'atomic_record';
-        const record = await supabaseFetch('/rest/v1/rpc/dirac_central_atomic_claim_record_v230', {
-          method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
-          body: { p_table_name: 'dirac_s2s_security', p_security_key: 's2s-central-v230-record-gate:' + probe, p_record_json: { type: 'v230_record_gate' }, p_expires_at: new Date(Date.now() + 120000).toISOString() }
-        });
-        if (!record || record.ok !== true || record.data !== true) throw new Error('DIRAC_BACKEND_ATOMIC_RECORD_GATE_FAILED');
-        gateStageV231 = 'atomic_rate';
-        const rate = await supabaseFetch('/rest/v1/rpc/dirac_central_atomic_rate_limit_v230', {
-          method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
-          body: { p_security_key: 's2s-central-v230-rate-gate:' + probe, p_limit: 2, p_window_seconds: 60, p_block_seconds: 60 }
-        });
-        if (!rate || rate.ok !== true || !Array.isArray(rate.data) || !rate.data[0] || typeof rate.data[0].allowed !== 'boolean') throw new Error('DIRAC_BACKEND_ATOMIC_RATE_GATE_FAILED');
-        gateStageV231 = 'durable_log';
-        const logged = await supabaseFetch('/rest/v1/rpc/dirac_central_security_log_v230', {
-          method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
-          body: { p_event_type: 'backend_compliance_probe', p_severity: 'info', p_request_id_hash: '', p_action_name: 'domain_health', p_reason_code: 'v230_gate', p_event_json: { probe_hash: diracCentralHashV146(probe) } }
-        });
-        if (!logged || logged.ok !== true || logged.data !== true) throw new Error('DIRAC_BACKEND_DURABLE_LOG_GATE_FAILED');
+        gateStageV231 = 'post_replay_parallel_checks';
+        const [record, rate, logged] = await Promise.all([
+          supabaseFetch('/rest/v1/rpc/dirac_central_atomic_claim_record_v230', {
+            method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
+            body: { p_table_name: 'dirac_s2s_security', p_security_key: 's2s-central-v230-record-gate:' + probe, p_record_json: { type: 'v230_record_gate' }, p_expires_at: new Date(Date.now() + 120000).toISOString() }
+          }),
+          supabaseFetch('/rest/v1/rpc/dirac_central_atomic_rate_limit_v230', {
+            method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
+            body: { p_security_key: 's2s-central-v230-rate-gate:' + probe, p_limit: 2, p_window_seconds: 60, p_block_seconds: 60 }
+          }),
+          supabaseFetch('/rest/v1/rpc/dirac_central_security_log_v230', {
+            method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
+            body: { p_event_type: 'backend_compliance_probe', p_severity: 'info', p_request_id_hash: '', p_action_name: 'domain_health', p_reason_code: 'v230_gate', p_event_json: { probe_hash: diracCentralHashV146(probe) } }
+          })
+        ]);
+        if (!record || record.ok !== true || record.data !== true) {
+          gateStageV231 = 'atomic_record';
+          throw new Error('DIRAC_BACKEND_ATOMIC_RECORD_GATE_FAILED');
+        }
+        if (!rate || rate.ok !== true || !Array.isArray(rate.data) || !rate.data[0] || typeof rate.data[0].allowed !== 'boolean') {
+          gateStageV231 = 'atomic_rate';
+          throw new Error('DIRAC_BACKEND_ATOMIC_RATE_GATE_FAILED');
+        }
+        if (!logged || logged.ok !== true || logged.data !== true) {
+          gateStageV231 = 'durable_log';
+          throw new Error('DIRAC_BACKEND_DURABLE_LOG_GATE_FAILED');
+        }
         gateStageV231 = 'complete';
         return Object.freeze({ ok: true, mode: 'production_dynamic' });
       });
