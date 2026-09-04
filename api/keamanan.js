@@ -1343,13 +1343,37 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
   if (!Number.isSafeInteger(previousSignCount) || !Number.isSafeInteger(nextSignCount) || nextSignCount < previousSignCount) throw diracPasswordResetErrorV333('PASSWORD_RESET_SIGN_COUNT_INVALID', 503);
   const nowIso = new Date().toISOString();
   const currentJson = row.credential_json && typeof row.credential_json === 'object' ? row.credential_json : {};
+  const transports = [];
+  const addTransport = (value) => {
+    const clean = String(value || '').trim().toLowerCase();
+    if (clean && /^[a-z0-9_-]{1,32}$/.test(clean) && !transports.includes(clean)) transports.push(clean);
+  };
+  for (const values of [
+    response && response.transports,
+    credential && credential.transports,
+    credential && credential.response && credential.response.transports,
+    credential && credential.clientExtensionResults && credential.clientExtensionResults.transports
+  ]) {
+    if (Array.isArray(values)) values.forEach(addTransport);
+  }
+  const userAgent = requestUserAgent(req).slice(0, 512);
+  let userAgentHash = null;
+  if (userAgent) {
+    const customerMfaKey = diracCentralDeriveSecretV146('customer-mfa');
+    try {
+      userAgentHash = crypto.createHmac('sha256', customerMfaKey.toString('base64url'))
+        .update('dirac-customer-mfa-binding-v2:ua:' + userAgent).digest('hex');
+    } finally { customerMfaKey.fill(0); }
+  }
+  const credentialIdHash = crypto.createHash('sha256').update(credentialId).digest('hex');
   const updatedJson = {
     ...currentJson,
     webauthn: {
       ...(currentJson.webauthn && typeof currentJson.webauthn === 'object' ? currentJson.webauthn : {}),
       backup_eligible: assertion.backupEligible === true,
       backup_state: assertion.backupState === true,
-      device_bound: assertion.deviceBound === true
+      device_bound: assertion.deviceBound === true,
+      sync_policy: 'synced-passkey-device-binding-required-v1'
     },
     device_binding: {
       ...(currentJson.device_binding && typeof currentJson.device_binding === 'object' ? currentJson.device_binding : {}),
@@ -1357,14 +1381,82 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
       algorithm: DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM,
       required: true,
       key_id: deviceBinding.keyId,
-      last_verified_at: nowIso
+      public_key_jwk: deviceBinding.publicKeyJwk
     },
-    last_authentication: { verified_at: nowIso, purpose: 'password_reset_passkey' }
+    last_authentication: {
+      schema: 'dirac-domain-passkey-v1',
+      mode: 'authentication',
+      rp_id: rpId,
+      origin: String(clientData.origin || expectedOrigin || requestOrigin(req) || ''),
+      auth_user_id: owner.authUserId,
+      customer_id: owner.customerId,
+      credential: {
+        id_hash: credentialIdHash,
+        id_hint: credentialIdHash.slice(0, 12),
+        type: diracPasskeyA2FSafeString(credential && credential.type, 64) || 'public-key',
+        clientExtensionResultKeys: credential && credential.clientExtensionResults && typeof credential.clientExtensionResults === 'object'
+          ? Object.keys(credential.clientExtensionResults).slice(0, 20)
+          : []
+      },
+      response: {
+        clientDataJSON_sha256: crypto.createHash('sha256').update(String(response && response.clientDataJSON || '')).digest('hex'),
+        attestationObject_sha256: response && response.attestationObject ? crypto.createHash('sha256').update(String(response.attestationObject)).digest('hex') : '',
+        authenticatorData_sha256: response && response.authenticatorData ? crypto.createHash('sha256').update(String(response.authenticatorData)).digest('hex') : '',
+        signature_sha256: response && response.signature ? crypto.createHash('sha256').update(String(response.signature)).digest('hex') : '',
+        userHandle_hash: response && response.userHandle ? crypto.createHash('sha256').update(String(response.userHandle)).digest('hex') : '',
+        transports: transports.slice(0, 12)
+      },
+      client_data: {
+        type: String(clientData.type || ''),
+        challenge_sha256: crypto.createHash('sha256').update(String(clientData.challenge || '')).digest('hex'),
+        origin: String(clientData.origin || ''),
+        crossOrigin: clientData.crossOrigin === true
+      },
+      saved_at: nowIso,
+      user_agent_hash: userAgentHash
+    }
   };
   const securityEpoch = await diracPasskeyA2FReadSecurityEpoch(owner);
   diracResetDiagnosticV335(req, 'verify.passkey.security_epoch', 'success', { security_epoch: Number(securityEpoch || 0) });
   if (!Number.isSafeInteger(securityEpoch) || securityEpoch < 1) throw diracPasswordResetErrorV333('PASSWORD_RESET_SECURITY_EPOCH_INVALID', 503);
-  const currentAuthSessionId = String(row.current_auth_session_id || '').trim();
+  const storedAuthSessionId = String(row.current_auth_session_id || '').trim();
+  if (!customerSecurityLooksLikeUuid(storedAuthSessionId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_SESSION_BINDING_INVALID', 503);
+  const signedSessionCookie = securityResetCentralCookieValueV334(req, String(process.env.DOMAIN_SIGNED_SESSION_COOKIE || 'dirac_domain_signed_session'));
+  let currentAuthSessionId = '';
+  if (signedSessionCookie) {
+    const signedParts = String(signedSessionCookie).trim().split('.');
+    if (signedParts.length === 2 && /^[A-Za-z0-9_-]+$/.test(signedParts[0]) && /^[A-Za-z0-9_-]{43}$/.test(signedParts[1])) {
+      const signedKey = diracCentralDeriveSecretV146('domain-signed-session');
+      let expectedSignature = '';
+      try {
+        expectedSignature = crypto.createHmac('sha256', signedKey.toString('base64url')).update(signedParts[0]).digest('base64url');
+      } finally { signedKey.fill(0); }
+      if (safeEqual(expectedSignature, signedParts[1])) {
+        try {
+          const rawSignedPayload = Buffer.from(signedParts[0], 'base64url');
+          if (rawSignedPayload.length && rawSignedPayload.length <= 4096 && rawSignedPayload.toString('base64url') === signedParts[0]) {
+            const signedPayload = JSON.parse(rawSignedPayload.toString('utf8'));
+            const nowS = Math.floor(Date.now() / 1000);
+            const issuedAt = Number(signedPayload && signedPayload.iat || 0);
+            const expiresAt = Number(signedPayload && signedPayload.exp || 0);
+            const signedUserId = String(signedPayload && (signedPayload.uid || signedPayload.id) || '').trim();
+            const signedEmail = normalizeAuthEmail(signedPayload && signedPayload.email || '');
+            const signedSessionId = String(signedPayload && signedPayload.sid || '').trim();
+            if (signedPayload && signedPayload.typ === 'dirac-domain-signed-session-v1'
+                && Number.isSafeInteger(issuedAt) && Number.isSafeInteger(expiresAt)
+                && issuedAt <= nowS + 60 && expiresAt > nowS
+                && expiresAt - issuedAt > 0 && expiresAt - issuedAt <= 60 * 60 * 24 * 7 + 60
+                && customerSecurityLooksLikeUuid(signedUserId)
+                && safeEqual(signedUserId, owner.authUserId)
+                && safeEqual(signedEmail, owner.email)
+                && customerSecurityLooksLikeUuid(signedSessionId)) {
+              currentAuthSessionId = signedSessionId;
+            }
+          }
+        } catch (_) {}
+      }
+    }
+  }
   if (!customerSecurityLooksLikeUuid(currentAuthSessionId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_SESSION_BINDING_INVALID', 503);
   const recorded = await supabaseFetch('/rest/v1/rpc/dirac_passkey_record_assertion_v237', {
     method: 'POST', auth: 'service', prefer: 'return=representation',
