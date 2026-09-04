@@ -4070,7 +4070,35 @@ async function checkDomainProtectedDatabaseSessionLockSafe(req, user, mfa) {
     encodeURIComponent('id,customer_id,security_epoch') +
     '&customer_id=eq.' + encodeURIComponent(customerId) +
     '&limit=2';
-  const epochRead = await supabaseFetch(epochReadPath, { method: 'GET', auth: 'service' });
+  const epochTask = supabaseFetch(epochReadPath, { method: 'GET', auth: 'service' });
+
+  let fingerprint = null;
+  let fingerprintSelectionDebugV219 = null;
+  let fingerprintBuildError = null;
+  try {
+    fingerprint = customerSecurityBuildSessionFingerprint(req, customerId);
+    fingerprintSelectionDebugV219 = customerSecuritySessionFingerprintSelectionV219(req);
+  } catch (error) {
+    fingerprintBuildError = error;
+  }
+  const fingerprintReady = Boolean(!fingerprintBuildError && fingerprint && fingerprint.session_token_hash);
+  let protectedReadStartedAtMs = 0;
+  let foundTask = null;
+  if (fingerprintReady) {
+    const select = 'id,customer_id,session_token_hash,status,last_seen_at,expires_at,revoked_at,revoke_reason,security_epoch';
+    const readPath = '/rest/v1/security_customer_sessions?select=' +
+      encodeURIComponent(select) +
+      '&customer_id=eq.' + encodeURIComponent(customerId) +
+      '&session_token_hash=eq.' + encodeURIComponent(fingerprint.session_token_hash) +
+      '&limit=1';
+    protectedReadStartedAtMs = Date.now();
+    foundTask = supabaseFetch(readPath, { method: 'GET', auth: 'service' }).then(
+      (value) => ({ fulfilled: true, value }),
+      (reason) => ({ fulfilled: false, reason })
+    );
+  }
+
+  const epochRead = await epochTask;
   if (!epochRead.ok || !Array.isArray(epochRead.data)) {
     return {
       ok: false,
@@ -4102,15 +4130,14 @@ async function checkDomainProtectedDatabaseSessionLockSafe(req, user, mfa) {
     };
   }
 
-  const fingerprint = customerSecurityBuildSessionFingerprint(req, customerId);
-  const fingerprintSelectionDebugV219 = customerSecuritySessionFingerprintSelectionV219(req);
+  if (fingerprintBuildError) throw fingerprintBuildError;
   customerSecuritySessionDecisionDebugV219(req, 'protected_session.fingerprint', {
-    decision: fingerprint && fingerprint.session_token_hash ? 'fingerprint_ready' : 'fingerprint_missing',
+    decision: fingerprintReady ? 'fingerprint_ready' : 'fingerprint_missing',
     customer_digest: customerSecurityShortDigestV219(customerId),
     fingerprint_source: fingerprintSelectionDebugV219.source,
     fingerprint_token_digest: fingerprintSelectionDebugV219.token_digest
   });
-  if (!fingerprint || !fingerprint.session_token_hash) {
+  if (!fingerprintReady) {
     return {
       ok: false,
       status: 401,
@@ -4121,15 +4148,9 @@ async function checkDomainProtectedDatabaseSessionLockSafe(req, user, mfa) {
     };
   }
 
-  const select = 'id,customer_id,session_token_hash,status,last_seen_at,expires_at,revoked_at,revoke_reason,security_epoch';
-  const readPath = '/rest/v1/security_customer_sessions?select=' +
-    encodeURIComponent(select) +
-    '&customer_id=eq.' + encodeURIComponent(customerId) +
-    '&session_token_hash=eq.' + encodeURIComponent(fingerprint.session_token_hash) +
-    '&limit=1';
-
-  const protectedReadStartedAtMs = Date.now();
-  const found = await supabaseFetch(readPath, { method: 'GET', auth: 'service' });
+  const foundSettled = await foundTask;
+  if (!foundSettled.fulfilled) throw foundSettled.reason;
+  const found = foundSettled.value;
   if (!found.ok) {
     const diagnostic = customerSecuritySessionStoreDiagnosticV218(req, 'protected_read', found, {
       elapsed_ms: Date.now() - protectedReadStartedAtMs,
@@ -8872,7 +8893,10 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
         encodeURIComponent('id,customer_id,session_token_hash,status,security_epoch,revoked_at') +
         '&customer_id=eq.' + encodeURIComponent(customerId) +
         '&id=eq.' + encodeURIComponent(String(rows[0].id)) +
-        '&security_epoch=eq.' + encodeURIComponent(String(previousSecurityEpoch)), {
+        '&security_epoch=eq.' + encodeURIComponent(String(previousSecurityEpoch)) +
+        (issuancePermit ? '' :
+          '&session_token_hash=eq.' + encodeURIComponent(String(fingerprint.session_token_hash || '')) +
+          '&status=eq.active&revoked_at=is.null'), {
         method: 'PATCH',
         auth: 'service',
         prefer: 'return=representation',
