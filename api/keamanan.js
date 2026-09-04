@@ -336,7 +336,7 @@ const RESET_GATEWAY_TOKEN = Object.freeze({ version: 'dirac-keamanan-reset-gatew
    Central health remains byte-identical. No alternate reset route, no new ENV/table/RPC.
    ============================================================ */
 const SECURITY_NATIVE_FETCH_V334 = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
-const SECURITY_RESET_PROFILE_PIN_V334 = 'SbvLXqGzuDUKUYHTZJCr0vuQm13BbSZP_Z9f5EflQzlvNEqpJpGrpwwlRJ9JdDAZksSTCJCI-VgfoRIProK5_g';
+const SECURITY_RESET_PROFILE_PIN_V334 = 'y1etldCKpbWMPOa-aNEfOiQd60Y_M6R3Sc1xY9sB8rX-GtJPaIG13P5OzxgcRuYOIT98Rcuum4syOhT_Okdmlw';
 const SECURITY_RESET_CSRF_TTL_S_V334 = 180;
 const SECURITY_RESET_PAGE_NONCE_TTL_S_V334 = 120;
 const SECURITY_RESET_MAX_BODY_V334 = 196608;
@@ -829,7 +829,7 @@ const DIRAC_PASSWORD_RESET_V333 = Object.freeze({
   protocol: 'dirac-lost-password-10-layer-v1',
   suite: 'X25519+HKDF-SHA512+4xAES-256-GCM+4xAES-256-KW',
   profile: 'dirac-lost-password-key-profile-v1',
-  profilePinSha512B64u: 'SbvLXqGzuDUKUYHTZJCr0vuQm13BbSZP_Z9f5EflQzlvNEqpJpGrpwwlRJ9JdDAZksSTCJCI-VgfoRIProK5_g',
+  profilePinSha512B64u: 'y1etldCKpbWMPOa-aNEfOiQd60Y_M6R3Sc1xY9sB8rX-GtJPaIG13P5OzxgcRuYOIT98Rcuum4syOhT_Okdmlw',
   profileTtlMs: 300000,
   flowTtlSeconds: 180
 });
