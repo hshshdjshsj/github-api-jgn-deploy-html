@@ -48592,6 +48592,7 @@ const DIRAC_CENTRAL_VERIFIED_OWNER_ACTIONS_V217 = Object.freeze([
   'domain_orders',
   'customer_security_status',
   'customer_security_overview',
+  'customer_security_guard_status',
   'customer_security_recovery_codes_status',
   'customer_security_recovery_codes_generate',
   'customer_security_recovery_code_verify',
@@ -51270,7 +51271,7 @@ try {
         return null;
       }
       const ctx = diracCentralCurrentContextV149();
-      if (ctx && ctx.executionPhaseV211 === 'guard') return user;
+      if (ctx && (ctx.executionPhaseV211 === 'guard' || ctx.__diracCentralOwnerScopeResolvingV146 === true)) return user;
 
       const cached = req && req.__diracAuthenticatedBanDecisionV320;
       let decision = cached
