@@ -1,0 +1,134 @@
+{
+  "release": "PT Digdaya Inovasi Nusantara — Final Patched Inline Build",
+  "validated_at_utc": "2026-09-04T11:03:16Z",
+  "status": "PASS",
+  "status_scope": "Gerbang objektif untuk struktur statis, paritas sumber inline, CSP, referensi lokal, pemetaan visual, foto tanpa wajah, watermark, decode media, keamanan framing berita/Wawasan, cakupan perubahan, pengiriman HTTP byte-roundtrip, dan integritas arsip.",
+  "scope": {
+    "deploy_files": 163,
+    "directories_below_root": 2,
+    "html_files": 38,
+    "indexable_pages": 36,
+    "noindex_pages": [
+      "404.html",
+      "berita-detail.html"
+    ],
+    "news_records": 71,
+    "knowledge_records": 200,
+    "raster_files": 84,
+    "video_files": 2
+  },
+  "inline_css_js_and_csp_gate": {
+    "remaining_link_rel_stylesheet": 0,
+    "remaining_script_src": 0,
+    "source_inline_blocks_byte_checked": 659,
+    "source_inline_blocks_mismatched": 0,
+    "inline_style_blocks": 310,
+    "inline_script_blocks_including_json_ld": 426,
+    "unique_inline_style_hashes": 14,
+    "unique_inline_script_hashes_including_json_ld": 53,
+    "csp_policy_bytes": 3985,
+    "headers_and_htaccess_policy_equal": true,
+    "script_unsafe_inline_used": false,
+    "all_inline_block_hashes_authorized": true,
+    "preserved_css_location": "assets/*.css",
+    "preserved_javascript_location": "assets/js/*.js"
+  },
+  "html_reference_and_metadata_gate": {
+    "local_references_checked": 4212,
+    "broken_local_references": 0,
+    "fragments_checked": 1023,
+    "broken_fragments": 0,
+    "social_image_mapping": "38/38 PASS",
+    "semantic_page_image_rules": "34/34 PASS",
+    "image_tags_with_alt_attribute_and_dimensions": "304/304 PASS",
+    "og_card_dimensions": "38/38 use 1200x630 assets",
+    "json_ld_parse": "37/37 PASS",
+    "duplicate_meta_content_attributes": 0
+  },
+  "photo_and_video_gate": {
+    "photographic_or_photo_composite_rasters": 72,
+    "exact_watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+    "raster_watermark_ocr": "72/72 PASS",
+    "legacy_wrong_case_watermarks_remaining": 0,
+    "regenerated_faceless_photo_bases": "37/37 PASS",
+    "rebuilt_faceless_og_cards": "5/5 PASS",
+    "original_face_bearing_targets_after_independent_review": 42,
+    "visible_faces_remaining": "0/42 PASS",
+    "face_review_scope": "Wajah langsung, profil, bagian wajah, foto cetak, layar, pantulan, dan materi kolase.",
+    "raster_full_decode": "84/84 PASS",
+    "photo_dimensions": {
+      "webp_1200x675": 67,
+      "jpeg_1200x630": 5
+    },
+    "video_stream_and_full_decode": "2/2 PASS; H.264, yuv420p, 1280x720",
+    "sampled_video_watermark_frames": "37/37 PASS"
+  },
+  "news_and_knowledge_safety_gate": {
+    "status": "PASS",
+    "news_records": 71,
+    "title_archives_with_verification_pending": 46,
+    "query_monitors_explicitly_not_fact": 25,
+    "news_categories": 15,
+    "knowledge_orientation_records": 200,
+    "knowledge_generic_official_sources_with_limitations": 50,
+    "knowledge_internal_records_without_external_source": 150,
+    "duplicate_news_ids": 0,
+    "duplicate_knowledge_ids_or_category_subject_pairs": 0,
+    "unsupported_viral_or_verified_claim_residuals": 0,
+    "legacy_1046_or_1000_record_claim_residuals": 0,
+    "unexplained_target_terminology_residuals": 0,
+    "disclaimer": "Materi adalah orientasi dan catatan penelusuran; bukan jaminan hasil, berita terverifikasi, atau nasihat hukum/pajak/keamanan/kesehatan."
+  },
+  "motion_gate": {
+    "source_javascript_syntax": "15/15 PASS",
+    "css_brace_scanner_ignoring_strings_and_comments": "12/12 PASS",
+    "existing_animations_removed": 0,
+    "tree_svg_relative_coordinates": true,
+    "tree_branch_paths_separated_per_group": true,
+    "tree_active_path_limited_to_selected_group": true,
+    "animation_cancellation_and_raf_coalescing": true,
+    "resize_observer_restart_loop_removed": true,
+    "collapse_inert_and_visible_selection_sync": true,
+    "mobile_alignment_and_min_height_fix": true,
+    "reduced_motion_fallback": true,
+    "view_transition_header_stability": true,
+    "root_blur_removed": true,
+    "picture_overlay_content_model_valid": true,
+    "intersection_observer_fallback": true
+  },
+  "scope_lock_gate": {
+    "recognized_javascript_relocations": 15,
+    "unpaired_added_files": 0,
+    "unpaired_removed_files": 0,
+    "outside_news_knowledge_html_files_checked": 32,
+    "outside_news_knowledge_visible_text_unchanged": true,
+    "outside_news_knowledge_protected_markup_unchanged": true,
+    "permitted_outside_changes": "Foto/watermark, motion CSS/JS, CSP, sumber preservasi, dan reinlining yang termasuk dalam enam target pengguna."
+  },
+  "transport_and_package_layout_gate": {
+    "local_http_files_requested": 163,
+    "http_200_and_response_bytes_equal_disk": "163/163 PASS",
+    "direct_file_counts": {
+      "PT": 50,
+      "PT/assets": 98,
+      "PT/assets/js": 15
+    },
+    "maximum_direct_files_per_folder": 100,
+    "folder_limit_status": "PASS",
+    "maximum_zip_bytes": 24000000,
+    "manifest_policy": "FILE-MANIFEST-V16.json dibangun setelah seluruh file lain final dan tidak mencantumkan dirinya sendiri."
+  },
+  "sitemap_gate": {
+    "sitemap_entries": 36,
+    "sitemap_sha256": "2a2b47ed7826ac4576ed0b176d40bd0b519b0a6f6ad22bf6ac445341b326c3e2"
+  },
+  "limitations": {
+    "production_host_deployment_performed": false,
+    "live_backend_submission_tested": false,
+    "real_safari_or_chromium_render_claimed": false,
+    "reason": "Executable browser nyata tidak tersedia di lingkungan validasi.",
+    "legal_compliance_guarantee_claimed": false,
+    "legal_note": "Bahasa berisiko telah dibatasi dan sumber/ketidakpastian dijelaskan, tetapi kepatuhan produksi tetap memerlukan pemeriksaan manusia terhadap fakta, konteks, dan aturan terbaru."
+  },
+  "issues": []
+}

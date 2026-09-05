@@ -1,0 +1,24 @@
+SUPERSEDED / EXCLUDED FROM DEPLOY V16
+
+Ringkasan:
+- 56 aset visual lama, alias duplikat, atau kandidat unggahan yang tidak dipakai.
+- 5 file brand/code tidak direferensikan.
+- 5 mockup OG lama berpenampilan terlalu sintetis.
+- 19 versi visual sebelum recrop/regenerasi disimpan sebagai backup di luar paket.
+- 44 laporan audit lama (termasuk klaim V15/37 halaman) dipindahkan ke arsip di luar paket.
+
+Total file aset yang sengaja tidak ikut deploy: 66.
+Tidak ada penghapusan terhadap arsip sumber ZIP pengguna.
+
+Kelompok utama yang dikeluarkan:
+- brand-campaign-04/05/07/08/10/12.webp
+- brand-promo-02/07/09/11/12/13/15.webp
+- seluruh visual-theme lama kecuali visual-theme-services.webp yang masih dipakai metadata layanan
+- visual-about/contact/domain/newsroom/partnership/security/website lama
+- varian -editorial lama yang sudah diganti foto V16
+- alias news *-v16 yang byte-identik dengan nama canonical
+- digdaya-logo-gold/navy/white-1024.webp dan digdaya-monogram-512.webp
+- runtime-site.js lama setelah seluruh halaman memakai runtime-site-v8.js
+- og-domain/home/parfum/topup/website.jpg lama; referensinya diganti foto V16 realistis
+
+Enam gambar news-digital dan news-pariwisata TIDAK dikeluarkan. Keduanya dipertahankan sebagai fallback kontrak kategori yang didukung runtime; dataset aman saat ini berisi 71 catatan terbingkai.

@@ -1,0 +1,733 @@
+{
+  "schema_version": 1,
+  "revision": "V17",
+  "source_zip_sha256": "277088ced487f13e2270662cbfeba7a600019f1e9da599ccaf8fef522bc5afd2",
+  "target_count": 72,
+  "pipeline_counts": {
+    "clean_scene_archive_plus_deterministic_transparent_text": 29,
+    "precise_object_edit_preserving_transparent_text": 26,
+    "precise_object_edit_clean_plate_plus_deterministic_transparent_text": 17
+  },
+  "files": [
+    {
+      "path": "assets/brand-campaign-01.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "65f270e720b5da326a10bb52c848cdc0f01490744ae93e73a5a8766048610eb0"
+    },
+    {
+      "path": "assets/brand-campaign-02.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "28b8b5a614e215a610878a4bd6ab9e9e8c156b55338611153d7a6fa58a529b26"
+    },
+    {
+      "path": "assets/brand-campaign-03.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "75f0aeb126501288559fdd533e3a132abc94b2aa1ae036af1eb2bda21f4e32ce"
+    },
+    {
+      "path": "assets/brand-campaign-06.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "660522e40a5c7c8f6fff2bcfbf0501bddad87843d4656dc5ad83fcf5ef1b0ab9"
+    },
+    {
+      "path": "assets/brand-campaign-09.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "ee10c5968fa4c285e7a8ecca65685ad985bf213208c099274b340930e8a89a6a"
+    },
+    {
+      "path": "assets/brand-campaign-11.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "881bba55aa47aa84e00c79869274692dc06f3c187db0ef1cfb4fe36458a878fe"
+    },
+    {
+      "path": "assets/brand-promo-01.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "c69f9e1e84c445cd87d91a266352b3e79a761fe5e7f68cc6f9e63399489b5f4c"
+    },
+    {
+      "path": "assets/brand-promo-03.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "2eb3a554ba11cf40a6c50378b0595837be75f8ddf9a527c8b59e59a2b0863288"
+    },
+    {
+      "path": "assets/brand-promo-04.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "d8a6614fa64984c3bedea85249ff34077a07c3eba48067ba9c5a35b26355c476"
+    },
+    {
+      "path": "assets/brand-promo-05.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "1c1e364254f5029b4ab9b16b78d04accd20f7212b1c6b7e552e33bf8625e3452"
+    },
+    {
+      "path": "assets/brand-promo-06.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "392cb361234a0e62d793e3414d0b5cd9f2ef47371da50b793403ca95ad2936a9"
+    },
+    {
+      "path": "assets/brand-promo-08.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "614b1789345e6ca51ff2f7f7c6282348d5d649cad0b5c532c3398f0f09de70e6"
+    },
+    {
+      "path": "assets/brand-promo-10.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "a74a1331765d2988289bb7ca67e3cd7331c6ff7d9e4071605212702485be7ba4"
+    },
+    {
+      "path": "assets/brand-promo-14.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "14a94f593285d3cfbe192b4434683f69eaa7c91074403749b0f849d0ee0c7471"
+    },
+    {
+      "path": "assets/corporate-home-v16.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "8f5bf69b2b5b920d13d8b83173d4a9bec31055d2e293956ed1f1896652033e8d"
+    },
+    {
+      "path": "assets/customer-support-v16.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "cc38b67120c30e57b7151901a6db246233601e56baee741ccf7d46ddd8ea032d"
+    },
+    {
+      "path": "assets/digital-operations-v16.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "da628c7f6fd283b485cc308b719bc25dca9d321c56a9002a3f834795c2eb784e"
+    },
+    {
+      "path": "assets/domain-strategy-v16.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "d94975b63920ff4d8477705568172f1e8fe14579d16ef96032a298734ec52cd0"
+    },
+    {
+      "path": "assets/fragrance-workshop-v16.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "3c2e4ee66605dab184e5bb7ab0fed982409b41f4f315cf52f653184edca8bfed"
+    },
+    {
+      "path": "assets/gaming-service-v16.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "255f9428599e767e9420122c24cc3714be4e520d33f04e1c97368f88b1405844"
+    },
+    {
+      "path": "assets/legal-cv-registration-v16.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "9fddc2460cc700f78a77d536189ae9928eefdbb02e9db622327f969671796358"
+    },
+    {
+      "path": "assets/legal-nib-oss-v16.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "a6ac64b947b56e1d7ec897c50eddb38187429b9b9500a94fa57c5bccb8398c0f"
+    },
+    {
+      "path": "assets/legal-pt-documents-v16.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "1d6400619ed3357f14a220703ae9ce9fa40ee2d799db69f098772da226b67526"
+    },
+    {
+      "path": "assets/news-bisnis-1.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "1ba1faf7166409bc2f9907f3a74ba1de8398b0124a5a6ec5dc962af7bdd1d612"
+    },
+    {
+      "path": "assets/news-bisnis-2.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "247ac8b8a0ef1ee8f1ae49c4015c86f1a96b4af346272885f746099eb136dbd9"
+    },
+    {
+      "path": "assets/news-bisnis-3.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "be9677cac94ad8fa0f666af700fa8d4c66b87af87eac9f24b9e0a3519ed1f967"
+    },
+    {
+      "path": "assets/news-budaya-1.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "ffc7bdd3406651960a21e7950358ba2302bb0640819bcd2a1699ad6b4752794c"
+    },
+    {
+      "path": "assets/news-budaya-2.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "6c6d3fd9c0938a8a1cab6354442e82133fd51c6f1808cbc4fc0b18d80d046f9b"
+    },
+    {
+      "path": "assets/news-budaya-3.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "eab5ab83dc1f6909cec22a0468e5eb56330b632b764f2319b61e44d394bcfa7c"
+    },
+    {
+      "path": "assets/news-digital-1.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "75cb53a7d578e4a5fc71e1f16438d74ad7bf91befc6f56306ea62178e9bbd099"
+    },
+    {
+      "path": "assets/news-digital-2.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "e7ad3501ed44de0173a4f5b02eb1f7cc82432403f734b8cc75bae9e25a4f5c8e"
+    },
+    {
+      "path": "assets/news-digital-3.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "4a66eda175d9e134d10eb4e5ef645d7a314706ce320fa6b834b4fe55aec2fef8"
+    },
+    {
+      "path": "assets/news-ekonomi-1.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "4b70159cfd0642ea4dbf2ee064f5c4038a2e174c3cb379a4239614b19e2e6455"
+    },
+    {
+      "path": "assets/news-ekonomi-2.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "557e986d6d0e539a8f776992b0239744e426351f059a389bbfafc08ea9df407f"
+    },
+    {
+      "path": "assets/news-ekonomi-3.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "abd1f3b24e8c42d2277e0d557d28a266fe03ef377a033104f727e9f43e315baa"
+    },
+    {
+      "path": "assets/news-fragrance-1.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "825ee475c8230db6919b000686497982ce696d4cf8db27134d7c4265483fdfe4"
+    },
+    {
+      "path": "assets/news-fragrance-2.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "7577b6144fd799d4c3ef709c31606d09b65fa8ff4405c55599e01c6ee94224ad"
+    },
+    {
+      "path": "assets/news-fragrance-3.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "eddfb5174723a1f8bedf377ee27b7cfb34571b602f0bdac1f0139a2471eb8d15"
+    },
+    {
+      "path": "assets/news-kesehatan-1.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "ffa91cda430fe7365090529b0a173f5a7274ec3812472e545c4a7171fa1485a1"
+    },
+    {
+      "path": "assets/news-kesehatan-2.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "496f2200cbb9c6ac2bdfde03463e855ef2d6d9c9d52a2ff3ddef299542d27884"
+    },
+    {
+      "path": "assets/news-kesehatan-3.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "cc9993f64cfa9a102503adf61616db43530abd30b687df1db3bb91e82faf2960"
+    },
+    {
+      "path": "assets/news-lingkungan-1.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "dd6d143f4ea8f31cfd289cbe084cf3d24304db51be28e177a2ef8bce5371889b"
+    },
+    {
+      "path": "assets/news-lingkungan-2.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "36f29ef844bb78b15768535eb87f66d48b46c417368a33c4f5acec36bea787c5"
+    },
+    {
+      "path": "assets/news-lingkungan-3.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "8477432627e0fad023baa73b0cfd6bcd882283f4bd5f3b506c937f1ec0582883"
+    },
+    {
+      "path": "assets/news-nasional-1.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "ee26cff91cc6dd4b8914ebcb7820be237ca3c580f5cfed191b54576d14c44b2f"
+    },
+    {
+      "path": "assets/news-nasional-2.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "928a248d112d963ca9e067fc76be3a32e01121c57affa33b0eb5ba761479f9ed"
+    },
+    {
+      "path": "assets/news-nasional-3.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "1353b05cbc4e4ce91fd75cdc9e497a83d6940e9645c03ff13f70db101deecd01"
+    },
+    {
+      "path": "assets/news-olahraga-1.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "87c8fe118c1aee1cfc1d1263c483051dabc88da74ee4214c788d6e2efb301922"
+    },
+    {
+      "path": "assets/news-olahraga-2.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "e877618cb3567b13882ab7ff6877d0288a9dee976d0a543ae4b6588b6499cbe7"
+    },
+    {
+      "path": "assets/news-olahraga-3.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "cda6bb681865ad66d4aea6bddf193edc08982e8321845a106539726058a50bcc"
+    },
+    {
+      "path": "assets/news-pariwisata-1.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "49c62fbc686d1d331a7772c18e1b27c68463005a00f4b489d0e31117f5083cd1"
+    },
+    {
+      "path": "assets/news-pariwisata-2.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "2dfd55127a9a29a1d544f3bd2636fae8e030793f5acb9832c7d9ba16a088bd75"
+    },
+    {
+      "path": "assets/news-pariwisata-3.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "af548dd30e6cf3e8e2551bee67fb179463145bb18faa64ec55aa8b54374bcc64"
+    },
+    {
+      "path": "assets/news-pendidikan-1.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "1cc86c710e6c7add5bf4a4219c917b7f3e076e194da9117f881aad505e449956"
+    },
+    {
+      "path": "assets/news-pendidikan-2.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "b61cd9134b56f87cc9a01c25953f2e7c31c874b6ab1d8a1f69eb01aec016c42a"
+    },
+    {
+      "path": "assets/news-pendidikan-3.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "ffeb386706363eb4d7752d035192a5ad17c28dab4955c78c25a7b41708356194"
+    },
+    {
+      "path": "assets/news-teknologi-1.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "5f641966d163721eaa5228b6a8418e727b7724747917a63f85e0a04387ba807e"
+    },
+    {
+      "path": "assets/news-teknologi-2.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "83e3b1485f94bf54e9d8897eade5a5cf8745e9d22da15d6adf2b6090a6cbb1df"
+    },
+    {
+      "path": "assets/news-teknologi-3.webp",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "ce5005de6e7fa30e5b2213928bb14bb619f30aac08fffad9feed26bfc575c79b"
+    },
+    {
+      "path": "assets/og-domain-branded.jpg",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 630,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "4d72136cf4e06735cdf3accc629e769520f8f34c1f3f8434a6917636a7ab4e22"
+    },
+    {
+      "path": "assets/og-home-branded.jpg",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 630,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "806a033c9733c5e2ed19a131a37bef211e0d4c544288884321fa12f82e5af9b0"
+    },
+    {
+      "path": "assets/og-parfum-branded.jpg",
+      "pipeline": "precise_object_edit_clean_plate_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 630,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "f478659fe311a84a7977e88ae63a931727b5b7484b5017d26e0d319bb74d0cc4"
+    },
+    {
+      "path": "assets/og-topup-branded.jpg",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 630,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "a949041a02f612ee5b5c8a1515617542027b16671936bf6d278db72149bfd2ef"
+    },
+    {
+      "path": "assets/og-website-branded.jpg",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 630,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "b32aeb656bd31a6c2823af7b142625c55c21916369656b7a1529c7e1496352f4"
+    },
+    {
+      "path": "assets/parfum-designer-v16.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "bd1d45afe99440c762d744ce36a62e9fb213c8c9389851696b23c9c29b5944bb"
+    },
+    {
+      "path": "assets/parfum-lokal-v16.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "8bee5bda997d6ae993bf639f6266f2d1633c7903e3300490f467ab5e08771470"
+    },
+    {
+      "path": "assets/parfum-niche-v16.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "26b25bfcce00d47ff9cd2d79ce5e5d9d4df45d55770831b50802bd4b9bf5d05e"
+    },
+    {
+      "path": "assets/parfum-timur-tengah-v16.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "eddfb5174723a1f8bedf377ee27b7cfb34571b602f0bdac1f0139a2471eb8d15"
+    },
+    {
+      "path": "assets/partnership-workshop-v16.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "14292bbe72cc9c607f1125697fd4e5583de6c560996420dcec19bb37e58343ba"
+    },
+    {
+      "path": "assets/security-verification-v16.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "6554b0ec5dc538747dda72ff2f201045fcfe4847356756ea2a310d6d6a43d30f"
+    },
+    {
+      "path": "assets/visual-topup-2-clean.webp",
+      "pipeline": "clean_scene_archive_plus_deterministic_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "e12a4006ad53c6219edb633a135ecf380d379715e83ccdcbc41bb8a89f6bc6df"
+    },
+    {
+      "path": "assets/website-studio-v16.webp",
+      "pipeline": "precise_object_edit_preserving_transparent_text",
+      "width": 1200,
+      "height": 675,
+      "watermark_text": "Property Of Dirac Group & CV Multi Usaha Mandiri",
+      "text_treatment": "semi-transparent, composited directly on image",
+      "container": false,
+      "sha256": "96d8bbdfb9f17aa12bc42c62bbf3068b0ee5610e24f466d8e2912ccd99df126d"
+    }
+  ]
+}

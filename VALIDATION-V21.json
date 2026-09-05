@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "revision": "V21",
+  "validator": "validate_v21.py",
+  "generated_at_utc": "2026-09-05T02:40:16+00:00",
+  "project_root": "PT/",
+  "status": "PASS",
+  "summary": {
+    "checks_total": 10,
+    "checks_passed": 10,
+    "checks_failed": 0,
+    "failure_count": 0,
+    "warning_count": 0
+  },
+  "checks": {
+    "byte_inventory_and_utf8": {
+      "status": "PASS",
+      "files": 195,
+      "bytes_read": 30328873,
+      "utf8_text_files": 109,
+      "inventory_sha256": "923487974fbf886dcff56b35957de893b2bcbb54ebaf05023d74eb73234576ce",
+      "regular_files_processed": 195,
+      "failure_count": 0,
+      "warning_count": 0
+    },
+    "html_structure_accessibility": {
+      "status": "PASS",
+      "target_blank_links": 364,
+      "form_controls_applicable": 610,
+      "form_controls_labelled": 610,
+      "html_files_expected": 38,
+      "html_files_found": 38,
+      "html_files_parsed": 38,
+      "json_ld_blocks": 37,
+      "json_ld_required_pages": 37,
+      "json_ld_exempt_pages": 1,
+      "label_methods": {
+        "label[for]": 325,
+        "wrapping label": 285
+      },
+      "failure_count": 0,
+      "warning_count": 0
+    },
+    "local_references_and_fragments": {
+      "status": "PASS",
+      "local_urls_checked": 4523,
+      "fragments_checked": 1403,
+      "css_url_tokens_seen": 120,
+      "failure_count": 0,
+      "warning_count": 0
+    },
+    "data_inline_from_exact_parity": {
+      "status": "PASS",
+      "pairs_found": 1115,
+      "pairs_exact": 693,
+      "pairs_exact_raw": 693,
+      "pairs_semantically_exact": 1115,
+      "edge_lf_normalized": 384,
+      "css_url_rebased": 38,
+      "source_occurrences": {
+        "assets/js/knowledge-library-runtime.js": 1,
+        "assets/js/motion-v16.js": 38,
+        "assets/js/native-navigation-safety-v1.js": 38,
+        "assets/js/news-data.js": 2,
+        "assets/js/news-detail-runtime.js": 1,
+        "assets/js/news-visual-runtime-v16.js": 2,
+        "assets/js/newsroom-runtime.js": 1,
+        "assets/js/revision-v17.js": 38,
+        "assets/js/revision-v19.js": 38,
+        "assets/js/revision-v20.js": 38,
+        "assets/js/revision-v21-menu.js": 38,
+        "assets/js/revision-v21-ui.js": 38,
+        "assets/js/runtime-contact.js": 38,
+        "assets/js/runtime-hardening.js": 38,
+        "assets/js/runtime-premium.js": 38,
+        "assets/js/runtime-site-v8.js": 38,
+        "assets/js/runtime-ultimate-v4.js": 38,
+        "assets/js/runtime-widgets.js": 38,
+        "assets/js/text-motion-v13.js": 38,
+        "assets/js/tree-navigator-v16.js": 2,
+        "assets/motion-v16.css": 38,
+        "assets/newsroom-enhance.css": 2,
+        "assets/polish-v13.css": 38,
+        "assets/premium-v3.css": 38,
+        "assets/rev8-home-expansion.css": 1,
+        "assets/revision-v17.css": 38,
+        "assets/revision-v18.css": 38,
+        "assets/revision-v19.css": 38,
+        "assets/revision-v20.css": 38,
+        "assets/revision-v21-content.css": 38,
+        "assets/revision-v21-menu.css": 38,
+        "assets/revision-v21-ui.css": 38,
+        "assets/revision-v7.css": 38,
+        "assets/runtime-core-v8.css": 37,
+        "assets/runtime-hardening.css": 38,
+        "assets/runtime-newsroom-core-v8.css": 1,
+        "assets/tree-navigator-v16.css": 2,
+        "assets/ultimate-v4.css": 38,
+        "assets/visual-system-v10.css": 37
+      },
+      "mismatches_by_source": {},
+      "failure_count": 0,
+      "warning_count": 0
+    },
+    "javascript_syntax": {
+      "status": "PASS",
+      "source_files": 20,
+      "node_binary": "node",
+      "source_files_passed": 20,
+      "failure_count": 0,
+      "warning_count": 0
+    },
+    "news_dataset": {
+      "status": "PASS",
+      "expected_items": 19,
+      "items": 19,
+      "categories": [
+        "Aksesibilitas",
+        "Badan Usaha",
+        "Domain",
+        "Keamanan",
+        "Konsumen",
+        "Legalitas",
+        "Merek",
+        "Parfum",
+        "Pembayaran",
+        "Privasi",
+        "Website"
+      ],
+      "https_sources": 19,
+      "items_with_sections": 19,
+      "items_with_takeaways": 19,
+      "failure_count": 0,
+      "warning_count": 0
+    },
+    "knowledge_dataset": {
+      "status": "PASS",
+      "expected_items": 56,
+      "items": 56,
+      "category_count": 8,
+      "categories": [
+        "Administrasi & operasional",
+        "Badan usaha & perizinan",
+        "Keamanan, data & tata kelola",
+        "Merek, domain & situs web",
+        "Pajak & keuangan",
+        "Parfum & kosmetik",
+        "Pemasaran & layanan pelanggan",
+        "Produk digital & transaksi"
+      ],
+      "angle_count": 7,
+      "angles": [
+        "Daftar periksa",
+        "Istilah penting",
+        "Kesalahan umum",
+        "Panduan langkah",
+        "Perbandingan",
+        "Risiko",
+        "Template praktis"
+      ],
+      "https_sources": 56,
+      "unique_point_sequences": 56,
+      "failure_count": 0,
+      "warning_count": 0
+    },
+    "raster_decode_and_dimensions": {
+      "status": "PASS",
+      "raster_files": 84,
+      "raster_bytes": 4068376,
+      "raster_files_decoded": 84,
+      "formats": {
+        "JPEG": 5,
+        "PNG": 2,
+        "WEBP": 77
+      },
+      "html_image_dimensions_checked": 263,
+      "failure_count": 0,
+      "warning_count": 0
+    },
+    "video_probe_and_full_decode": {
+      "status": "PASS",
+      "video_files": 2,
+      "video_bytes": 6143240,
+      "ffprobe_binary": "ffprobe",
+      "ffmpeg_binary": "ffmpeg",
+      "video_files_fully_decoded": 2,
+      "probes": [
+        {
+          "path": "assets/company-profile-digdaya-ultimate.mp4",
+          "duration_seconds": 38.366667,
+          "format": "mov,mp4,m4a,3gp,3g2,mj2",
+          "streams": [
+            {
+              "index": 0,
+              "type": "video",
+              "codec": "h264",
+              "width": 1280,
+              "height": 720
+            }
+          ]
+        },
+        {
+          "path": "assets/company-profile-digdaya.mp4",
+          "duration_seconds": 18.0,
+          "format": "mov,mp4,m4a,3gp,3g2,mj2",
+          "streams": [
+            {
+              "index": 0,
+              "type": "video",
+              "codec": "h264",
+              "width": 1280,
+              "height": 720
+            }
+          ]
+        }
+      ],
+      "failure_count": 0,
+      "warning_count": 0
+    },
+    "csp_hash_coverage_and_deployment_parity": {
+      "status": "PASS",
+      "deployment_policies_identical": true,
+      "inline_script_blocks": 616,
+      "inline_style_blocks": 577,
+      "expected_unique_script_hashes": 58,
+      "actual_unique_script_hashes": 58,
+      "expected_unique_style_hashes": 22,
+      "actual_unique_style_hashes": 22,
+      "failure_count": 0,
+      "warning_count": 0
+    }
+  },
+  "failures": [],
+  "warnings": []
+}
