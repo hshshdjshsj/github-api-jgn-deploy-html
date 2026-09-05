@@ -51,7 +51,7 @@ function parsePtdinRequest(req) {
       && (typeof req.query.action !== 'string' || req.query.action !== action)) return { code: 'PTDIN_ACTION_MISMATCH' };
   const method = String(req.method || '').toUpperCase();
   if (!PTDIN_ACTIONS[action].has(method)) return { code: 'PTDIN_METHOD_INVALID', status: 405 };
-  const base = String(process.env.DIRAC_BASE_DOMAIN || '').trim().toLowerCase();
+  const base = String(process.env.DIRAC_BASE_DOMAIN || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '').replace(/^\./, '');
   if (base.length > 253 || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(base)
       || /^\d+$/.test(base.split('.').pop()) || /(?:^|\.)(?:localhost|local|internal)$/.test(base)) return { code: 'PTDIN_DOMAIN_INVALID', status: 503 };
   const origin = 'https://' + base;

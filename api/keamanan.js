@@ -246,6 +246,7 @@ async function passwordResetEngine(req, res, ops, body) {
   const inner = opened.inner;
   diracResetDiagnosticV335(req, 'd10.open', 'success', { op: String(inner && inner.op || ''), request_id_hash: crypto.createHash('sha256').update(String(inner && inner.request_id || '')).digest('hex').slice(0, 20), key_id_length: String(opened && opened.context && opened.context.keyId || '').length });
   let payload;
+  let responseStatus = 200;
   try {
     const bindingNow = String(await ops.requestBinding());
     const browserHash = String(await ops.hashBinding('browser', inner.browser_binding));
@@ -319,14 +320,14 @@ async function passwordResetEngine(req, res, ops, body) {
     }
   } catch (error) {
     diracResetDiagnosticV335(req, 'confirm.operation', 'error', { op: String(inner.op || '') }, error);
+    responseStatus = Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503));
     payload = { ok: false, op: String(inner.op || ''), code: String(error && error.code || 'PASSWORD_RESET_REQUEST_REJECTED'), message: 'Permintaan lost password tidak dapat diproses.' };
   }
   diracResetDiagnosticV335(req, 'd10.seal', 'begin', { op: String(inner.op || ''), payload_ok: payload && payload.ok === true, payload_code: String(payload && payload.code || '') });
   const challenge = await sealD10Response(payload, opened.context);
-  diracResetDiagnosticV335(req, 'd10.seal', 'success', { op: String(inner.op || ''), carrier_length: challenge.length, http_status: 200 });
-  const responseV338 = await resetResponse(res, 200, { ok: true, encrypted: true, protocol: D10.protocol, challenge });
+  diracResetDiagnosticV335(req, 'd10.seal', 'success', { op: String(inner.op || ''), carrier_length: challenge.length, http_status: responseStatus });
   await securityResetDispatchCommittedMailV338(req);
-  return responseV338;
+  return resetResponse(res, responseStatus, { ok: payload.ok === true, encrypted: true, protocol: D10.protocol, challenge });
 }
 
 const RESET_GATEWAY_TOKEN = Object.freeze({ version: 'dirac-keamanan-reset-gateway-v333' });

@@ -827,7 +827,7 @@ function diracPersistentSecurityTableForKeysV209(securityKeys) {
 
 // LOGIN RATE LIMIT PATCH v1 - domain_login only.
 // Menggunakan tabel rate limit yang sudah ada. Tidak mengubah endpoint, hash, A2F, checkout, order, atau fitur lain.
-const DOMAIN_LOGIN_RATE_TABLE = String(process.env.DOMAIN_LOGIN_RATE_TABLE || '').trim();
+const DOMAIN_LOGIN_RATE_TABLE = String(process.env.DOMAIN_LOGIN_RATE_TABLE || LOGIN_SECURITY_PERSIST_TABLE).trim();
 
 const DOMAIN_LOGIN_RATE_STORE = globalThis.__DIRAC_DOMAIN_LOGIN_RATE_STORE__ || new Map();
 globalThis.__DIRAC_DOMAIN_LOGIN_RATE_STORE__ = DOMAIN_LOGIN_RATE_STORE;
@@ -1204,13 +1204,7 @@ async function domainLogin(req, res, preloadedBody) {
     ok: Boolean(loginRate && loginRate.ok)
   }, res);
   if (!loginRate.ok) {
-    res.setHeader('Retry-After', String(loginRate.retryAfterSeconds));
-    return res.status(429).json({
-      ok: false,
-      code: 'LOGIN_RATE_LIMITED',
-      retry_after_seconds: loginRate.retryAfterSeconds,
-      message: 'Terlalu banyak percobaan masuk. Silakan coba lagi beberapa saat.'
-    });
+    return sendDomainLoginRateDecisionV336(res, loginRate);
   }
 
   diracLoginFatalMarkV324(req, 'login.auth_token', 'begin', {}, res);
@@ -1229,13 +1223,7 @@ async function domainLogin(req, res, preloadedBody) {
       const failedRate = await registerDomainLoginFailure(req, loginGuard.email);
 
       if (failedRate.blocked) {
-        res.setHeader('Retry-After', String(failedRate.retryAfterSeconds));
-        return res.status(429).json({
-          ok: false,
-          code: 'LOGIN_RATE_LIMITED',
-          retry_after_seconds: failedRate.retryAfterSeconds,
-          message: 'Terlalu banyak percobaan masuk. Silakan coba lagi beberapa saat.'
-        });
+        return sendDomainLoginRateDecisionV336(res, failedRate);
       }
     }
 
@@ -1414,6 +1402,19 @@ async function domainLoginEffectiveAccessBlockV320(req, authData) {
   const authEmail = normalizeAuthEmail(user && user.email || '');
   if (!customerSecurityLooksLikeUuid(authUserId) || !isValidAuthEmail(authEmail)) {
     return { ok: false, reason: 'login_ban_auth_user_invalid' };
+  }
+
+  const accountRateV336 = await checkDomainLoginRateLimit(req, authEmail);
+  if (!accountRateV336.ok) {
+    if (accountRateV336.unavailable) return { ok: false, reason: 'login_account_rate_store_unavailable' };
+    return {
+      ok: true,
+      blocked: true,
+      matched_scope: 'account',
+      blocked_until: accountRateV336.permanent ? null : new Date(Date.now() + accountRateV336.retryAfterSeconds * 1000).toISOString(),
+      retry_after_seconds: accountRateV336.retryAfterSeconds,
+      reason: accountRateV336.permanent ? 'login_account_locked' : 'login_password_lockout'
+    };
   }
 
   const centralContextV320 = diracCentralCurrentContextV149();
@@ -2455,10 +2456,10 @@ function getDomainLoginRateIdentity(req, email) {
   const userAgent = String(headers['user-agent'] || '').slice(0, 160);
   const normalizedEmail = normalizeAuthEmail(email || '');
   const emailHash = loginSecurityHash(normalizedEmail || 'empty-email');
-  const digest = loginSecurityHash(['domain_login_rate_v1', ip, userAgent, emailHash].join('|'));
-
+  const legacyDigest = loginSecurityHash(['domain_login_rate_v1', ip, userAgent, emailHash].join('|'));
   return {
-    key: 'domain-login-rate:' + digest,
+    key: 'domain-login-account:' + emailHash,
+    legacyKey: 'domain-login-rate:' + legacyDigest,
     ip,
     emailHash
   };
@@ -2466,189 +2467,204 @@ function getDomainLoginRateIdentity(req, email) {
 
 function normalizeDomainLoginRateRecord(record, now = Date.now()) {
   const row = record && typeof record === 'object' ? record : {};
+  const count = Number(row.count || 0);
+  const blockedUntilMs = Number(row.blockedUntilMs || row.blocked_until_ms || 0);
+  const lastFailedAtMs = Number(row.lastFailedAtMs || row.last_failed_at_ms || 0);
+  if (!Number.isSafeInteger(count) || count < 0
+      || !Number.isSafeInteger(blockedUntilMs) || blockedUntilMs < 0
+      || !Number.isSafeInteger(lastFailedAtMs) || lastFailedAtMs < 0
+      || (row.permanent !== undefined && typeof row.permanent !== 'boolean')) {
+    throw Object.assign(new Error('LOGIN_SECURITY_STATE_INVALID'), { code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' });
+  }
+  const permanent = row.permanent === true || count >= 7;
   return {
-    count: Number(row.count || 0),
+    count: Math.min(7, count),
     windowStartMs: Number(row.windowStartMs || row.window_start_ms || now),
     resetAtMs: Number(row.resetAtMs || row.reset_at_ms || (now + DOMAIN_LOGIN_RATE_WINDOW_MS)),
-    blockedUntilMs: Number(row.blockedUntilMs || row.blocked_until_ms || 0),
-    lastFailedAtMs: Number(row.lastFailedAtMs || row.last_failed_at_ms || 0)
+    blockedUntilMs: permanent ? 253402300799999 : blockedUntilMs,
+    lastFailedAtMs,
+    permanent
   };
 }
 
 async function readDomainLoginRateRecord(identity) {
   const key = String(identity && identity.key || '').trim();
-  if (!key) return null;
-
-  const memory = DOMAIN_LOGIN_RATE_STORE.get(key);
-  if (memory) return normalizeDomainLoginRateRecord(memory);
-
-  if (DOMAIN_LOGIN_RATE_STORE.size >= 20000) {
-    const nowV321 = Date.now();
-    diracBoundedMapSweepV321(
-      DOMAIN_LOGIN_RATE_STORE,
-      nowV321,
-      128,
-      (value) => Math.max(Number(value && value.resetAtMs || 0), Number(value && value.blockedUntilMs || 0))
-    );
-    if (DOMAIN_LOGIN_RATE_STORE.size >= 20000 && !DOMAIN_LOGIN_RATE_TABLE) {
-      return {
-        count: DOMAIN_LOGIN_RATE_MAX,
-        windowStartMs: nowV321,
-        resetAtMs: nowV321 + DOMAIN_LOGIN_RATE_WINDOW_MS,
-        blockedUntilMs: nowV321 + DOMAIN_LOGIN_RATE_BLOCK_MS,
-        lastFailedAtMs: nowV321
-      };
+  if (!key || !DOMAIN_LOGIN_RATE_TABLE) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+  const keys = [key, String(identity.legacyKey || '')].filter(Boolean);
+  const path = '/rest/v1/' + encodeURIComponent(DOMAIN_LOGIN_RATE_TABLE)
+    + '?select=security_key,record_json,blocked_until_ms,expires_at,updated_at'
+    + '&security_key=in.(' + keys.map(encodeURIComponent).join(',') + ')'
+    + '&limit=' + String(keys.length + 1);
+  const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+  if (!result || result.ok !== true || !Array.isArray(result.data)
+      || result.data.length > keys.length) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+  const seen = new Set();
+  const records = new Map();
+  for (const row of result.data) {
+    if (!row || !keys.includes(row.security_key) || seen.has(row.security_key)
+        || !row.record_json || typeof row.record_json !== 'object' || Array.isArray(row.record_json)
+        || (row.updated_at != null && !Number.isFinite(Date.parse(row.updated_at)))) {
+      throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+    }
+    seen.add(row.security_key);
+    const candidate = normalizeDomainLoginRateRecord(row.record_json);
+    const topLevelBlock = Number(row.blocked_until_ms || 0);
+    if (!Number.isSafeInteger(topLevelBlock) || topLevelBlock < 0) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+    candidate.blockedUntilMs = Math.max(candidate.blockedUntilMs, topLevelBlock);
+    records.set(row.security_key, { row, candidate });
+  }
+  const primary = records.get(key);
+  let record = primary ? primary.candidate : normalizeDomainLoginRateRecord(null);
+  const version = primary ? (primary.row.updated_at == null ? null : String(primary.row.updated_at)) : undefined;
+  const legacy = records.get(identity.legacyKey);
+  if (legacy) {
+    const candidate = legacy.candidate;
+    // A later account update already incorporated, or explicitly cleared, this legacy history.
+    const superseded = version != null && candidate.lastFailedAtMs <= Date.parse(version);
+    if (!superseded) {
+      if (candidate.count >= 5 && candidate.lastFailedAtMs > 0) {
+        candidate.blockedUntilMs = Math.max(candidate.blockedUntilMs,
+          candidate.lastFailedAtMs + (candidate.count >= 6 ? 86400000 : 3600000));
+      }
+      if (candidate.blockedUntilMs > Date.now() || candidate.resetAtMs > Date.now()) {
+        record.count = Math.max(record.count, candidate.count);
+        record.lastFailedAtMs = Math.max(record.lastFailedAtMs, candidate.lastFailedAtMs);
+        record.blockedUntilMs = Math.max(record.blockedUntilMs, candidate.blockedUntilMs);
+        record.permanent = record.permanent || candidate.permanent;
+      }
     }
   }
-
-  if (!DOMAIN_LOGIN_RATE_TABLE) return null;
-
-  try {
-    const path = '/rest/v1/' + encodeURIComponent(DOMAIN_LOGIN_RATE_TABLE)
-      + '?select=security_key,record_json,blocked_until_ms,expires_at'
-      + '&security_key=eq.' + encodeURIComponent(key)
-      + '&limit=1';
-
-    const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
-    if (!result.ok || !Array.isArray(result.data) || !result.data.length) return null;
-
-    const row = result.data[0] || {};
-    const expiresAtMs = Date.parse(row.expires_at || '');
-    if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return null;
-
-    const record = normalizeDomainLoginRateRecord(row.record_json || {});
-    diracBoundedMapSetV321(
-      DOMAIN_LOGIN_RATE_STORE,
-      key,
-      record,
-      20000,
-      Date.now(),
-      (value) => Math.max(Number(value && value.resetAtMs || 0), Number(value && value.blockedUntilMs || 0))
-    );
-    return record;
-  } catch (_) {
-    return null;
-  }
+  record = normalizeDomainLoginRateRecord(record);
+  Object.defineProperty(record, '__version', { value: version });
+  return record;
 }
 
 async function writeDomainLoginRateRecord(identity, record) {
   const key = String(identity && identity.key || '').trim();
-  if (!key) return false;
-
-  const now = Date.now();
-  const normalized = normalizeDomainLoginRateRecord(record, now);
-  const memoryWrittenV321 = diracBoundedMapSetV321(
-    DOMAIN_LOGIN_RATE_STORE,
-    key,
-    normalized,
-    20000,
-    now,
-    (value) => Math.max(Number(value && value.resetAtMs || 0), Number(value && value.blockedUntilMs || 0))
-  );
-
-  if (!DOMAIN_LOGIN_RATE_TABLE) return memoryWrittenV321;
-
-  try {
-    const ttlMs = Math.max(DOMAIN_LOGIN_RATE_WINDOW_MS, DOMAIN_LOGIN_RATE_BLOCK_MS, 60 * 1000) + 60 * 1000;
-    const payload = [{
-      security_key: key,
-      record_json: normalized,
-      blocked_until_ms: Number(normalized.blockedUntilMs || 0),
-      updated_at: new Date(now).toISOString(),
-      expires_at: new Date(now + ttlMs).toISOString()
-    }];
-
-    const result = await supabaseFetch('/rest/v1/' + encodeURIComponent(DOMAIN_LOGIN_RATE_TABLE) + '?on_conflict=security_key', {
-      method: 'POST',
-      auth: 'service',
-      prefer: 'resolution=merge-duplicates',
-      body: payload
-    });
-
-    return !!result.ok;
-  } catch (_) {
-    return false;
+  if (!key || !DOMAIN_LOGIN_RATE_TABLE || !Object.prototype.hasOwnProperty.call(record, '__version')) {
+    throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
   }
+  const version = record.__version;
+  const previousMs = version == null ? 0 : Date.parse(version);
+  const now = Math.max(Date.now(), previousMs + 1);
+  const normalized = normalizeDomainLoginRateRecord(record, now);
+  const payload = {
+    security_key: key,
+    record_json: normalized,
+    blocked_until_ms: normalized.blockedUntilMs,
+    updated_at: new Date(now).toISOString(),
+    expires_at: '9999-12-31T23:59:59.999Z'
+  };
+  const base = '/rest/v1/' + encodeURIComponent(DOMAIN_LOGIN_RATE_TABLE);
+  const path = version === undefined
+    ? base + '?on_conflict=security_key'
+    : base + '?security_key=eq.' + encodeURIComponent(key)
+      + '&updated_at=' + (version === null ? 'is.null' : 'eq.' + encodeURIComponent(version));
+  const result = await supabaseFetch(path, {
+    method: version === undefined ? 'POST' : 'PATCH',
+    auth: 'service',
+    prefer: version === undefined ? 'resolution=ignore-duplicates,return=representation' : 'return=representation',
+    body: version === undefined ? [payload] : payload
+  });
+  if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > 1) {
+    throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+  }
+  if (!result.data.length) return false;
+  const saved = result.data[0];
+  if (!saved || saved.security_key !== key || !saved.record_json
+      || Number(saved.record_json.count) !== normalized.count
+      || Number(saved.blocked_until_ms) !== normalized.blockedUntilMs
+      || Date.parse(saved.updated_at) !== now) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+  return true;
+}
+
+function domainLoginRateDecisionV336(identity, record, now = Date.now()) {
+  const permanent = record.permanent === true || record.count >= 7;
+  const blocked = permanent || record.blockedUntilMs > now;
+  return {
+    ok: !blocked,
+    blocked,
+    identity,
+    permanent,
+    count: record.count,
+    status: permanent ? 423 : 429,
+    code: permanent ? 'LOGIN_ACCOUNT_LOCKED' : 'LOGIN_RATE_LIMITED',
+    retryAfterSeconds: permanent ? 0 : Math.max(0, Math.ceil((record.blockedUntilMs - now) / 1000)),
+    message: permanent
+      ? 'Akun terkunci. Silakan hubungi admin melalui WhatsApp 087892523968 atau email support@diracgroup.store.'
+      : record.count >= 6
+        ? 'Password salah 6 kali. Akun dibatasi selama 24 jam sejak percobaan terakhir. Satu kesalahan berikutnya setelah pembatasan berakhir akan mengunci akun; silakan hubungi admin jika membutuhkan bantuan.'
+        : 'Password salah 5 kali. Akun dibatasi selama 1 jam sejak percobaan terakhir. Silakan coba kembali setelah pembatasan berakhir.'
+  };
+}
+
+function sendDomainLoginRateDecisionV336(res, decision) {
+  if (decision.retryAfterSeconds > 0) res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+  return res.status(decision.status || 503).json({
+    ok: false,
+    code: decision.code || 'LOGIN_SECURITY_STATE_UNAVAILABLE',
+    ...(decision.permanent ? { account_locked: true } : {}),
+    ...(decision.retryAfterSeconds > 0 ? { retry_after_seconds: decision.retryAfterSeconds } : {}),
+    message: decision.message || 'Status keamanan akun belum dapat diverifikasi. Silakan coba lagi.'
+  });
 }
 
 async function checkDomainLoginRateLimit(req, email) {
-  const now = Date.now();
   const identity = getDomainLoginRateIdentity(req, email);
-  let record = await readDomainLoginRateRecord(identity);
-  record = normalizeDomainLoginRateRecord(record, now);
-
-  if (Number(record.blockedUntilMs || 0) > now) {
-    return {
-      ok: false,
-      identity,
-      retryAfterSeconds: Math.max(1, Math.ceil((record.blockedUntilMs - now) / 1000))
-    };
+  try {
+    const record = await readDomainLoginRateRecord(identity);
+    return domainLoginRateDecisionV336(identity, record);
+  } catch (_) {
+    return { ok: false, blocked: true, unavailable: true, status: 503, code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' };
   }
-
-  if (Number(record.resetAtMs || 0) <= now) {
-    record = {
-      count: 0,
-      windowStartMs: now,
-      resetAtMs: now + DOMAIN_LOGIN_RATE_WINDOW_MS,
-      blockedUntilMs: 0,
-      lastFailedAtMs: 0
-    };
-    await writeDomainLoginRateRecord(identity, record);
-  }
-
-  return { ok: true, identity, retryAfterSeconds: 0 };
 }
 
 function shouldCountDomainLoginFailure(result) {
   const status = Number(result && result.status || 0);
-  return status === 400 || status === 401 || status === 403 || status === 422;
+  const data = result && result.data || {};
+  const code = String(data.error_code || data.code || '').toLowerCase();
+  if (![400, 401, 403, 422].includes(status)) return false;
+  if (code) return /^(invalid_credentials|invalid_login_credentials)$/.test(code);
+  return /invalid (?:login credentials|credentials|password)|incorrect password/i.test(String(data.msg || data.message || data.error_description || data.error || ''));
 }
 
 async function registerDomainLoginFailure(req, email) {
-  const now = Date.now();
   const identity = getDomainLoginRateIdentity(req, email);
-  let record = await readDomainLoginRateRecord(identity);
-  record = normalizeDomainLoginRateRecord(record, now);
-
-  if (Number(record.resetAtMs || 0) <= now) {
-    record = {
-      count: 0,
-      windowStartMs: now,
-      resetAtMs: now + DOMAIN_LOGIN_RATE_WINDOW_MS,
-      blockedUntilMs: 0,
-      lastFailedAtMs: 0
-    };
-  }
-
-  record.count = Number(record.count || 0) + 1;
-  record.lastFailedAtMs = now;
-
-  if (record.count >= DOMAIN_LOGIN_RATE_MAX) {
-    record.blockedUntilMs = now + DOMAIN_LOGIN_RATE_BLOCK_MS;
-  }
-
-  await writeDomainLoginRateRecord(identity, record);
-
-  return {
-    blocked: Number(record.blockedUntilMs || 0) > now,
-    retryAfterSeconds: Number(record.blockedUntilMs || 0) > now
-      ? Math.max(1, Math.ceil((record.blockedUntilMs - now) / 1000))
-      : 0,
-    count: record.count
-  };
+  try {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const record = await readDomainLoginRateRecord(identity);
+      const now = Date.now();
+      const current = domainLoginRateDecisionV336(identity, record, now);
+      if (current.blocked) return current;
+      record.count = Math.min(7, record.count + 1);
+      record.lastFailedAtMs = now;
+      record.permanent = record.count >= 7;
+      record.blockedUntilMs = record.permanent ? 253402300799999
+        : record.count >= 6 ? now + 86400000
+          : record.count >= 5 ? now + 3600000 : 0;
+      if (!await writeDomainLoginRateRecord(identity, record)) continue;
+      if (record.count >= 5 && req && !Object.prototype.hasOwnProperty.call(req, '__diracUserSecurityLoginFailureV336')) {
+        Object.defineProperty(req, '__diracUserSecurityLoginFailureV336', {
+          value: Object.freeze({ email: normalizeAuthEmail(email), attemptCount: record.count, blockedUntilMs: record.blockedUntilMs, permanent: record.permanent })
+        });
+      }
+      return domainLoginRateDecisionV336(identity, record, now);
+    }
+  } catch (_) {}
+  return { ok: false, blocked: true, unavailable: true, status: 503, code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' };
 }
 
 async function clearDomainLoginRateLimit(req, email) {
-  const now = Date.now();
   const identity = getDomainLoginRateIdentity(req, email);
-  const record = {
-    count: 0,
-    windowStartMs: now,
-    resetAtMs: now + DOMAIN_LOGIN_RATE_WINDOW_MS,
-    blockedUntilMs: 0,
-    lastFailedAtMs: 0
-  };
-  await writeDomainLoginRateRecord(identity, record);
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const record = await readDomainLoginRateRecord(identity);
+    // Once escalation starts, only an administrator can clear its history.
+    if (record.count === 0 || record.count >= 5 || record.permanent || record.blockedUntilMs > Date.now()) return;
+    record.count = 0;
+    record.lastFailedAtMs = 0;
+    if (await writeDomainLoginRateRecord(identity, record)) return;
+  }
+  throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
 }
 
 function summarizeLoginSecurityUserAgent(userAgent) {
@@ -47637,6 +47653,70 @@ function diracSecurityMailTextV327(input = {}) {
   ].filter((line, index, all) => line !== '' || (index > 0 && all[index - 1] !== '')).join('\r\n');
 }
 
+function diracUserSecurityLoginFailureMarkerV336(req) {
+  const descriptor = req && Object.getOwnPropertyDescriptor(req, '__diracUserSecurityLoginFailureV336');
+  const marker = descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : null;
+  if (!descriptor || descriptor.writable !== false || descriptor.configurable !== false || descriptor.enumerable !== false
+      || !marker || typeof marker !== 'object' || Array.isArray(marker) || !Object.isFrozen(marker)
+      || ![5, 6, 7].includes(marker.attemptCount)
+      || marker.permanent !== (marker.attemptCount === 7)
+      || !Number.isSafeInteger(marker.blockedUntilMs) || marker.blockedUntilMs < 0
+      || (marker.attemptCount < 7 && marker.blockedUntilMs <= Date.now())) return null;
+  const email = diracSecurityMailEmailV327(marker.email);
+  return email && email === marker.email ? marker : null;
+}
+
+async function diracUserSecurityResolveLoginFailureV336(req, payload, action, httpStatus) {
+  if (action !== 'domain_login' || !payload || payload.ok !== false || ![429, 423].includes(httpStatus)) return null;
+  const marker = diracUserSecurityLoginFailureMarkerV336(req);
+  const ctx = diracCentralCurrentContextV149();
+  if (!marker || !ctx || ctx.req !== req || ctx.action !== action
+      || !diracCentralGuardPassedForHandlerV168(req)
+      || (marker.permanent ? httpStatus !== 423 : httpStatus !== 429)) return null;
+  // The attempted login address is never sufficient: use the exact, unique stored customer recipient.
+  const found = await customerSecurityFetchCustomerByEmail(marker.email).catch(() => null);
+  const rows = found && found.ok === true && Array.isArray(found.data) ? found.data : [];
+  const customer = rows.length === 1 ? rows[0] : null;
+  if (!customer || !customerSecurityLooksLikeUuid(String(customer.id || ''))
+      || diracSecurityMailEmailV327(customer.email) !== marker.email) return null;
+  const client = diracSecurityMailClientContextV327(req);
+  const reference = diracSecurityMailReferenceV327('login_password_blocked', req, marker.email);
+  const count = marker.attemptCount;
+  const duration = count === 5 ? '1 jam' : count === 6 ? '24 jam' : '';
+  const until = marker.permanent ? 'Hubungi admin untuk peninjauan'
+    : (typeof formatDiracWibTime === 'function' ? formatDiracWibTime(marker.blockedUntilMs) : new Date(marker.blockedUntilMs).toISOString());
+  const htmlInput = {
+    preheader: 'Percobaan password ke-' + count + ' belum berhasil. Kami membantu menjaga akun Anda.',
+    brandLabel: 'SECURE ACCOUNT SECURITY',
+    eyebrow: 'PERINGATAN KEAMANAN AKUN',
+    title: marker.permanent ? 'Akun Anda\nTerkunci' : 'Maaf, Akses Akun\nDijeda Sementara',
+    greeting: 'Yth. Pengguna Dirac Group,',
+    summary: marker.permanent
+      ? 'Kami memahami situasi ini tidak nyaman. Percobaan password ke-7 belum berhasil dan akun Anda kini terkunci. Silakan hubungi admin di WhatsApp 087892523968 atau support@diracgroup.store untuk peninjauan akses.'
+      : 'Kami memahami gagal masuk berulang kali bisa membuat khawatir. Percobaan password ke-' + count + ' belum berhasil. Demi menjaga akun Anda, akses masuk dijeda selama ' + duration + '.',
+    statusLabel: 'STATUS AKUN',
+    statusValue: marker.permanent ? 'TERKUNCI — HUBUNGI ADMIN' : 'DIJEDA ' + duration.toUpperCase(),
+    statusNote: count === 5 ? 'Kesalahan password ke-6 setelah jeda selesai akan mengunci akses selama 24 jam.'
+      : count === 6 ? 'Kesalahan password ke-7 setelah jeda selesai akan mengunci akun sampai ditinjau admin.'
+        : 'Akses hanya dapat dipulihkan setelah peninjauan admin.',
+    detailsLabel: 'DETAIL PERCOBAAN MASUK',
+    rows: [
+      ['AKTIVITAS', 'Password tidak sesuai'], ['JUMLAH KESALAHAN', String(count)],
+      ['AKHIR JEDA / TINDAKAN', until],
+      ['WAKTU WIB', typeof formatDiracWibTime === 'function' ? formatDiracWibTime(Date.now()) : new Date().toISOString()],
+      ['PERANGKAT', client.device], ['BROWSER', client.browser], ['IP TERSAMAR', client.maskedIp], ['REFERENSI', reference]
+    ],
+    actionUrl: diracRoleOriginV250('security') + '/keamanan.html',
+    actionText: 'BUKA PUSAT KEAMANAN',
+    warningTitle: 'JIKA INI BUKAN ANDA',
+    warning: 'Segera hubungi bantuan resmi dan tinjau keamanan akun. Jangan bagikan password, OTP, token, atau Passkey kepada siapa pun. Tim support tidak akan meminta data rahasia tersebut.',
+    supportLead: 'Kami siap membantu melalui WhatsApp 087892523968 atau support@diracgroup.store.'
+  };
+  return Object.freeze({ kind: 'login_password_blocked', email: marker.email, reference,
+    subject: 'DiracGroup Security - ' + String(htmlInput.title).replace(/\n/g, ' ') + ' [' + reference + ']',
+    html: diracSecurityCorporateEmailHtmlV327(htmlInput), text: diracSecurityMailTextV327(htmlInput) });
+}
+
 function diracUserSecurityResolveEventV327(req, payload, action) {
   const normalizedAction = diracV110NormalizeAction(String(action || ''));
   const client = diracSecurityMailClientContextV327(req);
@@ -48354,10 +48434,10 @@ __diracV202RegisterMiddleware(async function diracSecurityNotificationMailWrappe
 
   res.json = async function diracSecurityNotificationMailJsonV327(payload) {
     const httpStatus = Number(capturedStatus || res.statusCode || 200);
-    const event = !notificationScheduled && httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true
-      ? diracUserSecurityResolveEventV327(req, payload, action)
-      : null;
-    const forwarded = await originalJson(payload);
+    const event = notificationScheduled ? null
+      : (httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true
+        ? diracUserSecurityResolveEventV327(req, payload, action)
+        : await diracUserSecurityResolveLoginFailureV336(req, payload, action, httpStatus));
     if (event && !notificationScheduled) {
       notificationScheduled = true;
       const delivery = diracUserSecurityKeepAliveV327(req, diracUserSecuritySendV327(event, configuration.user));
@@ -48369,7 +48449,7 @@ __diracV202RegisterMiddleware(async function diracSecurityNotificationMailWrappe
         }).catch(() => false);
       }
     }
-    return forwarded;
+    return originalJson(payload);
   };
 
   return nextHandlerV202(req, res);
@@ -61110,6 +61190,7 @@ async function diracS2SProcessSecurityReportV206(ctx) {
   const body = ctx && ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
   const event = String(body.event || '').trim().toLowerCase();
   const reporterServerId = diracS2SIdV206(diracS2SHeaderV206(ctx.req, 'x-dirac-server-id'));
+  if (event === 'password_reset_committed_v338') return diracPasswordResetMailPrepareV338(ctx);
   if (event === 'revocation_check') {
     const offenderServerId = diracS2SIdV206(body.offender_server_id);
     const offenderKeyVersion = diracS2SKeyVersionV206(body.offender_key_version);
@@ -61575,7 +61656,7 @@ function diracSessionHandoffBuildLocalCookiesV250(req, user, customerId, securit
 
 const DIRAC_APP_ORIGIN_HANDOFF_V313 = 'dirac-app-origin-handoff-v310';
 const DIRAC_APP_ORIGIN_HANDOFF_RESPONSE_PROOF_V316 = 'dirac-app-origin-handoff-response-proof-v316';
-const DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313 = Object.freeze(new Set(['panel', 'parfum', 'pesanan', 'security']));
+const DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313 = Object.freeze(new Set(['panel', 'parfum', 'pesanan', 'security', 'website', 'topup', 'domain']));
 const DIRAC_APP_ORIGIN_HANDOFF_ACCESS_PROOF_V318 = 'dirac-app-origin-handoff-access-proof-v318';
 const DIRAC_APP_ORIGIN_HANDOFF_ACCESS_PROOFS_V318 = new WeakMap();
 
@@ -61587,13 +61668,19 @@ function diracAppOriginHandoffTargetV313(targetRole) {
       panel: 'https://panel.' + base + '/dashboard.html',
       parfum: 'https://' + base + '/parfum.html',
       pesanan: 'https://order.' + base + '/pesanan.html',
-      security: 'https://security.' + base + '/keamanan.html'
+      security: 'https://security.' + base + '/keamanan.html',
+      website: 'https://' + base + '/website.html',
+      topup: 'https://' + base + '/topup.html',
+      domain: 'https://' + base + '/domain.html'
     };
     const expectedPath = {
       panel: '/dashboard.html',
       parfum: '/parfum.html',
       pesanan: '/pesanan.html',
-      security: '/keamanan.html'
+      security: '/keamanan.html',
+      website: '/website.html',
+      topup: '/topup.html',
+      domain: '/domain.html'
     }[role];
     if (!DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313.has(role) || !routes[role] || !expectedPath) return null;
     const url = new URL(routes[role]);
@@ -62631,6 +62718,183 @@ function diracCentralNativeNetworkSurfaceIntactV231() {
   );
 }
 
+// v338: committed reset notifications re-enter the complete, unchanged Central Guard.
+// The private marker binds this in-process request; it never substitutes for S2S proof.
+const DIRAC_PASSWORD_RESET_MAIL_REQUESTS_V338 = new WeakMap();
+
+function diracPasswordResetMailRecordV338(record, commitId) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)
+      || !/^[a-f0-9]{64}$/.test(String(commitId || ''))
+      || record.type !== 'password_reset_committed_v338'
+      || record.commit_id !== commitId
+      || !customerSecurityLooksLikeUuid(record.auth_user_id)
+      || !customerSecurityLooksLikeUuid(record.customer_id)
+      || !customerSecurityLooksLikeUuid(record.passkey_id)
+      || typeof record.email !== 'string' || !diracSecurityMailEmailV327(record.email)
+      || diracSecurityMailEmailV327(record.email) !== record.email
+      || !Number.isSafeInteger(record.security_epoch) || record.security_epoch < 0
+      || !Number.isSafeInteger(record.committed_at_ms) || record.committed_at_ms <= 0
+      || !Number.isSafeInteger(record.expires_at_ms)
+      || record.expires_at_ms - record.committed_at_ms !== 900000
+      || record.committed_at_ms > Date.now() + 30000 || record.expires_at_ms <= Date.now()
+      || !/^[a-f0-9]{128}$/.test(String(record.mac || ''))) return null;
+  const key = diracCentralDeriveSecretV146('password-reset-mail-record-v338');
+  const expected = crypto.createHmac('sha512', key).update(JSON.stringify([
+    record.type, record.commit_id, record.auth_user_id, record.customer_id, record.email,
+    record.passkey_id, record.security_epoch, record.committed_at_ms, record.expires_at_ms
+  ])).digest('hex');
+  if (!safeEqual(expected, record.mac)) return null;
+  return Object.freeze({
+    type: record.type, commit_id: record.commit_id, auth_user_id: record.auth_user_id,
+    customer_id: record.customer_id, email: record.email, passkey_id: record.passkey_id,
+    security_epoch: record.security_epoch, committed_at_ms: record.committed_at_ms,
+    expires_at_ms: record.expires_at_ms, mac: record.mac
+  });
+}
+
+function diracPasswordResetMailContextV338(ctx, phase) {
+  const marker = ctx && ctx.req && DIRAC_PASSWORD_RESET_MAIL_REQUESTS_V338.get(ctx.req);
+  const body = ctx && ctx.body;
+  if (!marker || marker.req !== ctx.req || marker.used === true
+      || ctx.action !== 'security_report' || ctx.method !== 'POST'
+      || ctx.classification !== 'server' || ctx.authentication !== 'server'
+      || ctx.__diracS2SSevenSignaturesVerifiedV206 !== true
+      || diracS2SHeaderV206(ctx.req, 'x-dirac-server-id') !== diracS2SServerIdV250()
+      || diracS2SHeaderV206(ctx.req, 'x-dirac-target-server-id') !== diracS2SServerIdV250()
+      || !body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).sort().join(',') !== 'action,event,evidence_hash'
+      || body.action !== 'security_report' || body.event !== 'password_reset_committed_v338'
+      || body.evidence_hash !== marker.commitId) return null;
+  if (phase === 'guard') {
+    if (!diracCentralGuardPhaseValidV211(ctx) || ctx.currentStageV211 !== 'security report'
+        || ctx.currentStageIndexV211 !== SECURITY_PIPELINE.findIndex((stage) => stage.name === 'security report')) return null;
+  } else if (phase !== 'handler' || !diracCentralHandlerContextFullyPassedV211(ctx, ctx.req)) return null;
+  return marker;
+}
+
+async function diracPasswordResetMailPrepareV338(ctx) {
+  const marker = diracPasswordResetMailContextV338(ctx, 'guard');
+  if (!marker) return { ok: false, reason: 'password_reset_mail_request_binding_invalid' };
+  const committed = await readPersistentSecurityJsonStrictV194('password-reset-mail-v338:' + marker.commitId);
+  const record = committed && committed.ok === true && committed.found === true
+    ? diracPasswordResetMailRecordV338(committed.record, marker.commitId) : null;
+  if (!record) return { ok: false, reason: 'password_reset_mail_commit_record_invalid' };
+  marker.record = record;
+  // No terminal response: remaining guard stages and the full-passport dispatcher run.
+  return { ok: true, response: null };
+}
+
+function diracPasswordResetMailEventV338(record, client) {
+  const reference = record.commit_id.slice(0, 10).toUpperCase();
+  const input = {
+    preheader: 'Password berhasil diganti - Referensi ' + reference,
+    brandLabel: 'SECURE ACCOUNT SECURITY', eyebrow: 'PASSWORD SECURITY NOTICE',
+    title: 'Password Berhasil\nDiganti', greeting: 'Yth. Pengguna Dirac Group,',
+    summary: 'Password akun Anda berhasil diganti melalui verifikasi Passkey. Password baru sudah diperiksa dan perubahan telah tersimpan.',
+    statusLabel: 'STATUS KEAMANAN', statusValue: 'PASSWORD BARU AKTIF',
+    statusNote: 'Perubahan telah dikonfirmasi oleh server setelah pemeriksaan keamanan selesai.',
+    detailsLabel: 'DETAIL AKTIVITAS',
+    rows: [
+      ['AKTIVITAS', 'Penggantian password terverifikasi'], ['METODE', 'WebAuthn Passkey'],
+      ['WAKTU WIB', typeof formatDiracWibTime === 'function' ? formatDiracWibTime(record.committed_at_ms) : new Date(record.committed_at_ms).toISOString()],
+      ['PERANGKAT', client.device], ['SISTEM OPERASI', client.operatingSystem],
+      ['BROWSER', client.browser], ['IP TERSAMAR', client.maskedIp],
+      ['PERKIRAAN LOKASI', client.location], ['SUMBER LOKASI', client.locationSource],
+      ['REFERENSI', reference]
+    ],
+    actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN',
+    warningTitle: 'PERINGATAN KEAMANAN',
+    warning: 'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi WhatsApp 087892523968 atau email support@diracgroup.store. Jangan kirim password, OTP, token, atau data rahasia melalui chat maupun email.',
+    supportLead: 'Butuh bantuan memeriksa perubahan akun? Hubungi tim support melalui kanal resmi berikut.'
+  };
+  return Object.freeze({ kind: 'password_changed', email: record.email, reference,
+    subject: 'DiracGroup Security - Password Berhasil Diganti [' + reference + ']',
+    html: diracSecurityCorporateEmailHtmlV327(input), text: diracSecurityMailTextV327(input) });
+}
+
+__diracV202RegisterMiddleware(async function diracPasswordResetCommittedMailWrapperV338(req, res, nextHandlerV202) {
+  const ctx = diracCentralCurrentContextV149();
+  if (!ctx || ctx.action !== 'security_report' || !ctx.body
+      || ctx.body.event !== 'password_reset_committed_v338') return nextHandlerV202(req, res);
+  const marker = diracPasswordResetMailContextV338(ctx, 'handler');
+  const record = marker && marker.record ? diracPasswordResetMailRecordV338(marker.record, marker.commitId) : null;
+  if (!marker || !record) return res.status(403).json({ ok: false, code: 'PASSWORD_RESET_MAIL_FULL_GUARD_REQUIRED' });
+  const configuration = diracUserSecurityConfigurationRequiredV327();
+  if (!configuration.user) return res.status(503).json({ ok: false, code: 'PASSWORD_RESET_MAIL_CONFIGURATION_UNAVAILABLE' });
+  marker.used = true;
+  const claimed = await claimPersistentSecurityKeyOnceV194('password-reset-mail-dispatch-v338:' + record.commit_id, {
+    type: 'password_reset_mail_dispatch_v338', commit_id: record.commit_id,
+    customer_id: record.customer_id, auth_user_id: record.auth_user_id,
+    record_mac: record.mac, claimed_at_ms: Date.now()
+  }, 900);
+  if (claimed !== true) return res.status(409).json({ ok: false, code: 'PASSWORD_RESET_MAIL_CLAIM_UNAVAILABLE_OR_USED' });
+  const result = await diracUserSecuritySendV327(diracPasswordResetMailEventV338(record, marker.client), configuration.user);
+  const delivered = Boolean(result && result.ok === true);
+  return res.status(delivered ? 200 : 503).json({ ok: delivered,
+    code: delivered ? 'PASSWORD_RESET_MAIL_DELIVERED' : String(result && result.code || 'PASSWORD_RESET_MAIL_UNCONFIRMED'),
+    provider: String(result && result.provider || ''), status: Number(result && result.status || 0) });
+}, 'diracPasswordResetCommittedMailWrapperV338');
+
+function diracPasswordResetMailPreflightV338(preflight, serverId, keyVersion) {
+  if (!preflight || typeof preflight !== 'object' || !preflight.registry
+      || preflight.registry.security_key !== 's2s-server-registry:' + serverId
+      || !Array.isArray(preflight.revocations) || preflight.revocations.length > 1) return false;
+  const registry = preflight.registry;
+  const rawRecord = registry.record_json;
+  if (!rawRecord || typeof rawRecord !== 'object' || Array.isArray(rawRecord)) return false;
+  const entry = rawRecord.entry && typeof rawRecord.entry === 'object' && !Array.isArray(rawRecord.entry)
+    ? rawRecord.entry : rawRecord;
+  const expiry = registry.expires_at == null || registry.expires_at === '' ? Infinity : Date.parse(registry.expires_at);
+  if (!(expiry > Date.now()) || !diracS2SValidateEnvRegistryV207({ [serverId]: entry })
+      || String(entry.status || '').toLowerCase() !== 'active' || entry.key_version !== keyVersion
+      || !entry.allowed_targets.map(diracS2SIdV206).includes(serverId)
+      || !entry.allowed_actions.map((action) => String(action || '').trim().toLowerCase()).includes('security_report')) return false;
+  const envRevocation = diracS2SEnvRevocationStatusV207(serverId, keyVersion);
+  if (!envRevocation || envRevocation.ok !== true || envRevocation.revoked === true) return false;
+  for (const row of preflight.revocations) {
+    if (!row || row.security_key !== 's2s-revocation:' + serverId + ':' + keyVersion
+        || !row.record_json || typeof row.record_json !== 'object' || Array.isArray(row.record_json)
+        || row.record_json.revoked === true) return false;
+  }
+  // Advisory only. The real pipeline performs fresh database registry/revocation reads.
+  return true;
+}
+
+async function diracPasswordResetMailNotifyCommittedV338(sourceReq, commitId, preflight) {
+  if (!sourceReq || typeof sourceReq !== 'object' || !/^[a-f0-9]{64}$/.test(String(commitId || '')))
+    return { ok: false, code: 'PASSWORD_RESET_MAIL_INPUT_INVALID' };
+  const serverId = diracS2SIdV206(diracS2SServerIdV250());
+  const keyVersion = diracS2SKeyVersionV206(diracS2STextV206('DIRAC_S2S_KEY_VERSION'));
+  if (!serverId || !keyVersion || !diracPasswordResetMailPreflightV338(preflight, serverId, keyVersion))
+    return { ok: false, code: 'PASSWORD_RESET_MAIL_SELF_SCOPE_UNAVAILABLE' };
+  const target = new URL(diracRoleApiUrlV250(diracAppRoleV250(), 'security_report'));
+  const body = { action: 'security_report', event: 'password_reset_committed_v338', evidence_hash: commitId };
+  const rawBody = JSON.stringify(body);
+  const headers = { host: target.host, 'x-forwarded-proto': 'https',
+    'content-type': 'application/json', 'content-length': String(Buffer.byteLength(rawBody)),
+    accept: 'application/json', 'user-agent': 'Dirac-Security-Mail/338' };
+  const signed = diracS2SSignHeadersV206({ target, action: 'security_report', body, targetServerId: serverId });
+  for (const [name, value] of Object.entries(signed)) headers[name.toLowerCase()] = value;
+  const originalIp = getLoginSecurityIp(sourceReq);
+  const req = { method: 'POST', url: target.pathname + target.search, query: { action: 'security_report' },
+    headers, rawHeaders: Object.entries(headers).flat(), body: rawBody,
+    socket: { remoteAddress: require('net').isIP(originalIp) ? originalIp : '', encrypted: true } };
+  const res = diracCentralFakeResponseV146();
+  DIRAC_PASSWORD_RESET_MAIL_REQUESTS_V338.set(req, { req, commitId, used: false,
+    client: diracSecurityMailClientContextV327(sourceReq), record: null });
+  try {
+    // Same public export: raw-body capture, compliance gate, all 30 guards, dispatcher.
+    await module.exports(req, res);
+    const result = res.payload;
+    const deliveryAccepted = result && typeof result === 'object' && result.ok === true
+      && result.code === 'PASSWORD_RESET_MAIL_DELIVERED'
+      && ((['brevo', 'resend'].includes(result.provider) && [200, 201, 202].includes(Number(result.status)))
+        || (result.provider === 'gmail_smtp' && Number(result.status) === 250));
+    return Number(res.statusCode) === 200 && deliveryAccepted
+      ? { ok: true, provider: String(result.provider || ''), status: Number(result.status || 0) }
+      : { ok: false, code: String(result && result.code || 'PASSWORD_RESET_MAIL_CENTRAL_GUARD_REJECTED'), status: Number(res.statusCode || 0) };
+  } finally { DIRAC_PASSWORD_RESET_MAIL_REQUESTS_V338.delete(req); }
+}
 function diracCentralLockBackendRuntimeV230() {
   if (!DIRAC_CENTRAL_ASYNC_CONTEXT_V149 || !DIRAC_CENTRAL_DATABASE_EGRESS_CONTEXT_V230) {
     throw new Error('DIRAC_RUNTIME_ASYNC_CONTEXT_REQUIRED');
@@ -63188,6 +63452,7 @@ if (__diracRecoveryRoleV250) {
   throw new Error('DIRAC_NON_RECOVERY_ROLE_PROXY_ONLY_INVARIANT_FAILED_V250');
 }
 Object.defineProperty(module.exports, '__diracRecoveryRoleAwareV250', { value: true, enumerable: false });
+Object.defineProperty(module.exports, '__diracPasswordResetMailNotifyCommittedV338', { value: diracPasswordResetMailNotifyCommittedV338, enumerable: false, writable: false, configurable: false });
 
 Object.freeze(module.exports);
 if (!Object.isFrozen(module.exports)) {
