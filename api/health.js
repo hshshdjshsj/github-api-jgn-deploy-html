@@ -548,7 +548,7 @@ const __diracV202BaseHandler = async function handler(req, res) {
   const isDomainAction = DOMAIN_ACTIONS.has(action);
   const isLegacyAuthPost = !rawAction && (req.method === 'POST' || req.method === 'OPTIONS');
 
-  const cors = setCors(req, res, { isDomainAction: isDomainAction || isLegacyAuthPost });
+  const cors = setCors(req, res, { isDomainAction: isDomainAction || isLegacyAuthPost || action === 'security_report' });
   if (req.method === 'OPTIONS') return res.status(cors.allowed ? 200 : 403).end();
   if (!cors.allowed) return res.status(403).json({ ok: false, message: 'Origin tidak diizinkan.' });
 
@@ -50058,10 +50058,54 @@ function diracCentralPermanentBanDecisionV281(ctx, reason) {
     && (!cleanReason || cleanReason === evidenceKind);
   const corroborated = Boolean(ctx && ctx.__diracCentralCorroboratedAttackV281 === true)
     && DIRAC_CENTRAL_CONFIRMED_ATTACK_KINDS_V281.has(cleanReason);
+  const body = ctx && ctx.body && typeof ctx.body === 'object' && !Array.isArray(ctx.body) ? ctx.body : null;
+  const reportPassport = ctx && ctx.guardPassport && typeof ctx.guardPassport === 'object' ? ctx.guardPassport : null;
+  const reportHeaders = ctx && ctx.headers && typeof ctx.headers === 'object' ? ctx.headers : null;
+  const reportRequest = ctx && ctx.req && typeof ctx.req === 'object' ? ctx.req : null;
+  const reportQuery = reportRequest && reportRequest.query && typeof reportRequest.query === 'object' && !Array.isArray(reportRequest.query) ? reportRequest.query : null;
+  const reportShopOrigin = diracBaseOriginV250();
+  const verifiedParfumSecurityReport = Boolean(
+    cleanReason === 'html_security_report'
+    && ctx && ctx.action === 'security_report' && ctx.method === 'POST'
+    && ctx.classification === 'browser' && ctx.authentication === 'browser'
+    && ctx.terminalBlockReason === 'html_security_report'
+    && ctx.preflightValidatedV221 !== true && !ctx.failedStageV211
+    && ctx.passport === DIRAC_V202_ALL_CHECKPOINTS
+    && reportHeaders
+    && String(reportHeaders.origin || '').trim() === reportShopOrigin
+    && String(reportHeaders.referer || reportHeaders.referrer || '').trim() === reportShopOrigin + '/parfum.html'
+    && !Object.keys(reportHeaders).some((name) => /^x-dirac-(?:server-id|target-server-id|network-id|key-version|signature(?:-|$)|worker(?:-|$)|s2s(?:-|$))/i.test(String(name)))
+    && reportRequest && String(reportRequest.url || '') === '/api/health?action=security_report'
+    && reportQuery && Object.keys(reportQuery).length === 1 && reportQuery.action === 'security_report'
+    && reportPassport
+    && Object.keys(DIRAC_V202_CHECKPOINT_BY_STAMP).every((stamp) => reportPassport[stamp] === true)
+    && reportPassport.identity_checked === true
+    && reportPassport.persistent_ban_checked === true
+    && reportPassport.browser_auth_checked === true
+    && reportPassport.csrf_checked === true
+    && reportPassport.page_nonce_checked === true
+    && reportPassport.browser_signal_checked === true
+    && reportPassport.device_checked === true
+    && reportPassport.body_checked === true
+    && reportPassport.light_checked === true
+    && reportPassport.contract_checked === true
+    && reportPassport.security_report_checked === true
+    && reportPassport.integrity_checked === true
+    && body
+    && Object.keys(body).sort().join('|') === 'action|event|evidence|page|reason|type|version'
+    && body.action === 'security_report'
+    && body.reason === 'html_detected_attack'
+    && body.page === 'parfum.html'
+    && body.version === 'dirac-html-shell-v1'
+    && ((body.evidence === 'family=forbidden_html_suffix;field=url;source=parfum_checkout_security'
+      && body.type === 'url_guard' && body.event === 'forbidden_html_url_suffix')
+      || (/^family=(?:invalid_key|invalid_paste|invalid_drop|invalid_input|frontend_threat);field=(?:name|detail|note|phone|menu|search|promo);source=parfum_checkout_security$/.test(String(body.evidence || ''))
+        && body.type === 'input_guard' && body.event === 'fourth_high_confidence_input_violation'))
+  );
   return Object.freeze({
-    permanent: evidenceConfirmed || corroborated,
-    kind: evidenceConfirmed ? evidenceKind : (corroborated ? cleanReason : ''),
-    basis: evidenceConfirmed ? 'central_threat_evidence' : (corroborated ? 'corroborated_attack' : 'transient_or_unconfirmed_failure')
+    permanent: evidenceConfirmed || corroborated || verifiedParfumSecurityReport,
+    kind: evidenceConfirmed ? evidenceKind : (corroborated ? cleanReason : (verifiedParfumSecurityReport ? 'html_security_report' : '')),
+    basis: evidenceConfirmed ? 'central_threat_evidence' : (corroborated ? 'corroborated_attack' : (verifiedParfumSecurityReport ? 'verified_parfum_security_report' : 'transient_or_unconfirmed_failure'))
   });
 }
 
@@ -51987,14 +52031,17 @@ function diracCentralTimeoutOptionsV221(options, exactTimeoutMs) {
 }
 
 async function diracCentralFreshDnsV221(host) {
+  let timer = null;
   try {
     const rows = await Promise.race([
       DIRAC_CENTRAL_NATIVE_DNS_LOOKUP_V230(String(host || ''), { all: true, verbatim: true }),
-      new Promise((resolve) => setTimeout(() => resolve([]), 1500))
+      new Promise((resolve) => { timer = setTimeout(() => resolve([]), 1500); })
     ]);
     return Array.from(new Set((rows || []).map((row) => String(row && row.address || '')).filter(Boolean))).slice(0, 32);
   } catch (_) {
     return [];
+  } finally {
+    if (timer !== null) clearTimeout(timer);
   }
 }
 
@@ -52337,9 +52384,16 @@ function diracCentralGuardSourceUniquenessV221() {
       'diracCentralMfaEnvelopeV221',
       'diracCentralPipelineIntegrityV221'
     ];
+    const requiredCounts = new Map(requiredNames.map((name) => [name, 0]));
+    const requiredAlternatives = requiredNames.join('|');
+    const requiredPattern = new RegExp('(?:function\\s+(' + requiredAlternatives + ')\\s*\\(|const\\s+(' + requiredAlternatives + ')\\s*=)', 'g');
+    let requiredMatch;
+    while ((requiredMatch = requiredPattern.exec(source))) {
+      const name = requiredMatch[1] || requiredMatch[2];
+      requiredCounts.set(name, requiredCounts.get(name) + 1);
+    }
     for (const name of requiredNames) {
-      const pattern = new RegExp('(?:function\\s+' + name + '\\s*\\(|const\\s+' + name + '\\s*=)', 'g');
-      const count = (source.match(pattern) || []).length;
+      const count = requiredCounts.get(name);
       if (count !== 1) return { ok: false, reason: 'v221_function_declaration_count_' + name + '_' + count };
     }
     const counts = new Map();
@@ -54488,9 +54542,9 @@ function diracCentralVerifyPageNonceV146(req, token, action) {
   const requestMethod = String(req && req.method || '').toUpperCase();
   if (!payload.mth || String(payload.mth).toUpperCase() !== requestMethod) return { ok: false, reason: 'page_nonce_method_mismatch' };
   const sid = diracCentralRequestSessionHashV146(req);
-  if (payload.sid && sid && payload.sid !== sid) return { ok: false, reason: 'page_nonce_session_mismatch' };
+  if (typeof payload.sid !== 'string' || !/^[a-f0-9]{64}$/.test(payload.sid) || !sid || !safeEqual(payload.sid, sid)) return { ok: false, reason: 'page_nonce_session_mismatch' };
   const originHash = diracCentralHashV146(diracCentralNormalizeOriginV146(req && req.headers && (req.headers.origin || req.headers.referer || req.headers.referrer) || ''));
-  if (payload.oh && originHash && payload.oh !== originHash) return { ok: false, reason: 'page_nonce_origin_mismatch' };
+  if (typeof payload.oh !== 'string' || !/^[a-f0-9]{64}$/.test(payload.oh) || !originHash || !safeEqual(payload.oh, originHash)) return { ok: false, reason: 'page_nonce_origin_mismatch' };
   return { ok: true, payload };
 }
 
@@ -58448,8 +58502,9 @@ async function diracCentralResolveHostIpsV146(host) {
       }
     }
   };
+  let timer = null;
   try {
-    await Promise.race([walk(cleanHost, 0), new Promise((_, reject) => setTimeout(() => reject(new Error('DIRAC_DNS_TIMEOUT')), cleanHost === diracRoleHostnameV250('recovery') ? 10000 : 2500))]);
+    await Promise.race([walk(cleanHost, 0), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('DIRAC_DNS_TIMEOUT')), cleanHost === diracRoleHostnameV250('recovery') ? 10000 : 2500); })]);
     const result = Array.from(ips).slice(0, 32);
     const now = Date.now();
     diracBoundedMapSetV321(
@@ -58473,6 +58528,8 @@ async function diracCentralResolveHostIpsV146(host) {
       (value) => Number(value && value.until || 0)
     );
     return [];
+  } finally {
+    if (timer !== null) clearTimeout(timer);
   }
 }
 
@@ -59081,7 +59138,10 @@ function diracCentralNormalizeOriginV146(value) {
 
 function diracCentralRequestSessionHashV146(req) {
   const cookies = typeof parseCookies === 'function' ? parseCookies(req) : {};
-  return diracCentralHashV146([cookies[ACCESS_COOKIE], cookies[DOMAIN_SIGNED_SESSION_COOKIE], cookies.sb_access_token].filter(Boolean).join('|'));
+  // Bind the complete tokens, including chunked cookies and duplicate candidates.
+  return diracCentralHashV146([ACCESS_COOKIE, DOMAIN_SIGNED_SESSION_COOKIE, 'sb_access_token']
+    .flatMap((name) => readCookieTokenCandidates(cookies, name))
+    .join('|'));
 }
 
 function diracCentralExtractValuesV146(value) {
@@ -62321,7 +62381,12 @@ const DIRAC_CENTRAL_GUARD_REFERENCE_LIST_V230 = Object.freeze([
   diracCentralDatabaseCallerEvidenceV230,
   diracCentralCreateDatabaseEgressPermitV230,
   diracCentralDirectNetworkBypassBlockedV230,
-  diracCentralNativeNetworkSurfaceIntactV231
+  diracCentralNativeNetworkSurfaceIntactV231,
+  diracCentralRequestSessionHashV146,
+  diracCentralVerifyPageNonceV146,
+  diracCentralFreshDnsV221,
+  diracCentralResolveHostIpsV146,
+  diracCentralGuardSourceUniquenessV221
 ]);
 function diracCentralRuntimeReferenceHashV230() {
   const source = DIRAC_CENTRAL_GUARD_REFERENCE_LIST_V230.map((fn) => Function.prototype.toString.call(fn)).join('\n---DIRAC-V230---\n');
@@ -62478,6 +62543,13 @@ function diracCentralRuntimeInvariantGuardV230() {
   expect(Object.isFrozen(__diracV202MiddlewareRegistry) && __diracV202MiddlewareRegistry.length === DIRAC_CENTRAL_RUNTIME_LOCK_V230.middlewareCount, 'middleware_registry_mutated');
   expect(Object.isFrozen(SECURITY_PIPELINE) && SECURITY_PIPELINE.length === DIRAC_CENTRAL_RUNTIME_LOCK_V230.pipelineLength, 'security_pipeline_mutated');
   expect(Object.isFrozen(ACTION_POLICY) && Object.keys(ACTION_POLICY).length === DIRAC_CENTRAL_RUNTIME_LOCK_V230.actionCount, 'action_policy_mutated');
+  expect([
+    diracCentralRequestSessionHashV146,
+    diracCentralVerifyPageNonceV146,
+    diracCentralFreshDnsV221,
+    diracCentralResolveHostIpsV146,
+    diracCentralGuardSourceUniquenessV221
+  ].every((fn, index) => DIRAC_CENTRAL_GUARD_REFERENCE_LIST_V230[DIRAC_CENTRAL_GUARD_REFERENCE_LIST_V230.length - 5 + index] === fn), 'nonce_dns_integrity_function_replaced');
   expect(diracCentralRuntimeReferenceHashV230() === DIRAC_CENTRAL_RUNTIME_LOCK_V230.referenceHash, 'guard_reference_hash_mutated');
   return Object.freeze({ ok: failures.length === 0, failures: Object.freeze(failures) });
 }
