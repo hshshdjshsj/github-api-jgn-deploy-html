@@ -12643,18 +12643,26 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
         workerFailureBody.worker_status_text = String(response.statusText || '').slice(0, 80);
         workerFailureBody.worker_body_preview = String(workerResponseText || '').replace(/[<>]/g, '').slice(0, 800);
       }
-      return res.status(response.status || data.status || 502).json(workerFailureBody);
+      const failureStatus = Number(response.status) >= 400 && Number(response.status) <= 599
+        ? Number(response.status)
+        : (Number.isInteger(Number(data && data.status)) && Number(data.status) >= 400 && Number(data.status) <= 599 ? Number(data.status) : 502);
+      return res.status(failureStatus).json(workerFailureBody);
     }
-    return res.status(200).json({
-      ok: true,
-      request_id: String(data.request_id || ''),
-      expires_at: String(data.expires_at || ''),
-      delivery: 'encrypted_pdf_email_attachment',
-      website_recovery_code: String(data.website_recovery_code || ''),
-      email_code_delivery: 'included_in_email',
-      message: data.message || 'PDF recovery terenkripsi sudah dikirim ke email resmi akun.',
+    const deliveryPayload = customerSecurityLostPasskeyGenerateSuccessPayloadV182({
+      requestId: customerSecurityNormalizeLostPasskeyRequestId(data.request_id),
+      expiresAt: String(data.expires_at || ''),
+      websiteRecoveryCode: data.website_recovery_code,
+      message: 'Link pemulihan dan kode email sudah dikirim ke email resmi akun.',
       time: data.time || diracNowIso()
     });
+    if (!deliveryPayload || !Number.isFinite(Date.parse(deliveryPayload.expires_at)) || Date.parse(deliveryPayload.expires_at) <= Date.now()) {
+      return res.status(502).json({
+        ok: false,
+        code: 'RECOVERY_DUAL_DELIVERY_CONTRACT_INVALID',
+        message: 'Respons pemulihan belum lengkap. Nomor referensi dan kode website 100 karakter wajib diterima bersama.'
+      });
+    }
+    return res.status(200).json(deliveryPayload);
   } catch (error) {
     const workerErrorName = String(error && error.name || '').slice(0, 80);
     const workerErrorMessage = diracSecurityRedactDiagnosticV210(error, 240);
@@ -47717,7 +47725,29 @@ async function diracUserSecurityResolveLoginFailureV336(req, payload, action, ht
     html: diracSecurityCorporateEmailHtmlV327(htmlInput), text: diracSecurityMailTextV327(htmlInput) });
 }
 
-function diracUserSecurityResolveEventV327(req, payload, action) {
+function diracUserSecurityCommittedPasskeyMarkerV339(req, action) {
+  try {
+    const ctx = diracCentralCurrentContextV149();
+    if (diracV110NormalizeAction(String(action || '')) !== 'dirac_mfa_passkey_verify'
+        || !ctx || diracV110NormalizeAction(String(ctx.action || '')) !== 'dirac_mfa_passkey_verify'
+        || String(req && req.method || '').toUpperCase() !== 'POST'
+        || !diracCentralHandlerContextFullyPassedV211(ctx, req)) return null;
+    const descriptor = Object.getOwnPropertyDescriptor(req, '__diracPasskeyRecoveryCommittedV281');
+    const commit = descriptor && descriptor.value;
+    if (!descriptor || descriptor.writable !== false || descriptor.configurable !== false
+        || descriptor.enumerable !== false || !commit || !Object.isFrozen(commit)) return null;
+    const owner = { customerId: commit.customerId, authUserId: commit.authUserId, email: commit.email };
+    if (!diracPasskeyCurrentRecoveryAuthorityV281(req, owner)) return null;
+    const verified = diracPasskeyReadRecoveryCommittedV281(req, owner.customerId,
+      { id: owner.authUserId, email: owner.email });
+    const email = diracSecurityMailEmailV327(verified && verified.email || '');
+    if (!verified || !email) return null;
+    return Object.freeze({ email, mode: 'registration', registeredNow: true,
+      firstRegistration: false, recoveryReplacement: true, committedBeforeSession: true });
+  } catch (_) { return null; }
+}
+
+function diracUserSecurityResolveEventV327(req, payload, action, committedOnly = false) {
   const normalizedAction = diracV110NormalizeAction(String(action || ''));
   const client = diracSecurityMailClientContextV327(req);
   const nowWib = typeof formatDiracWibTime === 'function' ? formatDiracWibTime(Date.now()) : new Date().toISOString();
@@ -47725,8 +47755,10 @@ function diracUserSecurityResolveEventV327(req, payload, action) {
   const payloadUser = payload && payload.user && typeof payload.user === 'object' ? payload.user : {};
   const passwordMarker = req && req.__diracUserSecurityPasswordChangedV327 && typeof req.__diracUserSecurityPasswordChangedV327 === 'object'
     ? req.__diracUserSecurityPasswordChangedV327 : null;
-  const passkeyMarker = req && req.__diracUserSecurityPasskeyEventV327 && typeof req.__diracUserSecurityPasskeyEventV327 === 'object'
-    ? req.__diracUserSecurityPasskeyEventV327 : null;
+  const passkeyMarker = committedOnly === true
+    ? diracUserSecurityCommittedPasskeyMarkerV339(req, normalizedAction)
+    : (req && req.__diracUserSecurityPasskeyEventV327 && typeof req.__diracUserSecurityPasskeyEventV327 === 'object'
+      ? req.__diracUserSecurityPasskeyEventV327 : diracUserSecurityCommittedPasskeyMarkerV339(req, normalizedAction));
   let email = diracSecurityMailEmailV327(passwordMarker && passwordMarker.email || passkeyMarker && passkeyMarker.email || payloadUser.email || cached.email || '');
   if (!email) return null;
   let kind = '';
@@ -47767,6 +47799,11 @@ function diracUserSecurityResolveEventV327(req, payload, action) {
       activity = firstRegistration ? 'Pendaftaran akun dan aktivasi Passkey pertama'
         : (replaced ? 'Penggantian Passkey melalui recovery' : 'Aktivasi atau pembaruan Passkey');
       method = 'WebAuthn Passkey';
+      if (passkeyMarker.committedBeforeSession === true) {
+        summary = 'Passkey lama telah diganti melalui recovery yang terverifikasi dan perubahan tersimpan. Penerbitan sesi baru belum selesai. Silakan masuk kembali menggunakan Passkey baru.';
+        statusValue = 'PASSKEY DIGANTI / LOGIN ULANG';
+        statusNote = 'Perubahan Passkey sudah tersimpan. Akses dashboard tetap mengikuti seluruh pemeriksaan keamanan sesi.';
+      }
     } else if (String(passkeyMarker.mode || '') === 'authentication') {
       kind = 'login_passkey';
       title = 'Login Passkey\nBerhasil';
@@ -47955,6 +47992,17 @@ function diracUserSecurityKeepAliveV327(req, promise) {
     if (!attached && typeof globalThis.waitUntil === 'function') {
       globalThis.waitUntil(tracked);
       attached = true;
+    }
+  } catch (_) {}
+  try {
+    if (!attached) {
+      const reader = globalThis[Symbol.for('@vercel/request-context')];
+      const runtimeContext = reader && typeof reader.get === 'function' ? reader.get() : null;
+      if (runtimeContext && typeof runtimeContext.waitUntil === 'function') {
+        const registered = runtimeContext.waitUntil(tracked);
+        attached = registered === undefined;
+        if (registered && typeof registered.catch === 'function') registered.catch(() => false);
+      }
     }
   } catch (_) {}
   DIRAC_USER_SECURITY_NOTIFICATION_STATE_V327.pending.add(tracked);
@@ -48437,16 +48485,21 @@ __diracV202RegisterMiddleware(async function diracSecurityNotificationMailWrappe
     const event = notificationScheduled ? null
       : (httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true
         ? diracUserSecurityResolveEventV327(req, payload, action)
-        : await diracUserSecurityResolveLoginFailureV336(req, payload, action, httpStatus));
+        : (action === 'dirac_mfa_passkey_verify' && diracUserSecurityCommittedPasskeyMarkerV339(req, action)
+          ? diracUserSecurityResolveEventV327(req, payload, action, true)
+          : await diracUserSecurityResolveLoginFailureV336(req, payload, action, httpStatus)));
     if (event && !notificationScheduled) {
       notificationScheduled = true;
       const delivery = diracUserSecurityKeepAliveV327(req, diracUserSecuritySendV327(event, configuration.user));
       const completed = delivery.attached ? null : await delivery.promise;
       if (completed && completed.ok !== true) diracUserSecurityLocalLogV327(event, completed);
       if (delivery.attached) {
-        delivery.promise.then((result) => {
+        // Send the guarded response now; retain this live guard context until mail settles.
+        try { return await originalJson(payload); }
+        finally {
+          const result = await delivery.promise;
           if (!result || result.ok !== true) diracUserSecurityLocalLogV327(event, result || {});
-        }).catch(() => false);
+        }
       }
     }
     return originalJson(payload);
