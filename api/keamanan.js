@@ -443,7 +443,6 @@ function diracResetDiagnosticErrorV335(error) {
   };
 }
 function diracResetDiagnosticV335(req, stage, outcome, details, error) {
-  if (!error && (outcome === 'begin' || outcome === 'success' || outcome === 'issued' || outcome === 'validated')) return;
   try {
     const record = {
       v: DIRAC_RESET_DIAGNOSTIC_VERSION_V335,

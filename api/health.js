@@ -47912,12 +47912,8 @@ function diracPasswordResetMailPreflightV338(request, target, body, preflight) {
     const revocations = preflight && preflight.revocations;
     const record = row && row.record_json;
     const entry = record && record.entry && typeof record.entry === 'object' ? record.entry : record;
-    const registryExpiryV339 = row && row.expires_at;
-    const registryExpiryTextV339 = String(registryExpiryV339 || '').trim();
-    if (!row || row.security_key !== 's2s-server-registry:' + role
-        || (registryExpiryV339 !== null && registryExpiryV339 !== undefined && typeof registryExpiryV339 !== 'string')
-        || (registryExpiryTextV339 && (!Number.isFinite(Date.parse(registryExpiryTextV339)) || Date.parse(registryExpiryTextV339) <= Date.now()))
-        || !entry || !diracS2SValidateEnvRegistryV207({ [role]: entry })
+    if (!row || row.security_key !== 's2s-server-registry:' + role || !Number.isFinite(Date.parse(row.expires_at))
+        || Date.parse(row.expires_at) <= Date.now() || !entry || !diracS2SValidateEnvRegistryV207({ [role]: entry })
         || String(entry.status).toLowerCase() !== 'active' || entry.key_version !== keyVersion
         || !entry.allowed_targets.includes(role) || !entry.allowed_actions.includes('security_report')
         || !Array.isArray(revocations) || revocations.length > 1) return false;
@@ -48617,7 +48613,7 @@ __diracV202RegisterMiddleware(async function diracSecurityNotificationMailWrappe
         }
       })();
       const delivery = diracUserSecurityKeepAliveV327(req, notification);
-      await delivery.promise;
+      if (!delivery.attached) await delivery.promise;
       return forwardedFailure;
     }
     const event = !notificationScheduled && httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true
@@ -48627,8 +48623,13 @@ __diracV202RegisterMiddleware(async function diracSecurityNotificationMailWrappe
     if (event && !notificationScheduled) {
       notificationScheduled = true;
       const delivery = diracUserSecurityKeepAliveV327(req, diracUserSecuritySendV327(event, configuration.user));
-      const completed = await delivery.promise;
+      const completed = delivery.attached ? null : await delivery.promise;
       if (completed && completed.ok !== true) diracUserSecurityLocalLogV327(event, completed);
+      if (delivery.attached) {
+        delivery.promise.then((result) => {
+          if (!result || result.ok !== true) diracUserSecurityLocalLogV327(event, result || {});
+        }).catch(() => false);
+      }
     }
     return forwarded;
   };
