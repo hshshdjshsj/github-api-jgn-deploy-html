@@ -57009,6 +57009,7 @@ function diracCentralEgressRouteAllowedV228(url, method, ctx, options) {
   };
   const configuredExact = (envName, defaultBase, suffix, methods, actions, policy, allowedQueryKeys) => {
     try {
+      if (!methods.includes(verb) || !actionAllowed(actions)) return null;
       const base = new URL(String(process.env[envName] || defaultBase).replace(/\/+$/, '') + '/');
       const expectedPath = (base.pathname.replace(/\/+$/, '') + suffix).replace(/\/{2,}/g, '/');
       if (url.origin !== base.origin || path !== expectedPath || !methods.includes(verb) || !actionAllowed(actions)) return null;
