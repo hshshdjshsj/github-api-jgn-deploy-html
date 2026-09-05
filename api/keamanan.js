@@ -324,7 +324,9 @@ async function passwordResetEngine(req, res, ops, body) {
   diracResetDiagnosticV335(req, 'd10.seal', 'begin', { op: String(inner.op || ''), payload_ok: payload && payload.ok === true, payload_code: String(payload && payload.code || '') });
   const challenge = await sealD10Response(payload, opened.context);
   diracResetDiagnosticV335(req, 'd10.seal', 'success', { op: String(inner.op || ''), carrier_length: challenge.length, http_status: 200 });
-  return resetResponse(res, 200, { ok: true, encrypted: true, protocol: D10.protocol, challenge });
+  const responseV338 = await resetResponse(res, 200, { ok: true, encrypted: true, protocol: D10.protocol, challenge });
+  await securityResetDispatchCommittedMailV338(req);
+  return responseV338;
 }
 
 const RESET_GATEWAY_TOKEN = Object.freeze({ version: 'dirac-keamanan-reset-gateway-v333' });
@@ -441,6 +443,7 @@ function diracResetDiagnosticErrorV335(error) {
   };
 }
 function diracResetDiagnosticV335(req, stage, outcome, details, error) {
+  if (!error && (outcome === 'begin' || outcome === 'success' || outcome === 'issued' || outcome === 'validated')) return;
   try {
     const record = {
       v: DIRAC_RESET_DIAGNOSTIC_VERSION_V335,
@@ -725,6 +728,7 @@ const SECURITY_SUPABASE_TARGETS_V334 = Object.freeze({
 function securityEnvTrueV334(name) { return /^(1|true|yes|on)$/i.test(String(process.env[name] || '').trim()); }
 function securitySupabaseTargetV334(path) {
   if (path === '/rest/v1/rpc/dirac_central_atomic_consume_v230' || path === '/rest/v1/rpc/dirac_central_atomic_rate_limit_v230' || path.startsWith('/rest/v1/dirac_persistent_bans')) return 'security';
+  if (path.startsWith('/rest/v1/dirac_s2s_security?security_key=eq.s2s-server-registry%3A') || path.startsWith('/rest/v1/dirac_s2s_security?security_key=eq.s2s-revocation%3A')) return 'security';
   if (path === '/rest/v1/rpc/dirac_passkey_record_assertion_v237') return 'legacy';
   if (path.startsWith('/rest/v1/domain_passkeys')) return securityEnvTrueV334('DIRAC_ENABLE_MULTI_DB_ROUTER') || securityEnvTrueV334('DIRAC_MULTI_DB_ROUTER_ENABLED') ? 'domain' : 'legacy';
   if (/^\/rest\/v1\/security_customer_(auth_links|password_hashes|sessions|settings)/.test(path)) return securityEnvTrueV334('DIRAC_ENABLE_MULTI_DB_ROUTER') || securityEnvTrueV334('DIRAC_MULTI_DB_ROUTER_ENABLED') ? 'customerSecurity' : 'legacy';
@@ -1511,6 +1515,66 @@ function diracPasswordResetStrongPasswordV333(password, email) {
   return value;
 }
 
+const SECURITY_RESET_MAIL_PENDING_V338 = new WeakMap();
+
+async function securityResetRememberCommittedMailV338(req, owner, state, grantId) {
+  const now = Date.now();
+  const record = {
+    type: 'password_reset_committed_v338',
+    commit_id: crypto.createHash('sha256').update('password-reset-mail-v338|' + String(grantId)).digest('hex'),
+    auth_user_id: owner.authUserId, customer_id: owner.customerId, email: owner.email,
+    passkey_id: String(state.passkey_id), security_epoch: Number(state.security_epoch),
+    committed_at_ms: now, expires_at_ms: now + 900000
+  };
+  const notificationRoot = String(process.env.DIRAC_SECURITY_ROOT_SECRET || '').trim();
+  const minimumRootBytes = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production' ? 3000 : 32;
+  if (Buffer.byteLength(notificationRoot, 'utf8') < minimumRootBytes) throw resetError('PASSWORD_RESET_MAIL_ROOT_INVALID', 503);
+  const key = crypto.createHmac('sha512', notificationRoot).update('dirac-derived-secret-v146:password-reset-mail-record-v338').digest();
+  try {
+    record.mac = crypto.createHmac('sha512', key).update(JSON.stringify([
+      record.type, record.commit_id, record.auth_user_id, record.customer_id, record.email,
+      record.passkey_id, record.security_epoch, record.committed_at_ms, record.expires_at_ms
+    ])).digest('hex');
+  } finally { key.fill(0); }
+  const securityKey = 'password-reset-mail-v338:' + record.commit_id;
+  const write = await supabaseFetch('/rest/v1/dirac_persistent_bans?on_conflict=security_key', {
+    method: 'POST', auth: 'service', prefer: 'resolution=ignore-duplicates,return=representation',
+    body: [{ security_key: securityKey, record_json: record, blocked_until_ms: 0,
+      updated_at: new Date(now).toISOString(), expires_at: new Date(record.expires_at_ms).toISOString() }]
+  });
+  if (!write || write.ok !== true || !Array.isArray(write.data) || write.data.length !== 1
+      || write.data[0].security_key !== securityKey || !write.data[0].record_json
+      || !safeEqual(String(write.data[0].record_json.mac || ''), record.mac)) {
+    throw resetError('PASSWORD_RESET_MAIL_RECORD_UNCONFIRMED', 503);
+  }
+  SECURITY_RESET_MAIL_PENDING_V338.set(req, Object.freeze({ commitId: record.commit_id }));
+}
+
+async function securityResetDispatchCommittedMailV338(req) {
+  const notice = SECURITY_RESET_MAIL_PENDING_V338.get(req);
+  if (!notice) return;
+  SECURITY_RESET_MAIL_PENDING_V338.delete(req);
+  const delivery = Promise.resolve().then(async () => {
+    const role = String(process.env.DIRAC_S2S_SERVER_ID || '').trim().toLowerCase();
+    const version = String(process.env.DIRAC_S2S_KEY_VERSION || '').trim();
+    if (!/^[a-z0-9][a-z0-9_.-]{0,79}$/.test(role) || !/^[A-Za-z0-9_.-]{1,80}$/.test(version)) throw resetError('PASSWORD_RESET_MAIL_CONFIGURATION_UNAVAILABLE', 503);
+    const records = await Promise.all([
+      supabaseFetch('/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent('s2s-server-registry:' + role) + '&select=security_key,record_json,expires_at&limit=2', { method: 'GET', auth: 'service' }),
+      supabaseFetch('/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent('s2s-revocation:' + role + ':' + version) + '&select=security_key,record_json,expires_at&limit=2', { method: 'GET', auth: 'service' })
+    ]);
+    if (records.some((result) => !result || result.ok !== true || !Array.isArray(result.data)) || records[0].data.length !== 1 || records[1].data.length > 1) throw resetError('PASSWORD_RESET_MAIL_PREFLIGHT_UNAVAILABLE', 503);
+    const result = await centralHandler.__diracPasswordResetMailNotifyCommittedV338(req, notice.commitId,
+      { registry: records[0].data[0], revocations: records[1].data });
+    if (!result || result.ok !== true) diracResetDiagnosticV335(req, 'notification.password_changed', 'error',
+      { delivered: false, code: String(result && result.code || 'PASSWORD_RESET_MAIL_UNCONFIRMED') });
+    else diracResetDiagnosticV335(req, 'notification.password_changed', 'success', { delivered: true });
+    return result;
+  }).catch((error) => { diracResetDiagnosticV335(req, 'notification.password_changed', 'error', { delivered: false }, error); });
+  if (typeof req.waitUntil === 'function') { try { req.waitUntil(delivery); return; } catch (_) {} }
+  if (typeof globalThis.waitUntil === 'function') { try { globalThis.waitUntil(delivery); return; } catch (_) {} }
+  await delivery;
+}
+
 async function diracPasswordResetCommitPasswordV333(req, state, password, confirmation, grantId) {
   diracResetDiagnosticV335(req, 'commit.server', 'begin', { grant_hash: crypto.createHash('sha256').update(String(grantId || '')).digest('hex').slice(0, 20), security_epoch: Number(state && state.security_epoch || 0), password_present: Boolean(password), confirmation_present: Boolean(confirmation) });
   if (!safeEqual(String(password || ''), String(confirmation || ''))) throw diracPasswordResetErrorV333('PASSWORD_CONFIRMATION_MISMATCH', 400);
@@ -1626,6 +1690,8 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
     throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_POSTCONDITION_FAILED', 503);
   }
   diracResetDiagnosticV335(req, 'commit.server', 'success', { password_changed: true, sessions_revoked: true, login_required: true });
+  try { await securityResetRememberCommittedMailV338(req, owner, state, grantId); }
+  catch (error) { diracResetDiagnosticV335(req, 'notification.password_changed.persist', 'error', { delivered: false }, error); }
   return Object.freeze({ password_changed: true, sessions_revoked: true, login_required: true });
 }
 
