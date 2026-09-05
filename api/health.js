@@ -25982,6 +25982,13 @@ async function diracPasskeyA2FVerify(req, res) {
         email: diracSecurityMailEmailV327(owner.email || email || ''),
         mode: isAuthentication ? 'authentication' : 'registration',
         registeredNow: Boolean(registeredNow),
+        firstRegistration: Boolean(isPendingConfirmation && registeredNow
+          && !lostRecoverySession && !lostRecoveryRotation
+          && securityEpochBeforeVerify === 1 && Number(dbWrite.securityEpoch) === 2
+          && activeBeforeVerify.length === 0
+          && String(payload.rotationPurpose || '') === DIRAC_PASSKEY_ROTATION_PURPOSE_INITIAL_V237
+          && dbWrite.row && dbWrite.row.is_active === true
+          && String(dbWrite.row.rotation_purpose || '') === DIRAC_PASSKEY_ROTATION_PURPOSE_INITIAL_V237),
         recoveryReplacement: Boolean(lostRecoveryRotation && lostRecoveryRotation.ok)
       }),
       writable: false,
@@ -47663,14 +47670,22 @@ function diracUserSecurityResolveEventV327(req, payload, action) {
     }
   } else if (normalizedAction === 'dirac_mfa_passkey_verify' && passkeyMarker) {
     if (String(passkeyMarker.mode || '') === 'registration') {
-      kind = 'passkey_changed';
       const replaced = passkeyMarker.recoveryReplacement === true;
-      title = replaced ? 'Passkey Berhasil\nDiganti' : (passkeyMarker.registeredNow === true ? 'Passkey Berhasil\nDiaktifkan' : 'Passkey Berhasil\nDiperbarui');
-      eyebrow = 'PASSKEY SECURITY NOTICE';
-      summary = replaced
-        ? 'Passkey lama telah diganti melalui alur recovery yang terverifikasi. Passkey baru kini menjadi kredensial aktif akun Anda.'
-        : 'Passkey akun Anda berhasil diaktifkan atau diperbarui setelah verifikasi keamanan selesai.';
-      activity = replaced ? 'Penggantian Passkey melalui recovery' : 'Aktivasi atau pembaruan Passkey';
+      const firstRegistration = passkeyMarker.firstRegistration === true
+        && passkeyMarker.registeredNow === true && !replaced
+        && payload && payload.database_saved === true && payload.verified === true && payload.active === true;
+      kind = firstRegistration ? 'account_welcome' : 'passkey_changed';
+      title = firstRegistration ? 'Selamat Datang\nDi Dirac Group'
+        : (replaced ? 'Passkey Berhasil\nDiganti' : (passkeyMarker.registeredNow === true ? 'Passkey Berhasil\nDiaktifkan' : 'Passkey Berhasil\nDiperbarui'));
+      eyebrow = firstRegistration ? 'ACCOUNT REGISTRATION COMPLETE' : 'PASSKEY SECURITY NOTICE';
+      summary = firstRegistration
+        ? 'Selamat datang di Dirac Group By PT Digdaya Inovasi Nusantara. Akun Anda telah terdaftar dan Passkey pertama berhasil diaktifkan serta tersimpan. Anda kini dapat melanjutkan ke layanan melalui akun yang telah diverifikasi.'
+        : (replaced
+          ? 'Passkey lama telah diganti melalui alur recovery yang terverifikasi. Passkey baru kini menjadi kredensial aktif akun Anda.'
+          : 'Passkey akun Anda berhasil diaktifkan atau diperbarui setelah verifikasi keamanan selesai.');
+      if (firstRegistration) statusValue = 'AKUN DAN PASSKEY SIAP DIGUNAKAN';
+      activity = firstRegistration ? 'Pendaftaran akun dan aktivasi Passkey pertama'
+        : (replaced ? 'Penggantian Passkey melalui recovery' : 'Aktivasi atau pembaruan Passkey');
       method = 'WebAuthn Passkey';
     } else if (String(passkeyMarker.mode || '') === 'authentication') {
       kind = 'login_passkey';
