@@ -755,11 +755,11 @@ const DOMAIN_SIGNED_SESSION_TYPE = 'dirac-domain-signed-session-v1';
 // SAFE V2: database-backed protected-page lock, fail-safe.
 // Login/hash/A2F/payment/webhook tidak diubah. Jika database session belum siap/schema berbeda,
 // dashboard tidak diblokir. Blokir hanya saat row database jelas revoked/expired/idle.
-const DOMAIN_PROTECTED_IDLE_TIMEOUT_MS_RAW = Number(process.env.DOMAIN_PROTECTED_IDLE_TIMEOUT_MS || 5 * 60 * 1000);
+const DOMAIN_PROTECTED_IDLE_TIMEOUT_MS_RAW = 15 * 60 * 1000;
 const DOMAIN_PROTECTED_IDLE_TIMEOUT_MS = Number.isFinite(DOMAIN_PROTECTED_IDLE_TIMEOUT_MS_RAW)
   ? Math.max(15 * 1000, DOMAIN_PROTECTED_IDLE_TIMEOUT_MS_RAW)
-  : 5 * 60 * 1000;
-const DOMAIN_PROTECTED_SESSION_REVOKE_REASON = 'protected_idle_timeout_5m';
+  : 15 * 60 * 1000;
+const DOMAIN_PROTECTED_SESSION_REVOKE_REASON = 'protected_idle_timeout_15m';
 
 
 const HOSTINGER_API_BASE = 'https://developers.hostinger.com';
@@ -4302,7 +4302,7 @@ async function checkDomainProtectedDatabaseSessionLockSafe(req, user, mfa) {
       clearCookies: true,
       customerId,
       sessionId: row.id,
-      message: 'Sesi dikunci karena tidak aktif lebih dari 5 menit. Silakan login ulang.'
+      message: 'Sesi dikunci karena tidak aktif selama 15 menit. Silakan login ulang.'
     };
   }
 
@@ -4354,7 +4354,8 @@ async function checkDomainProtectedDatabaseSessionLockSafe(req, user, mfa) {
     customer_id: row.customer_id,
     session_token_hash: row.session_token_hash,
     status: row.status,
-    security_epoch: row.security_epoch
+    security_epoch: row.security_epoch,
+    expires_at: row.expires_at
   }).catch(() => null);
   customerSecuritySessionDecisionDebugV219(req, 'protected_session.refresh_result', {
     decision: touched && touched.ok === true && String(touched.session_id || '') === String(row.id)
@@ -4395,7 +4396,7 @@ async function checkDomainProtectedDatabaseSessionLockSafe(req, user, mfa) {
     touch_ok: true,
     session_id_match: true
   });
-  return { ok: true, customerId, sessionId: row.id, idleMs, idle_timeout_ms: DOMAIN_PROTECTED_IDLE_TIMEOUT_MS, touched: true };
+  return { ok: true, customerId, sessionId: row.id, idleMs, idle_timeout_ms: DOMAIN_PROTECTED_IDLE_TIMEOUT_MS, expiresAtMs: touched.expiresAtMs, touched: true };
 }
 
 async function revokeCurrentDomainProtectedSessionSafe(req, reason) {
@@ -4438,6 +4439,7 @@ async function revokeCurrentDomainProtectedSessionSafe(req, reason) {
 async function getDomainUserForProtectedLogoutSafe(req) {
   const cookies = parseCookies(req);
   const accessTokens = uniqueNonEmptyStrings(readCookieTokenCandidates(cookies, ACCESS_COOKIE));
+  let identityUnavailable = false;
 
   for (const accessToken of accessTokens) {
     const userResult = await supabaseFetch('/auth/v1/user', {
@@ -4446,10 +4448,12 @@ async function getDomainUserForProtectedLogoutSafe(req) {
       bearer: accessToken
     });
     if (userResult.ok && userResult.data && userResult.data.id) return userResult.data;
+    if (Number(userResult.status) !== 401 && Number(userResult.status) !== 403) identityUnavailable = true;
   }
 
   const signedSessionUser = await readSignedDomainSessionUser(cookies);
   if (signedSessionUser && signedSessionUser.id) return signedSessionUser;
+  if (identityUnavailable) throw new Error('LOGOUT_IDENTITY_UNAVAILABLE');
 
   return null;
 }
@@ -4460,7 +4464,22 @@ async function domainDashboardMe(req, res) {
   const access = await requireDomainDashboardAccess(req, res);
   if (!access) return;
 
-  const { user, mfa } = access;
+  const { user, mfa, protectedLock } = access;
+  const checkoutSource = diracAppOriginHandoffTargetV313('parfum');
+  const checkoutProfileRequested = checkoutSource && diracCsrfRequestOrigin(req) === checkoutSource.origin;
+  let profileName = '';
+  if (checkoutProfileRequested) {
+    const profileId = String(access.protectedLock && access.protectedLock.customerId || '').trim();
+    const profile = customerSecurityLooksLikeUuid(profileId)
+      ? await sessionOwnershipCheckoutFetchCustomerById(profileId).catch(() => null)
+      : null;
+    if (!profile || profile.ok !== true || !profile.customer
+        || String(profile.customer.id || '') !== profileId
+        || normalizeAuthEmail(profile.customer.email || '') !== normalizeAuthEmail(user.email || '')) {
+      return res.status(503).json({ ok: false, code: 'REGISTERED_PROFILE_UNAVAILABLE', message: 'Profil akun belum dapat diverifikasi. Silakan coba lagi.' });
+    }
+    profileName = String(profile.customer.name || '').trim();
+  }
   customerSecuritySessionDecisionDebugV219(req, 'dashboard_response.200', {
     decision: 'respond_200_dashboard_true',
     result: 'ok',
@@ -4470,7 +4489,12 @@ async function domainDashboardMe(req, res) {
   return res.status(200).json({
     ok: true,
     dashboard: true,
-    user: sanitizeUser(user),
+    user: { ...sanitizeUser(user), name: profileName && profileName.length <= 120 && !/[\u0000-\u001F\u007F]/.test(profileName) ? profileName : '' },
+    session: {
+      idleTimeoutMs: DOMAIN_PROTECTED_IDLE_TIMEOUT_MS,
+      maxAgeMs: 8 * 60 * 60 * 1000,
+      expiresAtMs: Number(protectedLock.expiresAtMs || 0)
+    },
     mfa: {
       active: true,
       method: mfa.method || '',
@@ -4514,8 +4538,20 @@ async function domainMfaStatus(req, res) {
 async function domainLogout(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, message: 'Gunakan POST.' });
 
-  // SAFE V2: logout mencabut row session database jika tersedia, tetapi tidak menggagalkan logout.
-  await revokeCurrentDomainProtectedSessionSafe(req, 'manual_logout').catch(() => null);
+  // Publish success only after revocation; unavailable persistence must remain retryable.
+  let revocation;
+  try {
+    revocation = await revokeCurrentDomainProtectedSessionSafe(req, 'manual_logout');
+  } catch (_) {
+    revocation = null;
+  }
+  if (!revocation || (revocation.ok !== true && revocation.reason !== 'no_user')) {
+    return res.status(503).json({
+      ok: false,
+      code: 'LOGOUT_REVOCATION_UNCONFIRMED',
+      message: 'Pencabutan sesi belum dikonfirmasi. Silakan coba logout lagi.'
+    });
+  }
 
   clearCurrentRequestSessionCookiesV235(req, res);
   appendSetCookie(res, [
@@ -6999,7 +7035,11 @@ function verifyDomainSessionCookieValue(value) {
   const payload = parseBase64UrlJson(body);
   if (!payload || payload.typ !== DOMAIN_SIGNED_SESSION_TYPE) return null;
   const exp = Number(payload.exp || 0);
-  if (!Number.isFinite(exp) || exp <= Math.floor(Date.now() / 1000)) return null;
+  const iat = Number(payload.iat || 0);
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isSafeInteger(iat) || iat <= 0 || iat > now + 60
+      || !Number.isSafeInteger(exp) || exp <= now || exp <= iat
+      || exp - iat > 8 * 60 * 60) return null;
   const id = String(payload.uid || payload.id || '').trim();
   const email = normalizeAuthEmail(payload.email || '');
   const sessionId = payload.sid === undefined ? '' : normalizeDomainSignedSessionId(payload.sid);
@@ -7078,12 +7118,30 @@ function diracVerifiedMfaSignedSessionContinuityV230(req, nextUser) {
 
 function makeSignedDomainSessionCookieSet(session, options = {}) {
   const user = extractUserForSignedDomainSession(session);
-  const maxAge = Math.max(60, Math.floor(Number(options.maxAge || 60 * 60 * 24 * 7)));
+  const requestedMaxAge = Math.floor(Number(options.maxAge || diracV110SessionMaxAgeSeconds()));
+  let maxAge = Math.max(60, Math.min(diracV110SessionMaxAgeSeconds(), Number.isFinite(requestedMaxAge) ? requestedMaxAge : 8 * 60 * 60));
   const cookies = [];
   if (!user) return cookies;
 
   const req = diracCurrentRequestForSignedSessionV230();
-  const continuity = diracVerifiedMfaSignedSessionContinuityV230(req, user);
+  const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
+  const action = String(ctx && ctx.req === req && ctx.action || req && req.query && req.query.action || '').trim().toLowerCase();
+  const freshAuthentication = action === 'domain_login' || action === 'domain_register';
+  const now = Math.floor(Date.now() / 1000);
+  let issuedAt = now;
+  let expiresAt = now + maxAge;
+  if (req && !freshAuthentication) {
+    const previous = readCookieTokenCandidates(parseCookies(req), DOMAIN_SIGNED_SESSION_COOKIE)
+      .map(customerSecurityDecodeSignedSessionPayloadV228)
+      .filter((item) => item && item.userId === user.id && item.email === user.email
+        && item.sessionId === user.sessionId);
+    if (previous.length !== 1) return cookies;
+    issuedAt = previous[0].issuedAt;
+    expiresAt = Math.min(previous[0].expiresAt, now + maxAge);
+    maxAge = expiresAt - now;
+    if (maxAge < 1) return cookies;
+  }
+  const continuity = freshAuthentication ? null : diracVerifiedMfaSignedSessionContinuityV230(req, user);
   if (continuity) {
     cookies.push(makeCookie(DOMAIN_SIGNED_SESSION_COOKIE, continuity.value, {
       maxAge: Math.min(maxAge, continuity.maxAgeSeconds),
@@ -7092,13 +7150,12 @@ function makeSignedDomainSessionCookieSet(session, options = {}) {
     return cookies;
   }
 
-  const now = Math.floor(Date.now() / 1000);
   const payload = {
     typ: DOMAIN_SIGNED_SESSION_TYPE,
     uid: user.id,
     email: user.email,
-    iat: now,
-    exp: now + maxAge,
+    iat: issuedAt,
+    exp: expiresAt,
     nonce: crypto.randomBytes(12).toString('base64url')
   };
   if (user.sessionId) payload.sid = user.sessionId;
@@ -8848,7 +8905,8 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
       ? {
           id: String(verifiedExistingSession.id).trim(),
           status: 'active',
-          security_epoch: Number(verifiedExistingSession.security_epoch)
+          security_epoch: Number(verifiedExistingSession.security_epoch),
+          expires_at: verifiedExistingSession.expires_at
         }
       : null;
 
@@ -8857,7 +8915,7 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
     if (verifiedRow) {
       rows = [verifiedRow];
     } else {
-      const path = '/rest/v1/security_customer_sessions?select=id,status,security_epoch,revoked_at,revoke_reason&customer_id=eq.' +
+      const path = '/rest/v1/security_customer_sessions?select=id,status,security_epoch,revoked_at,revoke_reason,expires_at&customer_id=eq.' +
         encodeURIComponent(customerId) +
         (issuancePermit
           ? ''
@@ -8919,6 +8977,15 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
       return { ok: false, reason: 'session_security_epoch_invalid', status: 401 };
     }
 
+    const fingerprintExpiresAtMs = Date.parse(String(fingerprint.expires_at || ''));
+    const existingExpiresAtMs = Date.parse(String(currentRow && currentRow.expires_at || ''));
+    const nowMs = Date.now();
+    if (!Number.isFinite(fingerprintExpiresAtMs) || fingerprintExpiresAtMs <= nowMs
+        || (!issuancePermit && (!Number.isFinite(existingExpiresAtMs) || existingExpiresAtMs <= nowMs))) {
+      return { ok: false, reason: 'session_absolute_lifetime_expired', status: 401 };
+    }
+    const absoluteExpiresAtMs = Math.min(fingerprintExpiresAtMs, nowMs + 8 * 60 * 60 * 1000,
+      issuancePermit ? Number.POSITIVE_INFINITY : existingExpiresAtMs);
     const updateBody = {
       device_id: fingerprint.device_id,
       device_name: fingerprint.device_name,
@@ -8928,7 +8995,7 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
       ip_address: fingerprint.ip_address || null,
       status: 'active',
       last_seen_at: now,
-      expires_at: fingerprint.expires_at
+      expires_at: new Date(absoluteExpiresAtMs).toISOString()
     };
     if (issuancePermit) {
       updateBody.session_token_hash = fingerprint.session_token_hash;
@@ -8946,13 +9013,13 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
         return { ok: false, reason: 'session_update_previous_epoch_invalid', status: 409 };
       }
       const patched = await supabaseFetch('/rest/v1/security_customer_sessions?select=' +
-        encodeURIComponent('id,customer_id,session_token_hash,status,security_epoch,revoked_at') +
+        encodeURIComponent('id,customer_id,session_token_hash,status,security_epoch,revoked_at,expires_at') +
         '&customer_id=eq.' + encodeURIComponent(customerId) +
         '&id=eq.' + encodeURIComponent(String(rows[0].id)) +
         '&security_epoch=eq.' + encodeURIComponent(String(previousSecurityEpoch)) +
         (issuancePermit ? '' :
           '&session_token_hash=eq.' + encodeURIComponent(String(fingerprint.session_token_hash || '')) +
-          '&status=eq.active&revoked_at=is.null'), {
+          '&status=eq.active&revoked_at=is.null&expires_at=eq.' + encodeURIComponent(String(currentRow.expires_at))), {
         method: 'PATCH',
         auth: 'service',
         prefer: 'return=representation',
@@ -8989,7 +9056,9 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
           || !safeEqual(String(patchedRow.session_token_hash || ''), String(fingerprint.session_token_hash))
           || String(patchedRow.status || '').trim().toLowerCase() !== 'active'
           || patchedRow.revoked_at
-          || Number(patchedRow.security_epoch || 0) !== resolvedSecurityEpoch) {
+          || Number(patchedRow.security_epoch || 0) !== resolvedSecurityEpoch
+          || Date.parse(String(patchedRow.expires_at || '')) !== absoluteExpiresAtMs
+          || absoluteExpiresAtMs <= Date.now()) {
         return { ok: false, reason: 'session_update_epoch_postcondition_failed', status: 409 };
       }
       customerSecuritySessionDecisionDebugV219(req, 'session_touch.update_succeeded', {
@@ -8999,13 +9068,13 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
         customer_digest: customerSecurityShortDigestV219(customerId),
         session_id_digest: customerSecurityShortDigestV219(rows[0].id)
       });
-      return { ok: true, created: false, session_id: rows[0].id, security_epoch: resolvedSecurityEpoch, session_token_hash: fingerprint.session_token_hash };
+      return { ok: true, created: false, session_id: rows[0].id, security_epoch: resolvedSecurityEpoch, session_token_hash: fingerprint.session_token_hash, expiresAtMs: absoluteExpiresAtMs };
     }
 
     activeStage = 'create';
     const createStartedAtMs = Date.now();
     const created = await supabaseFetch('/rest/v1/security_customer_sessions?select=' +
-      encodeURIComponent('id,security_epoch'), {
+      encodeURIComponent('id,security_epoch,expires_at'), {
       method: 'POST',
       auth: 'service',
       prefer: 'return=representation',
@@ -9038,7 +9107,7 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
       if (isCustomerIdRace && issuancePermit) {
         activeStage = 'create_customer_conflict_update';
         const conflictPatched = await supabaseFetch('/rest/v1/security_customer_sessions?select=' +
-          encodeURIComponent('id,customer_id,session_token_hash,status,security_epoch,revoked_at') +
+          encodeURIComponent('id,customer_id,session_token_hash,status,security_epoch,revoked_at,expires_at') +
           '&customer_id=eq.' + encodeURIComponent(customerId) +
           '&security_epoch=eq.' + encodeURIComponent(String(resolvedSecurityEpoch)), {
           method: 'PATCH',
@@ -9058,13 +9127,16 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
             && safeEqual(String(conflictPatchedRow.session_token_hash || ''), String(fingerprint.session_token_hash))
             && String(conflictPatchedRow.status || '').trim().toLowerCase() === 'active'
             && !conflictPatchedRow.revoked_at
-            && Number(conflictPatchedRow.security_epoch || 0) === resolvedSecurityEpoch) {
+            && Number(conflictPatchedRow.security_epoch || 0) === resolvedSecurityEpoch
+            && Date.parse(String(conflictPatchedRow.expires_at || '')) === absoluteExpiresAtMs
+            && absoluteExpiresAtMs > Date.now()) {
           return {
             ok: true,
             created: false,
             session_id: conflictPatchedRow.id,
             security_epoch: resolvedSecurityEpoch,
-            session_token_hash: fingerprint.session_token_hash
+            session_token_hash: fingerprint.session_token_hash,
+            expiresAtMs: absoluteExpiresAtMs
           };
         }
 
@@ -9120,6 +9192,7 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
           && !conflictRow.revoked_at
           && Number.isFinite(conflictExpiresAtMs)
           && conflictExpiresAtMs > Date.now()
+          && conflictExpiresAtMs <= absoluteExpiresAtMs
           && Number(conflictRow.security_epoch || 0) === resolvedSecurityEpoch;
 
         if (conflictVerified) {
@@ -9133,7 +9206,7 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
             customer_digest: customerSecurityShortDigestV219(customerId),
             session_id_digest: customerSecurityShortDigestV219(conflictRow.id)
           });
-          return { ok: true, created: false, session_id: conflictRow.id, security_epoch: resolvedSecurityEpoch, session_token_hash: fingerprint.session_token_hash };
+          return { ok: true, created: false, session_id: conflictRow.id, security_epoch: resolvedSecurityEpoch, session_token_hash: fingerprint.session_token_hash, expiresAtMs: conflictExpiresAtMs };
         }
 
         customerSecuritySessionDecisionDebugV219(req, 'session_touch.create_conflict_rejected', {
@@ -9198,7 +9271,8 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
     const createdRows = Array.isArray(created.data) ? created.data : [];
     const createdRow = createdRows.length === 1 ? createdRows[0] : null;
     const createdSessionId = createdRow && createdRow.id ? createdRow.id : null;
-    if (!createdSessionId || Number(createdRow.security_epoch || 0) !== resolvedSecurityEpoch) {
+    if (!createdSessionId || Number(createdRow.security_epoch || 0) !== resolvedSecurityEpoch
+        || Date.parse(String(createdRow.expires_at || '')) !== absoluteExpiresAtMs || absoluteExpiresAtMs <= Date.now()) {
       customerSecuritySessionDecisionDebugV219(req, 'session_touch.create_missing_id', {
         decision: 'return_failure',
         database_operation: 'POST',
@@ -9229,7 +9303,7 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
       customer_digest: customerSecurityShortDigestV219(customerId),
       session_id_digest: customerSecurityShortDigestV219(createdSessionId)
     });
-    return { ok: true, created: true, session_id: createdSessionId, security_epoch: resolvedSecurityEpoch, session_token_hash: fingerprint.session_token_hash };
+    return { ok: true, created: true, session_id: createdSessionId, security_epoch: resolvedSecurityEpoch, session_token_hash: fingerprint.session_token_hash, expiresAtMs: absoluteExpiresAtMs };
   } catch (error) {
     const diagnostic = customerSecuritySessionStoreDiagnosticV218(req, activeStage + '_exception', {
       ok: false,
@@ -13523,9 +13597,9 @@ function customerSecurityDecodeSignedSessionPayloadV228(value) {
 
   if (!payload || payload.typ !== DOMAIN_SIGNED_SESSION_TYPE
       || !userId || !email
-      || !Number.isSafeInteger(issuedAt) || !Number.isSafeInteger(expiresAt)
+      || !Number.isSafeInteger(issuedAt) || issuedAt <= 0 || !Number.isSafeInteger(expiresAt)
       || issuedAt > now + 60 || expiresAt <= now
-      || expiresAt - issuedAt <= 0 || expiresAt - issuedAt > 60 * 60 * 24 * 7 + 60
+      || expiresAt - issuedAt <= 0 || expiresAt - issuedAt > 8 * 60 * 60
       || (payload.sid !== undefined && !sessionId)) return null;
 
   return { payload, userId, email, sessionId, issuedAt, expiresAt };
@@ -13623,7 +13697,7 @@ function customerSecurityIssueSignedSessionAnchorV228(req, res, user, requestedM
     ? diracPasskeyReadRecoveryCommittedV281(req, recoveryMarkerV281.customerId, user)
     : null;
 
-  if (!matching.length && !bootstrapMatches && !recoveryBootstrapV281) {
+  if (!matching.length && !recoveryBootstrapV281) {
     return debugFailure('bootstrap_authority_missing', {
       signed_session_candidate_count: candidates.length,
       matching_signed_session_count: matching.length,
@@ -13635,8 +13709,9 @@ function customerSecurityIssueSignedSessionAnchorV228(req, res, user, requestedM
 
   const now = Math.floor(Date.now() / 1000);
   const sessionMaxAge = typeof diracV110SessionMaxAgeSeconds === 'function'
-    ? Math.max(60, Math.min(60 * 60 * 24 * 7, Math.floor(Number(diracV110SessionMaxAgeSeconds()) || 0)))
-    : 60 * 60 * 24 * 7;
+    ? Math.max(60, Math.min(8 * 60 * 60, Math.floor(Number(diracV110SessionMaxAgeSeconds()) || 0)))
+    : 8 * 60 * 60;
+  const signedIssuedAt = matching.length ? matching[0].issuedAt : now;
   const signedExpiresAt = matching.length
     ? Math.min(matching[0].expiresAt, now + sessionMaxAge)
     : now + sessionMaxAge;
@@ -13659,7 +13734,7 @@ function customerSecurityIssueSignedSessionAnchorV228(req, res, user, requestedM
     typ: DOMAIN_SIGNED_SESSION_TYPE,
     uid: userId,
     email,
-    iat: now,
+    iat: signedIssuedAt,
     exp: signedExpiresAt,
     nonce: crypto.randomBytes(12).toString('base64url'),
     session_version: String(epoch),
@@ -13678,7 +13753,7 @@ function customerSecurityIssueSignedSessionAnchorV228(req, res, user, requestedM
   if (!verifiedAnchor
       || verifiedAnchor.userId !== userId
       || verifiedAnchor.email !== email
-      || verifiedAnchor.issuedAt !== now
+      || verifiedAnchor.issuedAt !== signedIssuedAt
       || verifiedAnchor.expiresAt !== signedExpiresAt
       || verifiedAnchor.anchorId !== anchorId
       || verifiedAnchor.anchorIssuedAt !== now
@@ -13691,7 +13766,7 @@ function customerSecurityIssueSignedSessionAnchorV228(req, res, user, requestedM
       decoded: Boolean(verifiedAnchor),
       user_match: Boolean(verifiedAnchor && verifiedAnchor.userId === userId),
       email_match: Boolean(verifiedAnchor && verifiedAnchor.email === email),
-      issued_at_match: Boolean(verifiedAnchor && verifiedAnchor.issuedAt === now),
+      issued_at_match: Boolean(verifiedAnchor && verifiedAnchor.issuedAt === signedIssuedAt),
       expires_at_match: Boolean(verifiedAnchor && verifiedAnchor.expiresAt === signedExpiresAt),
       anchor_id_match: Boolean(verifiedAnchor && verifiedAnchor.anchorId === anchorId),
       anchor_issued_at_match: Boolean(verifiedAnchor && verifiedAnchor.anchorIssuedAt === now),
@@ -14774,14 +14849,13 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
   }
 
   const customerPhone = normalizePhone(body.customer_phone || body.phone || body.whatsapp || body.customer_whatsapp || '');
-  const requestedName = sessionOwnershipCheckoutSafeName(body.customer_name || body.name || body.full_name || sessionOwnershipCheckoutUserMetadataName(user) || userEmail);
+  const requestedName = String(sessionOwnershipCheckoutUserMetadataName(user) || '').trim();
   const serviceType = sessionOwnershipCheckoutNormalizeServiceType(body.service_type || body.service || 'parfum');
   const quantity = sessionOwnershipCheckoutPositiveInteger(body.quantity || body.qty || 1, 1, 999);
   const requestedProductTitle = sessionOwnershipCheckoutBuildProductTitle(body, serviceType);
   const shippingAddress = sessionOwnershipCheckoutBuildShippingAddress(body);
   const checkoutNote = sessionOwnershipCheckoutBuildOrderNote(body);
 
-  if (!requestedName) return res.status(400).json({ ok: false, message: 'Nama pelanggan wajib diisi.' });
   if (!customerPhone) return res.status(400).json({ ok: false, message: 'Nomor WhatsApp/HP wajib diisi.' });
   if (!requestedProductTitle) return res.status(400).json({ ok: false, message: 'Nama produk/layanan wajib diisi.' });
 
@@ -14816,7 +14890,10 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
   const customer = owner.customer;
   const customerId = String(customer.id || '').trim();
   const orderCode = sessionOwnershipCheckoutGenerateOrderCode();
-  const finalCustomerName = sessionOwnershipCheckoutSafeName(customer.name || requestedName || userEmail);
+  const finalCustomerName = String(customer.name || '').trim();
+  if (!finalCustomerName || finalCustomerName.length > 120 || /[\u0000-\u001F\u007F]/.test(finalCustomerName)) {
+    return res.status(409).json({ ok: false, code: 'REGISTERED_NAME_REQUIRED', message: 'Nama akun terdaftar belum tersedia. Hubungi dukungan untuk memperbaiki profil sebelum checkout.' });
+  }
   const finalCustomerEmail = normalizeAuthEmail(customer.email || userEmail);
   const finalCustomerPhone = normalizePhone(customer.phone || customerPhone);
 
@@ -14909,6 +14986,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     message: 'Pesanan berhasil dibuat. Nominal dikunci backend dari database, payment gateway belum aktif.',
     order_id: order.id,
     order_code: order.order_id || orderCode,
+    customer_name: finalCustomerName,
     service_type: serviceType,
     total: backendQuote.total,
     subtotal: backendQuote.subtotal,
@@ -15183,7 +15261,11 @@ async function sessionOwnershipCheckoutFindOrCreateCustomerForAuth({ email, full
   const rows = Array.isArray(existing.data) ? existing.data : [];
   if (rows.length && rows[0] && rows[0].id) return { ok: true, customer: rows[0], created: false };
 
-  const body = { name: sessionOwnershipCheckoutSafeName(fullName || email), email };
+  const registeredName = String(fullName || '').trim();
+  if (!registeredName || registeredName.length > 120 || /[\u0000-\u001F\u007F]/.test(registeredName)) {
+    return { ok: false, status: 409, message: 'Nama akun terdaftar belum tersedia. Hubungi dukungan sebelum checkout.' };
+  }
+  const body = { name: registeredName, email };
   if (phone) body.phone = phone;
 
   const created = await supabaseFetch('/rest/v1/customers', { method: 'POST', auth: 'service', prefer: 'return=representation', body: [body] });
@@ -27275,7 +27357,7 @@ function orderMailBuildNewOrderMessages(data) {
   ];
   const officialSupportText = [
     'WhatsApp: 0878 9252 3968',
-    'Email Support: support@diracgroup.store',
+    'Email Support: ' + diracSupportEmailV250(),
     'Email Perusahaan: companydirac@gmail.com',
     'Instagram: @diraccorp'
   ];
@@ -27437,7 +27519,7 @@ function orderMailHtmlShell(title, body, options = {}) {
   const orderUrl = diracRoleOriginV250('pesanan') + '/pesanan.html';
   let orderHost = diracBaseDomainV250();
   try { orderHost = new URL(orderUrl).hostname; } catch (_) {}
-  const supportEmail = 'support@diracgroup.store';
+  const supportEmail = diracSupportEmailV250();
   const whatsappUrl = 'https://wa.me/6287892523968';
   const companyEmail = 'companydirac@gmail.com';
   const instagramUrl = 'https://www.instagram.com/diraccorp/';
@@ -27478,7 +27560,7 @@ function orderMailHtmlShell(title, body, options = {}) {
 
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:0 0 13px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
                 <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WHATSAPP</div><a href="${whatsappUrl}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">0878 9252 3968</a></div></div></td></tr>
-                <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL SUPPORT</div><a href="mailto:${supportEmail}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${supportEmail}</a></div></div></td></tr>
+                <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL SUPPORT</div><a href="mailto:${orderMailEscapeHtml(supportEmail)}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${orderMailEscapeHtml(supportEmail)}</a></div></div></td></tr>
                 <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL PERUSAHAAN</div><a href="mailto:${companyEmail}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${companyEmail}</a></div></div></td></tr>
                 <tr><td style="padding:15px 20px;border-left:4px solid #148ba4"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">INSTAGRAM</div><a href="${instagramUrl}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">@diraccorp</a></div></div></td></tr>
               </table>
@@ -31395,11 +31477,16 @@ try {
         return false;
       }
 
-      const maxAge = diracV110SessionMaxAgeSeconds();
+      const signedCookies = makeSignedDomainSessionCookieSet(session, { maxAge: diracV110SessionMaxAgeSeconds() });
+      const signedCookie = signedCookies.find((value) => String(value).startsWith(DOMAIN_SIGNED_SESSION_COOKIE + '='));
+      const signedValue = signedCookie ? decodeURIComponent(String(signedCookie).split(';', 1)[0].slice(DOMAIN_SIGNED_SESSION_COOKIE.length + 1)) : '';
+      const signedLifetime = verifyDomainSessionCookieValue(signedValue);
+      const maxAge = signedLifetime ? signedLifetime.exp - Math.floor(Date.now() / 1000) : 0;
+      if (!Number.isSafeInteger(maxAge) || maxAge < 1) return false;
       appendSetCookie(res, [
         ...makeTokenCookieSet(ACCESS_COOKIE, session.access_token, { maxAge }),
         ...makeTokenCookieSet(REFRESH_COOKIE, session.refresh_token, { maxAge }),
-        ...makeSignedDomainSessionCookieSet(session, { maxAge })
+        ...signedCookies
       ]);
       return true;
     };
@@ -31413,7 +31500,12 @@ try {
     customerSecurityBuildSessionFingerprint = function customerSecurityBuildSessionFingerprintV110(req, customerId) {
       const fingerprint = __diracV110OriginalBuildSessionFingerprint(req, customerId);
       if (fingerprint && typeof fingerprint === 'object') {
-        fingerprint.expires_at = new Date(Date.now() + diracV110SessionMaxAgeSeconds() * 1000).toISOString();
+        const signedCandidates = readCookieTokenCandidates(parseCookies(req), DOMAIN_SIGNED_SESSION_COOKIE);
+        const signedLifetimes = signedCandidates.map(customerSecurityDecodeSignedSessionPayloadV228).filter(Boolean);
+        const signedDeadline = signedCandidates.length
+          ? signedLifetimes.length === 1 ? signedLifetimes[0].expiresAt * 1000 : 0
+          : Date.now() + diracV110SessionMaxAgeSeconds() * 1000;
+        fingerprint.expires_at = new Date(Math.min(Date.now() + diracV110SessionMaxAgeSeconds() * 1000, signedDeadline)).toISOString();
         fingerprint.session_hardening = DIRAC_AUTH_HARDENING_SAFE_PATCH_V110;
       }
       return fingerprint;
@@ -31612,7 +31704,7 @@ function diracV110PasswordArgon2Input(password, meta = {}) {
 }
 
 function diracV110SessionMaxAgeSeconds() {
-  return diracV110NumberFromEnv(['DIRAC_SESSION_COOKIE_MAX_AGE_SECONDS', 'DOMAIN_SESSION_MAX_AGE_SECONDS'], 24 * 60 * 60, 30 * 60, 7 * 24 * 60 * 60);
+  return diracV110NumberFromEnv(['DIRAC_SESSION_COOKIE_MAX_AGE_SECONDS', 'DOMAIN_SESSION_MAX_AGE_SECONDS'], 8 * 60 * 60, 30 * 60, 8 * 60 * 60);
 }
 
 function diracV110NormalizeAction(action) {
@@ -43158,7 +43250,7 @@ function customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(context = {}) {
                   <td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544">
                     <div class="gmail-blend-screen"><div class="gmail-blend-difference">
                       <div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL SUPPORT</div>
-                      <a href="mailto:support@diracgroup.store" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">support@diracgroup.store</a>
+                      <a href="mailto:${customerSecurityLostPasskeyEmailEscapeHtmlV157(diracSupportEmailV250())}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${customerSecurityLostPasskeyEmailEscapeHtmlV157(diracSupportEmailV250())}</a>
                     </div></div>
                   </td>
                 </tr>
@@ -43256,7 +43348,7 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
     'Link resmi: ' + recoveryLink,
     'SECRET_EMAIL_100_CHAR: ' + String(context.emailSecret || ''),
     'Jangan bagikan email secret, link, atau isi pesan ini kepada pihak lain. Website secret hanya tampil di website yang masih login.',
-    'Bantuan resmi Dirac Group:\nWhatsApp: 0878 9252 3968\nEmail Support: support@diracgroup.store\nEmail Perusahaan: companydirac@gmail.com\nInstagram: @diraccorp',
+    'Bantuan resmi Dirac Group:\nWhatsApp: 0878 9252 3968\nEmail Support: ' + diracSupportEmailV250() + '\nEmail Perusahaan: companydirac@gmail.com\nInstagram: @diraccorp',
     'Tim Dirac Group tidak pernah meminta Secret Email, Secret Website, password, OTP, atau hasil decrypt melalui WhatsApp, Instagram, telepon, maupun balasan email.'
   ].join('\n\n');
   const html = customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(emailContext);
@@ -47492,7 +47584,7 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
           <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI DIRAC GROUP</div><p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${supportLead}</p></div></div>
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:0 0 13px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WHATSAPP</div><a href="https://wa.me/6287892523968" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">0878 9252 3968</a></div></div></td></tr>
-            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL SUPPORT</div><a href="mailto:support@diracgroup.store" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">support@diracgroup.store</a></div></div></td></tr>
+            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL SUPPORT</div><a href="mailto:${diracSecurityMailEscapeV327(diracSupportEmailV250())}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${diracSecurityMailEscapeV327(diracSupportEmailV250())}</a></div></div></td></tr>
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL PERUSAHAAN</div><a href="mailto:companydirac@gmail.com" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">companydirac@gmail.com</a></div></div></td></tr>
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">INSTAGRAM</div><a href="https://www.instagram.com/diraccorp/" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">@diraccorp</a></div></div></td></tr>
           </table>
@@ -47530,7 +47622,7 @@ function diracSecurityMailTextV327(input = {}) {
     '',
     'Pusat keamanan: ' + diracSecurityMailOfficialUrlV327(input.actionUrl || (diracRoleOriginV250('security') + '/keamanan.html'), diracRoleOriginV250('security') + '/keamanan.html'),
     'WhatsApp: 0878 9252 3968',
-    'Email Support: support@diracgroup.store',
+    'Email Support: ' + diracSupportEmailV250(),
     'Email Perusahaan: companydirac@gmail.com',
     'Instagram: @diraccorp',
     '',
@@ -50040,12 +50132,14 @@ const DIRAC_CENTRAL_CONFIRMED_ATTACK_KINDS_V281 = Object.freeze(new Set([
   'path_traversal_lfi_rfi',
   'prototype_pollution',
   'http_request_smuggling',
+  'request_smuggling',
   'nosql_injection',
   'xxe',
   'ssti_template_injection',
   'log4shell',
   'crlf_header_injection',
-  'webshell'
+  'webshell',
+  'upload_webshell'
 ]));
 
 function diracCentralPermanentBanDecisionV281(ctx, reason) {
@@ -51380,10 +51474,16 @@ function diracCentralPublishVerifiedAuthSessionV224(req, res, authentication, ma
   if (authentication.refreshed) {
     const session = authentication.session;
     if (!hasValidDomainSessionTokens(session)) return { ok: false, reason: 'device_bootstrap_refresh_session_invalid' };
+    const signedCookies = makeSignedDomainSessionCookieSet(session, { maxAge });
+    const signedCookie = signedCookies.find((value) => String(value).startsWith(DOMAIN_SIGNED_SESSION_COOKIE + '='));
+    const signedValue = signedCookie ? decodeURIComponent(String(signedCookie).split(';', 1)[0].slice(DOMAIN_SIGNED_SESSION_COOKIE.length + 1)) : '';
+    const signedLifetime = verifyDomainSessionCookieValue(signedValue);
+    maxAge = signedLifetime ? Math.min(maxAge, signedLifetime.exp - Math.floor(Date.now() / 1000)) : 0;
+    if (!Number.isSafeInteger(maxAge) || maxAge < 1) return { ok: false, reason: 'device_bootstrap_absolute_session_expired' };
     const stagedV321 = diracStageAuthPublicationV321(req, { cookies: [
       ...makeTokenCookieSet(ACCESS_COOKIE, session.access_token, { maxAge }),
       ...makeTokenCookieSet(REFRESH_COOKIE, session.refresh_token, { maxAge }),
-      ...makeSignedDomainSessionCookieSet(session, { maxAge })
+      ...signedCookies
     ], headers: shouldHideDomainAuthTokens() ? {
       'X-Domain-Token-Refreshed': 'true'
     } : {
@@ -55667,7 +55767,7 @@ async function diracCentralBootstrapCheckoutOwnerV146(req, ctx) {
   if (!diracCentralLooksLikeUuidV146(authUserId) || !userEmail || (submittedEmail && submittedEmail !== userEmail)) return { ok: false };
   ctx.__diracCentralCheckoutOwnerBootstrapV146 = true;
   try {
-    const fullName = typeof sessionOwnershipCheckoutSafeName === 'function' ? sessionOwnershipCheckoutSafeName(body.customer_name || body.name || body.full_name || userEmail) : String(body.customer_name || body.name || body.full_name || userEmail).trim().slice(0, 120);
+    const fullName = String(sessionOwnershipCheckoutUserMetadataName(user) || '').trim();
     const phone = typeof normalizePhone === 'function' ? normalizePhone(body.customer_phone || body.phone || body.whatsapp || body.customer_whatsapp || '') : String(body.customer_phone || body.phone || body.whatsapp || body.customer_whatsapp || '').trim();
     const owner = await sessionOwnershipCheckoutResolveCustomerOwner({ authUserId, email: userEmail, fullName, phone });
     return { ok: Boolean(owner && owner.ok && owner.customer && diracCentralLooksLikeUuidV146(owner.customer.id)) };
@@ -56343,12 +56443,18 @@ function diracCentralIsCheckoutOwnerBootstrapServiceRoleV146(ctx, table, path, o
 }
 
 function diracCentralIsCheckoutCustomerOwnerReadServiceRoleV196(ctx, table, path, options = {}, method) {
-  if (!ctx || (ctx.action !== 'checkout_order' && ctx.action !== 'create_payment') || !ctx.req || ctx.req.__diracCentralSecurityGuardPassedV146 !== true) return false;
+  if (!ctx || !['checkout_order', 'create_payment', 'domain_dashboard_me'].includes(ctx.action) || !ctx.req || ctx.req.__diracCentralSecurityGuardPassedV146 !== true) return false;
   if (String(table || '').toLowerCase() !== 'customers' || String(method || options.method || 'GET').toUpperCase() !== 'GET') return false;
   if (options && options.body !== undefined && options.body !== null) return false;
 
-  const boundCustomerId = String(ctx.__diracCentralCheckoutOwnerCustomerIdV196 || '').trim();
-  const boundAuthUserId = String(ctx.__diracCentralCheckoutOwnerAuthUserIdV196 || '').trim();
+  const dashboardOwner = ctx.action === 'domain_dashboard_me' ? diracCentralOwnerFromStage26V217(ctx) : null;
+  const dashboardCheckoutSource = ctx.action === 'domain_dashboard_me' ? diracAppOriginHandoffTargetV313('parfum') : null;
+  if (ctx.action === 'domain_dashboard_me'
+      && (!diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) || !dashboardOwner
+        || dashboardOwner.customerIds.length !== 1 || !dashboardCheckoutSource
+        || diracCsrfRequestOrigin(ctx.req) !== dashboardCheckoutSource.origin)) return false;
+  const boundCustomerId = String(dashboardOwner ? dashboardOwner.customerIds[0] : ctx.__diracCentralCheckoutOwnerCustomerIdV196 || '').trim();
+  const boundAuthUserId = String(dashboardOwner ? dashboardOwner.authUserId : ctx.__diracCentralCheckoutOwnerAuthUserIdV196 || '').trim();
   if (!diracCentralLooksLikeUuidV146(boundCustomerId) || !diracCentralLooksLikeUuidV146(boundAuthUserId)) return false;
 
   const rawPath = String(path || '');
@@ -61384,17 +61490,23 @@ function diracSessionHandoffBuildLocalCookiesV250(req, user, customerId, securit
       || !Number.isSafeInteger(Number(securityEpoch)) || Number(securityEpoch) < 1
       || !hasValidDomainSessionTokens({ access_token: accessToken, refresh_token: refreshToken })) return null;
   const nowSeconds = Math.floor(Date.now() / 1000);
-  const signedMaxAge = typeof diracV110SessionMaxAgeSeconds === 'function'
-    ? Math.max(60, Math.min(7 * 24 * 60 * 60, Math.floor(Number(diracV110SessionMaxAgeSeconds()) || 0)))
-    : 7 * 24 * 60 * 60;
-  const mfaMaxAge = Math.max(15 * 60, Math.min(60 * 60, Math.floor(Number(process.env.DIRAC_DASHBOARD_MFA_MAX_AGE_SECONDS || 30 * 60))));
+  const sourceSigned = customerSecurityDecodeSignedSessionAnchorV228(String(authMaterial && authMaterial.signedSession || ''));
+  if (!sourceSigned || sourceSigned.userId !== userId || sourceSigned.email !== email
+      || sourceSigned.sessionId !== sessionId || sourceSigned.securityEpoch !== Number(securityEpoch)) return null;
+  const requestedSignedMaxAge = typeof diracV110SessionMaxAgeSeconds === 'function'
+    ? Math.max(60, Math.min(8 * 60 * 60, Math.floor(Number(diracV110SessionMaxAgeSeconds()) || 0)))
+    : 8 * 60 * 60;
+  const signedMaxAge = Math.min(requestedSignedMaxAge, sourceSigned.expiresAt - nowSeconds);
+  if (!Number.isSafeInteger(signedMaxAge) || signedMaxAge < 60) return null;
+  const mfaMaxAge = Math.min(sourceSigned.anchorExpiresAt - nowSeconds, signedMaxAge, Math.max(15 * 60, Math.min(60 * 60, Math.floor(Number(process.env.DIRAC_DASHBOARD_MFA_MAX_AGE_SECONDS || 30 * 60)))));
+  if (!Number.isSafeInteger(mfaMaxAge) || mfaMaxAge < 1) return null;
   const anchorId = crypto.randomBytes(32).toString('base64url');
   const payload = {
     typ: DOMAIN_SIGNED_SESSION_TYPE,
     uid: userId,
     email,
     sid: sessionId,
-    iat: nowSeconds,
+    iat: sourceSigned.issuedAt,
     exp: nowSeconds + signedMaxAge,
     nonce: crypto.randomBytes(12).toString('base64url'),
     session_version: String(securityEpoch),
@@ -63065,4 +63177,180 @@ Object.defineProperty(module.exports, '__diracRecoveryRoleAwareV250', { value: t
 Object.freeze(module.exports);
 if (!Object.isFrozen(module.exports)) {
   throw new Error('DIRAC_V230_FINAL_EXPORT_FREEZE_FAILED');
+}
+
+/* Deployment CLI only. The HTTP export and central guard above remain unchanged. */
+function diracConfigureHtmlDeploymentV335(directory, value, checkOnly) {
+  'use strict';
+  
+  // Deployment build hook: DIRAC_BASE_DOMAIN is the existing backend setting.
+  // Run before publishing the HTML. No network access or secrets are embedded.
+  const fs = require('fs');
+  const path = require('path');
+  const crypto = require('crypto');
+  const vm = require('vm');
+  const FILES = Object.freeze(['masuk.html', 'dashboard.html', 'pesanan.html', 'parfum.html', 'keamanan.html']);
+  
+  function diracHtmlBuildDomainV335(value) {
+    const host = String(value || '').trim().toLowerCase();
+    if (host.length > 253 || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host)
+        || /^\d+$/.test(host.split('.').pop()) || /(?:^|\.)(?:localhost|local|internal)$/.test(host)) {
+      throw new Error('DIRAC_BASE_DOMAIN_INVALID: use a bare DNS domain without scheme, port, path, wildcard or IP address.');
+    }
+    return host;
+  }
+  
+  function diracHtmlBuildEscapeRegexV335(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  function diracHtmlBuildDecodeAttributeV335(value) {
+    return value.replace(/&#x([0-9a-f]+);|&#([0-9]+);|&(amp|quot|apos|lt|gt);/gi, function (_, hex, decimal, named) {
+      if (hex || decimal) return String.fromCodePoint(parseInt(hex || decimal, hex ? 16 : 10));
+      return {amp: '&', quot: '"', apos: "'", lt: '<', gt: '>'}[named.toLowerCase()];
+    });
+  }
+  function diracHtmlBuildAttributeV335(tag, name) {
+    const match = tag.match(new RegExp('(?:^|\\s)' + name + '\\s*=\\s*(["\'])([\\s\\S]*?)\\1', 'i'));
+    return match ? diracHtmlBuildDecodeAttributeV335(match[2]) : null;
+  }
+  function diracHtmlBuildPolicyMetaV335(html) {
+    const matches = [...html.matchAll(/<meta\b[^>]*>/gi)].filter(m => String(diracHtmlBuildAttributeV335(m[0], 'http-equiv')).toLowerCase() === 'content-security-policy');
+    if (matches.length !== 1 || !diracHtmlBuildAttributeV335(matches[0][0], 'content')) throw new Error('Exactly one existing CSP meta is required.');
+    return matches[0];
+  }
+  function diracHtmlBuildConfiguredDomainV335(html) {
+    const metas = [...html.matchAll(/<meta\b[^>]*>/gi)].filter(m => diracHtmlBuildAttributeV335(m[0], 'name') === 'dirac-base-domain');
+    if (metas.length > 1) throw new Error('Duplicate dirac-base-domain meta.');
+    if (metas.length && String(diracHtmlBuildAttributeV335(metas[0][0], 'content') || '').trim()) return diracHtmlBuildDomainV335(diracHtmlBuildAttributeV335(metas[0][0], 'content'));
+    const csp = diracHtmlBuildAttributeV335(diracHtmlBuildPolicyMetaV335(html)[0], 'content');
+    const candidates = [...new Set([...csp.matchAll(/(?:^|\s)https:\/\/api\.([a-z0-9.-]+)(?=\s|;|$)/gi)].map(m => diracHtmlBuildDomainV335(m[1])))];
+    if (candidates.length !== 1) throw new Error('Cannot identify the existing deployment domain from its exact CSP API origin.');
+    return candidates[0];
+  }
+  function diracHtmlBuildBlocksV335(html) {
+    return [...html.matchAll(/<(script|style)\b([^>]*)>([\s\S]*?)<\/\1\s*>/gi)].map(m => ({tag: m[1].toLowerCase(), attributes: m[2], body: m[3]}));
+  }
+  function diracHtmlBuildDigestV335(body, algorithm) { return crypto.createHash(algorithm).update(body, 'utf8').digest('base64'); }
+  function diracHtmlBuildValidateInlineHashesV335(html) {
+    const policy = diracHtmlBuildAttributeV335(diracHtmlBuildPolicyMetaV335(html)[0], 'content');
+    const directives = new Map(policy.split(';').map(part => part.trim().split(/\s+/)).filter(parts => parts[0]).map(parts => [parts[0].toLowerCase(), parts.slice(1)]));
+    for (const block of diracHtmlBuildBlocksV335(html)) {
+      if (!block.body.trim()) continue;
+      const type = diracHtmlBuildAttributeV335('<script ' + block.attributes + '>', 'type') || '';
+      if (block.tag === 'script' && type && !/^(?:text|application)\/(?:java|ecma)script$/i.test(type) && type !== 'module') continue;
+      const sources = directives.get(block.tag + '-src-elem') || directives.get(block.tag + '-src') || directives.get('default-src') || [];
+      if (!['sha256', 'sha384', 'sha512'].some(algorithm => sources.includes("'" + algorithm + '-' + diracHtmlBuildDigestV335(block.body, algorithm) + "'"))) {
+        throw new Error('Inline CSP hash mismatch: ' + (diracHtmlBuildAttributeV335('<script ' + block.attributes + '>', 'id') || block.tag));
+      }
+      if (block.tag === 'script' && type !== 'module') new vm.Script(block.body, {filename: 'deployment-inline-script.js'});
+    }
+  }
+  function diracHtmlBuildReplaceDomainV335(text, previous, next) {
+    // Delimiters prevent modifying a different host that merely contains this name.
+    const plain = new RegExp('(?<![a-z0-9_-])' + diracHtmlBuildEscapeRegexV335(previous) + '(?![a-z0-9_-]|\\.[a-z0-9-])', 'gi');
+    const escaped = new RegExp('(?<![a-z0-9_-])' + diracHtmlBuildEscapeRegexV335(previous.replace(/\./g, '\\.')) + '(?![a-z0-9_-])', 'g');
+    return text.replace(plain, next).replace(escaped, () => next.replace(/\./g, '\\.'));
+  }
+  function diracHtmlBuildTransformV335(html, previous, next) {
+    const oldCspMeta = diracHtmlBuildPolicyMetaV335(html);
+    const oldPolicy = diracHtmlBuildAttributeV335(oldCspMeta[0], 'content');
+    if (!new RegExp('(?:^|\\s)https://api\\.' + diracHtmlBuildEscapeRegexV335(previous) + '(?=\\s|;|$)').test(oldPolicy)) throw new Error('CSP API origin and deployment domain do not agree.');
+    let result = diracHtmlBuildReplaceDomainV335(html, previous, next);
+    const before = diracHtmlBuildBlocksV335(html), after = diracHtmlBuildBlocksV335(result);
+    if (before.length !== after.length) throw new Error('Unexpected script/style structure change.');
+    const hashChanges = new Map();
+    for (let i = 0; i < before.length; i++) {
+      const a = before[i], b = after[i];
+      if (a.tag !== b.tag || diracHtmlBuildReplaceDomainV335(a.attributes, previous, next) !== b.attributes) throw new Error('Unexpected script/style attribute change.');
+      if (a.body === b.body) continue;
+      let covered = false;
+      for (const algorithm of ['sha256', 'sha384', 'sha512']) {
+        const oldHash = "'" + algorithm + '-' + diracHtmlBuildDigestV335(a.body, algorithm) + "'";
+        if (oldPolicy.includes(oldHash)) {
+          covered = true;
+          hashChanges.set(oldHash, "'" + algorithm + '-' + diracHtmlBuildDigestV335(b.body, algorithm) + "'");
+        }
+      }
+      const type = diracHtmlBuildAttributeV335('<script ' + b.attributes + '>', 'type') || '';
+      const executable = b.tag === 'style' || !type || /^(?:text|application)\/(?:java|ecma)script$/i.test(type) || type === 'module';
+      if (executable && !covered) throw new Error('Changed inline block lacks an existing CSP hash: ' + (diracHtmlBuildAttributeV335('<script ' + b.attributes + '>', 'id') || String(i)));
+      if (b.tag === 'script' && executable && type !== 'module') new vm.Script(b.body, {filename: 'deployment-inline-script.js'});
+    }
+    const newCspMeta = diracHtmlBuildPolicyMetaV335(result);
+    let tag = newCspMeta[0];
+    for (const [oldHash, newHash] of hashChanges) {
+      const oldCore = oldHash.slice(1, -1), newCore = newHash.slice(1, -1);
+      tag = tag.split(oldCore).join(newCore);
+    }
+    result = result.slice(0, newCspMeta.index) + tag + result.slice(newCspMeta.index + newCspMeta[0].length);
+    // This public value also supplies the existing client routing meta contract.
+    const baseMetas = [...result.matchAll(/<meta\b[^>]*>/gi)].filter(m => diracHtmlBuildAttributeV335(m[0], 'name') === 'dirac-base-domain');
+    if (baseMetas.length > 1) throw new Error('Duplicate deployment meta.');
+    const deploymentMeta = '<meta name="dirac-base-domain" content="' + next + '">';
+    if (baseMetas.length) {
+      const meta = baseMetas[0];
+      result = result.slice(0, meta.index) + deploymentMeta + result.slice(meta.index + meta[0].length);
+    } else {
+      const meta = diracHtmlBuildPolicyMetaV335(result), end = meta.index + meta[0].length;
+      result = result.slice(0, end) + '\n' + deploymentMeta + result.slice(end);
+    }
+    let expectedPolicy = diracHtmlBuildReplaceDomainV335(oldPolicy, previous, next);
+    for (const [oldHash, newHash] of hashChanges) expectedPolicy = expectedPolicy.split(oldHash).join(newHash);
+    if (diracHtmlBuildAttributeV335(diracHtmlBuildPolicyMetaV335(result)[0], 'content') !== expectedPolicy || diracHtmlBuildConfiguredDomainV335(result) !== next) throw new Error('Deployment CSP verification failed.');
+    return result;
+  }
+  
+  function diracHtmlBuildConfigureV335(directory, value, checkOnly) {
+    const next = diracHtmlBuildDomainV335(value);
+    const planned = FILES.map(name => {
+      const filename = path.join(directory, name), stat = fs.lstatSync(filename);
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Expected a regular HTML file: ' + name);
+      const original = fs.readFileSync(filename);
+      const html = original.toString('utf8');
+      if (!Buffer.from(html, 'utf8').equals(original)) throw new Error('Invalid UTF-8: ' + name);
+      diracHtmlBuildValidateInlineHashesV335(html);
+      return {name, filename, original, mode: stat.mode, previous: diracHtmlBuildConfiguredDomainV335(html), html};
+    });
+    if (new Set(planned.map(p => p.previous)).size !== 1) throw new Error('HTML deployment domains differ; no files were changed.');
+    // Validate every transformed file before writing any file.
+    for (const item of planned) {
+      const result = diracHtmlBuildTransformV335(item.html, item.previous, next);
+      diracHtmlBuildValidateInlineHashesV335(result);
+      item.result = Buffer.from(result, 'utf8');
+    }
+    const changed = planned.filter(p => !p.original.equals(p.result));
+    if (checkOnly) return {domain: next, valid: changed.length === 0, changed: changed.map(p => p.name)};
+    const written = [], temporary = [];
+    try {
+      for (const item of changed) {
+        item.temp = item.filename + '.domain-' + process.pid + '-' + crypto.randomBytes(8).toString('hex') + '.tmp';
+        fs.writeFileSync(item.temp, item.result, {flag: 'wx', mode: item.mode});
+        temporary.push(item.temp);
+      }
+      for (const item of changed) { fs.renameSync(item.temp, item.filename); written.push(item); }
+    } catch (error) {
+      for (const item of written.reverse()) {
+        try { fs.writeFileSync(item.filename, item.original, {mode: item.mode}); } catch (_) { error.message += '; rollback failed for ' + item.name; }
+      }
+      throw error;
+    } finally {
+      for (const filename of temporary) { try { fs.unlinkSync(filename); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
+    }
+    return {domain: next, valid: true, changed: changed.map(p => p.name)};
+  }
+  
+  return diracHtmlBuildConfigureV335(directory, value, checkOnly);
+}
+
+if (require.main === module && process.argv[2] === '--configure-domain') {
+  try {
+    const buildArgs = process.argv.slice(3);
+    if (buildArgs.length > 1 || buildArgs.some(arg => arg !== '--check')) {
+      throw new Error('Usage: node health.js --configure-domain [--check]');
+    }
+    const buildResult = diracConfigureHtmlDeploymentV335(__dirname, process.env.DIRAC_BASE_DOMAIN, buildArgs.includes('--check'));
+    console.log(JSON.stringify(buildResult));
+    if (!buildResult.valid) process.exitCode = 1;
+  } catch (error) {
+    console.error(String(error.message || error));
+    process.exitCode = 1;
+  }
 }
