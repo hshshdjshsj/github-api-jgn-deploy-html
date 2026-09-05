@@ -17,6 +17,170 @@ function diracSmtpHeaderImageUrlV332() {
   }
 }
 
+// Request timing only: no authorization decisions, response changes, or remote work.
+const DIRAC_REQUEST_PERFORMANCE_STATE_V340 = {
+  requests: new WeakMap(),
+  windowStartedAt: 0,
+  admitted: 0
+};
+const DIRAC_REQUEST_PERFORMANCE_ACTIONS_V340 = Object.freeze({
+  domain_login: 'POST', domain_register: 'POST',
+  dirac_mfa_passkey_start: 'POST', dirac_mfa_passkey_verify: 'POST',
+  domain_dashboard_me: 'GET', domain_health: 'GET', my_orders: 'GET',
+  checkout_order: 'POST', create_payment: 'POST',
+  customer_session_handoff_issue: 'POST', customer_session_handoff_consume: 'POST'
+});
+const DIRAC_REQUEST_PERFORMANCE_PHASES_V340 = new Set([
+  'entry.raw_capture', 'entry.compliance_gate', 'entry.central_guard',
+  'central_guard.dispatch', 'login.handler', 'login.body', 'login.input_guard',
+  'login.rate_check', 'login.auth_token', 'login.canonical_user',
+  'login.ban_check_1', 'login.rate_clear', 'login.ban_check_2',
+  'login.cookie_publication', 'login.ban_alert', 'login.response_200',
+  'login.response_403', 'login.response_503', 'response.bootstrap',
+  'response.argon_shadow', 'response.auth_audit'
+]);
+const DIRAC_REQUEST_PERFORMANCE_TABLES_V340 = new Set([
+  'customers', 'products', 'orders', 'order_items', 'domain_orders',
+  'domain_order_items', 'domain_tld_prices', 'payment_transactions',
+  'security_customer_auth_links', 'security_customer_settings',
+  'security_customer_sessions', 'domain_passkeys', 'security_customer_events',
+  'security_customer_login_logs', 'security_customer_account_requests',
+  'security_lost_passkey_recovery_requests', 'security_lost_passkey_recovery_sessions',
+  'dirac_persistent_bans', 'dirac_s2s_security'
+]);
+
+function diracRequestPerformanceBeginV340(req, res) {
+  try {
+    if (!req || typeof req !== 'object' || !res || typeof res.once !== 'function') return null;
+    const known = DIRAC_REQUEST_PERFORMANCE_STATE_V340.requests.get(req);
+    if (known !== undefined) return known;
+    let action = diracLoginFatalActionV324(req);
+    if (action === 'domain_mfa_passkey_start') action = 'dirac_mfa_passkey_start';
+    if (action === 'domain_mfa_passkey_verify') action = 'dirac_mfa_passkey_verify';
+    const method = String(req.method || '').toUpperCase();
+    if (!Object.prototype.hasOwnProperty.call(DIRAC_REQUEST_PERFORMANCE_ACTIONS_V340, action)
+        || DIRAC_REQUEST_PERFORMANCE_ACTIONS_V340[action] !== method) return null;
+    const now = Date.now();
+    const admission = DIRAC_REQUEST_PERFORMANCE_STATE_V340;
+    if (!admission.windowStartedAt || now - admission.windowStartedAt >= 60000) {
+      admission.windowStartedAt = now;
+      admission.admitted = 0;
+    }
+    admission.requests.set(req, null);
+    if (admission.admitted >= 16) return null;
+    admission.admitted += 1;
+    const record = {
+      action, method, startedAt: now, emitted: false, returnedAt: 0,
+      phases: new Map(), stages: new Map(), database: new Map()
+    };
+    admission.requests.set(req, record);
+    res.once('finish', () => diracRequestPerformanceFinishV340(req, res, record, 'finish'));
+    res.once('close', () => diracRequestPerformanceFinishV340(req, res, record, 'close'));
+    return record;
+  } catch (_) { return null; }
+}
+
+function diracRequestPerformanceMarkV340(req, res, phase, state, meta) {
+  try {
+    const record = diracRequestPerformanceBeginV340(req, res);
+    if (!record || record.emitted) return;
+    const now = Date.now();
+    if (phase === 'central_guard.finally' && state === 'begin') record.returnedAt = now;
+    if (phase === 'central_guard.stage' && state !== 'begin') {
+      const index = Number(meta && meta.guard_stage_index);
+      const duration = Number(meta && meta.duration_ms);
+      if (Number.isInteger(index) && index >= 0 && index < 30
+          && Number.isFinite(duration) && duration >= 0
+          && (state === 'passed' || state === 'blocked')) {
+        record.stages.set(index, { index, outcome: state, duration_ms: Math.min(86400000, duration) });
+      }
+      return;
+    }
+    if (!DIRAC_REQUEST_PERFORMANCE_PHASES_V340.has(phase)) return;
+    if (state === 'begin') {
+      if (!record.phases.has(phase)) record.phases.set(phase, { startedAt: now, endedAt: 0 });
+    } else {
+      const interval = record.phases.get(phase);
+      if (interval && !interval.endedAt) interval.endedAt = now;
+    }
+  } catch (_) {}
+}
+
+function diracRequestPerformanceDatabaseStartV340(ctx, path, options) {
+  try {
+    const record = ctx && ctx.req && DIRAC_REQUEST_PERFORMANCE_STATE_V340.requests.get(ctx.req);
+    if (!record || record.emitted) return null;
+    const classified = diracLoginFatalDatabaseRouteV324(path);
+    const route = ['auth:token', 'auth:user', 'auth:admin_user'].includes(classified)
+      ? classified
+      : classified.startsWith('table:') && DIRAC_REQUEST_PERFORMANCE_TABLES_V340.has(classified.slice(6))
+        ? classified
+        : classified.startsWith('rpc:') ? 'rpc' : 'other';
+    const rawMethod = String(options && options.method || 'GET').toUpperCase();
+    const method = ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(rawMethod) ? rawMethod : 'other';
+    const phase = ctx.executionPhaseV211 === 'handler' ? 'handler'
+      : ctx.executionPhaseV211 === 'guard' ? 'guard' : 'bootstrap';
+    let key = [phase, method, route].join('|');
+    if (!record.database.has(key) && record.database.size >= 24) key = 'overflow';
+    if (!record.database.has(key)) record.database.set(key, {
+      phase: key === 'overflow' ? 'mixed' : phase,
+      method: key === 'overflow' ? 'mixed' : method,
+      route: key === 'overflow' ? 'other' : route,
+      calls: 0, completed: 0, failed: 0, duration_sum_ms: 0, duration_max_ms: 0,
+      status_counts: { '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0, other: 0 }
+    });
+    const aggregate = record.database.get(key);
+    aggregate.calls += 1;
+    return { record, aggregate, startedAt: Date.now(), completed: false };
+  } catch (_) { return null; }
+}
+
+function diracRequestPerformanceDatabaseEndV340(marker, result, error) {
+  try {
+    if (!marker || marker.completed || marker.record.emitted) return;
+    marker.completed = true;
+    const aggregate = marker.aggregate;
+    const duration = Math.max(0, Math.min(86400000, Date.now() - marker.startedAt));
+    aggregate.completed += 1;
+    aggregate.duration_sum_ms += duration;
+    aggregate.duration_max_ms = Math.max(aggregate.duration_max_ms, duration);
+    if (error || !result || result.ok !== true) aggregate.failed += 1;
+    const status = Number(result && result.status || 0);
+    const category = Number.isInteger(status) && status >= 200 && status < 600
+      ? String(Math.floor(status / 100)) + 'xx' : 'other';
+    aggregate.status_counts[category] += 1;
+  } catch (_) {}
+}
+
+function diracRequestPerformanceFinishV340(req, res, record, event) {
+  try {
+    if (!record || record.emitted) return;
+    record.emitted = true;
+    const now = Date.now();
+    const elapsed = (end, start) => Math.max(0, Math.min(86400000, end - start));
+    const requestId = String(req && req.__diracCentralRequestIdV211 || '');
+    const status = Number(res && res.statusCode || 0);
+    const payload = {
+      v: 'dirac-request-performance-v340', action: record.action, method: record.method,
+      request_id: /^[a-f0-9]{32}$/.test(requestId) ? requestId : '',
+      response_event: event, http_status: Number.isInteger(status) && status >= 100 && status <= 599 ? status : 0,
+      response_finished: event === 'finish', response_ms: elapsed(now, record.startedAt),
+      handler_return_ms: record.returnedAt ? elapsed(record.returnedAt, record.startedAt) : null,
+      phases: Array.from(record.phases, ([phase, interval]) => ({
+        phase, duration_ms: elapsed(interval.endedAt || now, interval.startedAt),
+        completed: Boolean(interval.endedAt)
+      })),
+      guards: Array.from(record.stages.values()),
+      database: Array.from(record.database.values(), (aggregate) => ({
+        ...aggregate, pending: Math.max(0, aggregate.calls - aggregate.completed)
+      })),
+      durations_overlap: true
+    };
+    console.info('[dirac-request-performance-v340] ' + JSON.stringify(payload));
+  } catch (_) {}
+}
+
+
 /* ============================================================
    DIRAC LOGIN FATAL DIAGNOSTIC v324
    Production-safe breadcrumbs for POST domain_login/domain_register only.
@@ -243,6 +407,7 @@ function diracLoginFatalMarkIdV324(traceId, phase, state, meta, res) {
 }
 
 function diracLoginFatalMarkV324(req, phase, state, meta, res) {
+  diracRequestPerformanceMarkV340(req, res, phase, state, meta);
   const trace = diracLoginFatalTraceV324(req) || diracLoginFatalBeginV324(req, res);
   return trace ? diracLoginFatalMarkIdV324(trace.traceId, phase, state, meta, res) : false;
 }
@@ -260,11 +425,13 @@ function diracLoginFatalDatabaseRouteV324(path) {
 }
 
 function diracLoginFatalDatabaseStartV324(ctx, path, options) {
-  if (!ctx || (String(ctx.action || '') !== 'domain_login' && String(ctx.action || '') !== 'domain_register') || !ctx.req) return null;
+  const performanceV340 = diracRequestPerformanceDatabaseStartV340(ctx, path, options);
+  if (!ctx || (String(ctx.action || '') !== 'domain_login' && String(ctx.action || '') !== 'domain_register') || !ctx.req) return performanceV340 ? { performanceV340 } : null;
   const trace = diracLoginFatalTraceV324(ctx.req);
-  if (!trace) return null;
+  if (!trace) return performanceV340 ? { performanceV340 } : null;
   trace.dbOrdinal += 1;
   const marker = {
+    performanceV340,
     traceId: trace.traceId,
     ordinal: trace.dbOrdinal,
     startedAt: Date.now(),
@@ -282,7 +449,8 @@ function diracLoginFatalDatabaseStartV324(ctx, path, options) {
 }
 
 function diracLoginFatalDatabaseEndV324(marker, result, error, res) {
-  if (!marker) return false;
+  diracRequestPerformanceDatabaseEndV340(marker && marker.performanceV340, result, error);
+  if (!marker || !marker.traceId) return false;
   const rows = result && Array.isArray(result.data) ? result.data.length : -1;
   const safeError = error ? diracLoginFatalSafeErrorV324(error, 'database') : null;
   return diracLoginFatalMarkIdV324(marker.traceId, 'database.call', error ? 'throw' : 'done', {
@@ -48744,20 +48912,21 @@ async function diracSecurityMailResendV330(message, config) {
   }, JSON.stringify(payload), config.timeoutMs);
 }
 
-async function diracSecurityMailProviderCascadeV330(message, config, smtpSender) {
+async function diracSecurityMailProviderCascadeV330(message, config, smtpSender, diagnosticV340 = null) {
   const senders = [];
   if (config && config.brevoApiKey && config.brevoFromEmail) {
-    senders.push(() => diracSecurityMailBrevoV330(message, config));
+    senders.push(() => diagnosticV340 ? diracPasswordResetMailProviderAttemptV340(diagnosticV340, 'brevo', () => diracSecurityMailBrevoV330(message, config)) : diracSecurityMailBrevoV330(message, config));
   }
   if (config && config.resendApiKey && config.resendFromEmail) {
-    senders.push(() => diracSecurityMailResendV330(message, config));
+    senders.push(() => diagnosticV340 ? diracPasswordResetMailProviderAttemptV340(diagnosticV340, 'resend', () => diracSecurityMailResendV330(message, config)) : diracSecurityMailResendV330(message, config));
   }
   for (const send of senders) {
     const result = await send();
     if (result && result.ok === true) return result;
     if (!result || result.limited !== true) return result || Object.freeze({ ok: false, provider: 'unknown', status: 0, limited: false, code: 'PROVIDER_RESULT_INVALID' });
+    diracPasswordResetMailDiagnosticV340(diagnosticV340, 'provider.fallback', 'continue', { provider: result.provider, status: Number(result.status || 0), limited: true });
   }
-  return smtpSender();
+  return diagnosticV340 ? diracPasswordResetMailProviderAttemptV340(diagnosticV340, 'gmail_smtp', smtpSender) : smtpSender();
 }
 
 const diracUserSecurityExplicitReadyBeforeCascadeV330 = diracUserSecurityExplicitReadyV328;
@@ -49027,7 +49196,14 @@ diracUserSecuritySendV327 = async function diracUserSecuritySendCascadeV330(even
     html: event.html,
     reference: event.reference
   });
-  return diracSecurityMailProviderCascadeV330(message, config, () => diracUserSecuritySendSmtpV327(event, config));
+  let diagnosticV340 = null;
+  try {
+    const ctxV340 = diracCentralCurrentContextV149();
+    const markerV340 = ctxV340 && DIRAC_PASSWORD_RESET_MAIL_REQUESTS_V338.get(ctxV340.req);
+    if (event.kind === 'password_changed' && markerV340 && event.reference === markerV340.commitId.slice(0, 10).toUpperCase())
+      diagnosticV340 = DIRAC_PASSWORD_RESET_MAIL_DIAGNOSTICS_V340.get(ctxV340.req) || null;
+  } catch (_) { void 0; }
+  return diracSecurityMailProviderCascadeV330(message, config, () => diracUserSecuritySendSmtpV327(event, config), diagnosticV340);
 };
 
 const diracSecurityAlertSmtpSendBeforeCascadeV330 = diracSecurityAlertSendV320;
@@ -49498,7 +49674,15 @@ function diracCentralEmitDebugV211(ctx, event, extra) {
   try {
     const line = JSON.stringify(payload);
     if (event === 'request_passed' && diracCentralDebugEnabledV211()) console.info('[dirac-central-debug-v211]', line);
-    else if (event !== 'request_passed' && diracCentralShouldEmitBlockLogV322(payload)) console.error('[dirac-central-debug-v211]', line);
+    else if (event !== 'request_passed' && diracCentralShouldEmitBlockLogV322(payload)) {
+      const sessionAccepted = event === 'customer_session_decision_terminal'
+        && extra && extra.terminal_phase === 'dashboard_response.200'
+        && ctx && diracCentralHandlerContextFullyPassedV211(ctx, ctx.req)
+        && !payload.failed_stage && !payload.reason && !payload.failure_class
+        && !payload.severity && !payload.diagnostic_code && !payload.failure_point;
+      if (sessionAccepted) console.info('[dirac-central-debug-v211]', line);
+      else console.error('[dirac-central-debug-v211]', line);
+    }
   } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
   try { diracSecurityAlertScheduleV320(ctx, event, payload); }
   catch (suppressedErrorV320) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV320); }
@@ -62775,6 +62959,137 @@ function diracCentralNativeNetworkSurfaceIntactV231() {
 // The private marker binds this in-process request; it never substitutes for S2S proof.
 const DIRAC_PASSWORD_RESET_MAIL_REQUESTS_V338 = new WeakMap();
 
+// v340: observational password-mail diagnostics; never used to authorize delivery.
+const DIRAC_PASSWORD_RESET_MAIL_DIAGNOSTICS_V340 = new WeakMap();
+const DIRAC_PASSWORD_RESET_MAIL_ENV_V340 = Object.freeze([
+  'DIRAC_USER_SECURITY_EMAIL_ENABLED', 'DIRAC_USER_SECURITY_BREVO_API_KEY',
+  'DIRAC_USER_SECURITY_BREVO_FROM_EMAIL', 'DIRAC_USER_SECURITY_RESEND_API_KEY',
+  'DIRAC_USER_SECURITY_RESEND_FROM_EMAIL', 'DIRAC_USER_SECURITY_REPLY_TO',
+  'DIRAC_USER_SECURITY_TIMEOUT_MS', 'DIRAC_USER_SECURITY_SMTP_HOST',
+  'DIRAC_USER_SECURITY_SMTP_PORT', 'DIRAC_USER_SECURITY_SMTP_SECURE',
+  'DIRAC_USER_SECURITY_SMTP_USER', 'DIRAC_USER_SECURITY_SMTP_APP_PASSWORD'
+]);
+function diracPasswordResetMailDiagnosticStateV340(req, supplied) {
+  try {
+    const headers = req && req.headers || {};
+    const source = String(headers['x-vercel-id'] || headers['x-request-id'] || headers['x-vercel-request-id'] || '').trim();
+    return Object.freeze({
+      correlationId: supplied && /^[a-f0-9]{24}$/.test(supplied.correlationId) ? supplied.correlationId : crypto.randomBytes(12).toString('hex'),
+      traceId: supplied && /^[a-f0-9]{20}$/.test(supplied.traceId) ? supplied.traceId : source ? crypto.createHash('sha256').update(source).digest('hex').slice(0, 20) : 'unavailable',
+      startedAt: Date.now()
+    });
+  } catch (_) { return null; }
+}
+function diracPasswordResetMailDiagnosticV340(diagnostic, stage, outcome, details) {
+  if (!diagnostic) return;
+  try {
+    const stages = ['bridge.begin', 'bridge.preflight', 'bridge.signatures', 'bridge.guard.begin', 'bridge.guard.result', 'bridge.exception', 'record.read', 'handler.binding', 'configuration', 'claim', 'provider.begin', 'provider.result', 'provider.exception', 'provider.fallback', 'delivery.result'];
+    if (!stages.includes(stage) || !['begin', 'success', 'error', 'rejected', 'continue'].includes(outcome)) return;
+    const input = details && typeof details === 'object' ? details : {};
+    const safe = {};
+    for (const name of ['ok', 'delivered', 'limited', 'record_found', 'record_valid', 'binding_valid', 'configuration_available', 'owner_configuration_available', 'claim_acquired', 'guard_fully_passed']) {
+      if (typeof input[name] === 'boolean') safe[name] = input[name];
+    }
+    for (const name of ['status', 'upstream_status', 'stage_elapsed_ms', 'guard_stage_index', 'guard_checkpoint_count', 'record_age_ms', 'record_remaining_ms']) {
+      if (Number.isFinite(input[name])) safe[name] = Math.max(-1, Math.min(86400000, Math.trunc(input[name])));
+    }
+    if (['brevo', 'resend', 'gmail_smtp', 'unknown'].includes(input.provider)) safe.provider = input.provider;
+    if (input.code) {
+      const codes = ['PASSWORD_RESET_MAIL_INPUT_INVALID', 'PASSWORD_RESET_MAIL_SELF_SCOPE_UNAVAILABLE', 'PASSWORD_RESET_MAIL_FULL_GUARD_REQUIRED', 'PASSWORD_RESET_MAIL_CONFIGURATION_UNAVAILABLE', 'PASSWORD_RESET_MAIL_CLAIM_UNAVAILABLE_OR_USED', 'PASSWORD_RESET_MAIL_DELIVERED', 'PASSWORD_RESET_MAIL_UNCONFIRMED', 'PASSWORD_RESET_MAIL_CENTRAL_GUARD_REJECTED', 'PROVIDER_URL_INVALID', 'PROVIDER_ENDPOINT_MISMATCH', 'PROVIDER_SECURITY_CONTEXT_REQUIRED', 'PROVIDER_REQUEST_BODY_INVALID', 'PROVIDER_RESULT_INVALID', 'PROVIDER_REQUEST_FAILED', 'USER_SECURITY_SMTP_DELIVERY_FAILED', 'DIRAC_SMTP_EGRESS_POLICY_REJECTED', 'DIRAC_SMTP_PINNED_IP_REQUIRED', 'DIRAC_SMTP_SOCKET_INVALID', 'DIRAC_SMTP_SOCKET_ERROR', 'DIRAC_SMTP_TLS_UPGRADE_INVALID', 'SECURITY_ALERT_SMTP_TIMEOUT', 'SECURITY_ALERT_SMTP_CONNECTION_ENDED', 'SECURITY_ALERT_SMTP_CONNECTION_CLOSED', 'SECURITY_ALERT_SMTP_DEADLINE_EXCEEDED', 'SECURITY_ALERT_SMTP_UNEXPECTED_RESPONSE', 'AbortError', 'TimeoutError', 'TypeError', 'not_enough_credits', 'rate_limit_exceeded', 'daily_quota_exceeded', 'validation_error', 'unauthorized', 'authentication_error', 'permission_denied', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED'];
+      safe.code = codes.includes(input.code) || /^(BREVO|RESEND)_HTTP_[0-5]?[0-9]{1,2}$/.test(input.code) ? input.code : 'UNCLASSIFIED_ERROR';
+    }
+    const checkNames = ['server_id_valid', 'key_version_valid', 'preflight_present', 'registry_key_matches', 'registry_record_valid', 'registry_schema_valid', 'registry_not_expired', 'registry_active', 'registry_key_version_matches', 'self_target_allowed', 'security_report_allowed', 'revocation_rows_valid', 'revocation_keys_match', 'revocation_records_valid', 'database_not_revoked', 'environment_revocation_valid', 'environment_not_revoked', 'email_enabled', 'brevo_key_valid', 'brevo_sender_valid', 'resend_key_valid', 'resend_sender_valid', 'resend_sender_official', 'reply_to_valid', 'timeout_valid', 'smtp_host_valid', 'smtp_port_valid', 'smtp_secure', 'smtp_user_valid', 'smtp_password_valid', 'provider_secrets_distinct'];
+    if (input.checks && typeof input.checks === 'object') {
+      safe.checks = {};
+      for (const name of checkNames) if (typeof input.checks[name] === 'boolean') safe.checks[name] = input.checks[name];
+      safe.failed_checks = Object.keys(safe.checks).filter((name) => !safe.checks[name]);
+    }
+    if (input.env_present && typeof input.env_present === 'object') {
+      safe.env_present = {};
+      for (const name of DIRAC_PASSWORD_RESET_MAIL_ENV_V340) safe.env_present[name] = input.env_present[name] === true;
+    }
+    const record = { v: 'dirac-password-mail-diagnostic-v340', ts: new Date().toISOString(), trace_id: diagnostic.traceId,
+      correlation_id: diagnostic.correlationId, component: 'health', stage, outcome,
+      elapsed_ms: Math.max(0, Date.now() - diagnostic.startedAt), details: safe, secret_values_logged: false };
+    console.info('[dirac-password-mail-diagnostic-v340] ' + JSON.stringify(record));
+  } catch (_) { return; }
+}
+function diracPasswordResetMailPreflightDiagnosticV340(preflight, serverId, keyVersion) {
+  try {
+    const registry = preflight && preflight.registry;
+    const raw = registry && registry.record_json;
+    const recordValid = Boolean(raw && typeof raw === 'object' && !Array.isArray(raw));
+    const entry = recordValid && raw.entry && typeof raw.entry === 'object' && !Array.isArray(raw.entry) ? raw.entry : recordValid ? raw : {};
+    const rows = preflight && preflight.revocations;
+    const rowsValid = Array.isArray(rows) && rows.length <= 1;
+    const expiry = registry && (registry.expires_at == null || registry.expires_at === '') ? Infinity : Date.parse(registry && registry.expires_at);
+    const envRevocation = serverId && keyVersion ? diracS2SEnvRevocationStatusV207(serverId, keyVersion) : null;
+    return {
+      server_id_valid: Boolean(serverId), key_version_valid: Boolean(keyVersion),
+      preflight_present: Boolean(preflight && typeof preflight === 'object'),
+      registry_key_matches: Boolean(registry && registry.security_key === 's2s-server-registry:' + serverId),
+      registry_record_valid: recordValid,
+      registry_schema_valid: Boolean(recordValid && serverId && diracS2SValidateEnvRegistryV207({ [serverId]: entry })),
+      registry_not_expired: expiry > Date.now(), registry_active: String(entry.status || '').toLowerCase() === 'active',
+      registry_key_version_matches: entry.key_version === keyVersion,
+      self_target_allowed: Array.isArray(entry.allowed_targets) && entry.allowed_targets.map(diracS2SIdV206).includes(serverId),
+      security_report_allowed: Array.isArray(entry.allowed_actions) && entry.allowed_actions.map((action) => String(action || '').trim().toLowerCase()).includes('security_report'),
+      revocation_rows_valid: rowsValid,
+      revocation_keys_match: rowsValid && rows.every((row) => row && row.security_key === 's2s-revocation:' + serverId + ':' + keyVersion),
+      revocation_records_valid: rowsValid && rows.every((row) => row && row.record_json && typeof row.record_json === 'object' && !Array.isArray(row.record_json)),
+      database_not_revoked: rowsValid && rows.every((row) => row && row.record_json && row.record_json.revoked !== true),
+      environment_revocation_valid: Boolean(envRevocation && envRevocation.ok === true),
+      environment_not_revoked: Boolean(envRevocation && envRevocation.ok === true && envRevocation.revoked !== true)
+    };
+  } catch (_) { return {}; }
+}
+function diracPasswordResetMailConfigurationDiagnosticV340() {
+  try {
+    const env = (name) => diracSecurityMailExplicitEnvV328(name);
+    const values = Object.fromEntries(DIRAC_PASSWORD_RESET_MAIL_ENV_V340.map((name) => [name, env(name)]));
+    const resend = values.DIRAC_USER_SECURITY_RESEND_API_KEY;
+    const from = values.DIRAC_USER_SECURITY_RESEND_FROM_EMAIL;
+    const sender = diracSecurityMailEmailV327(from);
+    const domain = sender.split('@')[1] || '';
+    const base = diracBaseDomainV250();
+    const passwordRaw = values.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD;
+    const password = passwordRaw.replace(/\s+/g, '');
+    const brevo = diracSecurityMailProviderKeyV330(values.DIRAC_USER_SECURITY_BREVO_API_KEY, 24, 2048);
+    return { env_present: Object.fromEntries(DIRAC_PASSWORD_RESET_MAIL_ENV_V340.map((name) => [name, Boolean(values[name])])), checks: {
+      email_enabled: values.DIRAC_USER_SECURITY_EMAIL_ENABLED.toLowerCase() === 'true',
+      brevo_key_valid: Boolean(brevo), brevo_sender_valid: Boolean(diracSecurityMailProviderEmailV330(values.DIRAC_USER_SECURITY_BREVO_FROM_EMAIL)),
+      resend_key_valid: /^re_[A-Za-z0-9_-]{16,252}$/.test(resend) && !diracSecurityMailPlaceholderV327(resend),
+      resend_sender_valid: Boolean(sender) && !diracSecurityMailPlaceholderV327(from),
+      resend_sender_official: Boolean(domain && (domain === base || domain.endsWith('.' + base))),
+      reply_to_valid: Boolean(diracSecurityMailEmailV327(values.DIRAC_USER_SECURITY_REPLY_TO)) && !diracSecurityMailPlaceholderV327(values.DIRAC_USER_SECURITY_REPLY_TO),
+      timeout_valid: diracSecurityMailExplicitIntegerV328('DIRAC_USER_SECURITY_TIMEOUT_MS', 3000, 15000) !== null,
+      smtp_host_valid: values.DIRAC_USER_SECURITY_SMTP_HOST.toLowerCase() === 'smtp.gmail.com',
+      smtp_port_valid: diracSecurityMailExplicitIntegerV328('DIRAC_USER_SECURITY_SMTP_PORT', 465, 465) === 465,
+      smtp_secure: values.DIRAC_USER_SECURITY_SMTP_SECURE.toLowerCase() === 'true',
+      smtp_user_valid: Boolean(diracSecurityMailEmailV327(values.DIRAC_USER_SECURITY_SMTP_USER)) && !diracSecurityMailPlaceholderV327(values.DIRAC_USER_SECURITY_SMTP_USER),
+      smtp_password_valid: /^[A-Za-z0-9]{16,128}$/.test(password) && !diracSecurityMailPlaceholderV327(passwordRaw),
+      provider_secrets_distinct: diracSecurityMailProviderKeysDistinctV330([brevo, resend, password])
+    } };
+  } catch (_) { return {}; }
+}
+async function diracPasswordResetMailProviderAttemptV340(diagnostic, provider, send) {
+  if (!diagnostic) return send();
+  const start = Date.now();
+  diracPasswordResetMailDiagnosticV340(diagnostic, 'provider.begin', 'begin', { provider });
+  try {
+    const result = await send();
+    diracPasswordResetMailDiagnosticV340(diagnostic, 'provider.result', result && result.ok === true ? 'success' : 'error', {
+      provider, ok: Boolean(result && result.ok === true), limited: Boolean(result && result.limited === true),
+      status: Number(result && result.status || 0), code: result && result.code, stage_elapsed_ms: Date.now() - start
+    });
+    return result;
+  } catch (error) {
+    diracPasswordResetMailDiagnosticV340(diagnostic, 'provider.exception', 'error', { provider, code: error && error.code, stage_elapsed_ms: Date.now() - start });
+    throw error;
+  }
+}
+
+
 function diracPasswordResetMailRecordV338(record, commitId) {
   if (!record || typeof record !== 'object' || Array.isArray(record)
       || !/^[a-f0-9]{64}$/.test(String(commitId || ''))
@@ -62831,6 +63146,7 @@ async function diracPasswordResetMailPrepareV338(ctx) {
   const committed = await readPersistentSecurityJsonStrictV194('password-reset-mail-v338:' + marker.commitId);
   const record = committed && committed.ok === true && committed.found === true
     ? diracPasswordResetMailRecordV338(committed.record, marker.commitId) : null;
+  diracPasswordResetMailDiagnosticV340(DIRAC_PASSWORD_RESET_MAIL_DIAGNOSTICS_V340.get(ctx.req), 'record.read', record ? 'success' : 'rejected', { ok: Boolean(committed && committed.ok === true), record_found: Boolean(committed && committed.found === true), record_valid: Boolean(record) });
   if (!record) return { ok: false, reason: 'password_reset_mail_commit_record_invalid' };
   marker.record = record;
   // No terminal response: remaining guard stages and the full-passport dispatcher run.
@@ -62871,8 +63187,11 @@ __diracV202RegisterMiddleware(async function diracPasswordResetCommittedMailWrap
       || ctx.body.event !== 'password_reset_committed_v338') return nextHandlerV202(req, res);
   const marker = diracPasswordResetMailContextV338(ctx, 'handler');
   const record = marker && marker.record ? diracPasswordResetMailRecordV338(marker.record, marker.commitId) : null;
+  const diagnosticV340 = DIRAC_PASSWORD_RESET_MAIL_DIAGNOSTICS_V340.get(req);
+  diracPasswordResetMailDiagnosticV340(diagnosticV340, 'handler.binding', marker && record ? 'success' : 'rejected', { binding_valid: Boolean(marker && record), guard_fully_passed: Boolean(ctx.centralGuardFullyPassedV211 === true) });
   if (!marker || !record) return res.status(403).json({ ok: false, code: 'PASSWORD_RESET_MAIL_FULL_GUARD_REQUIRED' });
   const configuration = diracUserSecurityConfigurationRequiredV327();
+  diracPasswordResetMailDiagnosticV340(diagnosticV340, 'configuration', configuration.user ? 'success' : 'rejected', { ...diracPasswordResetMailConfigurationDiagnosticV340(), configuration_available: Boolean(configuration.user), owner_configuration_available: Boolean(configuration.owner) });
   if (!configuration.user) return res.status(503).json({ ok: false, code: 'PASSWORD_RESET_MAIL_CONFIGURATION_UNAVAILABLE' });
   marker.used = true;
   const claimed = await claimPersistentSecurityKeyOnceV194('password-reset-mail-dispatch-v338:' + record.commit_id, {
@@ -62880,9 +63199,11 @@ __diracV202RegisterMiddleware(async function diracPasswordResetCommittedMailWrap
     customer_id: record.customer_id, auth_user_id: record.auth_user_id,
     record_mac: record.mac, claimed_at_ms: Date.now()
   }, 900);
+  diracPasswordResetMailDiagnosticV340(diagnosticV340, 'claim', claimed === true ? 'success' : 'rejected', { claim_acquired: claimed === true });
   if (claimed !== true) return res.status(409).json({ ok: false, code: 'PASSWORD_RESET_MAIL_CLAIM_UNAVAILABLE_OR_USED' });
   const result = await diracUserSecuritySendV327(diracPasswordResetMailEventV338(record, marker.client), configuration.user);
   const delivered = Boolean(result && result.ok === true);
+  diracPasswordResetMailDiagnosticV340(diagnosticV340, 'delivery.result', delivered ? 'success' : 'error', { delivered, provider: result && result.provider, upstream_status: Number(result && result.status || 0), code: result && result.code });
   return res.status(delivered ? 200 : 503).json({ ok: delivered,
     code: delivered ? 'PASSWORD_RESET_MAIL_DELIVERED' : String(result && result.code || 'PASSWORD_RESET_MAIL_UNCONFIRMED'),
     provider: String(result && result.provider || ''), status: Number(result && result.status || 0) });
@@ -62913,11 +63234,15 @@ function diracPasswordResetMailPreflightV338(preflight, serverId, keyVersion) {
   return true;
 }
 
-async function diracPasswordResetMailNotifyCommittedV338(sourceReq, commitId, preflight) {
+async function diracPasswordResetMailNotifyCommittedV338(sourceReq, commitId, preflight, suppliedDiagnosticV340 = null) {
+  const diagnosticV340 = diracPasswordResetMailDiagnosticStateV340(sourceReq, suppliedDiagnosticV340);
+  diracPasswordResetMailDiagnosticV340(diagnosticV340, 'bridge.begin', 'begin', diracPasswordResetMailConfigurationDiagnosticV340());
   if (!sourceReq || typeof sourceReq !== 'object' || !/^[a-f0-9]{64}$/.test(String(commitId || '')))
     return { ok: false, code: 'PASSWORD_RESET_MAIL_INPUT_INVALID' };
   const serverId = diracS2SIdV206(diracS2SServerIdV250());
   const keyVersion = diracS2SKeyVersionV206(diracS2STextV206('DIRAC_S2S_KEY_VERSION'));
+  const checksV340 = diracPasswordResetMailPreflightDiagnosticV340(preflight, serverId, keyVersion);
+  diracPasswordResetMailDiagnosticV340(diagnosticV340, 'bridge.preflight', Object.values(checksV340).length && Object.values(checksV340).every(Boolean) ? 'success' : 'rejected', { checks: checksV340 });
   if (!serverId || !keyVersion || !diracPasswordResetMailPreflightV338(preflight, serverId, keyVersion))
     return { ok: false, code: 'PASSWORD_RESET_MAIL_SELF_SCOPE_UNAVAILABLE' };
   const target = new URL(diracRoleApiUrlV250(diracAppRoleV250(), 'security_report'));
@@ -62927,6 +63252,7 @@ async function diracPasswordResetMailNotifyCommittedV338(sourceReq, commitId, pr
     'content-type': 'application/json', 'content-length': String(Buffer.byteLength(rawBody)),
     accept: 'application/json', 'user-agent': 'Dirac-Security-Mail/338' };
   const signed = diracS2SSignHeadersV206({ target, action: 'security_report', body, targetServerId: serverId });
+  diracPasswordResetMailDiagnosticV340(diagnosticV340, 'bridge.signatures', 'success', {});
   for (const [name, value] of Object.entries(signed)) headers[name.toLowerCase()] = value;
   const originalIp = getLoginSecurityIp(sourceReq);
   const req = { method: 'POST', url: target.pathname + target.search, query: { action: 'security_report' },
@@ -62935,7 +63261,9 @@ async function diracPasswordResetMailNotifyCommittedV338(sourceReq, commitId, pr
   const res = diracCentralFakeResponseV146();
   DIRAC_PASSWORD_RESET_MAIL_REQUESTS_V338.set(req, { req, commitId, used: false,
     client: diracSecurityMailClientContextV327(sourceReq), record: null });
+  DIRAC_PASSWORD_RESET_MAIL_DIAGNOSTICS_V340.set(req, diagnosticV340);
   try {
+    diracPasswordResetMailDiagnosticV340(diagnosticV340, 'bridge.guard.begin', 'begin', {});
     // Same public export: raw-body capture, compliance gate, all 30 guards, dispatcher.
     await module.exports(req, res);
     const result = res.payload;
@@ -62943,10 +63271,14 @@ async function diracPasswordResetMailNotifyCommittedV338(sourceReq, commitId, pr
       && result.code === 'PASSWORD_RESET_MAIL_DELIVERED'
       && ((['brevo', 'resend'].includes(result.provider) && [200, 201, 202].includes(Number(result.status)))
         || (result.provider === 'gmail_smtp' && Number(result.status) === 250));
+    diracPasswordResetMailDiagnosticV340(diagnosticV340, 'bridge.guard.result', Number(res.statusCode) === 200 && deliveryAccepted ? 'success' : 'rejected', { status: Number(res.statusCode || 0), delivered: Boolean(deliveryAccepted), code: result && result.code, provider: result && result.provider, upstream_status: Number(result && result.status || 0) });
     return Number(res.statusCode) === 200 && deliveryAccepted
       ? { ok: true, provider: String(result.provider || ''), status: Number(result.status || 0) }
       : { ok: false, code: String(result && result.code || 'PASSWORD_RESET_MAIL_CENTRAL_GUARD_REJECTED'), status: Number(res.statusCode || 0) };
-  } finally { DIRAC_PASSWORD_RESET_MAIL_REQUESTS_V338.delete(req); }
+  } catch (error) {
+    diracPasswordResetMailDiagnosticV340(diagnosticV340, 'bridge.exception', 'error', { code: error && error.code });
+    throw error;
+  } finally { DIRAC_PASSWORD_RESET_MAIL_REQUESTS_V338.delete(req); DIRAC_PASSWORD_RESET_MAIL_DIAGNOSTICS_V340.delete(req); }
 }
 function diracCentralLockBackendRuntimeV230() {
   if (!DIRAC_CENTRAL_ASYNC_CONTEXT_V149 || !DIRAC_CENTRAL_DATABASE_EGRESS_CONTEXT_V230) {
