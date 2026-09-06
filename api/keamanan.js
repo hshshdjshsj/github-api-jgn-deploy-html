@@ -385,7 +385,10 @@ function diracBaseDomainV250() {
 }
 function diracRoleOriginV250(role) {
   const base = diracBaseDomainV250();
-  return role === 'auth' ? 'https://auth.' + base : 'https://' + base;
+  if (role === 'auth') return 'https://auth.' + base;
+  if (role === 'security') return 'https://security.' + base;
+  if (role === 'www') return 'https://www.' + base;
+  return 'https://' + base;
 }
 function diracPasskeyA2FRpId(req) {
   const base = diracBaseDomainV250();
@@ -1603,6 +1606,166 @@ function securityResetValidateCommittedMailV342(record, commitId) {
   return record;
 }
 
+function diracSupportEmailV250() {
+  return 'support@' + diracBaseDomainV250();
+}
+
+function diracSmtpHeaderImageUrlV332() {
+  return 'https://www.' + diracBaseDomainV250() + '/headerstp.webp';
+}
+
+function diracSecurityMailEscapeV327(value) {
+  if (typeof customerSecurityLostPasskeyEmailEscapeHtmlV157 === 'function') return customerSecurityLostPasskeyEmailEscapeHtmlV157(value);
+  return String(value || '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+}
+function diracSecurityMailCleanV327(value, maximum = 220) {
+  const limit = Math.max(1, Math.min(1000, Number(maximum || 220)));
+  return String(value || '')
+    .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069<>]/g, ' ')
+    .replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+function diracSecurityMailOfficialUrlV327(value, fallback) {
+  try {
+    const parsed = new URL(String(value || ''));
+    const base = diracBaseDomainV250();
+    const host = String(parsed.hostname || '').toLowerCase();
+    if (parsed.protocol !== 'https:' || !(host === base || host.endsWith('.' + base))) return String(fallback || '');
+    return parsed.toString();
+  } catch (_) {
+    return String(fallback || '');
+  }
+}
+function diracSecurityMailRowsHtmlV327(rows) {
+  return (Array.isArray(rows) ? rows : []).slice(0, 60).map((row, index, all) => {
+    const label = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(row && row[0], 100));
+    const value = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(row && row[1], 500));
+    const border = index < all.length - 1 ? 'border-bottom:1px solid #2c3544;' : '';
+    return `<tr><td style="padding:16px 20px;${border}"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.13em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">${label}</div><div style="margin-top:6px;font-size:15px;line-height:1.55;font-weight:700;word-break:break-word;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${value || 'Tidak tersedia'}</div></div></div></td></tr>`;
+  }).join('');
+}
+function diracSecurityMailTraceHtmlV327(trace) {
+  const entries = (Array.isArray(trace) ? trace : []).slice(0, 30);
+  if (!entries.length) return '';
+  const rows = entries.map((entry, index) => {
+    const stage = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(entry && entry.stage, 100));
+    const result = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(entry && entry.result, 60));
+    const duration = Math.max(0, Math.min(300000, Number(entry && entry.duration_ms || 0)));
+    return `<tr><td width="38" valign="top" style="padding:0 0 ${index === entries.length - 1 ? '0' : '13px'}"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:14px;line-height:1.55;font-weight:800;color:#9eb6ff!important;-webkit-text-fill-color:#9eb6ff!important;mso-color-alt:#9eb6ff">${String(index + 1).padStart(2, '0')}</div></div></div></td><td valign="top" style="padding:0 0 ${index === entries.length - 1 ? '0' : '13px'}"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:14px;line-height:1.55;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6"><b>${stage || 'unavailable'}</b> &rarr; ${result || 'unavailable'} <span style="color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important">(${duration} ms)</span></div></div></div></td></tr>`;
+  }).join('');
+  return `<div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="margin-top:28px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">JEJAK CENTRAL GUARD</div></div></div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:14px 0 27px;border-collapse:collapse">${rows}</table>`;
+}
+function diracSecurityMailBannerUrlV327() {
+  return diracSmtpHeaderImageUrlV332();
+}
+function diracSecurityCorporateEmailHtmlV327(input = {}) {
+  const preheader = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.preheader || input.title || 'Notifikasi keamanan Dirac Group.', 180));
+  const bannerUrl = diracSecurityMailEscapeV327(diracSecurityMailBannerUrlV327());
+  const brandLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.brandLabel || 'SECURE ACCOUNT RECOVERY', 80));
+  const eyebrow = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.eyebrow || 'SECURITY ACTIVITY NOTICE', 90));
+  const titleLines = String(input.title || 'Aktivitas Keamanan\nTerdeteksi').split(/\n+/).slice(0, 3)
+    .map((line) => diracSecurityMailEscapeV327(diracSecurityMailCleanV327(line, 90))).filter(Boolean).join('<br>');
+  const greeting = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.greeting || 'Yth. Pengguna Dirac Group,', 160));
+  const summary = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.summary || '', 700));
+  const statusLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.statusLabel || 'STATUS KEAMANAN', 100));
+  const statusValue = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.statusValue || 'TERLINDUNGI', 180));
+  const statusNote = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.statusNote || '', 400));
+  const detailsLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.detailsLabel || 'DETAIL AKTIVITAS', 100));
+  const warningTitle = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warningTitle || 'PERINGATAN KEAMANAN', 100));
+  const warning = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warning || 'Jika aktivitas ini bukan dilakukan oleh Anda, segera amankan akun dan hubungi bantuan resmi Dirac Group.', 700));
+  const supportLead = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.supportLead || 'Butuh bantuan untuk memeriksa aktivitas keamanan? Hubungi tim support melalui kanal resmi berikut.', 300));
+  const actionFallback = diracRoleOriginV250('security') + '/keamanan.html';
+  const actionUrl = diracSecurityMailEscapeV327(diracSecurityMailOfficialUrlV327(input.actionUrl || actionFallback, actionFallback));
+  const actionText = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.actionText || 'BUKA PUSAT KEAMANAN', 80));
+  const rowsHtml = diracSecurityMailRowsHtmlV327(input.rows);
+  const traceHtml = diracSecurityMailTraceHtmlV327(input.trace);
+  return `<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="supported-color-schemes" content="dark">
+  <title>Dirac Group Secure Security Notification</title>
+  <style>
+    :root { color-scheme:dark; supported-color-schemes:dark; }
+    body { margin:0!important; padding:0!important; }
+    .dirac-preheader { display:none!important; max-height:0!important; max-width:0!important; opacity:0!important; overflow:hidden!important; mso-hide:all!important; }
+    u + .body .gmail-blend-screen { background:#000; mix-blend-mode:screen; }
+    u + .body .gmail-blend-difference { background:#000; mix-blend-mode:difference; }
+    a[x-apple-data-detectors], .x-gmail-data-detectors, .ii a[href] { text-decoration:none!important; }
+    @media only screen and (max-width:620px) {
+      .dirac-outer-pad { padding:0!important; }
+      .dirac-shell { width:100%!important; max-width:100%!important; }
+      .dirac-pad { padding-left:24px!important; padding-right:24px!important; }
+      .dirac-title { font-size:32px!important; line-height:1.18!important; }
+      .dirac-button a { display:block!important; padding:17px 14px!important; }
+      .dirac-footer-pad { padding-left:18px!important; padding-right:18px!important; }
+    }
+  </style>
+</head>
+<body class="body" bgcolor="#090c12" style="margin:0!important;padding:0!important;background:#090c12;background-color:#090c12;background-image:linear-gradient(#090c12,#090c12);font-family:Arial,Helvetica,sans-serif;color:#f4f6f9">
+  <div class="dirac-preheader">${preheader}</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#090c12" style="width:100%;margin:0;padding:0;background:#090c12;background-color:#090c12;background-image:linear-gradient(#090c12,#090c12)">
+    <tr><td class="dirac-outer-pad" align="center" bgcolor="#090c12" style="padding:18px 12px;background:#090c12;background-color:#090c12;background-image:linear-gradient(#090c12,#090c12)">
+      <table class="dirac-shell" role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#141820" style="width:100%;max-width:600px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:18px;overflow:hidden;box-shadow:0 18px 48px rgba(0,0,0,.24);background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
+        <tr><td style="padding:0;line-height:0;font-size:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="50%" height="4" bgcolor="#5276e8" style="height:4px;line-height:4px;font-size:0;background:#5276e8;background-color:#5276e8">&nbsp;</td><td width="30%" height="4" bgcolor="#148ba4" style="height:4px;line-height:4px;font-size:0;background:#148ba4;background-color:#148ba4">&nbsp;</td><td width="20%" height="4" bgcolor="#9a741f" style="height:4px;line-height:4px;font-size:0;background:#9a741f;background-color:#9a741f">&nbsp;</td></tr></table></td></tr>
+        <tr><td bgcolor="#10151e" style="padding:0;line-height:0;font-size:0;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><img src="${bannerUrl}" width="600" alt="Dirac Group Secure Security" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;background:#10151e;background-color:#10151e"></td></tr>
+        <tr><td class="dirac-pad" bgcolor="#141820" style="padding:27px 32px 13px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:21px;line-height:1.2;font-weight:800;letter-spacing:.14em;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">DIRAC GROUP</div><div style="margin-top:7px;font-size:11px;line-height:1.4;font-weight:700;letter-spacing:.2em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${brandLabel}</div></div></div></td></tr>
+        <tr><td class="dirac-pad" bgcolor="#141820" style="padding:24px 32px 32px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#9eb6ff!important;-webkit-text-fill-color:#9eb6ff!important;mso-color-alt:#9eb6ff">${eyebrow}</div><div class="dirac-title" style="margin-top:13px;font-size:38px;line-height:1.16;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${titleLines}</div><p style="margin:25px 0 0;font-size:17px;line-height:1.55;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${greeting}</p><p style="margin:12px 0 0;font-size:16px;line-height:1.65;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">${summary}</p></div></div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1a1f29" style="width:100%;margin:24px 0 18px;border-collapse:separate;border-spacing:0;border:1px solid #303a49;border-radius:14px;overflow:hidden;box-shadow:0 8px 22px rgba(0,0,0,.12);background:#1a1f29;background-color:#1a1f29;background-image:linear-gradient(#1a1f29,#1a1f29)"><tr><td style="padding:18px 20px;border-left:4px solid #5276e8"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#9eb6ff!important;-webkit-text-fill-color:#9eb6ff!important;mso-color-alt:#9eb6ff">${statusLabel}</div><div style="margin-top:8px;font-size:19px;line-height:1.45;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${statusValue}</div>${statusNote ? `<div style="margin-top:7px;font-size:13px;line-height:1.55;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${statusNote}</div>` : ''}</div></div></td></tr></table>
+          <table class="dirac-button" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:0 0 9px;border-collapse:separate"><tr><td align="center" bgcolor="#5276e8" style="border-radius:10px;background:#5276e8;background-color:#5276e8"><a href="${actionUrl}" style="display:block;padding:17px 18px;font-size:15px;line-height:1.2;font-weight:800;letter-spacing:.04em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;text-decoration:none;border-radius:10px">${actionText}</a></td></tr></table>
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="margin:0 0 25px;text-align:center;font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tujuan resmi: ${diracSecurityMailEscapeV327(new URL(actionUrl).hostname)}</div><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${detailsLabel}</div></div></div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:13px 0 0;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">${rowsHtml}</table>
+          ${traceHtml}
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1d1b17" style="width:100%;margin:28px 0;border-collapse:separate;border-spacing:0;border:1px solid #4a4030;border-radius:14px;overflow:hidden;background:#1d1b17;background-color:#1d1b17;background-image:linear-gradient(#1d1b17,#1d1b17)"><tr><td style="padding:18px 20px;border-left:4px solid #9a741f"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.14em;color:#f0c86c!important;-webkit-text-fill-color:#f0c86c!important;mso-color-alt:#f0c86c">${warningTitle}</div><p style="margin:10px 0 0;font-size:14px;line-height:1.65;color:#e8ebef!important;-webkit-text-fill-color:#e8ebef!important;mso-color-alt:#e8ebef">${warning}</p></div></div></td></tr></table>
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI DIRAC GROUP</div><p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${supportLead}</p></div></div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:0 0 13px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
+            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WHATSAPP</div><a href="https://wa.me/6287892523968" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">0878 9252 3968</a></div></div></td></tr>
+            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL SUPPORT</div><a href="mailto:${diracSecurityMailEscapeV327(diracSupportEmailV250())}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${diracSecurityMailEscapeV327(diracSupportEmailV250())}</a></div></div></td></tr>
+            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL PERUSAHAAN</div><a href="mailto:companydirac@gmail.com" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">companydirac@gmail.com</a></div></div></td></tr>
+            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">INSTAGRAM</div><a href="https://www.instagram.com/diraccorp/" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">@diraccorp</a></div></div></td></tr>
+          </table>
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><p style="margin:0;font-size:12px;line-height:1.65;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tim Dirac Group tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui WhatsApp, Instagram, telepon, maupun balasan email.</p></div></div>
+        </td></tr>
+        <tr><td class="dirac-footer-pad" bgcolor="#b9dcff" style="padding:24px 26px 26px;border-top:1px solid #79aee5;background:#b9dcff;background-color:#b9dcff;background-image:linear-gradient(#b9dcff,#b9dcff)"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10213a" style="width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24466c;border-radius:16px;overflow:hidden;box-shadow:0 10px 24px rgba(14,42,72,.18);background:#10213a;background-color:#10213a;background-image:linear-gradient(#10213a,#10213a)"><tr><td style="padding:22px 24px 23px;border-left:4px solid #27a2bd"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:18px;line-height:1.3;font-weight:800;letter-spacing:.14em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">DIRAC GROUP</div><div style="margin-top:7px;font-size:11px;line-height:1.5;font-weight:700;letter-spacing:.13em;color:#d9e8ff!important;-webkit-text-fill-color:#d9e8ff!important;mso-color-alt:#d9e8ff">RECOVERY &bull; PRIVACY &bull; SECURITY</div><div style="margin-top:14px;font-size:13px;line-height:1.55;color:#d7e7f8!important;-webkit-text-fill-color:#d7e7f8!important;mso-color-alt:#d7e7f8">Secure Recovery &middot; Protected Delivery</div><p style="margin:17px 0 0;font-size:11px;line-height:1.65;color:#bfd0e3!important;-webkit-text-fill-color:#bfd0e3!important;mso-color-alt:#bfd0e3">Email ini dibuat otomatis oleh sistem Dirac Group. Mohon tidak membalas dan jangan meneruskan material keamanan kepada pihak lain.</p></div></div></td></tr></table></td></tr>
+        <tr><td style="padding:0;line-height:0;font-size:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="50%" height="4" bgcolor="#5276e8" style="height:4px;line-height:4px;font-size:0;background:#5276e8;background-color:#5276e8">&nbsp;</td><td width="30%" height="4" bgcolor="#148ba4" style="height:4px;line-height:4px;font-size:0;background:#148ba4;background-color:#148ba4">&nbsp;</td><td width="20%" height="4" bgcolor="#9a741f" style="height:4px;line-height:4px;font-size:0;background:#9a741f;background-color:#9a741f">&nbsp;</td></tr></table></td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+function diracSecurityMailTextV327(input = {}) {
+  const rows = (Array.isArray(input.rows) ? input.rows : []).slice(0, 60)
+    .map((row) => diracSecurityMailCleanV327(row && row[0], 100) + ': ' + diracSecurityMailCleanV327(row && row[1], 500));
+  const trace = (Array.isArray(input.trace) ? input.trace : []).slice(0, 30)
+    .map((entry, index) => String(index + 1) + '. ' + diracSecurityMailCleanV327(entry && entry.stage, 100) + ' -> ' + diracSecurityMailCleanV327(entry && entry.result, 60) + ' (' + Math.max(0, Number(entry && entry.duration_ms || 0)) + ' ms)');
+  return [
+    'DIRAC GROUP - ' + diracSecurityMailCleanV327(input.eyebrow || 'SECURITY ACTIVITY NOTICE', 100),
+    '',
+    diracSecurityMailCleanV327(String(input.title || '').replace(/\n+/g, ' '), 200),
+    '',
+    diracSecurityMailCleanV327(input.greeting || '', 160),
+    diracSecurityMailCleanV327(input.summary || '', 700),
+    '',
+    diracSecurityMailCleanV327(input.statusLabel || 'STATUS KEAMANAN', 100) + ': ' + diracSecurityMailCleanV327(input.statusValue || '', 200),
+    diracSecurityMailCleanV327(input.statusNote || '', 400),
+    '',
+    ...rows,
+    ...(trace.length ? ['', 'Jejak Central Guard:', ...trace] : []),
+    '',
+    diracSecurityMailCleanV327(input.warning || '', 700),
+    '',
+    'Pusat keamanan: ' + diracSecurityMailOfficialUrlV327(input.actionUrl || (diracRoleOriginV250('security') + '/keamanan.html'), diracRoleOriginV250('security') + '/keamanan.html'),
+    'WhatsApp: 0878 9252 3968',
+    'Email Support: ' + diracSupportEmailV250(),
+    'Email Perusahaan: companydirac@gmail.com',
+    'Instagram: @diraccorp',
+    '',
+    'Dirac Group tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui telepon, chat, atau balasan email.'
+  ].filter((line, index, all) => line !== '' || (index > 0 && all[index - 1] !== '')).join('\r\n');
+}
 function securityResetSmtpConfigV342() {
   const host = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim();
   const port = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 465);
@@ -1665,24 +1828,31 @@ async function securityResetSendCommittedPasswordMailV342(record) {
     }).format(new Date(record.committed_at_ms)) + ' WIB';
   } catch (_) {}
   const subject = 'DiracGroup Security - Password Berhasil Diganti [' + reference + ']';
-  const text = [
-    'Password akun Dirac Group Anda berhasil diganti.',
-    'Status: PASSWORD BARU AKTIF',
-    'Metode verifikasi: WebAuthn Passkey',
-    'Waktu: ' + timeText,
-    'Referensi: ' + reference,
-    'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi kanal resmi Dirac Group.',
-    'Jangan membagikan password, OTP, token, kode keamanan, atau Passkey kepada siapa pun.'
-  ].join('\n\n');
-  const html = '<!doctype html><html><body style="margin:0;background:#0b0f16;color:#eef3f8;font-family:Arial,sans-serif">'
-    + '<div style="max-width:680px;margin:0 auto;padding:32px 20px"><div style="background:#111827;border:1px solid #334155;border-radius:18px;padding:28px">'
-    + '<div style="font-size:12px;letter-spacing:.16em;color:#93c5fd;font-weight:700">DIRAC GROUP SECURITY</div>'
-    + '<h1 style="font-size:24px;margin:12px 0 8px;color:#fff">Password Berhasil Diganti</h1>'
-    + '<p style="line-height:1.65;color:#cbd5e1">Password akun Anda telah diganti setelah verifikasi Passkey dan perubahan sudah dikomit oleh server.</p>'
-    + '<div style="margin:20px 0;padding:16px;border-radius:12px;background:#020617;border:1px solid #475569;color:#fff">'
-    + '<b>STATUS: PASSWORD BARU AKTIF</b><br><br>Metode: WebAuthn Passkey<br>Waktu: ' + timeText + '<br>Referensi: ' + reference
-    + '</div><p style="font-size:13px;line-height:1.6;color:#fbbf24">Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun. Jangan bagikan password, OTP, token, kode keamanan, atau Passkey.</p>'
-    + '</div></div></body></html>';
+  const htmlInput = {
+    preheader: 'Password akun Dirac Group berhasil diganti.',
+    brandLabel: 'SECURE ACCOUNT SECURITY',
+    eyebrow: 'PASSWORD SECURITY NOTICE',
+    title: 'Password Berhasil\nDiganti',
+    greeting: 'Yth. Pengguna Dirac Group,',
+    summary: 'Password akun Anda telah diganti setelah verifikasi Passkey dan perubahan telah dikomit oleh server.',
+    statusLabel: 'STATUS PASSWORD',
+    statusValue: 'PASSWORD BARU AKTIF',
+    statusNote: 'Perubahan ini telah dikonfirmasi oleh server keamanan Dirac Group.',
+    detailsLabel: 'DETAIL PERUBAHAN',
+    rows: [
+      ['AKTIVITAS', 'Perubahan password akun'],
+      ['METODE VERIFIKASI', 'WebAuthn Passkey'],
+      ['WAKTU', timeText],
+      ['REFERENSI', reference]
+    ],
+    actionUrl: diracRoleOriginV250('security') + '/keamanan.html',
+    actionText: 'BUKA PUSAT KEAMANAN',
+    warningTitle: 'PERIKSA JIKA BUKAN ANDA',
+    warning: 'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi kanal resmi Dirac Group. Jangan bagikan password, OTP, token, cookie, kode keamanan, atau Passkey.',
+    supportLead: 'Jika membutuhkan bantuan terkait keamanan password, gunakan kanal resmi Dirac Group berikut.'
+  };
+  const text = diracSecurityMailTextV327(htmlInput);
+  const html = diracSecurityCorporateEmailHtmlV327(htmlInput);
   const boundary = 'dirac-password-reset-' + crypto.randomBytes(18).toString('hex');
   const mime = [
     'From: Dirac Group Security <' + config.user + '>',
