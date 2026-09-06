@@ -13904,7 +13904,7 @@ async function customerSecurityGenerateRecoveryCodes(req, res, action, override 
   }
   const access = localWorker && override && override.access
     ? override.access
-    : await customerSecurityRequireAccess(req, res, { action, requireMfa: false, rateLimit: { limit: 2, windowMs: 10 * 60_000 } });
+    : await customerSecurityRequireAccess(req, res, { action, requireMfa: false, rateLimit: { limit: 5, windowMs: 60_000 } });
   if (!access) return;
 
   let requestBody = {};
@@ -44104,6 +44104,86 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   return { ok: false, status: 503, code: 'RECOVERY_EMAIL_PROVIDER_NOT_CONFIGURED', message: 'Provider email recovery belum dikonfigurasi.' };
 }
 
+const DIRAC_RECOVERY_EMAIL100_ISSUANCE_WINDOW_MS_V349 = 10 * 60 * 1000;
+const DIRAC_RECOVERY_EMAIL100_ISSUANCE_LIMIT_V349 = 2;
+
+function customerSecurityLostPasskeyEmail100BindingMatchV349(metadata, observedBindings) {
+  const stored = metadata && metadata.binding_hashes && typeof metadata.binding_hashes === 'object' && !Array.isArray(metadata.binding_hashes)
+    ? metadata.binding_hashes
+    : null;
+  const observed = observedBindings && typeof observedBindings === 'object' && !Array.isArray(observedBindings)
+    ? observedBindings
+    : null;
+  if (!stored || !observed) return false;
+  const fields = ['emailBindingHash', 'customerBindingHash', 'authUserBindingHash', 'ipHash', 'userAgentHash'];
+  return fields.every((field) => {
+    const left = String(stored[field] || '');
+    const right = String(observed[field] || '');
+    return Boolean(left && right && safeEqual(left, right));
+  });
+}
+
+async function customerSecurityLostPasskeyEmail100IssuanceGateV349(owner, observedBindings) {
+  const customerId = String(owner && owner.customerId || '').trim();
+  const authUserId = String(owner && owner.authUserId || '').trim();
+  if (!customerSecurityLooksLikeUuid(customerId) || !customerSecurityLooksLikeUuid(authUserId)) {
+    return { ok: false, code: 'RECOVERY_EMAIL100_RATE_OWNER_INVALID' };
+  }
+  const nowMs = Date.now();
+  const sinceIso = new Date(nowMs - DIRAC_RECOVERY_EMAIL100_ISSUANCE_WINDOW_MS_V349).toISOString();
+  const select = 'request_id,status,created_at,sent_at,expires_at,used_at,revoked_at,metadata';
+  const path = '/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE
+    + '?select=' + encodeURIComponent(select)
+    + '&customer_id=eq.' + encodeURIComponent(customerId)
+    + '&auth_user_id=eq.' + encodeURIComponent(authUserId)
+    + '&created_at=gte.' + encodeURIComponent(sinceIso)
+    + '&order=created_at.desc&limit=8';
+  const result = await supabaseFetch(path, { method: 'GET', auth: 'service' }).catch(() => null);
+  if (!result || result.ok !== true || !Array.isArray(result.data)) {
+    return { ok: false, code: 'RECOVERY_EMAIL100_RATE_STORAGE_UNAVAILABLE' };
+  }
+  const rows = result.data.filter((row) => {
+    const metadata = row && row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {};
+    return metadata.mode === 'password_email_code_100_v347'
+      && metadata.delivery === 'email_code_100'
+      && metadata.code_verifier === 'hmac_sha512_root_pepper_v347';
+  });
+  const active = rows.find((row) => {
+    const expiresMs = Date.parse(String(row && row.expires_at || ''));
+    const requestId = customerSecurityNormalizeLostPasskeyRequestId(row && row.request_id);
+    const metadata = row && row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {};
+    return Boolean(requestId
+      && String(row && row.status || '') === 'pending'
+      && row && row.sent_at
+      && !row.used_at
+      && !row.revoked_at
+      && Number.isFinite(expiresMs)
+      && expiresMs > nowMs
+      && customerSecurityLostPasskeyEmail100BindingMatchV349(metadata, observedBindings));
+  }) || null;
+  if (active) {
+    return {
+      ok: true,
+      reuse: true,
+      requestId: String(active.request_id),
+      expiresAt: String(active.expires_at),
+      sentAt: String(active.sent_at || '')
+    };
+  }
+  const issued = rows.filter((row) => {
+    const sentMs = Date.parse(String(row && row.sent_at || ''));
+    return Number.isFinite(sentMs) && sentMs > nowMs - DIRAC_RECOVERY_EMAIL100_ISSUANCE_WINDOW_MS_V349;
+  }).sort((left, right) => Date.parse(String(left.sent_at || '')) - Date.parse(String(right.sent_at || '')));
+  if (issued.length >= DIRAC_RECOVERY_EMAIL100_ISSUANCE_LIMIT_V349) {
+    const oldestSentMs = Date.parse(String(issued[0] && issued[0].sent_at || ''));
+    const retryAfterSeconds = Number.isFinite(oldestSentMs)
+      ? Math.max(1, Math.ceil((oldestSentMs + DIRAC_RECOVERY_EMAIL100_ISSUANCE_WINDOW_MS_V349 - nowMs) / 1000))
+      : 60;
+    return { ok: true, reuse: false, limited: true, retryAfterSeconds };
+  }
+  return { ok: true, reuse: false, limited: false };
+}
+
 /* RECO donor source lines 4790-5119 */
 async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, override = null) {
   const localWorker = Boolean(override && override.localWorker === true);
@@ -44149,6 +44229,39 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
   const observedBindings = localWorker && override && override.bindings
     ? override.bindings
     : customerSecurityLostPasskeyBindings(req, owner);
+
+  if (localWorker) {
+    const issuanceGateV349 = await customerSecurityLostPasskeyEmail100IssuanceGateV349(owner, observedBindings);
+    if (!issuanceGateV349 || issuanceGateV349.ok !== true) {
+      return res.status(503).json({
+        ok: false,
+        code: String(issuanceGateV349 && issuanceGateV349.code || 'RECOVERY_EMAIL100_RATE_STORAGE_UNAVAILABLE'),
+        message: 'Status pembatasan recovery belum dapat diverifikasi.'
+      });
+    }
+    if (issuanceGateV349.reuse === true) {
+      return res.status(200).json({
+        ok: true,
+        request_id: String(issuanceGateV349.requestId),
+        expires_at: String(issuanceGateV349.expiresAt),
+        delivery: 'email_code_100',
+        email_code_delivery: 'gmail_smtp',
+        reused_pending: true,
+        message: 'Kode keamanan 100 karakter yang masih aktif sudah tersedia di email resmi akun.',
+        time: diracNowIso()
+      });
+    }
+    if (issuanceGateV349.limited === true) {
+      const retryAfterSecondsV349 = Math.max(1, Math.min(600, Number(issuanceGateV349.retryAfterSeconds || 60)));
+      try { res.setHeader('Retry-After', String(Math.ceil(retryAfterSecondsV349))); } catch (_) {}
+      return res.status(429).json({
+        ok: false,
+        code: 'RECOVERY_EMAIL100_ISSUANCE_RATE_LIMITED',
+        message: 'Batas penerbitan kode recovery baru tercapai. Gunakan kode terakhir yang masih berlaku atau coba lagi setelah masa tunggu.',
+        retry_after_seconds: Math.ceil(retryAfterSecondsV349)
+      });
+    }
+  }
 
   // PASSWORD + EMAIL-100 recovery contract v346.
   // The worker path intentionally avoids the retired link/website-secret/vault
