@@ -13087,6 +13087,242 @@ const DIRAC_RECOVERY_BROWSER_RESPONSE_VERSION_V287 = 'dirac-recovery-browser-res
 const DIRAC_RECOVERY_BROWSER_TRANSPORT_SUITE_V287 = 'ECDH-P256+HKDF-SHA256+AES-256-GCM';
 const DIRAC_RECOVERY_BROWSER_TRANSPORT_TTL_MS_V287 = 60 * 1000;
 const DIRAC_RECOVERY_BROWSER_ORIGIN_V287 = diracRoleOriginV250('auth');
+const DIRAC_RECOVERY_BROWSER_ROOT_CAUSE_DIAGNOSTIC_V344 = 'dirac-recovery-browser-root-cause-v344';
+
+function diracRecoveryBrowserDiagnosticStageV344(req, stage) {
+  try {
+    if (req) req.__diracRecoveryBrowserDiagnosticStageV344 = String(stage || 'unknown').slice(0, 96);
+  } catch (_) {}
+}
+
+function diracRecoveryBrowserDiagnosticSafeTextV344(value, maximum = 360) {
+  let text = String(value === undefined || value === null ? '' : value)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!/^[A-Z0-9_]{1,160}$/.test(text)) {
+    text = text
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]')
+      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, '[redacted-uuid]')
+      .replace(/([\"'`])[^\"'`]{16,}\1/g, '$1[redacted-quoted-material]$1')
+      .replace(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]{20,})?/g, '[redacted-token]')
+      .replace(/[A-Za-z0-9+\/_=-]{96,}/g, '[redacted-long-material]');
+  }
+  return text.slice(0, Math.max(32, Math.min(1000, Number(maximum || 360))));
+}
+
+function diracRecoveryBrowserDiagnosticB64ShapeV344(value, expectedLength = null, maximumTextLength = 8192) {
+  const clean = String(value || '').trim();
+  const result = {
+    present: Boolean(clean),
+    text_length: clean.length,
+    alphabet_valid: Boolean(clean && clean.length <= maximumTextLength && clean.length % 4 !== 1 && /^[A-Za-z0-9_-]+$/.test(clean)),
+    canonical: false,
+    decoded_length: null,
+    expected_length: expectedLength === null ? null : Number(expectedLength),
+    expected_length_match: expectedLength === null ? null : false,
+    first_byte: expectedLength === 65 ? null : undefined
+  };
+  if (!result.alphabet_valid) return result;
+  let decoded = null;
+  try {
+    decoded = Buffer.from(clean, 'base64url');
+    result.canonical = decoded.toString('base64url') === clean;
+    result.decoded_length = decoded.length;
+    result.expected_length_match = expectedLength === null ? null : decoded.length === Number(expectedLength);
+    if (expectedLength === 65) result.first_byte = decoded.length ? decoded[0] : null;
+    return result;
+  } catch (decodeError) {
+    result.decode_error_name = diracRecoveryBrowserDiagnosticSafeTextV344(decodeError && decodeError.name, 80);
+    result.decode_error_code = diracRecoveryBrowserDiagnosticSafeTextV344(decodeError && decodeError.code, 120);
+    result.decode_error_message = diracRecoveryBrowserDiagnosticSafeTextV344(decodeError && decodeError.message, 220);
+    return result;
+  } finally {
+    if (decoded) decoded.fill(0);
+  }
+}
+
+function diracRecoveryBrowserRootCauseDiagnosticV344(req, body, error, expectedAction) {
+  try {
+    const source = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
+    const actualKeys = source ? Object.keys(source).sort() : [];
+    const expectedKeys = [
+      'action', 'transport_binding_digest', 'transport_ciphertext_b64url', 'transport_ephemeral_public_key_b64url',
+      'transport_expires_at_ms', 'transport_key_id', 'transport_nonce_b64url', 'transport_request_id',
+      'transport_salt_b64url', 'transport_sent_at_ms', 'transport_version'
+    ];
+    const originRaw = diracRecoveryBrowserHeaderV287(req, 'origin');
+    const origin = diracCentralNormalizeOriginV146(originRaw);
+    const refererRaw = diracRecoveryBrowserHeaderV287(req, 'referer');
+    let refererOrigin = '';
+    try { refererOrigin = refererRaw ? new URL(refererRaw).origin : ''; } catch (_) {}
+    const csrfPrimary = diracRecoveryBrowserHeaderV287(req, 'x-dirac-csrf-token');
+    const csrfCompat = diracRecoveryBrowserHeaderV287(req, 'x-csrf-token');
+    const pageNonce = diracRecoveryBrowserHeaderV287(req, 'x-dirac-page-nonce');
+    const sentAtMs = source ? Number(source.transport_sent_at_ms) : NaN;
+    const expiresAtMs = source ? Number(source.transport_expires_at_ms) : NaN;
+    const nowMs = Date.now();
+
+    let serverKeyState = {
+      derived: false,
+      key_id_match: null,
+      incoming_key_id_shape: Boolean(source && /^[A-Za-z0-9_-]{43}$/.test(String(source.transport_key_id || '')))
+    };
+    try {
+      const diagnosticMaterial = diracRecoveryBrowserTransportKeyMaterialV287();
+      try {
+        serverKeyState = {
+          derived: true,
+          server_key_id_shape: /^[A-Za-z0-9_-]{43}$/.test(String(diagnosticMaterial.keyId || '')),
+          incoming_key_id_shape: Boolean(source && /^[A-Za-z0-9_-]{43}$/.test(String(source.transport_key_id || ''))),
+          key_id_match: Boolean(source && safeEqual(String(source.transport_key_id || ''), String(diagnosticMaterial.keyId || ''))),
+          server_public_key_length: Buffer.isBuffer(diagnosticMaterial.publicKey) ? diagnosticMaterial.publicKey.length : null,
+          server_public_key_uncompressed: Boolean(Buffer.isBuffer(diagnosticMaterial.publicKey) && diagnosticMaterial.publicKey.length === 65 && diagnosticMaterial.publicKey[0] === 0x04)
+        };
+      } finally {
+        if (diagnosticMaterial && Buffer.isBuffer(diagnosticMaterial.publicKey)) diagnosticMaterial.publicKey.fill(0);
+      }
+    } catch (keyError) {
+      serverKeyState = {
+        derived: false,
+        key_id_match: null,
+        error_name: diracRecoveryBrowserDiagnosticSafeTextV344(keyError && keyError.name, 80),
+        error_code: diracRecoveryBrowserDiagnosticSafeTextV344(keyError && keyError.code, 120),
+        error_message: diracRecoveryBrowserDiagnosticSafeTextV344(keyError && keyError.message, 260)
+      };
+    }
+
+    let bindingState = { computed: false, match: null };
+    try {
+      if (source) {
+        const computedBinding = diracRecoveryBrowserBindingDigestV287(req, source, origin);
+        bindingState = {
+          computed: true,
+          incoming_shape: /^[A-Za-z0-9_-]{43}$/.test(String(source.transport_binding_digest || '')),
+          computed_shape: /^[A-Za-z0-9_-]{43}$/.test(String(computedBinding || '')),
+          match: safeEqual(String(source.transport_binding_digest || ''), String(computedBinding || ''))
+        };
+      }
+    } catch (bindingError) {
+      bindingState = {
+        computed: false,
+        match: null,
+        error_name: diracRecoveryBrowserDiagnosticSafeTextV344(bindingError && bindingError.name, 80),
+        error_code: diracRecoveryBrowserDiagnosticSafeTextV344(bindingError && bindingError.code, 120),
+        error_message: diracRecoveryBrowserDiagnosticSafeTextV344(bindingError && bindingError.message, 260)
+      };
+    }
+
+    let aadState = { built: false, bytes: null, sha256_b64url: null };
+    try {
+      if (source && bindingState.computed === true && bindingState.match === true) {
+        const diagnosticAad = diracRecoveryBrowserAadV287(source, origin, String(source.transport_binding_digest || ''));
+        try {
+          aadState = {
+            built: true,
+            bytes: diagnosticAad.length,
+            sha256_b64url: crypto.createHash('sha256').update(diagnosticAad).digest('base64url')
+          };
+        } finally {
+          diagnosticAad.fill(0);
+        }
+      }
+    } catch (aadError) {
+      aadState = {
+        built: false,
+        bytes: null,
+        sha256_b64url: null,
+        error_name: diracRecoveryBrowserDiagnosticSafeTextV344(aadError && aadError.name, 80),
+        error_code: diracRecoveryBrowserDiagnosticSafeTextV344(aadError && aadError.code, 120),
+        error_message: diracRecoveryBrowserDiagnosticSafeTextV344(aadError && aadError.message, 260)
+      };
+    }
+
+    const cause = error && error.cause;
+    const stackLines = String(error && error.stack || '').split('\n').slice(0, 10)
+      .map((line) => diracRecoveryBrowserDiagnosticSafeTextV344(line, 420));
+    const causeStackLines = String(cause && cause.stack || '').split('\n').slice(0, 6)
+      .map((line) => diracRecoveryBrowserDiagnosticSafeTextV344(line, 420));
+
+    return {
+      diagnostic: DIRAC_RECOVERY_BROWSER_ROOT_CAUSE_DIAGNOSTIC_V344,
+      event: 'transport_root_cause',
+      stage: String(req && req.__diracRecoveryBrowserDiagnosticStageV344 || 'handler_catch_unknown').slice(0, 96),
+      expected_action: String(expectedAction || '').slice(0, 80),
+      query_action: String(req && req.query && req.query.action || '').slice(0, 80),
+      method: String(req && req.method || '').slice(0, 16),
+      guard: {
+        central_guard_passed: Boolean(req && req.__diracCentralSecurityGuardPassedV146 === true),
+        central_cached_body_present: Boolean(req && req.__diracCentralParsedBodyV146 && typeof req.__diracCentralParsedBodyV146 === 'object'),
+        central_cached_body_same_reference: Boolean(source && req && req.__diracCentralParsedBodyV146 === source)
+      },
+      request: {
+        content_type: diracRecoveryBrowserDiagnosticSafeTextV344(diracRecoveryBrowserHeaderV287(req, 'content-type'), 160),
+        content_length_header: diracRecoveryBrowserDiagnosticSafeTextV344(diracRecoveryBrowserHeaderV287(req, 'content-length'), 40),
+        origin_present: Boolean(originRaw),
+        origin_normalized: origin,
+        origin_expected: DIRAC_RECOVERY_BROWSER_ORIGIN_V287,
+        origin_match: origin === DIRAC_RECOVERY_BROWSER_ORIGIN_V287,
+        referer_origin: refererOrigin,
+        csrf_primary_present: Boolean(csrfPrimary),
+        csrf_primary_length: csrfPrimary.length,
+        csrf_compat_present: Boolean(csrfCompat),
+        csrf_compat_length: csrfCompat.length,
+        csrf_headers_equal: Boolean(csrfPrimary && csrfCompat && safeEqual(csrfPrimary, csrfCompat)),
+        page_nonce_present: Boolean(pageNonce),
+        page_nonce_length: pageNonce.length,
+        readable_ended: Boolean(req && req.readableEnded),
+        complete: Boolean(req && req.complete),
+        destroyed: Boolean(req && req.destroyed)
+      },
+      body: {
+        object: Boolean(source),
+        actual_key_count: actualKeys.length,
+        actual_keys: actualKeys,
+        exact_outer_fields: Boolean(source && actualKeys.length === expectedKeys.length && actualKeys.every((key, index) => key === expectedKeys[index])),
+        action: source ? String(source.action || '').slice(0, 80) : '',
+        action_matches_expected: Boolean(source && String(source.action || '') === String(expectedAction || '')),
+        version_matches: Boolean(source && source.transport_version === DIRAC_RECOVERY_BROWSER_TRANSPORT_VERSION_V287),
+        request_id_length: source ? String(source.transport_request_id || '').length : 0,
+        request_id_shape: Boolean(source && /^[A-Za-z0-9_-]{32}$/.test(String(source.transport_request_id || ''))),
+        sent_at_safe_integer: Number.isSafeInteger(sentAtMs),
+        expires_at_safe_integer: Number.isSafeInteger(expiresAtMs),
+        ttl_delta_ms: Number.isSafeInteger(sentAtMs) && Number.isSafeInteger(expiresAtMs) ? expiresAtMs - sentAtMs : null,
+        request_age_ms: Number.isSafeInteger(sentAtMs) ? nowMs - sentAtMs : null,
+        not_expired: Number.isSafeInteger(expiresAtMs) ? expiresAtMs > nowMs : null,
+        key: serverKeyState,
+        binding: bindingState,
+        ephemeral_public: diracRecoveryBrowserDiagnosticB64ShapeV344(source && source.transport_ephemeral_public_key_b64url, 65, 256),
+        salt: diracRecoveryBrowserDiagnosticB64ShapeV344(source && source.transport_salt_b64url, 32, 128),
+        nonce: diracRecoveryBrowserDiagnosticB64ShapeV344(source && source.transport_nonce_b64url, 12, 128),
+        ciphertext: diracRecoveryBrowserDiagnosticB64ShapeV344(source && source.transport_ciphertext_b64url, null, 8192),
+        aad: aadState
+      },
+      error: {
+        name: diracRecoveryBrowserDiagnosticSafeTextV344(error && error.name, 100),
+        code: diracRecoveryBrowserDiagnosticSafeTextV344(error && error.code, 160),
+        message: diracRecoveryBrowserDiagnosticSafeTextV344(error && error.message, 420),
+        stack: stackLines,
+        cause_name: diracRecoveryBrowserDiagnosticSafeTextV344(cause && cause.name, 100),
+        cause_code: diracRecoveryBrowserDiagnosticSafeTextV344(cause && cause.code, 160),
+        cause_message: diracRecoveryBrowserDiagnosticSafeTextV344(cause && cause.message, 420),
+        cause_stack: causeStackLines
+      },
+      secrets_logged: false
+    };
+  } catch (diagnosticError) {
+    return {
+      diagnostic: DIRAC_RECOVERY_BROWSER_ROOT_CAUSE_DIAGNOSTIC_V344,
+      event: 'diagnostic_failed',
+      stage: String(req && req.__diracRecoveryBrowserDiagnosticStageV344 || 'unknown').slice(0, 96),
+      diagnostic_error_name: diracRecoveryBrowserDiagnosticSafeTextV344(diagnosticError && diagnosticError.name, 100),
+      diagnostic_error_code: diracRecoveryBrowserDiagnosticSafeTextV344(diagnosticError && diagnosticError.code, 160),
+      diagnostic_error_message: diracRecoveryBrowserDiagnosticSafeTextV344(diagnosticError && diagnosticError.message, 420),
+      secrets_logged: false
+    };
+  }
+}
 
 function diracRecoveryBrowserTransportKeyMaterialV287() {
   const seed = Buffer.from(diracCentralDeriveSecretV146('recovery-browser-transport-p256-v287'));
@@ -13315,6 +13551,7 @@ async function diracRecoveryBrowserDecryptCompatSafeV343(material, ephemeralPubl
 }
 
 async function diracRecoveryBrowserOpenV287(req, body) {
+  diracRecoveryBrowserDiagnosticStageV344(req, 'open.entry');
   const source = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
   const expectedKeys = [
     'action', 'transport_binding_digest', 'transport_ciphertext_b64url', 'transport_ephemeral_public_key_b64url',
@@ -13327,6 +13564,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
     error.code = 'RECOVERY_BROWSER_TRANSPORT_FIELDS_INVALID';
     throw error;
   }
+  diracRecoveryBrowserDiagnosticStageV344(req, 'open.outer_fields_valid');
   const action = String(source.action || '');
   if (!['customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify'].includes(action)
       || source.transport_version !== DIRAC_RECOVERY_BROWSER_TRANSPORT_VERSION_V287) {
@@ -13334,6 +13572,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
     error.code = 'RECOVERY_BROWSER_TRANSPORT_VERSION_INVALID';
     throw error;
   }
+  diracRecoveryBrowserDiagnosticStageV344(req, 'open.version_valid');
   const requestId = String(source.transport_request_id || '');
   const sentAtMs = Number(source.transport_sent_at_ms);
   const expiresAtMs = Number(source.transport_expires_at_ms);
@@ -13349,12 +13588,14 @@ async function diracRecoveryBrowserOpenV287(req, body) {
     error.code = 'RECOVERY_BROWSER_TRANSPORT_TIME_INVALID';
     throw error;
   }
+  diracRecoveryBrowserDiagnosticStageV344(req, 'open.time_valid');
   const origin = diracCentralNormalizeOriginV146(diracRecoveryBrowserHeaderV287(req, 'origin'));
   if (origin !== DIRAC_RECOVERY_BROWSER_ORIGIN_V287) {
     const error = new Error('RECOVERY_BROWSER_TRANSPORT_ORIGIN_INVALID');
     error.code = 'RECOVERY_BROWSER_TRANSPORT_ORIGIN_INVALID';
     throw error;
   }
+  diracRecoveryBrowserDiagnosticStageV344(req, 'open.origin_valid');
   const material = diracRecoveryBrowserTransportKeyMaterialV287();
   if (!safeEqual(String(source.transport_key_id || ''), material.keyId)) {
     material.publicKey.fill(0);
@@ -13362,6 +13603,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
     error.code = 'RECOVERY_BROWSER_TRANSPORT_KEY_ID_INVALID';
     throw error;
   }
+  diracRecoveryBrowserDiagnosticStageV344(req, 'open.key_id_valid');
   const bindingDigest = diracRecoveryBrowserBindingDigestV287(req, source, origin);
   if (!/^[A-Za-z0-9_-]{43}$/.test(String(source.transport_binding_digest || ''))
       || !safeEqual(String(source.transport_binding_digest), bindingDigest)) {
@@ -13371,6 +13613,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
     throw error;
   }
 
+  diracRecoveryBrowserDiagnosticStageV344(req, 'open.binding_valid');
   const ephemeralPublic = diracRecoveryBrowserDecodeB64uV287(source.transport_ephemeral_public_key_b64url, 65, 256);
   const salt = diracRecoveryBrowserDecodeB64uV287(source.transport_salt_b64url, 32, 128);
   const nonce = diracRecoveryBrowserDecodeB64uV287(source.transport_nonce_b64url, 12, 128);
@@ -13382,6 +13625,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
     throw error;
   }
 
+  diracRecoveryBrowserDiagnosticStageV344(req, 'open.envelope_decoded');
   let shared = null;
   let requestKey = null;
   let responseKey = null;
@@ -13393,6 +13637,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
     // key-id, binding, TTL and replay checks above remain mandatory and unchanged.
     // Node/OpenSSL remains a same-suite fallback only if WebCrypto cannot open the
     // authenticated envelope; there is never a plaintext or unauthenticated fallback.
+    diracRecoveryBrowserDiagnosticStageV344(req, 'open.crypto_start');
     aad = diracRecoveryBrowserAadV287(source, origin, bindingDigest);
     let webcryptoOpenError = null;
     try {
@@ -13446,6 +13691,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
         throw error;
       }
     }
+    diracRecoveryBrowserDiagnosticStageV344(req, 'open.crypto_decrypted');
     let parsed;
     let text;
     try {
@@ -13456,6 +13702,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
       error.code = 'RECOVERY_BROWSER_TRANSPORT_PLAINTEXT_INVALID';
       throw error;
     }
+    diracRecoveryBrowserDiagnosticStageV344(req, 'open.plaintext_parsed');
     const innerKeys = Object.keys(parsed || {}).sort();
     let openedBody = null;
     if (action === 'customer_security_recovery_codes_generate') {
@@ -13515,6 +13762,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
       }
       openedBody = { action, request_id: requestIdInner, recovery_code: recoveryCodeInner, account_password: accountPassword, current_password: accountPassword };
     }
+    diracRecoveryBrowserDiagnosticStageV344(req, 'open.inner_payload_valid');
     if (typeof claimPersistentSecurityKeyOnceV194 !== 'function') {
       const error = new Error('RECOVERY_BROWSER_TRANSPORT_REPLAY_STORE_UNAVAILABLE');
       error.code = 'RECOVERY_BROWSER_TRANSPORT_REPLAY_STORE_UNAVAILABLE';
@@ -13525,6 +13773,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
       .update('\n', 'utf8')
       .update(bindingDigest, 'utf8')
       .digest('hex');
+    diracRecoveryBrowserDiagnosticStageV344(req, 'open.replay_claim_start');
     const claimed = await claimPersistentSecurityKeyOnceV194(
       's2s-recovery-browser-v287:' + replayDigest,
       { type: 'recovery_browser_transport_replay_claim_v287', request_id_hash: replayDigest, created_at: new Date().toISOString() },
@@ -13535,6 +13784,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
       error.code = 'RECOVERY_BROWSER_TRANSPORT_REPLAY_DETECTED';
       throw error;
     }
+    diracRecoveryBrowserDiagnosticStageV344(req, 'open.success');
     return {
       body: openedBody,
       action,
@@ -13647,7 +13897,9 @@ async function customerSecurityGenerateRecoveryCodes(req, res, action, override 
 
   let requestBody = {};
   if (!localWorker) {
+    diracRecoveryBrowserDiagnosticStageV344(req, 'generate.read_body');
     const encryptedRequestBodyV287 = await readBody(req);
+    diracRecoveryBrowserDiagnosticStageV344(req, 'generate.read_body_ok');
     let openedBrowserTransportV287;
     try {
       openedBrowserTransportV287 = await diracRecoveryBrowserOpenV287(req, encryptedRequestBodyV287);
@@ -13659,6 +13911,7 @@ async function customerSecurityGenerateRecoveryCodes(req, res, action, override 
       const code = /^[A-Z0-9_]{1,120}$/.test(errorCode)
         ? errorCode
         : (/^[A-Z0-9_]{1,120}$/.test(errorMessageCode) ? errorMessageCode : 'RECOVERY_BROWSER_TRANSPORT_REJECTED');
+      try { console.error('[dirac-recovery-browser-root-cause-v344]', JSON.stringify(diracRecoveryBrowserRootCauseDiagnosticV344(req, encryptedRequestBodyV287, error, action))); } catch (_) {}
       try { console.error('[dirac-recovery-browser-transport-v287]', JSON.stringify({ event: 'request_rejected', code, secrets_logged: false })); } catch (_) {}
       return res.status(403).json({ ok: false, code, message: 'Permintaan recovery terenkripsi ditolak.' });
     }
@@ -14341,8 +14594,11 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
   if (!access) return;
 
   let body = {};
+  let encryptedRequestBodyV287 = null;
   try {
-    const encryptedRequestBodyV287 = await readBody(req);
+    diracRecoveryBrowserDiagnosticStageV344(req, 'verify.read_body');
+    encryptedRequestBodyV287 = await readBody(req);
+    diracRecoveryBrowserDiagnosticStageV344(req, 'verify.read_body_ok');
     const openedBrowserTransportV287 = await diracRecoveryBrowserOpenV287(req, encryptedRequestBodyV287);
     body = openedBrowserTransportV287.body;
     diracRecoveryBrowserInstallResponseGuardV287(res, openedBrowserTransportV287);
@@ -14352,6 +14608,7 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
     const code = /^[A-Z0-9_]{1,120}$/.test(errorCode)
       ? errorCode
       : (/^[A-Z0-9_]{1,120}$/.test(errorMessageCode) ? errorMessageCode : 'RECOVERY_BROWSER_TRANSPORT_REJECTED');
+    try { console.error('[dirac-recovery-browser-root-cause-v344]', JSON.stringify(diracRecoveryBrowserRootCauseDiagnosticV344(req, encryptedRequestBodyV287, error, action))); } catch (_) {}
     try { console.error('[dirac-recovery-browser-transport-v287]', JSON.stringify({ event: 'verify_request_rejected', code, secrets_logged: false })); } catch (_) {}
     return res.status(403).json({ ok: false, code, message: 'Permintaan verifikasi recovery terenkripsi ditolak.' });
   }
