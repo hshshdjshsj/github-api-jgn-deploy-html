@@ -43479,7 +43479,7 @@ function customerSecurityLostPasskeyWorkerRootCauseDebugV173(reason, ctx = {}) {
   if (!owner || owner.ok !== true) rootCauseCandidates.push('owner_not_resolved_or_invalid');
   if (!bindings) rootCauseCandidates.push('worker_binding_payload_invalid_or_owner_core_binding_mismatch');
   if (!customerSecurityNormalizeLostPasskeyRequestId(ctx.requestId || body.request_id || '')) rootCauseCandidates.push('request_id_missing_or_invalid');
-  if (codeText && Array.from(codeText).length !== LOST_PASSKEY_RECOVERY_CODE_LENGTH_V157) rootCauseCandidates.push('recovery_code_length_not_1200_after_normalization');
+  if (codeText && Array.from(codeText).length !== LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157) rootCauseCandidates.push('email_code_length_not_100_after_normalization');
   if (rowState.found === false && (ctx.rowChecked === true || cleanReason.includes('not_found'))) rootCauseCandidates.push('request_row_not_found_in_security_lost_passkey_recovery_requests');
   if (rowState.found && rowState.status !== 'pending') rootCauseCandidates.push('request_status_not_pending');
   if (rowState.found && rowState.used_present) rootCauseCandidates.push('request_already_used');
@@ -43499,7 +43499,7 @@ function customerSecurityLostPasskeyWorkerRootCauseDebugV173(reason, ctx = {}) {
     request_id_present: Boolean(customerSecurityNormalizeLostPasskeyRequestId(ctx.requestId || body.request_id || '')),
     request_id_hash: customerSecurityLostPasskeyDiagnosticHashV210('request_id', customerSecurityNormalizeLostPasskeyRequestId(ctx.requestId || body.request_id || '')),
     code_length_after_normalization: codeText ? Array.from(codeText).length : 0,
-    expected_code_length: LOST_PASSKEY_RECOVERY_CODE_LENGTH_V157,
+    expected_code_length: LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157,
     owner: {
       ok: Boolean(owner && owner.ok === true),
       customer_match_row: Boolean(owner && row && String(owner.customerId || '') === String(row.customer_id || '')),
@@ -43598,7 +43598,7 @@ function customerSecurityLostPasskeyWorkerVerifyTraceV174(stage, reason, ctx = {
       server2_worker_task: DIRAC_RECOVERY_WORKER_TASK_VERIFY,
       recovery_request_table: LOST_PASSKEY_RECOVERY_REQUEST_TABLE,
       recovery_session_table: LOST_PASSKEY_RECOVERY_SESSION_TABLE,
-      code_length_expected: LOST_PASSKEY_RECOVERY_CODE_LENGTH_V157,
+      code_length_expected: LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157,
       session_insert_attempted_by_this_branch: Boolean(safeCtx.sessionInsertAttempted),
       response_includes_recovery_session_token: Boolean(responseBody && responseBody.recovery_session_token),
       response_includes_recovery_session_expires_at: Boolean(responseBody && responseBody.recovery_session_expires_at),
@@ -44142,9 +44142,245 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
     ? override.bindings
     : customerSecurityLostPasskeyBindings(req, owner);
 
+  // PASSWORD + EMAIL-100 recovery contract v346.
+  // The worker path intentionally avoids the retired link/website-secret/vault
+  // material. Security remains fail-closed: password is already verified above,
+  // the 100-character email code is CSPRNG material stored only as Argon2id,
+  // and the request remains bound to the authoritative owner/passkey snapshot.
+  if (localWorker) {
+    const vaultSecretsV346 = customerSecurityLostPasskeyRequireVaultSecretsV157();
+    if (!vaultSecretsV346.ok) {
+      return res.status(503).json({ ok: false, code: vaultSecretsV346.code, message: vaultSecretsV346.message });
+    }
 
+    const nowMsV346 = Date.now();
+    const nowIsoV346 = new Date(nowMsV346).toISOString();
+    const expiresAtV346 = new Date(nowMsV346 + LOST_PASSKEY_RECOVERY_TTL_MINUTES_V157 * 60 * 1000).toISOString();
+    const requestIdV346 = customerSecurityLostPasskeyRequestId();
+    let bindingsV346;
+    try {
+      bindingsV346 = customerSecurityLostPasskeyAuthoritativeBindingsV231(
+        owner,
+        activePasskeys,
+        requestIdV346,
+        observedBindings
+      );
+    } catch (error) {
+      return res.status(500).json({
+        ok: false,
+        code: String(error && error.code || 'RECOVERY_AUTHORITATIVE_BINDING_FAILED'),
+        message: 'Binding recovery server-authoritative belum dapat dibentuk.'
+      });
+    }
 
+    const emailCode100V346 = customerSecurityLostPasskeyExactSecret100V182(
+      customerSecurityLostPasskeyRandomTextV157(LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157)
+    );
+    if (!emailCode100V346) {
+      return res.status(500).json({
+        ok: false,
+        code: 'RECOVERY_EMAIL_CODE_100_MATERIAL_INVALID',
+        message: 'Kode keamanan email belum dapat dibentuk.'
+      });
+    }
 
+    const codeSaltV346 = crypto.randomBytes(LOST_PASSKEY_RECOVERY_SALT_BYTES_V157);
+    const bindingSaltV346 = crypto.randomBytes(LOST_PASSKEY_RECOVERY_SALT_BYTES_V157);
+    const bindingsCanonicalV346 = customerSecurityLostPasskeyCanonical(bindingsV346);
+    const [emailCodeHashV346, bindingHashCommitmentV346] = await Promise.all([
+      customerSecurityLostPasskeyArgon2EncodedHashV157('recovery_code', emailCode100V346, codeSaltV346, vaultSecretsV346.pepper, vaultSecretsV346.rootSecret),
+      customerSecurityLostPasskeyArgon2EncodedHashV157('binding', bindingsCanonicalV346, bindingSaltV346, vaultSecretsV346.pepper, vaultSecretsV346.rootSecret)
+    ]);
+    if (override && override.argonQueueTicket && !customerSecurityLostPasskeyQueueLeaseHealthyV188(override.argonQueueTicket)) {
+      return res.status(503).json({ ok: false, code: 'RECOVERY_ARGON2_LEASE_LOST', message: 'Antrean keamanan recovery perlu diulang.' });
+    }
+
+    // Preserve the established table shape without making these compatibility
+    // columns authoritative for the new flow. Authentication authority is the
+    // Argon2id email-code hash + password re-verification + owner binding.
+    const compatCipherV346 = crypto.randomBytes(32);
+    const compatNonceV346 = crypto.randomBytes(12);
+    const compatTagV346 = crypto.randomBytes(16);
+    const compatSaltV346 = crypto.randomBytes(32);
+    const compatMaterialV346 = Buffer.from(customerSecurityLostPasskeyCanonical({
+      mode: 'password_email_code_100_v346',
+      request_id: requestIdV346,
+      customer_id: owner.customerId,
+      auth_user_id: owner.authUserId,
+      expires_at: expiresAtV346,
+      code_hash_sha256: customerSecurityLostPasskeySha256B64(Buffer.from(emailCodeHashV346, 'utf8')),
+      binding_hash_sha256: customerSecurityLostPasskeySha256B64(Buffer.from(bindingHashCommitmentV346, 'utf8'))
+    }), 'utf8');
+    const compatShaV346 = customerSecurityLostPasskeySha256B64(compatMaterialV346);
+    const compatSignatureV346 = customerSecurityLostPasskeyHmacHexV157(
+      vaultSecretsV346.rootSecret,
+      'password_email_code_100_request_v346',
+      compatMaterialV346
+    );
+
+    const insertBodyV346 = [{
+      request_id: requestIdV346,
+      customer_id: owner.customerId,
+      auth_user_id: owner.authUserId,
+      email_hash: bindingsV346.emailBindingHash,
+      customer_binding_hash: bindingsV346.customerBindingHash,
+      auth_user_binding_hash: bindingsV346.authUserBindingHash,
+      device_binding_hash: bindingsV346.deviceBindingHash,
+      ip_hash: bindingsV346.ipHash,
+      user_agent_hash: bindingsV346.userAgentHash,
+      recovery_code_hash: emailCodeHashV346,
+      encrypted_file_key_text: customerSecurityLostPasskeyB64(compatCipherV346),
+      file_key_wrap_nonce: customerSecurityLostPasskeyB64(compatNonceV346),
+      file_key_wrap_tag: customerSecurityLostPasskeyB64(compatTagV346),
+      salt: customerSecurityLostPasskeyB64(compatSaltV346),
+      owner_key_salt: customerSecurityLostPasskeyB64(codeSaltV346),
+      file_sha256: compatShaV346,
+      aad_hash: customerSecurityLostPasskeySha256B64(Buffer.from(bindingsCanonicalV346, 'utf8')),
+      server_signature: compatSignatureV346,
+      old_passkey_ids: activePasskeys.map((row) => row.id).filter(Boolean),
+      status: 'pending',
+      attempt_count: 0,
+      created_at: nowIsoV346,
+      sent_at: null,
+      expires_at: expiresAtV346,
+      used_at: null,
+      revoked_at: null,
+      metadata: {
+        source: 'lost_passkey_recovery',
+        patch: 'lost-passkey-password-email100-v346',
+        mode: 'password_email_code_100_v346',
+        delivery: 'email_code_100',
+        password_formula: 'account_password_plus_email_code_100',
+        recovery_code_hash_label: 'recovery_code',
+        binding_hash_commitment: bindingHashCommitmentV346,
+        binding_hashes: bindingsV346,
+        binding_profile: DIRAC_LOST_PASSKEY_AUTHORITATIVE_BINDING_V231,
+        binding_rp_id: DIRAC_LOST_PASSKEY_RP_ID_V231,
+        browser_ip_and_user_agent_are_risk_snapshot_only: true,
+        root_secret_version: vaultSecretsV346.rootSecretVersion,
+        passkey_count: activePasskeys.length,
+        email_code_length: LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157,
+        recovery_code_length: LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157,
+        argon2id_params: customerSecurityLostPasskeyArgon2ParamsV157(64),
+        compatibility_fields_non_authoritative: true,
+        expires_minutes: LOST_PASSKEY_RECOVERY_TTL_MINUTES_V157
+      }
+    }];
+
+    try {
+      const createdV346 = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE, {
+        method: 'POST', auth: 'service', prefer: 'return=minimal', body: insertBodyV346
+      });
+      if (!createdV346.ok) {
+        return res.status(createdV346.status || 500).json({ ok: false, code: 'RECOVERY_REQUEST_STORE_FAILED', message: 'Gagal menyimpan recovery request.' });
+      }
+
+      const deliveryPreparedV346 = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346), {
+        method: 'PATCH',
+        auth: 'service',
+        prefer: 'return=minimal',
+        body: { sent_at: nowIsoV346 }
+      });
+      if (!deliveryPreparedV346.ok) {
+        await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346), {
+          method: 'PATCH', auth: 'service', body: { status: 'revoked', sent_at: null, revoked_at: diracNowIso() }
+        }).catch(() => null);
+        return res.status(deliveryPreparedV346.status || 500).json({ ok: false, code: 'RECOVERY_EMAIL100_PRECOMMIT_FAILED', message: 'Recovery request belum dapat dikomit sebelum pengiriman email.' });
+      }
+
+      const smtpHostV346 = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim().toLowerCase();
+      const smtpPortV346 = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 0);
+      const smtpSecureV346 = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || '').trim().toLowerCase() === 'true';
+      const smtpUserV346 = diracSecurityMailEmailV327(process.env.DIRAC_USER_SECURITY_SMTP_USER);
+      const smtpPassV346 = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
+      const smtpTimeoutRawV346 = Number(process.env.DIRAC_USER_SECURITY_TIMEOUT_MS || 7000);
+      const smtpTimeoutV346 = Number.isSafeInteger(smtpTimeoutRawV346) ? Math.max(3000, Math.min(15000, smtpTimeoutRawV346)) : 7000;
+      const replyToV346 = diracSecurityMailEmailV327(process.env.DIRAC_USER_SECURITY_REPLY_TO) || diracSecurityMailEmailV327(diracSupportEmailV250());
+      if (smtpHostV346 !== 'smtp.gmail.com' || smtpPortV346 !== 465 || !smtpSecureV346 || !smtpUserV346
+          || smtpPassV346.length < 16 || smtpPassV346.length > 128 || !replyToV346) {
+        await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346), {
+          method: 'PATCH', auth: 'service', body: { status: 'revoked', sent_at: null, revoked_at: diracNowIso() }
+        }).catch(() => null);
+        return res.status(503).json({ ok: false, code: 'RECOVERY_GMAIL_SMTP_CONFIGURATION_INVALID', message: 'Gmail SMTP recovery belum terkonfigurasi dengan benar.' });
+      }
+
+      const referenceV346 = crypto.createHash('sha256').update(requestIdV346, 'utf8').digest('hex').slice(0, 10).toUpperCase();
+      const htmlInputV346 = {
+        preheader: 'Kode pemulihan Passkey 100 karakter. Berlaku sampai ' + customerSecurityRecoveryFormatWibV326(expiresAtV346) + '.',
+        brandLabel: 'SECURE ACCOUNT RECOVERY',
+        eyebrow: 'PASSKEY RECOVERY CODE',
+        title: 'Kode Pemulihan\nPasskey',
+        greeting: 'Yth. Pengguna Dirac Group,',
+        summary: 'Password akun sudah diverifikasi. Gunakan kode 100 karakter di bawah hanya pada halaman masuk resmi Dirac Group.',
+        statusLabel: 'STATUS PEMULIHAN',
+        statusValue: 'PASSWORD TERVERIFIKASI',
+        statusNote: 'Kode hanya berlaku untuk request ini dan tidak pernah ditampilkan kembali oleh API.',
+        detailsLabel: 'DETAIL PEMULIHAN',
+        rows: [
+          ['KODE EMAIL — 100 KARAKTER', emailCode100V346],
+          ['REFERENSI', referenceV346],
+          ['BERLAKU SAMPAI', customerSecurityRecoveryFormatWibV326(expiresAtV346)],
+          ['METODE', 'Password + kode email 100 karakter']
+        ],
+        actionUrl: diracRoleOriginV250('auth') + '/masuk.html',
+        actionText: 'KEMBALI KE HALAMAN MASUK',
+        warningTitle: 'JANGAN BAGIKAN KODE INI',
+        warning: 'Jangan bagikan password, kode ini, OTP, token, atau Passkey kepada siapa pun. Jika Anda tidak meminta pemulihan ini, abaikan email dan hubungi bantuan resmi Dirac Group.',
+        supportLead: 'Butuh bantuan? Hubungi WhatsApp 087892523968 atau ' + diracSupportEmailV250() + '.'
+      };
+      const eventV346 = Object.freeze({
+        kind: 'passkey_recovery_code',
+        email: owner.email,
+        reference: referenceV346,
+        subject: 'DiracGroup Security - Kode Pemulihan Passkey [' + referenceV346 + ']',
+        html: diracSecurityCorporateEmailHtmlV327(htmlInputV346),
+        text: diracSecurityMailTextV327(htmlInputV346)
+      });
+      const smtpConfigV346 = Object.freeze({
+        smtpHost: smtpHostV346,
+        smtpPort: smtpPortV346,
+        smtpSecure: true,
+        smtpUser: smtpUserV346,
+        smtpAppPassword: smtpPassV346,
+        timeoutMs: smtpTimeoutV346,
+        replyTo: replyToV346
+      });
+      const sentV346 = await diracUserSecuritySendSmtpV327(eventV346, smtpConfigV346);
+      if (!sentV346 || sentV346.ok !== true || sentV346.provider !== 'gmail_smtp' || Number(sentV346.status) !== 250) {
+        await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346), {
+          method: 'PATCH', auth: 'service', body: { status: 'revoked', sent_at: null, revoked_at: diracNowIso() }
+        }).catch(() => null);
+        return res.status(502).json({ ok: false, code: String(sentV346 && sentV346.code || 'RECOVERY_GMAIL_SMTP_DELIVERY_FAILED'), message: 'Kode recovery belum dapat dikirim melalui Gmail SMTP.' });
+      }
+
+      const committedResponseV346 = res.status(200).json({
+        ok: true,
+        request_id: requestIdV346,
+        expires_at: expiresAtV346,
+        delivery: 'email_code_100',
+        email_code_delivery: 'gmail_smtp',
+        message: 'Kode keamanan 100 karakter sudah dikirim ke email resmi akun.',
+        time: nowIsoV346
+      });
+      await customerSecurityWriteGuardEvent(access.customerId, {
+        event_type: 'lost_passkey_recovery_email_code_sent',
+        status: 'success',
+        risk_level: 'high',
+        description: 'Kode recovery Passkey 100 karakter dikirim melalui Gmail SMTP ke email resmi customer.',
+        req,
+        metadata: { action, request_id: requestIdV346, delivery_provider: 'gmail_smtp', delivery: 'email_code_100', patch: 'lost-passkey-password-email100-v346' }
+      }).catch(() => null);
+      return committedResponseV346;
+    } finally {
+      codeSaltV346.fill(0);
+      bindingSaltV346.fill(0);
+      compatCipherV346.fill(0);
+      compatNonceV346.fill(0);
+      compatTagV346.fill(0);
+      compatSaltV346.fill(0);
+      compatMaterialV346.fill(0);
+    }
+  }
 
   const vaultSecrets = customerSecurityLostPasskeyRequireVaultSecretsV157();
   if (!vaultSecrets.ok) {
@@ -44468,9 +44704,24 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     await customerSecurityRegisterFailedVerification(req, action, 'invalid_recovery_worker_verify_payload', access && access.customerId).catch(() => null);
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 400, 'invalid_recovery_worker_verify_payload', { request_id: requestId, customer_id: owner && owner.customerId, auth_user_id: owner && owner.authUserId, email: owner && owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
-  if (Array.from(code).length !== LOST_PASSKEY_RECOVERY_CODE_LENGTH_V157) {
-    await customerSecurityRegisterFailedVerification(req, action, 'invalid_recovery_code_length', access.customerId).catch(() => null);
-    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 400, 'invalid_recovery_code_length', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+  if (!customerSecurityLostPasskeyExactSecret100V182(code)) {
+    await customerSecurityRegisterFailedVerification(req, action, 'invalid_email_code_100', access.customerId).catch(() => null);
+    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 400, 'invalid_email_code_100', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+  }
+
+  const passwordMaterial = customerSecurityExtractPasswordMaterialV157({
+    password_latest_material: override && (override.passwordLatestMaterial || override.password_latest_material || ''),
+    password_latest_proof: override && (override.passwordLatestProof || override.password_latest_proof || ''),
+    account_password: override && override.accountPassword || ''
+  });
+  if (!passwordMaterial) {
+    await customerSecurityRegisterFailedVerification(req, action, 'recovery_password_missing_on_verify', access.customerId).catch(() => null);
+    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 400, 'recovery_password_missing_on_verify', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+  }
+  const verifiedPassword = await customerSecurityVerifyAccountPasswordForPdfV156(owner.email, passwordMaterial);
+  if (!verifiedPassword.ok) {
+    await customerSecurityRegisterFailedVerification(req, action, 'recovery_account_password_invalid_on_verify', access.customerId).catch(() => null);
+    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_account_password_invalid_on_verify', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
 
   const vaultSecrets = customerSecurityLostPasskeyRequireVaultSecretsV157();
@@ -44910,6 +45161,7 @@ async function customerSecurityHandleRecoveryWorkerGenerateRecoV251(req, res, ac
         bindings,
         requestId: String(body.request_id || ''),
         recoveryCode: String(body.recovery_code || body.code || ''),
+        passwordLatestMaterial: String(body.password_latest_material || body.password_latest_proof || body.account_password || ''),
         argonQueueTicket: queueTicket
       });
     } finally {
