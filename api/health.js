@@ -31777,8 +31777,17 @@ __diracV202RegisterMiddleware(async function diracPasswordArgon2VerifiedShadowWr
 
   res.json = async function diracPasswordArgon2V4Json(payload) {
     const httpStatus = Number(capturedStatus || res.statusCode || 200);
-    if (httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true) {
-      diracLoginFatalMarkV324(req, 'response.argon_shadow', 'begin', { status: httpStatus }, res);
+    diracLoginFatalMarkV324(req, 'response.argon_forward', 'begin', { status: httpStatus }, res);
+    const forwardedResponseV324 = await originalJson(payload);
+    const finalStatusV348 = Number(res.statusCode || httpStatus);
+    diracLoginFatalMarkV324(req, 'response.argon_forward', 'done', {
+      status: finalStatusV348
+    }, res);
+
+    if (httpStatus >= 200 && httpStatus < 300
+        && finalStatusV348 >= 200 && finalStatusV348 < 300
+        && payload && payload.ok === true) {
+      diracLoginFatalMarkV324(req, 'response.argon_shadow', 'begin', { status: finalStatusV348 }, res);
       try {
         const argonResultV324 = await diracPasswordArgon2V4PersistAfterVerifiedAuth(req, payload, action);
         diracLoginFatalMarkV324(req, 'response.argon_shadow', 'done', {
@@ -31789,11 +31798,6 @@ __diracV202RegisterMiddleware(async function diracPasswordArgon2VerifiedShadowWr
         console.error('[password-argon2id-shadow-v4]', diracPasswordArgon2V4SafeError(error));
       }
     }
-    diracLoginFatalMarkV324(req, 'response.argon_forward', 'begin', { status: httpStatus }, res);
-    const forwardedResponseV324 = await originalJson(payload);
-    diracLoginFatalMarkV324(req, 'response.argon_forward', 'done', {
-      status: Number(res.statusCode || httpStatus)
-    }, res);
     return forwardedResponseV324;
   };
 
@@ -32192,10 +32196,19 @@ __diracV202RegisterMiddleware(async function diracAuthHardeningSafeWrapperV110(r
 
   res.json = async function diracV110Json(payload) {
     const httpStatus = Number(capturedStatus || res.statusCode || 200);
-    if (httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true) {
-      diracLoginFatalMarkV324(req, 'response.auth_audit', 'begin', { status: httpStatus }, res);
+    diracLoginFatalMarkV324(req, 'response.auth_audit_forward', 'begin', { status: httpStatus }, res);
+    const forwardedResponseV324 = await originalJson(payload);
+    const finalStatusV348 = Number(res.statusCode || httpStatus);
+    diracLoginFatalMarkV324(req, 'response.auth_audit_forward', 'done', {
+      status: finalStatusV348
+    }, res);
+
+    if (httpStatus >= 200 && httpStatus < 300
+        && finalStatusV348 >= 200 && finalStatusV348 < 300
+        && payload && payload.ok === true) {
+      diracLoginFatalMarkV324(req, 'response.auth_audit', 'begin', { status: finalStatusV348 }, res);
       try {
-        const auditResultV324 = await diracV110WriteAuthAudit(req, payload, action, httpStatus);
+        const auditResultV324 = await diracV110WriteAuthAudit(req, payload, action, finalStatusV348);
         diracLoginFatalMarkV324(req, 'response.auth_audit', 'done', {
           ok: Boolean(auditResultV324 && auditResultV324.ok)
         }, res);
@@ -32204,11 +32217,6 @@ __diracV202RegisterMiddleware(async function diracAuthHardeningSafeWrapperV110(r
         console.error('[dirac-auth-audit-v110]', diracV110SafeError(error));
       }
     }
-    diracLoginFatalMarkV324(req, 'response.auth_audit_forward', 'begin', { status: httpStatus }, res);
-    const forwardedResponseV324 = await originalJson(payload);
-    diracLoginFatalMarkV324(req, 'response.auth_audit_forward', 'done', {
-      status: Number(res.statusCode || httpStatus)
-    }, res);
     return forwardedResponseV324;
   };
 
@@ -44873,8 +44881,34 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
       verifierKeyV347.fill(0);
     }
   } else {
-    expectedBinding = await customerSecurityLostPasskeyArgon2VerifyHashV157('binding', customerSecurityLostPasskeyCanonical(authoritativeBindings), metadata.binding_hash_commitment, vaultSecrets.pepper, vaultSecrets.rootSecret);
-    codeOk = await customerSecurityLostPasskeyArgon2VerifyHashV157('recovery_code', code, row.recovery_code_hash, vaultSecrets.pepper, vaultSecrets.rootSecret);
+    let argonQueueTicketV348 = override && override.argonQueueTicket || null;
+    let ownsArgonQueueTicketV348 = false;
+    if (!argonQueueTicketV348) {
+      argonQueueTicketV348 = await customerSecurityLostPasskeyQueueAcquireV164(req, {
+        nonce: requestId,
+        caller_id: 'server2_recovery_verify_v348',
+        queue_task: DIRAC_RECOVERY_WORKER_TASK_VERIFY
+      });
+      ownsArgonQueueTicketV348 = Boolean(argonQueueTicketV348 && argonQueueTicketV348.ok);
+    }
+    if (!argonQueueTicketV348 || !argonQueueTicketV348.ok) {
+      return res.status(argonQueueTicketV348 && argonQueueTicketV348.status || 503).json({
+        ok: false,
+        code: 'RECOVERY_ARGON2_BUSY',
+        message: 'Verifikasi recovery sedang diproses. Silakan coba kembali.'
+      });
+    }
+    try {
+      if (!customerSecurityLostPasskeyQueueLeaseHealthyV188(argonQueueTicketV348)) {
+        return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 503, 'recovery_argon2_lease_lost', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+      }
+      expectedBinding = await customerSecurityLostPasskeyArgon2VerifyHashV157('binding', customerSecurityLostPasskeyCanonical(authoritativeBindings), metadata.binding_hash_commitment, vaultSecrets.pepper, vaultSecrets.rootSecret);
+      codeOk = await customerSecurityLostPasskeyArgon2VerifyHashV157('recovery_code', code, row.recovery_code_hash, vaultSecrets.pepper, vaultSecrets.rootSecret);
+    } finally {
+      if (ownsArgonQueueTicketV348) {
+        try { await argonQueueTicketV348.release(); } catch (_) {}
+      }
+    }
   }
 
   if (!expectedBinding) {
@@ -45149,7 +45183,33 @@ async function customerSecurityFinalizeRecoveryLocalWorkerV162(req, res, action,
       verifierKeyV347.fill(0);
     }
   } else {
-    bindingOk = await customerSecurityLostPasskeyArgon2VerifyHashV157('binding', customerSecurityLostPasskeyCanonical(authoritativeBindings), metadata.binding_hash_commitment, vaultSecrets.pepper, vaultSecrets.rootSecret).catch(() => false);
+    let argonQueueTicketV348 = override && override.argonQueueTicket || null;
+    let ownsArgonQueueTicketV348 = false;
+    if (!argonQueueTicketV348) {
+      argonQueueTicketV348 = await customerSecurityLostPasskeyQueueAcquireV164(req, {
+        nonce: requestId,
+        caller_id: 'server2_recovery_finalize_v348',
+        queue_task: DIRAC_RECOVERY_WORKER_TASK_FINALIZE
+      });
+      ownsArgonQueueTicketV348 = Boolean(argonQueueTicketV348 && argonQueueTicketV348.ok);
+    }
+    if (!argonQueueTicketV348 || !argonQueueTicketV348.ok) {
+      return res.status(argonQueueTicketV348 && argonQueueTicketV348.status || 503).json({
+        ok: false,
+        code: 'RECOVERY_ARGON2_BUSY',
+        message: 'Finalisasi recovery sedang diproses. Silakan coba kembali.'
+      });
+    }
+    try {
+      if (!customerSecurityLostPasskeyQueueLeaseHealthyV188(argonQueueTicketV348)) {
+        return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 503, 'recovery_argon2_lease_lost', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_FINALIZE });
+      }
+      bindingOk = await customerSecurityLostPasskeyArgon2VerifyHashV157('binding', customerSecurityLostPasskeyCanonical(authoritativeBindings), metadata.binding_hash_commitment, vaultSecrets.pepper, vaultSecrets.rootSecret).catch(() => false);
+    } finally {
+      if (ownsArgonQueueTicketV348) {
+        try { await argonQueueTicketV348.release(); } catch (_) {}
+      }
+    }
   }
   if (!bindingOk) return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_finalize_binding_commitment_mismatch', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email });
   if (override && override.argonQueueTicket && !customerSecurityLostPasskeyQueueLeaseHealthyV188(override.argonQueueTicket)) {
@@ -45228,49 +45288,23 @@ async function customerSecurityHandleRecoveryWorkerGenerateRecoV251(req, res, ac
   }
 
   if (workerTask === DIRAC_RECOVERY_WORKER_TASK_VERIFY) {
-    const queueTicket = await customerSecurityLostPasskeyQueueAcquireV164(req, body);
-    if (!queueTicket || !queueTicket.ok) {
-      return res.status(queueTicket && queueTicket.status || 503).json({
-        ok: false,
-        code: 'RECOVERY_ARGON2_BUSY',
-        message: 'Verifikasi recovery sedang diproses. Silakan coba kembali.'
-      });
-    }
-    try {
-      return await customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, 'customer_security_recovery_code_verify', {
-        access: { customerId: owner.customerId },
-        owner,
-        bindings,
-        requestId: String(body.request_id || ''),
-        recoveryCode: String(body.recovery_code || body.code || ''),
-        passwordLatestMaterial: String(body.password_latest_material || body.password_latest_proof || body.account_password || ''),
-        argonQueueTicket: queueTicket
-      });
-    } finally {
-      try { await queueTicket.release(); } catch (_) {}
-    }
+    return customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, 'customer_security_recovery_code_verify', {
+      access: { customerId: owner.customerId },
+      owner,
+      bindings,
+      requestId: String(body.request_id || ''),
+      recoveryCode: String(body.recovery_code || body.code || ''),
+      passwordLatestMaterial: String(body.password_latest_material || body.password_latest_proof || body.account_password || '')
+    });
   }
 
   if (workerTask === DIRAC_RECOVERY_WORKER_TASK_FINALIZE) {
-    const queueTicket = await customerSecurityLostPasskeyQueueAcquireV164(req, body);
-    if (!queueTicket || !queueTicket.ok) {
-      return res.status(queueTicket && queueTicket.status || 503).json({
-        ok: false,
-        code: 'RECOVERY_ARGON2_BUSY',
-        message: 'Finalisasi recovery sedang diproses. Silakan coba kembali.'
-      });
-    }
-    try {
-      return await customerSecurityFinalizeRecoveryLocalWorkerV162(req, res, 'customer_security_recovery_code_finalize', {
-        access: { customerId: owner.customerId },
-        owner,
-        bindings,
-        requestId: String(body.request_id || ''),
-        argonQueueTicket: queueTicket
-      });
-    } finally {
-      try { await queueTicket.release(); } catch (_) {}
-    }
+    return customerSecurityFinalizeRecoveryLocalWorkerV162(req, res, 'customer_security_recovery_code_finalize', {
+      access: { customerId: owner.customerId },
+      owner,
+      bindings,
+      requestId: String(body.request_id || '')
+    });
   }
 
   return res.status(404).json({ ok: false, code: 'RECOVERY_WORKER_TASK_INVALID', message: 'Worker task recovery tidak valid.' });
