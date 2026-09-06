@@ -13550,6 +13550,18 @@ async function diracRecoveryBrowserDecryptCompatSafeV343(material, ephemeralPubl
   }
 }
 
+/* ROOT FIX v345: the recovery donor's V182 validator is scoped inside
+   DIRAC_MERGED_RECOVERY_V251 and is not visible to AUTH browser transport.
+   Keep the exact same 100-character alphabet/policy in AUTH scope. */
+function customerSecurityLostPasskeyExactSecret100V182(value) {
+  if (typeof value !== 'string') return '';
+  if (value.length !== 100) return '';
+  for (const char of value) {
+    if (!'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'.includes(char)) return '';
+  }
+  return value;
+}
+
 async function diracRecoveryBrowserOpenV287(req, body) {
   diracRecoveryBrowserDiagnosticStageV344(req, 'open.entry');
   const source = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
