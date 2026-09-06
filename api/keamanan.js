@@ -1375,18 +1375,9 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
     ...currentJson,
     webauthn: {
       ...(currentJson.webauthn && typeof currentJson.webauthn === 'object' ? currentJson.webauthn : {}),
-      backup_eligible: assertion.backupEligible === true,
+      sign_count: nextSignCount,
       backup_state: assertion.backupState === true,
-      device_bound: assertion.deviceBound === true,
-      sync_policy: 'synced-passkey-device-binding-required-v1'
-    },
-    device_binding: {
-      ...(currentJson.device_binding && typeof currentJson.device_binding === 'object' ? currentJson.device_binding : {}),
-      version: DIRAC_PASSKEY_DEVICE_BINDING_VERSION,
-      algorithm: DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM,
-      required: true,
-      key_id: deviceBinding.keyId,
-      public_key_jwk: deviceBinding.publicKeyJwk
+      last_verified_at: nowIso
     },
     last_authentication: {
       schema: 'dirac-domain-passkey-v1',
@@ -1426,7 +1417,10 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
   if (!Number.isSafeInteger(securityEpoch) || securityEpoch < 1) throw diracPasswordResetErrorV333('PASSWORD_RESET_SECURITY_EPOCH_INVALID', 503);
   const storedAuthSessionId = String(row.current_auth_session_id || '').trim();
   if (!customerSecurityLooksLikeUuid(storedAuthSessionId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_SESSION_BINDING_INVALID', 503);
-  const signedSessionCookie = securityResetCentralCookieValueV334(req, String(process.env.DOMAIN_SIGNED_SESSION_COOKIE || 'dirac_domain_signed_session'));
+  const signedSessionCookieName = String(process.env.DOMAIN_SIGNED_SESSION_COOKIE || 'dirac_domain_signed_session').trim();
+  const signedSessionCookie = securityResetCentralCookieValueV334(req, signedSessionCookieName);
+  const signedSessionCookiePresent = securityResetHeaderV334(req, 'cookie').split(';')
+    .some(part => part.split('=', 1)[0].trim() === signedSessionCookieName);
   let currentAuthSessionId = '';
   if (signedSessionCookie) {
     const signedParts = String(signedSessionCookie).trim().split('.');
@@ -1462,7 +1456,7 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
       }
     }
   }
-  if (!customerSecurityLooksLikeUuid(currentAuthSessionId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_SESSION_BINDING_INVALID', 503);
+  if ((signedSessionCookie === null || signedSessionCookiePresent) && !customerSecurityLooksLikeUuid(currentAuthSessionId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_SESSION_BINDING_INVALID', 503);
   const recorded = await supabaseFetch('/rest/v1/rpc/dirac_passkey_record_assertion_v237', {
     method: 'POST', auth: 'service', prefer: 'return=representation',
     body: {
@@ -1477,7 +1471,7 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
       p_assertion_purpose: 'login',
       p_rotation_id: null,
       p_expected_security_epoch: securityEpoch,
-      p_current_auth_session_id: currentAuthSessionId
+      p_current_auth_session_id: currentAuthSessionId || null
     }
   });
   let recordedRow = null;
