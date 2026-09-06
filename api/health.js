@@ -44184,26 +44184,50 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
       });
     }
 
-    const codeSaltV346 = crypto.randomBytes(LOST_PASSKEY_RECOVERY_SALT_BYTES_V157);
-    const bindingSaltV346 = crypto.randomBytes(LOST_PASSKEY_RECOVERY_SALT_BYTES_V157);
     const bindingsCanonicalV346 = customerSecurityLostPasskeyCanonical(bindingsV346);
-    const [emailCodeHashV346, bindingHashCommitmentV346] = await Promise.all([
-      customerSecurityLostPasskeyArgon2EncodedHashV157('recovery_code', emailCode100V346, codeSaltV346, vaultSecretsV346.pepper, vaultSecretsV346.rootSecret),
-      customerSecurityLostPasskeyArgon2EncodedHashV157('binding', bindingsCanonicalV346, bindingSaltV346, vaultSecretsV346.pepper, vaultSecretsV346.rootSecret)
-    ]);
+    const verifierKeyV347 = crypto.createHmac('sha512', Buffer.from(vaultSecretsV346.rootSecret, 'utf8'))
+      .update('dirac-lost-passkey-email100-verifier-key-v347\n', 'utf8')
+      .update(String(vaultSecretsV346.pepper || ''), 'utf8')
+      .digest();
+    let emailCodeHashV346 = '';
+    let bindingHashCommitmentV346 = '';
+    try {
+      emailCodeHashV346 = crypto.createHmac('sha512', verifierKeyV347)
+        .update('recovery_code\n', 'utf8')
+        .update(customerSecurityLostPasskeyCanonical({
+          request_id: requestIdV346,
+          customer_id: owner.customerId,
+          auth_user_id: owner.authUserId,
+          code: emailCode100V346
+        }), 'utf8')
+        .digest('hex');
+      bindingHashCommitmentV346 = crypto.createHmac('sha512', verifierKeyV347)
+        .update('binding\n', 'utf8')
+        .update(customerSecurityLostPasskeyCanonical({
+          request_id: requestIdV346,
+          customer_id: owner.customerId,
+          auth_user_id: owner.authUserId,
+          bindings: bindingsV346
+        }), 'utf8')
+        .digest('hex');
+    } finally {
+      verifierKeyV347.fill(0);
+    }
     if (override && override.argonQueueTicket && !customerSecurityLostPasskeyQueueLeaseHealthyV188(override.argonQueueTicket)) {
       return res.status(503).json({ ok: false, code: 'RECOVERY_ARGON2_LEASE_LOST', message: 'Antrean keamanan recovery perlu diulang.' });
     }
 
     // Preserve the established table shape without making these compatibility
-    // columns authoritative for the new flow. Authentication authority is the
-    // Argon2id email-code hash + password re-verification + owner binding.
+    // columns authoritative for the new flow. Authentication authority remains
+    // password re-verification + a root-secret/pepper keyed HMAC over the
+    // 100-character CSPRNG email code + the authoritative owner/passkey binding.
     const compatCipherV346 = crypto.randomBytes(32);
     const compatNonceV346 = crypto.randomBytes(12);
     const compatTagV346 = crypto.randomBytes(16);
     const compatSaltV346 = crypto.randomBytes(32);
+    const compatOwnerKeySaltV347 = crypto.randomBytes(32);
     const compatMaterialV346 = Buffer.from(customerSecurityLostPasskeyCanonical({
-      mode: 'password_email_code_100_v346',
+      mode: 'password_email_code_100_v347',
       request_id: requestIdV346,
       customer_id: owner.customerId,
       auth_user_id: owner.authUserId,
@@ -44214,7 +44238,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
     const compatShaV346 = customerSecurityLostPasskeySha256B64(compatMaterialV346);
     const compatSignatureV346 = customerSecurityLostPasskeyHmacHexV157(
       vaultSecretsV346.rootSecret,
-      'password_email_code_100_request_v346',
+      'password_email_code_100_request_v347',
       compatMaterialV346
     );
 
@@ -44233,7 +44257,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
       file_key_wrap_nonce: customerSecurityLostPasskeyB64(compatNonceV346),
       file_key_wrap_tag: customerSecurityLostPasskeyB64(compatTagV346),
       salt: customerSecurityLostPasskeyB64(compatSaltV346),
-      owner_key_salt: customerSecurityLostPasskeyB64(codeSaltV346),
+      owner_key_salt: customerSecurityLostPasskeyB64(compatOwnerKeySaltV347),
       file_sha256: compatShaV346,
       aad_hash: customerSecurityLostPasskeySha256B64(Buffer.from(bindingsCanonicalV346, 'utf8')),
       server_signature: compatSignatureV346,
@@ -44247,11 +44271,13 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
       revoked_at: null,
       metadata: {
         source: 'lost_passkey_recovery',
-        patch: 'lost-passkey-password-email100-v346',
-        mode: 'password_email_code_100_v346',
+        patch: 'lost-passkey-password-email100-v347',
+        mode: 'password_email_code_100_v347',
         delivery: 'email_code_100',
         password_formula: 'account_password_plus_email_code_100',
         recovery_code_hash_label: 'recovery_code',
+        code_verifier: 'hmac_sha512_root_pepper_v347',
+        binding_verifier: 'hmac_sha512_root_pepper_v347',
         binding_hash_commitment: bindingHashCommitmentV346,
         binding_hashes: bindingsV346,
         binding_profile: DIRAC_LOST_PASSKEY_AUTHORITATIVE_BINDING_V231,
@@ -44262,6 +44288,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
         email_code_length: LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157,
         recovery_code_length: LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157,
         argon2id_params: customerSecurityLostPasskeyArgon2ParamsV157(64),
+        argon2id_authoritative: false,
         compatibility_fields_non_authoritative: true,
         expires_minutes: LOST_PASSKEY_RECOVERY_TTL_MINUTES_V157
       }
@@ -44368,16 +44395,15 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
         risk_level: 'high',
         description: 'Kode recovery Passkey 100 karakter dikirim melalui Gmail SMTP ke email resmi customer.',
         req,
-        metadata: { action, request_id: requestIdV346, delivery_provider: 'gmail_smtp', delivery: 'email_code_100', patch: 'lost-passkey-password-email100-v346' }
+        metadata: { action, request_id: requestIdV346, delivery_provider: 'gmail_smtp', delivery: 'email_code_100', patch: 'lost-passkey-password-email100-v347' }
       }).catch(() => null);
       return committedResponseV346;
     } finally {
-      codeSaltV346.fill(0);
-      bindingSaltV346.fill(0);
       compatCipherV346.fill(0);
       compatNonceV346.fill(0);
       compatTagV346.fill(0);
       compatSaltV346.fill(0);
+      compatOwnerKeySaltV347.fill(0);
       compatMaterialV346.fill(0);
     }
   }
@@ -44803,13 +44829,59 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     ip: !safeEqual(String(row.ip_hash || ''), bindings.ipHash),
     user_agent: !safeEqual(String(row.user_agent_hash || ''), bindings.userAgentHash)
   };
-  const expectedBinding = await customerSecurityLostPasskeyArgon2VerifyHashV157('binding', customerSecurityLostPasskeyCanonical(authoritativeBindings), metadata.binding_hash_commitment, vaultSecrets.pepper, vaultSecrets.rootSecret);
+  const verifierModeV347 = String(metadata.mode || '') === 'password_email_code_100_v347';
+  if (verifierModeV347
+      && (String(metadata.code_verifier || '') !== 'hmac_sha512_root_pepper_v347'
+        || String(metadata.binding_verifier || '') !== 'hmac_sha512_root_pepper_v347')) {
+    await customerSecurityRegisterFailedVerification(req, action, 'recovery_verifier_profile_invalid', access.customerId).catch(() => null);
+    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_verifier_profile_invalid', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+  }
+
+  let expectedBinding = false;
+  let codeOk = false;
+  if (verifierModeV347) {
+    const verifierSecretsV347 = customerSecurityLostPasskeySecretsForMetadataV281(metadata, vaultSecrets);
+    if (!verifierSecretsV347.ok) {
+      return res.status(503).json({ ok: false, code: verifierSecretsV347.code, message: verifierSecretsV347.message });
+    }
+    const verifierKeyV347 = crypto.createHmac('sha512', Buffer.from(verifierSecretsV347.rootSecret, 'utf8'))
+      .update('dirac-lost-passkey-email100-verifier-key-v347\n', 'utf8')
+      .update(String(verifierSecretsV347.pepper || ''), 'utf8')
+      .digest();
+    try {
+      const expectedBindingMacV347 = crypto.createHmac('sha512', verifierKeyV347)
+        .update('binding\n', 'utf8')
+        .update(customerSecurityLostPasskeyCanonical({
+          request_id: requestId,
+          customer_id: owner.customerId,
+          auth_user_id: owner.authUserId,
+          bindings: authoritativeBindings
+        }), 'utf8')
+        .digest('hex');
+      const expectedCodeMacV347 = crypto.createHmac('sha512', verifierKeyV347)
+        .update('recovery_code\n', 'utf8')
+        .update(customerSecurityLostPasskeyCanonical({
+          request_id: requestId,
+          customer_id: owner.customerId,
+          auth_user_id: owner.authUserId,
+          code
+        }), 'utf8')
+        .digest('hex');
+      expectedBinding = safeEqual(expectedBindingMacV347, String(metadata.binding_hash_commitment || ''));
+      codeOk = safeEqual(expectedCodeMacV347, String(row.recovery_code_hash || ''));
+    } finally {
+      verifierKeyV347.fill(0);
+    }
+  } else {
+    expectedBinding = await customerSecurityLostPasskeyArgon2VerifyHashV157('binding', customerSecurityLostPasskeyCanonical(authoritativeBindings), metadata.binding_hash_commitment, vaultSecrets.pepper, vaultSecrets.rootSecret);
+    codeOk = await customerSecurityLostPasskeyArgon2VerifyHashV157('recovery_code', code, row.recovery_code_hash, vaultSecrets.pepper, vaultSecrets.rootSecret);
+  }
+
   if (!expectedBinding) {
     await customerSecurityRegisterFailedVerification(req, action, 'recovery_binding_commitment_mismatch', access.customerId).catch(() => null);
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_binding_commitment_mismatch', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: expectedBinding, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
 
-  const codeOk = await customerSecurityLostPasskeyArgon2VerifyHashV157('recovery_code', code, row.recovery_code_hash, vaultSecrets.pepper, vaultSecrets.rootSecret);
   if (!codeOk) {
     const nextAttempts = Number(row.attempt_count || 0) + 1;
     const lock = nextAttempts >= LOST_PASSKEY_RECOVERY_ATTEMPT_LIMIT;
@@ -45050,7 +45122,35 @@ async function customerSecurityFinalizeRecoveryLocalWorkerV162(req, res, action,
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_finalize_binding_mismatch', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email });
   }
 
-  const bindingOk = await customerSecurityLostPasskeyArgon2VerifyHashV157('binding', customerSecurityLostPasskeyCanonical(authoritativeBindings), metadata.binding_hash_commitment, vaultSecrets.pepper, vaultSecrets.rootSecret).catch(() => false);
+  const finalizeVerifierModeV347 = String(metadata.mode || '') === 'password_email_code_100_v347';
+  if (finalizeVerifierModeV347 && String(metadata.binding_verifier || '') !== 'hmac_sha512_root_pepper_v347') {
+    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_finalize_verifier_profile_invalid', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email });
+  }
+  let bindingOk = false;
+  if (finalizeVerifierModeV347) {
+    const verifierSecretsV347 = customerSecurityLostPasskeySecretsForMetadataV281(metadata, vaultSecrets);
+    if (!verifierSecretsV347.ok) return res.status(503).json({ ok: false, code: verifierSecretsV347.code, message: verifierSecretsV347.message });
+    const verifierKeyV347 = crypto.createHmac('sha512', Buffer.from(verifierSecretsV347.rootSecret, 'utf8'))
+      .update('dirac-lost-passkey-email100-verifier-key-v347\n', 'utf8')
+      .update(String(verifierSecretsV347.pepper || ''), 'utf8')
+      .digest();
+    try {
+      const expectedBindingMacV347 = crypto.createHmac('sha512', verifierKeyV347)
+        .update('binding\n', 'utf8')
+        .update(customerSecurityLostPasskeyCanonical({
+          request_id: requestId,
+          customer_id: owner.customerId,
+          auth_user_id: owner.authUserId,
+          bindings: authoritativeBindings
+        }), 'utf8')
+        .digest('hex');
+      bindingOk = safeEqual(expectedBindingMacV347, String(metadata.binding_hash_commitment || ''));
+    } finally {
+      verifierKeyV347.fill(0);
+    }
+  } else {
+    bindingOk = await customerSecurityLostPasskeyArgon2VerifyHashV157('binding', customerSecurityLostPasskeyCanonical(authoritativeBindings), metadata.binding_hash_commitment, vaultSecrets.pepper, vaultSecrets.rootSecret).catch(() => false);
+  }
   if (!bindingOk) return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_finalize_binding_commitment_mismatch', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email });
   if (override && override.argonQueueTicket && !customerSecurityLostPasskeyQueueLeaseHealthyV188(override.argonQueueTicket)) {
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 503, 'recovery_argon2_lease_lost', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_FINALIZE });
@@ -45117,32 +45217,14 @@ async function customerSecurityHandleRecoveryWorkerGenerateRecoV251(req, res, ac
     if (!activePasskeys.length) {
       return res.status(409).json({ ok: false, code: 'ACTIVE_PASSKEY_NOT_FOUND', message: 'Passkey aktif untuk akun ini belum ditemukan.' });
     }
-    const queueTicket = await customerSecurityLostPasskeyQueueAcquireV164(req, body);
-    if (!queueTicket || !queueTicket.ok) {
-      return res.status(queueTicket && queueTicket.status || 503).json({
-        ok: false,
-        code: queueTicket && queueTicket.code || 'RECOVERY_GENERATE_QUEUE_BUSY',
-        message: 'Recovery sedang diproses oleh antrean keamanan. Silakan tunggu sebentar.',
-        queue: {
-          status: 'busy',
-          waited_ms: Number(queueTicket && queueTicket.waited_ms || 0),
-          retry_after_seconds: Math.max(1, Math.ceil(customerSecurityLostPasskeyQueuePollMsV164() / 1000))
-        }
-      });
-    }
-    try {
-      return await customerSecurityGenerateRecoveryCodesRecoV251(req, res, 'customer_security_recovery_codes_generate', {
-        localWorker: true,
-        access: { customerId: owner.customerId },
-        owner,
-        activePasskeys,
-        bindings,
-        argonQueueTicket: queueTicket,
-        passwordLatestMaterial: String(body.password_latest_material || body.password_latest_proof || body.account_password || '')
-      });
-    } finally {
-      try { await queueTicket.release(); } catch (_) {}
-    }
+    return await customerSecurityGenerateRecoveryCodesRecoV251(req, res, 'customer_security_recovery_codes_generate', {
+      localWorker: true,
+      access: { customerId: owner.customerId },
+      owner,
+      activePasskeys,
+      bindings,
+      passwordLatestMaterial: String(body.password_latest_material || body.password_latest_proof || body.account_password || '')
+    });
   }
 
   if (workerTask === DIRAC_RECOVERY_WORKER_TASK_VERIFY) {
