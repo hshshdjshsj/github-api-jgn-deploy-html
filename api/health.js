@@ -13553,7 +13553,7 @@ async function diracRecoveryBrowserDecryptCompatSafeV343(material, ephemeralPubl
 /* ROOT FIX v345: the recovery donor's V182 validator is scoped inside
    DIRAC_MERGED_RECOVERY_V251 and is not visible to AUTH browser transport.
    Keep the exact same 100-character alphabet/policy in AUTH scope. */
-function customerSecurityLostPasskeyExactSecret100V182(value) {
+function diracRecoveryBrowserExactSecret100V345(value) {
   if (typeof value !== 'string') return '';
   if (value.length !== 100) return '';
   for (const char of value) {
@@ -13745,7 +13745,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
     } else {
       const expectedInnerKeys = ['action', 'password_b64url', 'recovery_code', 'request_id'];
       const requestIdInner = customerSecurityNormalizeLostPasskeyRequestId(parsed && parsed.request_id || '');
-      const recoveryCodeInner = customerSecurityLostPasskeyExactSecret100V182(
+      const recoveryCodeInner = diracRecoveryBrowserExactSecret100V345(
         customerSecurityNormalizeRecoveryCodeInput(parsed && parsed.recovery_code || '')
       );
       let passwordBytes = null;
@@ -14625,7 +14625,7 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
     return res.status(403).json({ ok: false, code, message: 'Permintaan verifikasi recovery terenkripsi ditolak.' });
   }
   const requestId = customerSecurityNormalizeLostPasskeyRequestId(body.request_id || '');
-  const code = customerSecurityLostPasskeyExactSecret100V182(
+  const code = diracRecoveryBrowserExactSecret100V345(
     customerSecurityNormalizeRecoveryCodeInput(body.recovery_code || '')
   );
   const accountPassword = customerSecurityExtractAccountPasswordForPdfV156(body);
