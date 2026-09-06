@@ -1492,6 +1492,7 @@ async function domainLogin(req, res, preloadedBody) {
     diracLoginFatalMarkV324(req, 'login.response_403', 'begin', {
       reason_code: 'LOGIN_ACCESS_BLOCKED'
     }, res);
+    diracUserSecurityMarkVerifiedAccessBlockV341(req, canonicalLoginUserV321, effectiveLoginBlockV320);
     const blockedResponseV324 = await res.status(403).json({
       ok: false,
       code: 'LOGIN_ACCESS_BLOCKED',
@@ -1528,6 +1529,7 @@ async function domainLogin(req, res, preloadedBody) {
   }
   if (publicationLoginBlockV321.blocked) {
     clearSessionCookies(res);
+    diracUserSecurityMarkVerifiedAccessBlockV341(req, canonicalLoginUserV321, publicationLoginBlockV321);
     return res.status(403).json({
       ok: false,
       code: 'LOGIN_ACCESS_BLOCKED',
@@ -43798,12 +43800,19 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
   const bindingSalt = crypto.randomBytes(LOST_PASSKEY_RECOVERY_SALT_BYTES_V157);
 
   const bindingsCanonical = customerSecurityLostPasskeyCanonical(bindings);
-  const linkTokenHash = await customerSecurityLostPasskeyArgon2EncodedHashLinkOpenV171('link_token', linkToken, linkTokenSalt, vaultSecrets.pepper, vaultSecrets.rootSecret);
+  const [linkTokenHash, emailSecretHash, websiteSecretHash] = await Promise.all([
+    customerSecurityLostPasskeyArgon2EncodedHashLinkOpenV171('link_token', linkToken, linkTokenSalt, vaultSecrets.pepper, vaultSecrets.rootSecret),
+    customerSecurityLostPasskeyArgon2EncodedHashV157('email_secret', emailSecret100, emailSecretSalt, vaultSecrets.pepper, vaultSecrets.rootSecret),
+    customerSecurityLostPasskeyArgon2EncodedHashV157('website_secret', websiteSecret100, websiteSecretSalt, vaultSecrets.pepper, vaultSecrets.rootSecret)
+  ]);
+  if (override && override.argonQueueTicket && !customerSecurityLostPasskeyQueueLeaseHealthyV188(override.argonQueueTicket)) {
+    return res.status(503).json({ ok: false, code: 'RECOVERY_ARGON2_LEASE_LOST', message: 'Antrean keamanan recovery perlu diulang.' });
+  }
   const linkTokenArgon2Params = customerSecurityLostPasskeyArgon2EncodedParamsV171(linkTokenHash) || customerSecurityLostPasskeyLinkOpenArgon2ParamsV171(64);
-  const emailSecretHash = await customerSecurityLostPasskeyArgon2EncodedHashV157('email_secret', emailSecret100, emailSecretSalt, vaultSecrets.pepper, vaultSecrets.rootSecret);
-  const websiteSecretHash = await customerSecurityLostPasskeyArgon2EncodedHashV157('website_secret', websiteSecret100, websiteSecretSalt, vaultSecrets.pepper, vaultSecrets.rootSecret);
-  const recoveryCodeHash = await customerSecurityLostPasskeyArgon2EncodedHashV157('recovery_code', recoveryCode, recoveryCodeSalt, vaultSecrets.pepper, vaultSecrets.rootSecret);
-  const bindingHashCommitment = await customerSecurityLostPasskeyArgon2EncodedHashV157('binding', bindingsCanonical, bindingSalt, vaultSecrets.pepper, vaultSecrets.rootSecret);
+  const [recoveryCodeHash, bindingHashCommitment] = await Promise.all([
+    customerSecurityLostPasskeyArgon2EncodedHashV157('recovery_code', recoveryCode, recoveryCodeSalt, vaultSecrets.pepper, vaultSecrets.rootSecret),
+    customerSecurityLostPasskeyArgon2EncodedHashV157('binding', bindingsCanonical, bindingSalt, vaultSecrets.pepper, vaultSecrets.rootSecret)
+  ]);
   if (override && override.argonQueueTicket && !customerSecurityLostPasskeyQueueLeaseHealthyV188(override.argonQueueTicket)) {
     return res.status(503).json({ ok: false, code: 'RECOVERY_ARGON2_LEASE_LOST', message: 'Antrean keamanan recovery perlu diulang.' });
   }
@@ -47543,7 +47552,8 @@ diracS2SProcessSecurityReportV206 = async function diracS2SProcessSecurityReport
 const DIRAC_SECURITY_NOTIFICATION_MAIL_PATCH_V327 = 'dirac-security-notification-mail-v327';
 const DIRAC_USER_SECURITY_NOTIFICATION_STATE_V327 = {
   pending: new Set(),
-  configurationWarningLogged: false
+  configurationWarningLogged: false,
+  readinessLogged: false
 };
 
 function diracSecurityMailPlaceholderV327(value) {
@@ -47891,6 +47901,204 @@ async function diracUserSecurityResolveLoginFailureV336(req, payload, action, ht
   return Object.freeze({ kind: 'login_password_blocked', email: marker.email, reference,
     subject: 'DiracGroup Security - ' + String(htmlInput.title).replace(/\n/g, ' ') + ' [' + reference + ']',
     html: diracSecurityCorporateEmailHtmlV327(htmlInput), text: diracSecurityMailTextV327(htmlInput) });
+}
+
+
+const DIRAC_USER_SECURITY_MAIL_DIAGNOSTIC_PATCH_V341 = 'dirac-user-security-mail-diagnostic-v341';
+const DIRAC_USER_SECURITY_ACCESS_BLOCK_NOTICE_PATCH_V341 = 'dirac-user-security-access-block-notice-v341';
+
+function diracUserSecurityMarkVerifiedAccessBlockV341(req, canonicalUser, decision) {
+  try {
+    const ctx = diracCentralCurrentContextV149();
+    const email = diracSecurityMailEmailV327(canonicalUser && canonicalUser.email);
+    const authUserId = String(canonicalUser && canonicalUser.id || '').trim();
+    const scope = String(decision && decision.matched_scope || '').trim().toLowerCase();
+    const retryAfterSeconds = Number(decision && decision.retry_after_seconds || 0);
+    const blockedUntilRaw = decision && decision.blocked_until == null ? '' : String(decision.blocked_until || '').trim();
+    const blockedUntilMs = blockedUntilRaw ? Date.parse(blockedUntilRaw) : 0;
+    if (!req || !ctx || ctx.req !== req || ctx.action !== 'domain_login'
+        || String(req.method || '').toUpperCase() !== 'POST'
+        || !diracCentralHandlerContextFullyPassedV211(ctx, req)
+        || !canonicalUser || !customerSecurityLooksLikeUuid(authUserId)
+        || !email || email !== normalizeAuthEmail(canonicalUser.email || '')
+        || !decision || decision.ok !== true || decision.blocked !== true
+        || !new Set(['account', 'provider_account', 'account_settings', 'ip', 'device']).has(scope)
+        || !Number.isSafeInteger(retryAfterSeconds) || retryAfterSeconds < 0 || retryAfterSeconds > 31536000
+        || (blockedUntilRaw && (!Number.isFinite(blockedUntilMs) || blockedUntilMs <= Date.now() - 30000))
+        || Object.prototype.hasOwnProperty.call(req, '__diracUserSecurityAccessBlockV341')) return false;
+    Object.defineProperty(req, '__diracUserSecurityAccessBlockV341', {
+      value: Object.freeze({
+        patch: DIRAC_USER_SECURITY_ACCESS_BLOCK_NOTICE_PATCH_V341,
+        email,
+        authUserId,
+        scope,
+        retryAfterSeconds,
+        blockedUntilMs: blockedUntilRaw ? blockedUntilMs : 0,
+        requestId: String(ctx.requestId || '')
+      }),
+      enumerable: false,
+      writable: false,
+      configurable: false
+    });
+    return true;
+  } catch (_) { return false; }
+}
+
+function diracUserSecurityAccessBlockMarkerV341(req) {
+  try {
+    const descriptor = req && Object.getOwnPropertyDescriptor(req, '__diracUserSecurityAccessBlockV341');
+    const marker = descriptor && descriptor.value;
+    const ctx = diracCentralCurrentContextV149();
+    if (!descriptor || descriptor.enumerable !== false || descriptor.writable !== false || descriptor.configurable !== false
+        || !marker || !Object.isFrozen(marker)
+        || marker.patch !== DIRAC_USER_SECURITY_ACCESS_BLOCK_NOTICE_PATCH_V341
+        || !ctx || ctx.req !== req || ctx.action !== 'domain_login'
+        || String(req && req.method || '').toUpperCase() !== 'POST'
+        || !diracCentralHandlerContextFullyPassedV211(ctx, req)
+        || marker.requestId !== String(ctx.requestId || '')
+        || !customerSecurityLooksLikeUuid(marker.authUserId)
+        || !diracSecurityMailEmailV327(marker.email) || marker.email !== diracSecurityMailEmailV327(marker.email)
+        || !new Set(['account', 'provider_account', 'account_settings', 'ip', 'device']).has(marker.scope)
+        || !Number.isSafeInteger(marker.retryAfterSeconds) || marker.retryAfterSeconds < 0 || marker.retryAfterSeconds > 31536000
+        || !Number.isSafeInteger(marker.blockedUntilMs) || marker.blockedUntilMs < 0
+        || (marker.blockedUntilMs > 0 && marker.blockedUntilMs <= Date.now() - 30000)) return null;
+    return marker;
+  } catch (_) { return null; }
+}
+
+function diracUserSecurityLoginFailureCustomerLookupContractV341(ctx, table, path, options = {}, method) {
+  try {
+    if (!ctx || ctx.action !== 'domain_login' || ctx.method !== 'POST' || !ctx.req
+        || !diracCentralHandlerContextFullyPassedV211(ctx, ctx.req)
+        || String(table || '').toLowerCase() !== 'customers'
+        || String(method || options.method || '').toUpperCase() !== 'GET'
+        || !options || options.auth !== 'service' || String(options.method || '').toUpperCase() !== 'GET'
+        || options.body !== undefined || Object.keys(options).sort().join(',') !== 'auth,method') return false;
+    const marker = diracUserSecurityLoginFailureMarkerV336(ctx.req);
+    if (!marker) return false;
+    const parsed = new URL(String(path || ''), 'https://dirac-user-security.invalid');
+    if (parsed.origin !== 'https://dirac-user-security.invalid' || parsed.pathname !== '/rest/v1/customers' || parsed.hash) return false;
+    const params = parsed.searchParams;
+    const keys = Array.from(params.keys()).sort();
+    const expectedKeys = ['email', 'limit', 'order', 'select'];
+    return keys.length === expectedKeys.length
+      && keys.every((key, index) => key === expectedKeys[index] && params.getAll(key).length === 1)
+      && params.get('select') === 'id,email,name,phone'
+      && params.get('email') === 'eq.' + marker.email
+      && params.get('order') === 'updated_at.desc'
+      && params.get('limit') === '2';
+  } catch (_) { return false; }
+}
+
+async function diracUserSecurityResolveAccessBlockV341(req, payload, action, httpStatus) {
+  if (action !== 'domain_login' || httpStatus !== 403 || !payload || payload.ok !== false
+      || String(payload.code || '') !== 'LOGIN_ACCESS_BLOCKED') return null;
+  const marker = diracUserSecurityAccessBlockMarkerV341(req);
+  const ctx = diracCentralCurrentContextV149();
+  if (!marker || !ctx || ctx.req !== req || ctx.action !== 'domain_login'
+      || domainLoginBanGetLookupMarkerV321(req)) return null;
+
+  let found = null;
+  try {
+    domainLoginBanSetLookupMarkerV320(req, {
+      action: 'domain_login',
+      stage: 'customer_by_email',
+      auth_user_id: marker.authUserId,
+      customer_id: '',
+      email: marker.email
+    });
+    found = await customerSecurityFetchCustomerByEmail(marker.email).catch(() => null);
+  } finally {
+    domainLoginBanClearLookupMarkersV320(req);
+  }
+  const rows = found && found.ok === true && Array.isArray(found.data) ? found.data : [];
+  const customer = rows.length === 1 ? rows[0] : null;
+  if (!customer || !customerSecurityLooksLikeUuid(String(customer.id || ''))
+      || diracSecurityMailEmailV327(customer.email) !== marker.email) return null;
+
+  const client = diracSecurityMailClientContextV327(req);
+  const reference = diracSecurityMailReferenceV327('account_security_blocked', req, marker.email);
+  const until = marker.blockedUntilMs > 0
+    ? (typeof formatDiracWibTime === 'function' ? formatDiracWibTime(marker.blockedUntilMs) : new Date(marker.blockedUntilMs).toISOString())
+    : 'Menunggu peninjauan keamanan';
+  const scopeLabel = marker.scope === 'device' ? 'Perangkat'
+    : marker.scope === 'ip' ? 'Jaringan/perangkat'
+      : 'Akun';
+  const htmlInput = {
+    preheader: 'Akses masuk akun Anda sedang diblokir oleh kebijakan keamanan Dirac Group.',
+    brandLabel: 'SECURE ACCOUNT SECURITY',
+    eyebrow: 'PERINGATAN KEAMANAN AKUN',
+    title: 'Akses Akun\nSedang Diblokir',
+    greeting: 'Yth. Pengguna Dirac Group,',
+    summary: 'Sistem keamanan menolak percobaan masuk yang telah terautentikasi karena akun, perangkat, atau jaringan masih berada dalam status pembatasan keamanan.',
+    statusLabel: 'STATUS AKUN',
+    statusValue: 'AKSES MASUK DIBLOKIR',
+    statusNote: 'Pembatasan tetap berlaku sesuai keputusan keamanan server. Email ini tidak membuka, memperpendek, atau melewati blokir tersebut.',
+    detailsLabel: 'DETAIL KEAMANAN',
+    rows: [
+      ['AKTIVITAS', 'Percobaan masuk ditolak oleh kebijakan keamanan'],
+      ['CAKUPAN', scopeLabel],
+      ['AKHIR PEMBATASAN / TINDAKAN', until],
+      ['WAKTU WIB', typeof formatDiracWibTime === 'function' ? formatDiracWibTime(Date.now()) : new Date().toISOString()],
+      ['PERANGKAT', client.device], ['BROWSER', client.browser], ['IP TERSAMAR', client.maskedIp], ['REFERENSI', reference]
+    ],
+    actionUrl: diracRoleOriginV250('security') + '/keamanan.html',
+    actionText: 'BUKA PUSAT KEAMANAN',
+    warningTitle: 'JIKA INI BUKAN ANDA',
+    warning: 'Jangan membagikan password, OTP, token, cookie, atau Passkey. Tinjau keamanan akun melalui kanal resmi dan hubungi support apabila aktivitas ini tidak Anda kenali.',
+    supportLead: 'Butuh bantuan? Hubungi WhatsApp 087892523968 atau support@diracgroup.store.'
+  };
+  return Object.freeze({
+    kind: 'account_security_blocked',
+    email: marker.email,
+    reference,
+    subject: 'DiracGroup Security - Akses Akun Sedang Diblokir [' + reference + ']',
+    html: diracSecurityCorporateEmailHtmlV327(htmlInput),
+    text: diracSecurityMailTextV327(htmlInput)
+  });
+}
+
+function diracUserSecurityReadinessDiagnosticV341(configuration) {
+  if (DIRAC_USER_SECURITY_NOTIFICATION_STATE_V327.readinessLogged) return;
+  DIRAC_USER_SECURITY_NOTIFICATION_STATE_V327.readinessLogged = true;
+  try {
+    const source = typeof diracPasswordResetMailConfigurationDiagnosticV340 === 'function'
+      ? diracPasswordResetMailConfigurationDiagnosticV340() : {};
+    const checks = {};
+    const envPresent = {};
+    const allowedChecks = ['email_enabled', 'brevo_key_valid', 'brevo_sender_valid', 'resend_key_valid', 'resend_sender_valid', 'resend_sender_official', 'reply_to_valid', 'timeout_valid', 'smtp_host_valid', 'smtp_port_valid', 'smtp_secure', 'smtp_user_valid', 'smtp_password_valid', 'provider_secrets_distinct'];
+    for (const name of allowedChecks) if (source && source.checks && typeof source.checks[name] === 'boolean') checks[name] = source.checks[name];
+    for (const name of ['DIRAC_USER_SECURITY_EMAIL_ENABLED', 'DIRAC_USER_SECURITY_BREVO_API_KEY', 'DIRAC_USER_SECURITY_BREVO_FROM_EMAIL', 'DIRAC_USER_SECURITY_RESEND_API_KEY', 'DIRAC_USER_SECURITY_RESEND_FROM_EMAIL', 'DIRAC_USER_SECURITY_REPLY_TO', 'DIRAC_USER_SECURITY_TIMEOUT_MS', 'DIRAC_USER_SECURITY_SMTP_HOST', 'DIRAC_USER_SECURITY_SMTP_PORT', 'DIRAC_USER_SECURITY_SMTP_SECURE', 'DIRAC_USER_SECURITY_SMTP_USER', 'DIRAC_USER_SECURITY_SMTP_APP_PASSWORD']) {
+      envPresent[name] = Boolean(source && source.env_present && source.env_present[name] === true);
+    }
+    console.info('[dirac-user-security-mail-diagnostic-v341] ' + JSON.stringify({
+      patch: DIRAC_USER_SECURITY_MAIL_DIAGNOSTIC_PATCH_V341,
+      event: 'readiness',
+      ready: Boolean(configuration && configuration.user),
+      checks,
+      failed_checks: Object.keys(checks).filter((name) => checks[name] !== true),
+      env_present: envPresent,
+      secret_values_logged: false
+    }));
+  } catch (_) { return; }
+}
+
+function diracUserSecurityDeliveryDiagnosticV341(event, result) {
+  try {
+    const kind = String(event && event.kind || '');
+    if (!new Set(['password_changed', 'passkey_changed', 'account_welcome', 'login_password_blocked', 'account_security_blocked']).has(kind)) return;
+    console.info('[dirac-user-security-mail-diagnostic-v341] ' + JSON.stringify({
+      patch: DIRAC_USER_SECURITY_MAIL_DIAGNOSTIC_PATCH_V341,
+      event: 'delivery_result',
+      kind,
+      reference: diracSecurityMailCleanV327(event && event.reference || '', 20),
+      ok: Boolean(result && result.ok === true),
+      provider: diracSecurityMailCleanV327(result && result.provider || 'unknown', 40),
+      status: Math.max(0, Math.min(999, Number(result && result.status || 0))),
+      code: diracSecurityMailCleanV327(result && result.code || '', 100),
+      secret_values_logged: false
+    }));
+  } catch (_) { return; }
 }
 
 function diracUserSecurityCommittedPasskeyMarkerV339(req, action) {
@@ -48632,6 +48840,7 @@ __diracV202RegisterMiddleware(async function diracSecurityNotificationMailWrappe
   if (!gatedAction) return nextHandlerV202(req, res);
 
   const configuration = diracUserSecurityConfigurationRequiredV327();
+  diracUserSecurityReadinessDiagnosticV341(configuration);
   if (!configuration.user) return nextHandlerV202(req, res);
 
   if (action === 'domain_register') return nextHandlerV202(req, res);
@@ -48655,17 +48864,20 @@ __diracV202RegisterMiddleware(async function diracSecurityNotificationMailWrappe
         ? diracUserSecurityResolveEventV327(req, payload, action)
         : (action === 'dirac_mfa_passkey_verify' && diracUserSecurityCommittedPasskeyMarkerV339(req, action)
           ? diracUserSecurityResolveEventV327(req, payload, action, true)
-          : await diracUserSecurityResolveLoginFailureV336(req, payload, action, httpStatus)));
+          : (await diracUserSecurityResolveLoginFailureV336(req, payload, action, httpStatus)
+            || await diracUserSecurityResolveAccessBlockV341(req, payload, action, httpStatus))));
     if (event && !notificationScheduled) {
       notificationScheduled = true;
       const delivery = diracUserSecurityKeepAliveV327(req, diracUserSecuritySendV327(event, configuration.user));
       const completed = delivery.attached ? null : await delivery.promise;
+      if (completed) diracUserSecurityDeliveryDiagnosticV341(event, completed);
       if (completed && completed.ok !== true) diracUserSecurityLocalLogV327(event, completed);
       if (delivery.attached) {
         // Send the guarded response now; retain this live guard context until mail settles.
         try { return await originalJson(payload); }
         finally {
           const result = await delivery.promise;
+          diracUserSecurityDeliveryDiagnosticV341(event, result || {});
           if (!result || result.ok !== true) diracUserSecurityLocalLogV327(event, result || {});
         }
       }
@@ -56302,6 +56514,7 @@ async function diracCentralInspectServiceRoleAccessV146(path, options = {}) {
     return { ok: true, guarded: 'central_owner_lookup_v194' };
   }
   if (diracCentralIsAuthAuditWriteV331(ctx, table, path, options, method)) return { ok: true, guarded: 'auth_audit_exact_write_v331' };
+  if (diracUserSecurityLoginFailureCustomerLookupContractV341(ctx, table, path, options, method)) return { ok: true, guarded: 'user_security_login_failure_customer_lookup_v341' };
   if (diracCentralIsRegisterBootstrapServiceRoleV146(ctx, table, path, options, method)) return { ok: true, guarded: 'domain_register_bootstrap_service_role' };
   if (diracCentralIsCheckoutOwnerBootstrapServiceRoleV146(ctx, table, path, options, method)) return { ok: true, guarded: 'checkout_owner_bootstrap_service_role' };
   const checkoutStage26OwnerReadV216 = diracBolaIdorV128CentralOwnerBootstrapDecisionV213(path, options, { req: ctx.req, action: ctx.action }, 'central_gateway');
