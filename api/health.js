@@ -13217,6 +13217,90 @@ function diracRecoveryBrowserHkdfInfoV287(kind, requestId, keyId, bindingDigest)
   ].join('\n'), 'utf8');
 }
 
+async function diracRecoveryBrowserDecryptCompatV288(material, ephemeralPublic, salt, nonce, sealed, aad, requestId, bindingDigest) {
+  const subtle = crypto.webcrypto && crypto.webcrypto.subtle;
+  if (!subtle || !material || !material.ecdh || !Buffer.isBuffer(material.publicKey)) {
+    const error = new Error('RECOVERY_BROWSER_TRANSPORT_COMPAT_CRYPTO_UNAVAILABLE');
+    error.code = 'RECOVERY_BROWSER_TRANSPORT_COMPAT_CRYPTO_UNAVAILABLE';
+    throw error;
+  }
+  const privateScalarRaw = Buffer.from(material.ecdh.getPrivateKey());
+  const privateScalar = Buffer.alloc(32);
+  if (privateScalarRaw.length < 1 || privateScalarRaw.length > privateScalar.length) {
+    privateScalarRaw.fill(0);
+    const error = new Error('RECOVERY_BROWSER_TRANSPORT_COMPAT_PRIVATE_KEY_INVALID');
+    error.code = 'RECOVERY_BROWSER_TRANSPORT_COMPAT_PRIVATE_KEY_INVALID';
+    throw error;
+  }
+  privateScalarRaw.copy(privateScalar, privateScalar.length - privateScalarRaw.length);
+  privateScalarRaw.fill(0);
+  const publicX = Buffer.from(material.publicKey.subarray(1, 33));
+  const publicY = Buffer.from(material.publicKey.subarray(33, 65));
+  let shared = null;
+  let requestBits = null;
+  let responseBits = null;
+  let plaintext = null;
+  let requestInfo = null;
+  let responseInfo = null;
+  try {
+    if (privateScalar.length !== 32 || publicX.length !== 32 || publicY.length !== 32) {
+      throw new Error('compat_key_shape_invalid');
+    }
+    const privateKey = await subtle.importKey('jwk', {
+      kty: 'EC',
+      crv: 'P-256',
+      x: publicX.toString('base64url'),
+      y: publicY.toString('base64url'),
+      d: privateScalar.toString('base64url'),
+      ext: true,
+      key_ops: ['deriveBits']
+    }, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']);
+    const peerKey = await subtle.importKey(
+      'raw',
+      Buffer.from(ephemeralPublic),
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      []
+    );
+    shared = Buffer.from(await subtle.deriveBits({ name: 'ECDH', public: peerKey }, privateKey, 256));
+    if (shared.length !== 32 || crypto.timingSafeEqual(shared, Buffer.alloc(32))) {
+      throw new Error('compat_shared_secret_invalid');
+    }
+    const hkdfBase = await subtle.importKey('raw', shared, 'HKDF', false, ['deriveBits']);
+    requestInfo = diracRecoveryBrowserHkdfInfoV287('request', requestId, material.keyId, bindingDigest);
+    responseInfo = diracRecoveryBrowserHkdfInfoV287('response', requestId, material.keyId, bindingDigest);
+    requestBits = Buffer.from(await subtle.deriveBits({
+      name: 'HKDF', hash: 'SHA-256', salt: Buffer.from(salt), info: requestInfo
+    }, hkdfBase, 256));
+    responseBits = Buffer.from(await subtle.deriveBits({
+      name: 'HKDF', hash: 'SHA-256', salt: Buffer.from(salt), info: responseInfo
+    }, hkdfBase, 256));
+    if (requestBits.length !== 32 || responseBits.length !== 32) throw new Error('compat_hkdf_output_invalid');
+    const requestAesKey = await subtle.importKey('raw', requestBits, { name: 'AES-GCM' }, false, ['decrypt']);
+    plaintext = Buffer.from(await subtle.decrypt({
+      name: 'AES-GCM',
+      iv: Buffer.from(nonce),
+      additionalData: Buffer.from(aad),
+      tagLength: 128
+    }, requestAesKey, Buffer.from(sealed)));
+    return { plaintext: Buffer.from(plaintext), responseKey: Buffer.from(responseBits) };
+  } catch (_) {
+    const error = new Error('RECOVERY_BROWSER_TRANSPORT_AUTHENTICATION_FAILED');
+    error.code = 'RECOVERY_BROWSER_TRANSPORT_AUTHENTICATION_FAILED';
+    throw error;
+  } finally {
+    privateScalar.fill(0);
+    publicX.fill(0);
+    publicY.fill(0);
+    if (shared) shared.fill(0);
+    if (requestBits) requestBits.fill(0);
+    if (responseBits) responseBits.fill(0);
+    if (plaintext) plaintext.fill(0);
+    if (requestInfo) requestInfo.fill(0);
+    if (responseInfo) responseInfo.fill(0);
+  }
+}
+
 async function diracRecoveryBrowserOpenV287(req, body) {
   const source = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
   const expectedKeys = [
@@ -13309,14 +13393,32 @@ async function diracRecoveryBrowserOpenV287(req, body) {
     aad = diracRecoveryBrowserAadV287(source, origin, bindingDigest);
     const tag = Buffer.from(sealed.subarray(sealed.length - 16));
     const ciphertext = Buffer.from(sealed.subarray(0, sealed.length - 16));
+    let primaryAuthenticationError = null;
     try {
       const decipher = crypto.createDecipheriv('aes-256-gcm', requestKey, nonce, { authTagLength: 16 });
       decipher.setAAD(aad, { plaintextLength: ciphertext.length });
       decipher.setAuthTag(tag);
       plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    } catch (error) {
+      primaryAuthenticationError = error;
     } finally {
       tag.fill(0);
       ciphertext.fill(0);
+    }
+    if (primaryAuthenticationError) {
+      if (responseKey) { responseKey.fill(0); responseKey = null; }
+      const compat = await diracRecoveryBrowserDecryptCompatV288(
+        material,
+        ephemeralPublic,
+        salt,
+        nonce,
+        sealed,
+        aad,
+        requestId,
+        bindingDigest
+      );
+      plaintext = compat.plaintext;
+      responseKey = compat.responseKey;
     }
     let parsed;
     let text;
