@@ -1561,7 +1561,7 @@ async function domainLoginEffectiveAccessBlockV320(req, authData) {
     return {
       ok: true,
       blocked: true,
-      matched_scope: 'account',
+      matched_scope: accountRateV336.matched_scope || 'account',
       blocked_until: accountRateV336.permanent ? null : new Date(Date.now() + accountRateV336.retryAfterSeconds * 1000).toISOString(),
       retry_after_seconds: accountRateV336.retryAfterSeconds,
       reason: accountRateV336.permanent ? 'login_account_locked' : 'login_password_lockout'
@@ -2611,9 +2611,37 @@ function getDomainLoginRateIdentity(req, email) {
   return {
     key: 'domain-login-account:' + emailHash,
     legacyKey: 'domain-login-rate:' + legacyDigest,
+    scope: 'account',
     ip,
     emailHash
   };
+}
+
+function getDomainLoginRateIdentitiesV353(req, email) {
+  const account = getDomainLoginRateIdentity(req, email);
+  const access = customerSecurityAccessBlockIdentity(req);
+  const ipHash = String(access && access.ip_hash || '').trim().toLowerCase();
+  const deviceHash = String(access && access.device_hash || '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(ipHash) || !/^[a-f0-9]{64}$/.test(deviceHash)) {
+    throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+  }
+  return Object.freeze([
+    Object.freeze(account),
+    Object.freeze({
+      key: 'domain-login-ip:' + ipHash,
+      legacyKey: '',
+      scope: 'ip',
+      ip: account.ip,
+      emailHash: account.emailHash
+    }),
+    Object.freeze({
+      key: 'domain-login-device:' + deviceHash,
+      legacyKey: '',
+      scope: 'device',
+      ip: account.ip,
+      emailHash: account.emailHash
+    })
+  ]);
 }
 
 function normalizeDomainLoginRateRecord(record, now = Date.now()) {
@@ -2638,19 +2666,28 @@ function normalizeDomainLoginRateRecord(record, now = Date.now()) {
   };
 }
 
-async function readDomainLoginRateRecord(identity) {
-  const key = String(identity && identity.key || '').trim();
-  if (!key || !DOMAIN_LOGIN_RATE_TABLE) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
-  const keys = [key, String(identity.legacyKey || '')].filter(Boolean);
+async function readDomainLoginRateRecordsV353(identities) {
+  const source = Array.isArray(identities) ? identities : [];
+  if (!DOMAIN_LOGIN_RATE_TABLE || !source.length || source.length > 6) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+  const primaryKeys = source.map((identity) => String(identity && identity.key || '').trim());
+  if (primaryKeys.some((key) => !/^[A-Za-z0-9:._-]{1,500}$/.test(key)) || new Set(primaryKeys).size !== primaryKeys.length) {
+    throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+  }
+  const keys = Array.from(new Set(source.flatMap((identity) => [
+    String(identity && identity.key || '').trim(),
+    String(identity && identity.legacyKey || '').trim()
+  ]).filter(Boolean)));
+  if (!keys.length || keys.length > 12) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
   const path = '/rest/v1/' + encodeURIComponent(DOMAIN_LOGIN_RATE_TABLE)
     + '?select=security_key,record_json,blocked_until_ms,expires_at,updated_at'
     + '&security_key=in.(' + keys.map(encodeURIComponent).join(',') + ')'
     + '&limit=' + String(keys.length + 1);
   const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
-  if (!result || result.ok !== true || !Array.isArray(result.data)
-      || result.data.length > keys.length) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+  if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > keys.length) {
+    throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+  }
   const seen = new Set();
-  const records = new Map();
+  const rowsByKey = new Map();
   for (const row of result.data) {
     if (!row || !keys.includes(row.security_key) || seen.has(row.security_key)
         || !row.record_json || typeof row.record_json !== 'object' || Array.isArray(row.record_json)
@@ -2662,31 +2699,56 @@ async function readDomainLoginRateRecord(identity) {
     const topLevelBlock = Number(row.blocked_until_ms || 0);
     if (!Number.isSafeInteger(topLevelBlock) || topLevelBlock < 0) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
     candidate.blockedUntilMs = Math.max(candidate.blockedUntilMs, topLevelBlock);
-    records.set(row.security_key, { row, candidate });
+    rowsByKey.set(row.security_key, { row, candidate });
   }
-  const primary = records.get(key);
-  let record = primary ? primary.candidate : normalizeDomainLoginRateRecord(null);
-  const version = primary ? (primary.row.updated_at == null ? null : String(primary.row.updated_at)) : undefined;
-  const legacy = records.get(identity.legacyKey);
-  if (legacy) {
-    const candidate = legacy.candidate;
-    // A later account update already incorporated, or explicitly cleared, this legacy history.
-    const superseded = version != null && candidate.lastFailedAtMs <= Date.parse(version);
-    if (!superseded) {
-      if (candidate.count >= 5 && candidate.lastFailedAtMs > 0) {
-        candidate.blockedUntilMs = Math.max(candidate.blockedUntilMs,
-          candidate.lastFailedAtMs + (candidate.count >= 6 ? 86400000 : 3600000));
-      }
-      if (candidate.blockedUntilMs > Date.now() || candidate.resetAtMs > Date.now()) {
-        record.count = Math.max(record.count, candidate.count);
-        record.lastFailedAtMs = Math.max(record.lastFailedAtMs, candidate.lastFailedAtMs);
-        record.blockedUntilMs = Math.max(record.blockedUntilMs, candidate.blockedUntilMs);
-        record.permanent = record.permanent || candidate.permanent;
+
+  const now = Date.now();
+  const output = new Map();
+  for (const identity of source) {
+    const key = String(identity.key || '').trim();
+    const primary = rowsByKey.get(key);
+    let record = primary ? primary.candidate : normalizeDomainLoginRateRecord(null, now);
+    const version = primary ? (primary.row.updated_at == null ? null : String(primary.row.updated_at)) : undefined;
+    const legacyKey = String(identity.legacyKey || '').trim();
+    const legacy = legacyKey ? rowsByKey.get(legacyKey) : null;
+    if (legacy) {
+      const candidate = legacy.candidate;
+      const superseded = version != null && candidate.lastFailedAtMs <= Date.parse(version);
+      if (!superseded) {
+        if (candidate.count >= 5 && candidate.lastFailedAtMs > 0) {
+          candidate.blockedUntilMs = Math.max(candidate.blockedUntilMs,
+            candidate.lastFailedAtMs + (candidate.count >= 6 ? 86400000 : 3600000));
+        }
+        if (candidate.blockedUntilMs > now || candidate.resetAtMs > now) {
+          record.count = Math.max(record.count, candidate.count);
+          record.lastFailedAtMs = Math.max(record.lastFailedAtMs, candidate.lastFailedAtMs);
+          record.blockedUntilMs = Math.max(record.blockedUntilMs, candidate.blockedUntilMs);
+          record.permanent = record.permanent || candidate.permanent;
+        }
       }
     }
+    record = normalizeDomainLoginRateRecord(record, now);
+    const scope = String(identity.scope || 'account');
+    if (scope !== 'account' && record.count < 5 && record.permanent !== true
+        && record.blockedUntilMs <= now && Number(record.resetAtMs || 0) <= now) {
+      record.count = 0;
+      record.windowStartMs = now;
+      record.resetAtMs = now + DOMAIN_LOGIN_RATE_WINDOW_MS;
+      record.blockedUntilMs = 0;
+      record.lastFailedAtMs = 0;
+      record.permanent = false;
+    }
+    Object.defineProperty(record, '__version', { value: version });
+    output.set(key, record);
   }
-  record = normalizeDomainLoginRateRecord(record);
-  Object.defineProperty(record, '__version', { value: version });
+  return output;
+}
+
+async function readDomainLoginRateRecord(identity) {
+  const key = String(identity && identity.key || '').trim();
+  const records = await readDomainLoginRateRecordsV353([identity]);
+  const record = records.get(key);
+  if (!record) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
   return record;
 }
 
@@ -2761,10 +2823,20 @@ function sendDomainLoginRateDecisionV336(res, decision) {
 }
 
 async function checkDomainLoginRateLimit(req, email) {
-  const identity = getDomainLoginRateIdentity(req, email);
   try {
-    const record = await readDomainLoginRateRecord(identity);
-    return domainLoginRateDecisionV336(identity, record);
+    const identities = getDomainLoginRateIdentitiesV353(req, email);
+    const records = await readDomainLoginRateRecordsV353(identities);
+    const decisions = identities.map((identity) => {
+      const record = records.get(identity.key);
+      if (!record) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+      return { ...domainLoginRateDecisionV336(identity, record), matched_scope: identity.scope || 'account' };
+    });
+    const blocked = decisions.filter((decision) => decision.blocked)
+      .sort((left, right) => Number(right.permanent) - Number(left.permanent)
+        || Number(right.retryAfterSeconds || 0) - Number(left.retryAfterSeconds || 0)
+        || Number(right.count || 0) - Number(left.count || 0));
+    if (blocked.length) return blocked[0];
+    return { ...decisions[0], ok: true, blocked: false, matched_scope: '' };
   } catch (_) {
     return { ok: false, blocked: true, unavailable: true, status: 503, code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' };
   }
@@ -2779,30 +2851,81 @@ function shouldCountDomainLoginFailure(result) {
   return /invalid (?:login credentials|credentials|password)|incorrect password/i.test(String(data.msg || data.message || data.error_description || data.error || ''));
 }
 
-async function registerDomainLoginFailure(req, email) {
-  const identity = getDomainLoginRateIdentity(req, email);
-  try {
-    for (let attempt = 0; attempt < 12; attempt += 1) {
-      const record = await readDomainLoginRateRecord(identity);
-      const now = Date.now();
-      const current = domainLoginRateDecisionV336(identity, record, now);
-      if (current.blocked) return current;
-      record.count = Math.min(7, record.count + 1);
-      record.lastFailedAtMs = now;
-      record.permanent = record.count >= 7;
-      record.blockedUntilMs = record.permanent ? 253402300799999
-        : record.count >= 6 ? now + 86400000
-          : record.count >= 5 ? now + 3600000 : 0;
-      if (!await writeDomainLoginRateRecord(identity, record)) continue;
-      if (record.count >= 5 && req && !Object.prototype.hasOwnProperty.call(req, '__diracUserSecurityLoginFailureV336')) {
-        Object.defineProperty(req, '__diracUserSecurityLoginFailureV336', {
-          value: Object.freeze({ email: normalizeAuthEmail(email), attemptCount: record.count, blockedUntilMs: record.blockedUntilMs, permanent: record.permanent })
-        });
-      }
-      return domainLoginRateDecisionV336(identity, record, now);
+async function registerDomainLoginFailureForIdentityV353(identity) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const record = await readDomainLoginRateRecord(identity);
+    const now = Date.now();
+    const current = domainLoginRateDecisionV336(identity, record, now);
+    if (current.blocked) return { ...current, matched_scope: identity.scope || 'account' };
+    if (record.count === 0) {
+      record.windowStartMs = now;
+      record.resetAtMs = now + DOMAIN_LOGIN_RATE_WINDOW_MS;
     }
-  } catch (_) {}
-  return { ok: false, blocked: true, unavailable: true, status: 503, code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' };
+    record.count = Math.min(7, record.count + 1);
+    record.lastFailedAtMs = now;
+    record.permanent = record.count >= 7;
+    record.blockedUntilMs = record.permanent ? 253402300799999
+      : record.count >= 6 ? now + 86400000
+        : record.count >= 5 ? now + 3600000 : 0;
+    if (!await writeDomainLoginRateRecord(identity, record)) continue;
+    return { ...domainLoginRateDecisionV336(identity, record, now), matched_scope: identity.scope || 'account' };
+  }
+  throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+}
+
+async function registerDomainLoginFailure(req, email) {
+  try {
+    const identities = getDomainLoginRateIdentitiesV353(req, email);
+    const decisions = await Promise.all(identities.map((identity) => registerDomainLoginFailureForIdentityV353(identity)));
+    if (decisions.some((decision) => !decision || decision.unavailable)) {
+      return { ok: false, blocked: true, unavailable: true, status: 503, code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' };
+    }
+    const blocked = decisions.filter((decision) => decision.blocked)
+      .sort((left, right) => Number(right.permanent) - Number(left.permanent)
+        || Number(right.retryAfterSeconds || 0) - Number(left.retryAfterSeconds || 0)
+        || Number(right.count || 0) - Number(left.count || 0));
+    const selected = blocked[0] || decisions.slice().sort((left, right) => Number(right.count || 0) - Number(left.count || 0))[0];
+
+    if (blocked.length) {
+      const untilMs = blocked.some((decision) => decision.permanent)
+        ? 253402300799999
+        : Math.max(...blocked.map((decision) => Date.now() + Math.max(1, Number(decision.retryAfterSeconds || 0)) * 1000));
+      const accessIdentity = customerSecurityAccessBlockIdentity(req);
+      const mirrored = await customerSecurityCreatePersistentAccessBlockV325(
+        accessIdentity,
+        'domain_login',
+        'wrong_password_rate_limit_' + String(selected && selected.matched_scope || 'source'),
+        null,
+        untilMs
+      ).catch(() => false);
+      if (mirrored !== true) {
+        return { ok: false, blocked: true, unavailable: true, status: 503, code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' };
+      }
+      diracBoundedMapSetV321(
+        CUSTOMER_SECURITY_ACCESS_BLOCK_MEMORY,
+        accessIdentity.ip_hash + ':' + accessIdentity.device_hash,
+        untilMs,
+        5000,
+        Date.now(),
+        (value) => Number(value || 0)
+      );
+    }
+
+    if (selected && Number(selected.count || 0) >= 5 && req && !Object.prototype.hasOwnProperty.call(req, '__diracUserSecurityLoginFailureV336')) {
+      Object.defineProperty(req, '__diracUserSecurityLoginFailureV336', {
+        value: Object.freeze({
+          email: normalizeAuthEmail(email),
+          attemptCount: Number(selected.count || 0),
+          blockedUntilMs: selected.permanent ? 253402300799999 : Date.now() + Math.max(0, Number(selected.retryAfterSeconds || 0)) * 1000,
+          permanent: selected.permanent === true,
+          matchedScope: String(selected.matched_scope || '')
+        })
+      });
+    }
+    return selected;
+  } catch (_) {
+    return { ok: false, blocked: true, unavailable: true, status: 503, code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' };
+  }
 }
 
 async function clearDomainLoginRateLimit(req, email) {
@@ -60307,6 +60430,39 @@ function diracCentralTransientPersistentBanKeysV287(identity) {
   return Array.from(new Set(keys));
 }
 
+async function diracCentralMirrorBrowserBanToCustomerAccessV353(ctx, action, reason, blockedUntilMs) {
+  const classification = String(ctx && ctx.classification || '').trim().toLowerCase();
+  if (!['browser', 'admin'].includes(classification)) return Object.freeze({ required: false, ok: true });
+  const req = ctx && ctx.req;
+  const rawUntil = Number(blockedUntilMs || 0);
+  const minimumUntil = Date.now() + CUSTOMER_SECURITY_ACCESS_BLOCK_SECONDS * 1000;
+  const effectiveUntil = Math.max(rawUntil, minimumUntil);
+  if (!req || !Number.isSafeInteger(effectiveUntil) || effectiveUntil <= Date.now()) {
+    return Object.freeze({ required: true, ok: false });
+  }
+  const identity = customerSecurityAccessBlockIdentity(req);
+  if (!identity || !/^[a-f0-9]{64}$/.test(String(identity.ip_hash || ''))
+      || !/^[a-f0-9]{64}$/.test(String(identity.device_hash || ''))) {
+    return Object.freeze({ required: true, ok: false });
+  }
+  diracBoundedMapSetV321(
+    CUSTOMER_SECURITY_ACCESS_BLOCK_MEMORY,
+    identity.ip_hash + ':' + identity.device_hash,
+    effectiveUntil,
+    5000,
+    Date.now(),
+    (value) => Number(value || 0)
+  );
+  const persisted = await customerSecurityCreatePersistentAccessBlockV325(
+    identity,
+    String(action || 'central_guard').slice(0, 80),
+    'central_guard_' + String(reason || 'security_block').slice(0, 80),
+    null,
+    effectiveUntil
+  ).catch(() => false);
+  return Object.freeze({ required: true, ok: persisted === true, blockedUntilMs: effectiveUntil });
+}
+
 async function diracCentralWriteTransientFailureBanV284(ctx, action, method, reason) {
   const identityKey = String(ctx && ctx.identity && ctx.identity.key || '').trim();
   const persistentKeys = diracCentralTransientPersistentBanKeysV287(ctx && ctx.identity);
@@ -60344,6 +60500,19 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
         ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000)
       });
     } catch (suppressedErrorV284) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV284); }
+    return { ok: false };
+  }
+  const browserAccessMirrorV353 = await diracCentralMirrorBrowserBanToCustomerAccessV353(ctx, action, reason, blockedUntilMs)
+    .catch(() => Object.freeze({ required: true, ok: false }));
+  if (browserAccessMirrorV353.required === true && browserAccessMirrorV353.ok !== true) {
+    try {
+      if (typeof diracCentralEmitDebugV211 === 'function') diracCentralEmitDebugV211(ctx, 'persistent_ban_write_failed', {
+        persistent_ban_written: true,
+        customer_access_ban_written: false,
+        ban_type: record.type,
+        ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000)
+      });
+    } catch (suppressedErrorV353) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV353); }
     return { ok: false };
   }
   DIRAC_CENTRAL_NEGATIVE_BAN_V146.delete(identityKey);
