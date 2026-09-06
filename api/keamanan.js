@@ -1803,6 +1803,7 @@ async function securityResetSmtpCommandV342(socket, command, allowed) {
   if (!allowedCodes.includes(response.code)) {
     const error = new Error('SMTP_UNEXPECTED_RESPONSE');
     error.smtpCode = response.code;
+    error.smtpText = String(response.text || '').slice(0, 2048);
     throw error;
   }
   return response;
@@ -1816,84 +1817,128 @@ function securityResetDotStuffV342(value) {
   return String(value || '').replace(/\r?\n/g, '\r\n').replace(/^\./gm, '..');
 }
 
-async function securityResetSendCommittedPasswordMailV342(record) {
-  const config = securityResetSmtpConfigV342();
-  if (!config) return { ok: false, code: 'PASSWORD_RESET_MAIL_CONFIGURATION_UNAVAILABLE', status: 503 };
-  const reference = String(record.commit_id).slice(0, 10).toUpperCase();
-  let timeText = new Date(record.committed_at_ms).toISOString();
-  try {
-    timeText = new Intl.DateTimeFormat('id-ID', {
-      timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', year: 'numeric',
-      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
-    }).format(new Date(record.committed_at_ms)) + ' WIB';
-  } catch (_) {}
-  const subject = 'DiracGroup Security - Password Berhasil Diganti [' + reference + ']';
-  const htmlInput = {
-    preheader: 'Password akun Dirac Group berhasil diganti.',
-    brandLabel: 'SECURE ACCOUNT SECURITY',
-    eyebrow: 'PASSWORD SECURITY NOTICE',
-    title: 'Password Berhasil\nDiganti',
-    greeting: 'Yth. Pengguna Dirac Group,',
-    summary: 'Password akun Anda telah diganti setelah verifikasi Passkey dan perubahan telah dikomit oleh server.',
-    statusLabel: 'STATUS PASSWORD',
-    statusValue: 'PASSWORD BARU AKTIF',
-    statusNote: 'Perubahan ini telah dikonfirmasi oleh server keamanan Dirac Group.',
-    detailsLabel: 'DETAIL PERUBAHAN',
-    rows: [
-      ['AKTIVITAS', 'Perubahan password akun'],
-      ['METODE VERIFIKASI', 'WebAuthn Passkey'],
-      ['WAKTU', timeText],
-      ['REFERENSI', reference]
-    ],
-    actionUrl: diracRoleOriginV250('security') + '/keamanan.html',
-    actionText: 'BUKA PUSAT KEAMANAN',
-    warningTitle: 'PERIKSA JIKA BUKAN ANDA',
-    warning: 'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi kanal resmi Dirac Group. Jangan bagikan password, OTP, token, cookie, kode keamanan, atau Passkey.',
-    supportLead: 'Jika membutuhkan bantuan terkait keamanan password, gunakan kanal resmi Dirac Group berikut.'
+function securityResetUserMailConfigV352() {
+  const brevoKey = String(process.env.DIRAC_USER_SECURITY_BREVO_API_KEY || '').trim();
+  const brevoFrom = normalizeAuthEmail(process.env.DIRAC_USER_SECURITY_BREVO_FROM_EMAIL || '');
+  const resendKey = String(process.env.DIRAC_USER_SECURITY_RESEND_API_KEY || '').trim();
+  const resendFrom = normalizeAuthEmail(process.env.DIRAC_USER_SECURITY_RESEND_FROM_EMAIL || '');
+  const primary = securityResetSmtpConfigV342();
+  const secondaryUser = normalizeAuthEmail(process.env.DIRAC_REGISTER_SMTP_USER_2 || '');
+  const secondaryPass = String(process.env.DIRAC_REGISTER_SMTP_APP_PASSWORD_2 || '').replace(/\s+/g, '');
+  const brevoKeyValid = Buffer.byteLength(brevoKey, 'utf8') >= 24 && Buffer.byteLength(brevoKey, 'utf8') <= 2048
+    && !/[\s<>\"']/.test(brevoKey);
+  let baseDomain = '';
+  try { baseDomain = diracBaseDomainV250(); } catch (_) { baseDomain = ''; }
+  const officialSender = (email) => {
+    const domain = String(email || '').split('@')[1] || '';
+    return Boolean(baseDomain && domain && (domain === baseDomain || domain.endsWith('.' + baseDomain)));
   };
-  const text = diracSecurityMailTextV327(htmlInput);
-  const html = diracSecurityCorporateEmailHtmlV327(htmlInput);
+  if (String(process.env.DIRAC_USER_SECURITY_EMAIL_ENABLED || '').trim().toLowerCase() !== 'true'
+      || !primary || !brevoKeyValid || !isValidAuthEmail(brevoFrom) || !officialSender(brevoFrom)
+      || !/^re_[A-Za-z0-9_-]{16,252}$/.test(resendKey) || !isValidAuthEmail(resendFrom) || !officialSender(resendFrom)) return null;
+  const secondary = isValidAuthEmail(secondaryUser) && /^[A-Za-z0-9]{16,128}$/.test(secondaryPass)
+    && secondaryUser !== primary.user && secondaryPass !== primary.pass
+    ? { host: primary.host, port: primary.port, user: secondaryUser, pass: secondaryPass }
+    : null;
+  return { brevoKey, brevoFrom, resendKey, resendFrom, primary, secondary };
+}
+
+function securityResetProviderLimitedV352(provider, status, body) {
+  const code = String(body && (body.code || body.type || body.error_code || body.error && (body.error.code || body.error.type)) || '').toLowerCase();
+  if (Number(status || 0) === 429) return true;
+  return provider === 'brevo' && Number(status || 0) === 402 && code === 'not_enough_credits';
+}
+
+async function securityResetHttpMailV352(provider, config, record, subject, text, html, reference) {
+  const target = provider === 'brevo' ? 'https://api.brevo.com/v3/smtp/email' : 'https://api.resend.com/emails';
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), 7000) : null;
+  try {
+    if (!SECURITY_NATIVE_FETCH_V334) return { ok: false, provider, status: 0, limited: false, code: 'PROVIDER_NATIVE_FETCH_UNAVAILABLE' };
+    const response = await SECURITY_NATIVE_FETCH_V334(target, provider === 'brevo' ? {
+      method: 'POST', redirect: 'error', signal: controller ? controller.signal : undefined,
+      headers: { 'api-key': config.brevoKey, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ sender: { name: 'Dirac Secure', email: config.brevoFrom }, to: [{ email: record.email }], subject, textContent: text, htmlContent: html, headers: { 'X-Dirac-Reference': reference } })
+    } : {
+      method: 'POST', redirect: 'error', signal: controller ? controller.signal : undefined,
+      headers: { Authorization: 'Bearer ' + config.resendKey, 'Content-Type': 'application/json', Accept: 'application/json', 'Idempotency-Key': ('dirac-password-' + reference).slice(0, 240) },
+      body: JSON.stringify({ from: 'Dirac Secure <' + config.resendFrom + '>', to: [record.email], subject, text, html })
+    });
+    let body = {};
+    try { body = await response.json(); } catch (_) { body = {}; }
+    const limited = !response.ok && securityResetProviderLimitedV352(provider, response.status, body);
+    return { ok: response.ok, provider, status: Number(response.status || 0), limited, code: String(body && (body.code || body.type || '') || '').slice(0, 100) };
+  } catch (error) {
+    return { ok: false, provider, status: 0, limited: false, code: String(error && (error.name || error.code) || 'PROVIDER_REQUEST_FAILED').slice(0, 100) };
+  } finally { if (timer) clearTimeout(timer); }
+}
+
+function securityResetGmailQuotaV352(error) {
+  const text = String(error && error.smtpText || '').toLowerCase().replace(/\s+/g, ' ');
+  return Number(error && error.smtpCode || 0) === 550 && (text.includes('5.4.5') || text.includes('daily user sending limit exceeded')
+    || text.includes('daily user sending quota exceeded') || text.includes('daily smtp relay limit exceeded for user'));
+}
+
+async function securityResetGmailMailV352(account, record, subject, text, html, slot) {
   const boundary = 'dirac-password-reset-' + crypto.randomBytes(18).toString('hex');
   const mime = [
-    'From: Dirac Group Security <' + config.user + '>',
-    'To: ' + record.email,
+    'From: Dirac Group Security <' + account.user + '>', 'To: ' + record.email,
     'Subject: =?UTF-8?B?' + Buffer.from(subject, 'utf8').toString('base64') + '?=',
-    'MIME-Version: 1.0',
-    'Content-Type: multipart/alternative; boundary="' + boundary + '"',
-    '',
-    '--' + boundary,
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    securityResetBase64LinesV342(Buffer.from(text, 'utf8')),
-    '--' + boundary,
-    'Content-Type: text/html; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    securityResetBase64LinesV342(Buffer.from(html, 'utf8')),
-    '--' + boundary + '--',
-    ''
+    'MIME-Version: 1.0', 'Content-Type: multipart/alternative; boundary="' + boundary + '"', '',
+    '--' + boundary, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '',
+    securityResetBase64LinesV342(Buffer.from(text, 'utf8')), '--' + boundary,
+    'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '',
+    securityResetBase64LinesV342(Buffer.from(html, 'utf8')), '--' + boundary + '--', ''
   ].join('\r\n');
-
   let socket = null;
   try {
     const tls = require('tls');
-    socket = tls.connect({ host: config.host, port: config.port, servername: config.host, timeout: 20_000 });
+    socket = tls.connect({ host: account.host, port: account.port, servername: account.host, timeout: 7000 });
     await securityResetSmtpCommandV342(socket, '', 220);
     await securityResetSmtpCommandV342(socket, 'EHLO diracgroup.store', 250);
-    const auth = Buffer.from('\u0000' + config.user + '\u0000' + config.pass, 'utf8').toString('base64');
+    const auth = Buffer.from('\u0000' + account.user + '\u0000' + account.pass, 'utf8').toString('base64');
     await securityResetSmtpCommandV342(socket, 'AUTH PLAIN ' + auth, 235);
-    await securityResetSmtpCommandV342(socket, 'MAIL FROM:<' + config.user + '>', 250);
+    await securityResetSmtpCommandV342(socket, 'MAIL FROM:<' + account.user + '>', 250);
     await securityResetSmtpCommandV342(socket, 'RCPT TO:<' + record.email + '>', [250, 251]);
     await securityResetSmtpCommandV342(socket, 'DATA', 354);
     await securityResetSmtpCommandV342(socket, securityResetDotStuffV342(mime) + '\r\n.', 250);
     await securityResetSmtpCommandV342(socket, 'QUIT', [221, 250]);
-    return { ok: true, provider: 'gmail_smtp', status: 250 };
-  } catch (_) {
-    return { ok: false, code: 'PASSWORD_RESET_MAIL_UNCONFIRMED', status: 502 };
-  } finally {
-    try { if (socket) socket.end(); } catch (_) {}
-  }
+    return { ok: true, provider: 'gmail_smtp', smtp_slot: slot, status: 250, limited: false };
+  } catch (error) {
+    return { ok: false, provider: 'gmail_smtp', smtp_slot: slot, status: Number(error && error.smtpCode || 0), limited: securityResetGmailQuotaV352(error), code: String(error && error.code || 'PASSWORD_RESET_MAIL_UNCONFIRMED').slice(0, 100) };
+  } finally { try { if (socket) socket.end(); } catch (_) {} }
+}
+
+async function securityResetSendCommittedPasswordMailV342(record) {
+  const config = securityResetUserMailConfigV352();
+  if (!config) return { ok: false, code: 'PASSWORD_RESET_MAIL_CONFIGURATION_UNAVAILABLE', status: 503 };
+  const reference = String(record.commit_id).slice(0, 10).toUpperCase();
+  let timeText = new Date(record.committed_at_ms).toISOString();
+  try { timeText = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(record.committed_at_ms)) + ' WIB'; } catch (_) {}
+  const subject = 'DiracGroup Security - Password Berhasil Diganti [' + reference + ']';
+  const htmlInput = {
+    preheader: 'Password akun Dirac Group berhasil diganti.', brandLabel: 'SECURE ACCOUNT SECURITY', eyebrow: 'PASSWORD SECURITY NOTICE',
+    title: 'Password Berhasil\nDiganti', greeting: 'Yth. Pengguna Dirac Group,',
+    summary: 'Password akun Anda telah diganti setelah verifikasi Passkey dan perubahan telah dikomit oleh server.',
+    statusLabel: 'STATUS PASSWORD', statusValue: 'PASSWORD BARU AKTIF', statusNote: 'Perubahan ini telah dikonfirmasi oleh server keamanan Dirac Group.',
+    detailsLabel: 'DETAIL PERUBAHAN', rows: [['AKTIVITAS','Perubahan password akun'],['METODE VERIFIKASI','WebAuthn Passkey'],['WAKTU',timeText],['REFERENSI',reference]],
+    actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN',
+    warningTitle: 'PERIKSA JIKA BUKAN ANDA', warning: 'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi kanal resmi Dirac Group. Jangan bagikan password, OTP, token, cookie, kode keamanan, atau Passkey.',
+    supportLead: 'Jika membutuhkan bantuan terkait keamanan password, gunakan kanal resmi Dirac Group berikut.'
+  };
+  const text = diracSecurityMailTextV327(htmlInput);
+  const html = diracSecurityCorporateEmailHtmlV327(htmlInput);
+  let result = await securityResetHttpMailV352('brevo', config, record, subject, text, html, reference);
+  if (result.ok) return result;
+  if (!result.limited) return result;
+  result = await securityResetHttpMailV352('resend', config, record, subject, text, html, reference);
+  if (result.ok) return result;
+  if (!result.limited) return result;
+  result = await securityResetGmailMailV352(config.primary, record, subject, text, html, 1);
+  if (result.ok) return result;
+  if (!result.limited) return result;
+  if (!config.secondary) return { ...result, code: 'PASSWORD_RESET_SECONDARY_GMAIL_UNAVAILABLE_AFTER_LIMIT' };
+  return securityResetGmailMailV352(config.secondary, record, subject, text, html, 2);
 }
 
 async function securityResetDispatchCommittedMailV338(req) {

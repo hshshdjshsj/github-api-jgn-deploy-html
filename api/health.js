@@ -1366,10 +1366,13 @@ async function domainLogin(req, res, preloadedBody) {
     return res.status(loginGuard.status).json(loginGuard.body);
   }
 
-  // V350: enforce the already-existing persistent customer access-block namespace
-  // before password authentication. This checks only browser-bound IP/device scopes;
-  // the authoritative account scope is rechecked again after canonical auth identity.
-  const preAuthAccessBlockV350 = await customerSecurityCheckAccessBlock(req, 'domain_login');
+  // V352 performance-safe scheduling: these two checks are independent reads.
+  // Both still execute and both remain fail-closed before password authentication.
+  diracLoginFatalMarkV324(req, 'login.rate_check', 'begin', {}, res);
+  const [preAuthAccessBlockV350, loginRate] = await Promise.all([
+    customerSecurityCheckAccessBlock(req, 'domain_login'),
+    checkDomainLoginRateLimit(req, loginGuard.email)
+  ]);
   if (!preAuthAccessBlockV350 || preAuthAccessBlockV350.unavailable) {
     clearSessionCookies(res);
     return res.status(503).json({
@@ -1388,9 +1391,6 @@ async function domainLogin(req, res, preloadedBody) {
       retry_after_seconds: preAuthAccessBlockV350.retry_after_seconds || 300
     });
   }
-
-  diracLoginFatalMarkV324(req, 'login.rate_check', 'begin', {}, res);
-  const loginRate = await checkDomainLoginRateLimit(req, loginGuard.email);
   diracLoginFatalMarkV324(req, 'login.rate_check', 'done', {
     ok: Boolean(loginRate && loginRate.ok)
   }, res);
@@ -1469,70 +1469,15 @@ async function domainLogin(req, res, preloadedBody) {
   }
   const canonicalLoginSessionV321 = { ...result.data, user: canonicalLoginUserV321 };
 
-  diracLoginFatalMarkV324(req, 'login.ban_check_1', 'begin', {}, res);
-  const effectiveLoginBlockV320 = await domainLoginEffectiveAccessBlockV320(req, canonicalLoginSessionV321);
+  // V352: the duplicate full account/provider/settings/access-block traversal that used
+  // to run here is intentionally deferred. The exact authoritative traversal still runs
+  // below immediately before cookie publication, which narrows rather than widens the
+  // decision-to-publication window. No ban source or guard is removed.
   diracLoginFatalMarkV324(req, 'login.ban_check_1', 'done', {
-    ok: Boolean(effectiveLoginBlockV320 && effectiveLoginBlockV320.ok),
-    blocked: Boolean(effectiveLoginBlockV320 && effectiveLoginBlockV320.blocked),
-    reason_code: effectiveLoginBlockV320 && effectiveLoginBlockV320.reason
+    ok: true,
+    blocked: false,
+    reason_code: 'DEFERRED_TO_PUBLICATION_CHECK_V352'
   }, res);
-  if (!effectiveLoginBlockV320.ok) {
-    clearSessionCookies(res);
-    diracLoginFatalMarkV324(req, 'login.response_503', 'begin', {
-      reason_code: 'LOGIN_BAN_CHECK_UNAVAILABLE'
-    }, res);
-    const unavailableResponseV324 = await res.status(503).json({
-      ok: false,
-      code: 'LOGIN_BAN_CHECK_UNAVAILABLE',
-      message: 'Login belum dapat diterbitkan karena status keamanan akun tidak tersedia.'
-    });
-    diracLoginFatalMarkV324(req, 'login.response_503', 'done', {
-      status: 503,
-      reason_code: 'LOGIN_BAN_CHECK_UNAVAILABLE'
-    }, res);
-    return unavailableResponseV324;
-  }
-  if (effectiveLoginBlockV320.blocked) {
-    clearSessionCookies(res);
-    try {
-      res.setHeader('Retry-After', String(effectiveLoginBlockV320.retry_after_seconds || 300));
-    } catch (_) {}
-    let alertScheduledV324 = false;
-    diracLoginFatalMarkV324(req, 'login.ban_alert', 'begin', {
-      alert_event: 'account_or_device_ban_enforced'
-    }, res);
-    try {
-      alertScheduledV324 = diracSecurityAlertScheduleV320(diracCentralCurrentContextV149(), 'account_or_device_ban_enforced', {
-        reason: 'active_customer_access_block',
-        matched_scope: effectiveLoginBlockV320.matched_scope,
-        blocked_until: effectiveLoginBlockV320.blocked_until
-      });
-    } catch (_) {}
-    diracLoginFatalMarkV324(req, 'login.ban_alert', alertScheduledV324 ? 'scheduled' : 'skipped', {
-      scheduled: alertScheduledV324,
-      alert_event: 'account_or_device_ban_enforced'
-    }, res);
-    diracLoginFatalMarkV324(req, 'login.response_403', 'begin', {
-      reason_code: 'LOGIN_ACCESS_BLOCKED'
-    }, res);
-    diracUserSecurityMarkVerifiedAccessBlockV341(req, canonicalLoginUserV321, effectiveLoginBlockV320);
-    const blockedResponseV324 = await res.status(403).json({
-      ok: false,
-      code: 'LOGIN_ACCESS_BLOCKED',
-      message: 'Akses masuk ditolak oleh kebijakan keamanan.',
-      blocked_until: effectiveLoginBlockV320.blocked_until,
-      retry_after_seconds: effectiveLoginBlockV320.retry_after_seconds || 300
-    });
-    diracLoginFatalMarkV324(req, 'login.response_403', 'done', {
-      status: 403,
-      reason_code: 'LOGIN_ACCESS_BLOCKED'
-    }, res);
-    return blockedResponseV324;
-  }
-
-  diracLoginFatalMarkV324(req, 'login.rate_clear', 'begin', {}, res);
-  await clearDomainLoginRateLimit(req, loginGuard.email);
-  diracLoginFatalMarkV324(req, 'login.rate_clear', 'done', {}, res);
 
   diracLoginFatalMarkV324(req, 'login.ban_check_2', 'begin', {}, res);
   const publicationLoginBlockV321 = await domainLoginEffectiveAccessBlockV320(req, canonicalLoginSessionV321)
@@ -1552,6 +1497,13 @@ async function domainLogin(req, res, preloadedBody) {
   }
   if (publicationLoginBlockV321.blocked) {
     clearSessionCookies(res);
+    try {
+      diracSecurityAlertScheduleV320(diracCentralCurrentContextV149(), 'account_or_device_ban_enforced', {
+        reason: 'active_customer_access_block',
+        matched_scope: publicationLoginBlockV321.matched_scope,
+        blocked_until: publicationLoginBlockV321.blocked_until
+      });
+    } catch (_) {}
     diracUserSecurityMarkVerifiedAccessBlockV341(req, canonicalLoginUserV321, publicationLoginBlockV321);
     return res.status(403).json({
       ok: false,
@@ -1561,6 +1513,12 @@ async function domainLogin(req, res, preloadedBody) {
       retry_after_seconds: publicationLoginBlockV321.retry_after_seconds || 300
     });
   }
+
+  // Clear stale failed-password counters only after the final authoritative ban decision.
+  // A clear failure never grants access; the final ban decision above has already passed.
+  diracLoginFatalMarkV324(req, 'login.rate_clear', 'begin', {}, res);
+  await clearDomainLoginRateLimit(req, loginGuard.email);
+  diracLoginFatalMarkV324(req, 'login.rate_clear', 'done', {}, res);
 
   diracLoginFatalMarkV324(req, 'login.cookie_publication', 'begin', {}, res);
   const sessionCookiesPublished = setSessionCookies(res, canonicalLoginSessionV321);
@@ -21667,7 +21625,12 @@ async function diracPasskeyA2FStart(req, res) {
     issuedAtMs: now,
     expiresAtMs: now + DIRAC_PASSKEY_A2F_TTL_MS
   };
-  const challengeStoreBanDecisionV321 = await domainLoginEffectiveAccessBlockV320(req, { user })
+  const cachedChallengeBanV352 = !recoveryAuthorityV281 && req && req.__diracAuthenticatedBanDecisionV320
+    && req.__diracAuthenticatedBanDecisionV320.auth_user_id === String(user && user.id || '')
+    && req.__diracAuthenticatedBanDecisionV320.email === normalizeAuthEmail(user && user.email || '')
+    ? req.__diracAuthenticatedBanDecisionV320.decision
+    : null;
+  const challengeStoreBanDecisionV321 = cachedChallengeBanV352 || await domainLoginEffectiveAccessBlockV320(req, { user })
     .catch(() => ({ ok: false }));
   if (!challengeStoreBanDecisionV321 || challengeStoreBanDecisionV321.ok !== true
       || challengeStoreBanDecisionV321.blocked || challengeStoreBanDecisionV321.onboarding_required) {
@@ -50240,6 +50203,281 @@ diracSecurityAlertSendV320 = async function diracSecurityAlertSendCascadeV330(sn
       });
   error.deliveryAmbiguous = true;
   throw error;
+};
+
+
+
+/* ============================================================
+   DIRAC MAIL ROLE PARTITION + CUSTOMER CASCADE + PAID INVOICE v352
+   Scope:
+   - Customer-facing mail: Brevo -> Resend (only on confirmed limit) ->
+     Google SMTP #1 -> Google SMTP #2 (only on confirmed Gmail quota limit).
+   - Owner/staff cyber alerts: DIRAC_SECURITY_ALERT_SMTP_* Google SMTP only.
+   - Paid customer invoice reuses the customer cascade.
+   - Paid owner/admin invoice uses ORDER_OWNER_SMTP_* Google SMTP only.
+   - All affected HTML uses diracSecurityCorporateEmailHtmlV327.
+   - No Central Guard bypass, no table addition. The second customer Gmail reuses the already-existing
+     DIRAC_REGISTER_SMTP_USER_2 / DIRAC_REGISTER_SMTP_APP_PASSWORD_2 slot so no
+     new ENV is introduced.
+   ============================================================ */
+const DIRAC_MAIL_ROLE_PARTITION_V352 = 'dirac-mail-role-partition-v352';
+
+function diracCustomerMailSecondarySmtpV352(config) {
+  const rawUser = String(process.env.DIRAC_REGISTER_SMTP_USER_2 || '').trim();
+  const rawPass = String(process.env.DIRAC_REGISTER_SMTP_APP_PASSWORD_2 || '');
+  const user = diracSecurityMailEmailV327(rawUser);
+  const appPassword = rawPass.replace(/\s+/g, '');
+  if (!config || config.smtpHost !== 'smtp.gmail.com' || Number(config.smtpPort) !== 465 || config.smtpSecure !== true
+      || !user || !/^[A-Za-z0-9]{16,128}$/.test(appPassword)
+      || diracSecurityMailPlaceholderV327(rawUser) || diracSecurityMailPlaceholderV327(rawPass)
+      || safeEqual(user, String(config.smtpUser || '')) || safeEqual(appPassword, String(config.smtpAppPassword || ''))) return null;
+  return Object.freeze({ user, appPassword });
+}
+
+function diracCustomerMailMimeV352(message, account, replyTo) {
+  const boundary = 'dirac-customer-mail-' + crypto.randomBytes(16).toString('hex');
+  const senderDomain = String(account && account.user || '').split('@')[1] || 'gmail.com';
+  const reference = String(message && message.reference || crypto.randomBytes(8).toString('hex')).slice(0, 64);
+  const messageId = crypto.createHash('sha256').update(reference + '|' + String(message.subject || '') + '|' + Date.now()).digest('hex').slice(0, 32) + '@' + senderDomain;
+  const headers = [
+    'From: ' + diracSecurityAlertMimeHeaderV320(String(message.fromName || 'Dirac Secure')) + ' <' + account.user + '>',
+    'To: ' + (message.recipients || []).join(', '),
+    replyTo ? 'Reply-To: ' + replyTo : '',
+    'Subject: ' + diracSecurityAlertMimeHeaderV320(String(message.subject || 'Dirac Group')),
+    'Date: ' + new Date().toUTCString(),
+    'Message-ID: <' + messageId + '>',
+    'Auto-Submitted: auto-generated',
+    'X-Dirac-Customer-Mail: v352',
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/alternative; boundary="' + boundary + '"',
+    '',
+    '--' + boundary,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    diracSecurityAlertBase64LinesV320(String(message.text || '')),
+    '--' + boundary,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    diracSecurityAlertBase64LinesV320(String(message.html || '')),
+    '--' + boundary + '--',
+    ''
+  ].join('\r\n');
+  return headers;
+}
+
+async function diracCustomerMailGmailAttemptV352(message, config, account, slot) {
+  let socket = null;
+  let reader = null;
+  let authBytes = null;
+  const deadline = Date.now() + Number(config && config.timeoutMs || 7000);
+  let stage = 'connect';
+  try {
+    socket = await diracCentralOpenSmtpSocketV230(config.smtpHost, config.smtpPort, true, config.timeoutMs);
+    reader = diracRegisterEmailSmtpReaderV331(socket);
+    if (typeof socket.setTimeout === 'function') socket.setTimeout(Math.max(1, deadline - Date.now()));
+    stage = 'greeting';
+    await diracRegisterEmailSmtpCommandV331(socket, reader, null, 220, deadline);
+    stage = 'ehlo';
+    await diracRegisterEmailSmtpCommandV331(socket, reader, 'EHLO ' + diracBaseDomainV250(), 250, deadline);
+    authBytes = Buffer.from('\u0000' + account.user + '\u0000' + account.appPassword, 'utf8');
+    stage = 'auth';
+    await diracRegisterEmailSmtpCommandV331(socket, reader, 'AUTH PLAIN ' + authBytes.toString('base64'), 235, deadline);
+    stage = 'mail_from';
+    await diracRegisterEmailSmtpCommandV331(socket, reader, 'MAIL FROM:<' + account.user + '>', 250, deadline);
+    for (const recipient of message.recipients || []) {
+      stage = 'recipient';
+      await diracRegisterEmailSmtpCommandV331(socket, reader, 'RCPT TO:<' + recipient + '>', [250, 251], deadline);
+    }
+    stage = 'data';
+    await diracRegisterEmailSmtpCommandV331(socket, reader, 'DATA', 354, deadline);
+    stage = 'submit';
+    try {
+      await diracRegisterEmailSmtpCommandV331(socket, reader,
+        diracSecurityAlertDotStuffV320(diracCustomerMailMimeV352(message, account, config.replyTo || '')) + '\r\n.', 250, deadline);
+    } catch (error) {
+      if (error && typeof error === 'object' && !Number(error.smtpCode || 0) && error.smtpWriteCompleted === true) error.deliveryAmbiguous = true;
+      throw error;
+    }
+    try { socket.write('QUIT\r\n'); } catch (_) {}
+    return Object.freeze({ ok: true, provider: 'gmail_smtp', smtp_slot: slot, status: 250, limited: false, quotaLimited: false, deliveryAmbiguous: false });
+  } catch (error) {
+    const limited = Boolean(error && error.senderQuotaLimited === true && error.deliveryAmbiguous !== true);
+    return Object.freeze({
+      ok: false, provider: 'gmail_smtp', smtp_slot: slot, status: Number(error && error.smtpCode || 0),
+      limited, quotaLimited: limited, deliveryAmbiguous: Boolean(error && error.deliveryAmbiguous === true),
+      stage, code: String(error && error.code || 'CUSTOMER_GMAIL_DELIVERY_FAILED').slice(0, 100)
+    });
+  } finally {
+    if (authBytes) authBytes.fill(0);
+    if (reader) reader.close();
+    try { if (socket) socket.end(); } catch (_) {}
+    try { if (socket) socket.destroy(); } catch (_) {}
+  }
+}
+
+async function diracCustomerMailSmtpCascadeV352(message, config) {
+  const primary = Object.freeze({ user: String(config.smtpUser || ''), appPassword: String(config.smtpAppPassword || '') });
+  const first = await diracCustomerMailGmailAttemptV352(message, config, primary, 1);
+  if (first.ok) return first;
+  if (!first.quotaLimited || first.deliveryAmbiguous) return first;
+  const secondary = diracCustomerMailSecondarySmtpV352(config);
+  if (!secondary) return Object.freeze({ ...first, code: 'CUSTOMER_GMAIL_SECONDARY_UNAVAILABLE_AFTER_LIMIT' });
+  return diracCustomerMailGmailAttemptV352(message, config, secondary, 2);
+}
+
+// User security events (login, passkey, password notices, lock/ban notices): exact requested cascade.
+diracUserSecuritySendV327 = async function diracUserSecuritySendCascadeV352(event, config) {
+  if (!event || !config) return Object.freeze({ ok: false, provider: 'internal', status: 0, limited: false, code: 'USER_SECURITY_EVENT_OR_CONFIG_INVALID' });
+  const message = Object.freeze({
+    fromName: 'Dirac Secure', recipients: [event.email], replyTo: config.replyTo,
+    subject: event.subject, text: event.text, html: event.html, reference: event.reference
+  });
+  return diracSecurityMailProviderCascadeV330(message, config, () => diracCustomerMailSmtpCascadeV352(message, config));
+};
+
+// Registration uses the same customer-facing provider cascade. Existing challenge/CSRF/authority logic is untouched.
+diracRegisterEmailConfigV331 = function diracRegisterEmailConfigCustomerCascadeV352() {
+  return diracUserSecurityConfigV327();
+};
+diracRegisterEmailDeliverV331 = async function diracRegisterEmailDeliverCustomerCascadeV352(message, config) {
+  const htmlInput = {
+    preheader: 'Kode verifikasi email untuk menyelesaikan pendaftaran Dirac Group.',
+    brandLabel: 'SECURE ACCOUNT REGISTRATION', eyebrow: 'EMAIL REGISTRATION VERIFICATION',
+    title: 'Verifikasi Email\nPendaftaran', greeting: 'Yth. Calon Customer Dirac Group,',
+    summary: 'Email ini dikirim karena alamat Anda digunakan untuk memulai pendaftaran. Salin kode verifikasi ke halaman pendaftaran yang masih terbuka.',
+    statusLabel: 'STATUS VERIFIKASI', statusValue: 'MENUNGGU KONFIRMASI',
+    statusNote: 'Kode berlaku selama 10 menit dan hanya dapat digunakan satu kali.',
+    detailsLabel: 'DETAIL VERIFIKASI',
+    rows: [['KODE VERIFIKASI', String(message.proof || '')], ['MASA BERLAKU', '10 menit'], ['PENGGUNAAN', 'Sekali pakai'], ['REFERENSI', String(message.reference || '')]],
+    actionUrl: diracRoleOriginV250('auth') + '/masuk.html', actionText: 'BUKA HALAMAN PENDAFTARAN',
+    warningTitle: 'JAGA KERAHASIAAN KODE',
+    warning: 'Jangan berikan kode ini, password, token, cookie, atau data rahasia kepada siapa pun. Jika Anda tidak memulai pendaftaran, abaikan email ini.',
+    supportLead: 'Jika membutuhkan bantuan terkait pendaftaran, gunakan kanal resmi Dirac Group berikut.'
+  };
+  const generic = Object.freeze({
+    fromName: 'Dirac Secure', recipients: [message.email], replyTo: config.replyTo,
+    subject: 'Kode verifikasi pendaftaran Dirac Group [' + String(message.reference || '') + ']',
+    text: diracSecurityMailTextV327(htmlInput), html: diracSecurityCorporateEmailHtmlV327(htmlInput), reference: String(message.reference || '')
+  });
+  return diracSecurityMailProviderCascadeV330(generic, config, () => diracCustomerMailSmtpCascadeV352(generic, config));
+};
+
+// Owner/staff cyber alerts are intentionally SMTP-only on DIRAC_SECURITY_ALERT_SMTP_* (cyberdefend account).
+// Provider API keys may remain in the deployment for rollback/history, but are not readiness
+// dependencies and are never selected by this role.
+diracSecurityAlertExplicitReadyV328 = diracSecurityAlertExplicitReadyBeforeCascadeV330;
+diracSecurityAlertConfigV320 = function diracSecurityAlertConfigCyberSmtpOnlyV352() {
+  const base = diracSecurityAlertConfigBeforeCascadeV330();
+  if (!base || !diracSecurityAlertExplicitReadyBeforeCascadeV330().valid) return null;
+  return base;
+};
+diracSecurityAlertSendV320 = async function diracSecurityAlertSendCyberSmtpOnlyV352(snapshot, config, loginDiagnosticTraceIdV324) {
+  return diracSecurityAlertSmtpSendBeforeCascadeV330(snapshot, config, loginDiagnosticTraceIdV324);
+};
+
+// Paid-order mail role partition: customer follows customer cascade; owner/admin is dedicated Google SMTP only.
+const orderMailCustomerEnabledBeforeRolePartitionV352 = orderMailCustomerEnabled;
+orderMailCustomerEnabled = function orderMailCustomerEnabledRolePartitionV352() {
+  const explicit = orderMailPickEnvV129(['ORDER_CUSTOMER_EMAIL_ENABLED']);
+  if (explicit) return orderMailEnvTrue(explicit, false);
+  return Boolean(diracUserSecurityConfigV327());
+};
+
+const orderMailSmtpConfigBeforeRolePartitionV352 = orderMailSmtpConfig;
+orderMailSmtpConfig = function orderMailSmtpConfigRolePartitionV352(kind) {
+  if (kind === 'customer') {
+    const cfg = diracUserSecurityConfigV327();
+    return {
+      kind: 'customer', configured: Boolean(cfg), smtpConfigured: false, providerConfigured: Boolean(cfg),
+      fromName: 'Dirac Group', fromEmail: cfg ? (cfg.brevoFromEmail || cfg.resendFromEmail || cfg.smtpUser) : '',
+      recipients: [], customerCascadeV352: cfg || null, patch: DIRAC_MAIL_ROLE_PARTITION_V352
+    };
+  }
+  if (kind === 'owner') {
+    const host = String(process.env.ORDER_OWNER_SMTP_HOST || '').trim().toLowerCase();
+    const port = Number(process.env.ORDER_OWNER_SMTP_PORT || 465);
+    const secure = String(process.env.ORDER_OWNER_SMTP_SECURE || 'true').trim().toLowerCase() === 'true';
+    const user = orderMailNormalizeEmail(process.env.ORDER_OWNER_SMTP_USER || '');
+    const pass = String(process.env.ORDER_OWNER_SMTP_PASS || process.env.ORDER_OWNER_SMTP_PASSWORD || '').replace(/\s+/g, '');
+    const fromEmail = orderMailNormalizeEmail(process.env.ORDER_OWNER_FROM_EMAIL || user);
+    const fromName = orderMailCleanText(process.env.ORDER_OWNER_FROM_NAME || 'Dirac Group', 80);
+    const recipients = orderMailOwnerRecipientListV129();
+    const smtpConfigured = host === 'smtp.gmail.com' && port === 465 && secure === true && user && fromEmail === user
+      && /^[A-Za-z0-9]{16,128}$/.test(pass) && recipients.length > 0;
+    return { kind: 'owner', host, port, secure, user, pass, fromName, fromEmail, recipients,
+      configured: Boolean(smtpConfigured), smtpConfigured: Boolean(smtpConfigured), providerConfigured: false, patch: DIRAC_MAIL_ROLE_PARTITION_V352 };
+  }
+  return orderMailSmtpConfigBeforeRolePartitionV352(kind);
+};
+
+const orderMailSendViaSmtpSafeBeforeRolePartitionV352 = orderMailSendViaSmtpSafe;
+orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV352(config, message) {
+  try {
+    if (config && config.kind === 'customer') {
+      const customerCfg = config.customerCascadeV352 || diracUserSecurityConfigV327();
+      if (!customerCfg) return { ok: false, error: 'customer_cascade_not_configured' };
+      const generic = Object.freeze({
+        fromName: 'Dirac Group', recipients: Array.from(new Set((message.to || []).map(orderMailNormalizeEmail).filter(Boolean))),
+        replyTo: customerCfg.replyTo, subject: String(message.subject || 'Dirac Group'), text: String(message.text || ''),
+        html: String(message.html || ''), reference: crypto.createHash('sha256').update(String(message.subject || '') + '|' + String((message.to || [])[0] || '')).digest('hex').slice(0, 32)
+      });
+      return await diracSecurityMailProviderCascadeV330(generic, customerCfg, () => diracCustomerMailSmtpCascadeV352(generic, customerCfg));
+    }
+    if (config && config.kind === 'owner') {
+      if (!config.smtpConfigured) return { ok: false, error: 'owner_google_smtp_not_configured' };
+      return await orderMailSendViaSmtp(config, message);
+    }
+    return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message);
+  } catch (error) {
+    return { ok: false, error: orderMailSafeError(error) };
+  }
+};
+
+const orderMailBuildNewOrderMessagesBeforeCorporateV352 = orderMailBuildNewOrderMessages;
+orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporateV352(data) {
+  const legacy = orderMailBuildNewOrderMessagesBeforeCorporateV352(data);
+  const paid = String(data && data.order && (data.order.payment_status || data.order.order_status) || '').toLowerCase() === 'paid' || String(data && data.kind || '') === 'paid_invoice';
+  const currency = String(data && data.order && data.order.currency || 'IDR').toUpperCase();
+  const rowsBase = [
+    ['KODE PESANAN', data && data.order && data.order.code || '-'],
+    ['LAYANAN', data && data.order && data.order.service_type || '-'],
+    ['SUBTOTAL', orderMailFormatCurrency(data && data.order && (data.order.subtotal || data.order.total) || 0, currency)],
+    ['DISKON', orderMailFormatCurrency(data && data.order && data.order.discount || 0, currency)],
+    ['ONGKIR', orderMailFormatCurrency(data && data.order && data.order.shipping_cost || 0, currency)],
+    ['TOTAL', orderMailFormatCurrency(data && data.order && data.order.total || 0, currency)],
+    ['STATUS', paid ? 'LUNAS / PAID' : String(data && data.order && data.order.payment_status || data && data.order && data.order.order_status || 'ORDER').toUpperCase()],
+    ['REFERENSI PEMBAYARAN', data && data.payment && data.payment.invoice_id || '-']
+  ];
+  const items = (Array.isArray(data && data.items) ? data.items : []).slice(0, 20).map((item, index) => [
+    'ITEM ' + String(index + 1).padStart(2, '0'),
+    orderMailCleanText(item && item.title || 'Item', 120) + ' ×' + Math.max(1, Number(item && item.quantity || 1)) + ' — ' +
+      orderMailFormatCurrency(item && (item.subtotal || (Number(item.unit_price || 0) * Math.max(1, Number(item.quantity || 1)))) || 0, currency)
+  ]);
+  const customerInput = {
+    preheader: paid ? 'Pembayaran pesanan Anda telah diterima dan diverifikasi.' : 'Pesanan Anda telah diterima Dirac Group.',
+    brandLabel: 'SECURE PAYMENT', eyebrow: paid ? 'PAYMENT CONFIRMED' : 'ORDER CONFIRMATION',
+    title: paid ? 'Pembayaran\nBerhasil' : 'Pesanan\nDiterima',
+    greeting: 'Yth. ' + orderMailCleanText(data && data.customer && data.customer.name || 'Pengguna Dirac Group', 120) + ',',
+    summary: paid ? 'Pembayaran Anda telah berhasil diterima dan diverifikasi. Berikut invoice serta rincian pesanan Anda.' : 'Pesanan Anda telah diterima. Berikut rincian yang tercatat pada sistem Dirac Group.',
+    statusLabel: 'STATUS PEMBAYARAN', statusValue: paid ? 'LUNAS / PAID' : 'MENUNGGU PEMBAYARAN',
+    statusNote: 'Informasi berasal dari backend pembayaran dan data pesanan resmi.', detailsLabel: 'RINCIAN INVOICE',
+    rows: rowsBase.concat(items), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'LIHAT PESANAN',
+    warningTitle: 'KEAMANAN PEMBAYARAN', warning: 'Dirac Group tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau data kartu melalui balasan email, WhatsApp, Instagram, atau telepon.',
+    supportLead: 'Jika membutuhkan bantuan terkait pembayaran atau invoice, gunakan kanal resmi Dirac Group.'
+  };
+  const ownerInput = {
+    ...customerInput, brandLabel: 'SECURE PAYMENT ADMIN', eyebrow: paid ? 'VERIFIED PAYMENT RECEIVED' : 'NEW ORDER NOTIFICATION',
+    title: paid ? 'Pembayaran\nDiterima' : 'Order Baru\nDiterima', greeting: 'Yth. Admin / Owner Dirac Group,',
+    summary: paid ? 'Pembayaran customer telah tervalidasi oleh backend. Berikut invoice dan identitas customer yang tercatat.' : 'Order baru telah tercatat pada backend.',
+    rows: rowsBase.concat([
+      ['CUSTOMER', data && data.customer && data.customer.name || '-'],
+      ['EMAIL', data && data.customer && data.customer.email || '-'],
+      ['HP / WA', data && data.customer && data.customer.phone || '-']
+    ], items), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'BUKA PESANAN'
+  };
+  return { ...legacy, customerHtml: diracSecurityCorporateEmailHtmlV327(customerInput), ownerHtml: diracSecurityCorporateEmailHtmlV327(ownerInput) };
 };
 
 /* ============================================================
