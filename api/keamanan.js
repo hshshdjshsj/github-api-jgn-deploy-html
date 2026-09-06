@@ -1566,8 +1566,164 @@ async function securityResetRememberCommittedMailV338(req, owner, state, grantId
       || !safeEqual(String(write.data[0].record_json.mac || ''), record.mac)) {
     throw resetError('PASSWORD_RESET_MAIL_RECORD_UNCONFIRMED', 503);
   }
-  SECURITY_RESET_MAIL_PENDING_V338.set(req, Object.freeze({ commitId: record.commit_id }));
+  SECURITY_RESET_MAIL_PENDING_V338.set(req, Object.freeze({ commitId: record.commit_id, record: Object.freeze({ ...record }) }));
   securityResetMailDiagnosticV340(req, 'persist.result', 'success', { record_confirmed: true });
+}
+
+
+function securityResetValidateCommittedMailV342(record, commitId) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)
+      || !/^[a-f0-9]{64}$/.test(String(commitId || ''))
+      || record.type !== 'password_reset_committed_v338'
+      || record.commit_id !== commitId
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(record.auth_user_id || ''))
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(record.customer_id || ''))
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(record.passkey_id || ''))
+      || normalizeAuthEmail(record.email) !== String(record.email || '')
+      || !isValidAuthEmail(record.email)
+      || !Number.isSafeInteger(record.security_epoch) || record.security_epoch < 0
+      || !Number.isSafeInteger(record.committed_at_ms) || record.committed_at_ms <= 0
+      || !Number.isSafeInteger(record.expires_at_ms)
+      || record.expires_at_ms - record.committed_at_ms !== 900000
+      || record.committed_at_ms > Date.now() + 30000
+      || record.expires_at_ms <= Date.now()
+      || !/^[a-f0-9]{128}$/.test(String(record.mac || ''))) return null;
+  const notificationRoot = String(process.env.DIRAC_SECURITY_ROOT_SECRET || '').trim();
+  const minimumRootBytes = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production' ? 3000 : 32;
+  if (Buffer.byteLength(notificationRoot, 'utf8') < minimumRootBytes) return null;
+  const key = crypto.createHmac('sha512', notificationRoot)
+    .update('dirac-derived-secret-v146:password-reset-mail-record-v338').digest();
+  try {
+    const expected = crypto.createHmac('sha512', key).update(JSON.stringify([
+      record.type, record.commit_id, record.auth_user_id, record.customer_id, record.email,
+      record.passkey_id, record.security_epoch, record.committed_at_ms, record.expires_at_ms
+    ])).digest('hex');
+    if (!safeEqual(expected, record.mac)) return null;
+  } finally { key.fill(0); }
+  return record;
+}
+
+function securityResetSmtpConfigV342() {
+  const host = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim();
+  const port = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 465);
+  const secure = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || '').trim().toLowerCase() === 'true';
+  const user = normalizeAuthEmail(process.env.DIRAC_USER_SECURITY_SMTP_USER || '');
+  const pass = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
+  if (host !== 'smtp.gmail.com' || port !== 465 || secure !== true || !isValidAuthEmail(user)
+      || !/^[A-Za-z0-9]{16,128}$/.test(pass)) return null;
+  return { host, port, user, pass };
+}
+
+async function securityResetSmtpReadV342(socket) {
+  return await new Promise((resolve, reject) => {
+    let buffer = '';
+    const cleanup = (done, value) => {
+      socket.off('data', onData); socket.off('error', onError); socket.off('timeout', onTimeout);
+      done(value);
+    };
+    const onData = (chunk) => {
+      buffer += chunk.toString('utf8');
+      const lines = buffer.split(/\r?\n/).filter(Boolean);
+      const last = lines[lines.length - 1] || '';
+      if (/^\d{3}\s/.test(last)) cleanup(resolve, { code: Number(last.slice(0, 3)), text: buffer });
+    };
+    const onError = (error) => cleanup(reject, error);
+    const onTimeout = () => cleanup(reject, Object.assign(new Error('SMTP_TIMEOUT'), { code: 'ETIMEDOUT' }));
+    socket.on('data', onData); socket.on('error', onError); socket.on('timeout', onTimeout);
+  });
+}
+
+async function securityResetSmtpCommandV342(socket, command, allowed) {
+  if (command) socket.write(command + '\r\n');
+  const response = await securityResetSmtpReadV342(socket);
+  const allowedCodes = Array.isArray(allowed) ? allowed : [allowed];
+  if (!allowedCodes.includes(response.code)) {
+    const error = new Error('SMTP_UNEXPECTED_RESPONSE');
+    error.smtpCode = response.code;
+    throw error;
+  }
+  return response;
+}
+
+function securityResetBase64LinesV342(value) {
+  return Buffer.from(value).toString('base64').replace(/.{1,76}/g, '$&\r\n').trim();
+}
+
+function securityResetDotStuffV342(value) {
+  return String(value || '').replace(/\r?\n/g, '\r\n').replace(/^\./gm, '..');
+}
+
+async function securityResetSendCommittedPasswordMailV342(record) {
+  const config = securityResetSmtpConfigV342();
+  if (!config) return { ok: false, code: 'PASSWORD_RESET_MAIL_CONFIGURATION_UNAVAILABLE', status: 503 };
+  const reference = String(record.commit_id).slice(0, 10).toUpperCase();
+  let timeText = new Date(record.committed_at_ms).toISOString();
+  try {
+    timeText = new Intl.DateTimeFormat('id-ID', {
+      timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+    }).format(new Date(record.committed_at_ms)) + ' WIB';
+  } catch (_) {}
+  const subject = 'DiracGroup Security - Password Berhasil Diganti [' + reference + ']';
+  const text = [
+    'Password akun Dirac Group Anda berhasil diganti.',
+    'Status: PASSWORD BARU AKTIF',
+    'Metode verifikasi: WebAuthn Passkey',
+    'Waktu: ' + timeText,
+    'Referensi: ' + reference,
+    'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi kanal resmi Dirac Group.',
+    'Jangan membagikan password, OTP, token, kode keamanan, atau Passkey kepada siapa pun.'
+  ].join('\n\n');
+  const html = '<!doctype html><html><body style="margin:0;background:#0b0f16;color:#eef3f8;font-family:Arial,sans-serif">'
+    + '<div style="max-width:680px;margin:0 auto;padding:32px 20px"><div style="background:#111827;border:1px solid #334155;border-radius:18px;padding:28px">'
+    + '<div style="font-size:12px;letter-spacing:.16em;color:#93c5fd;font-weight:700">DIRAC GROUP SECURITY</div>'
+    + '<h1 style="font-size:24px;margin:12px 0 8px;color:#fff">Password Berhasil Diganti</h1>'
+    + '<p style="line-height:1.65;color:#cbd5e1">Password akun Anda telah diganti setelah verifikasi Passkey dan perubahan sudah dikomit oleh server.</p>'
+    + '<div style="margin:20px 0;padding:16px;border-radius:12px;background:#020617;border:1px solid #475569;color:#fff">'
+    + '<b>STATUS: PASSWORD BARU AKTIF</b><br><br>Metode: WebAuthn Passkey<br>Waktu: ' + timeText + '<br>Referensi: ' + reference
+    + '</div><p style="font-size:13px;line-height:1.6;color:#fbbf24">Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun. Jangan bagikan password, OTP, token, kode keamanan, atau Passkey.</p>'
+    + '</div></div></body></html>';
+  const boundary = 'dirac-password-reset-' + crypto.randomBytes(18).toString('hex');
+  const mime = [
+    'From: Dirac Group Security <' + config.user + '>',
+    'To: ' + record.email,
+    'Subject: =?UTF-8?B?' + Buffer.from(subject, 'utf8').toString('base64') + '?=',
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/alternative; boundary="' + boundary + '"',
+    '',
+    '--' + boundary,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    securityResetBase64LinesV342(Buffer.from(text, 'utf8')),
+    '--' + boundary,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    securityResetBase64LinesV342(Buffer.from(html, 'utf8')),
+    '--' + boundary + '--',
+    ''
+  ].join('\r\n');
+
+  let socket = null;
+  try {
+    const tls = require('tls');
+    socket = tls.connect({ host: config.host, port: config.port, servername: config.host, timeout: 20_000 });
+    await securityResetSmtpCommandV342(socket, '', 220);
+    await securityResetSmtpCommandV342(socket, 'EHLO diracgroup.store', 250);
+    const auth = Buffer.from('\u0000' + config.user + '\u0000' + config.pass, 'utf8').toString('base64');
+    await securityResetSmtpCommandV342(socket, 'AUTH PLAIN ' + auth, 235);
+    await securityResetSmtpCommandV342(socket, 'MAIL FROM:<' + config.user + '>', 250);
+    await securityResetSmtpCommandV342(socket, 'RCPT TO:<' + record.email + '>', [250, 251]);
+    await securityResetSmtpCommandV342(socket, 'DATA', 354);
+    await securityResetSmtpCommandV342(socket, securityResetDotStuffV342(mime) + '\r\n.', 250);
+    await securityResetSmtpCommandV342(socket, 'QUIT', [221, 250]);
+    return { ok: true, provider: 'gmail_smtp', status: 250 };
+  } catch (_) {
+    return { ok: false, code: 'PASSWORD_RESET_MAIL_UNCONFIRMED', status: 502 };
+  } finally {
+    try { if (socket) socket.end(); } catch (_) {}
+  }
 }
 
 async function securityResetDispatchCommittedMailV338(req) {
@@ -1576,27 +1732,67 @@ async function securityResetDispatchCommittedMailV338(req) {
   if (!notice) return;
   SECURITY_RESET_MAIL_PENDING_V338.delete(req);
   const delivery = Promise.resolve().then(async () => {
-    const role = String(process.env.DIRAC_S2S_SERVER_ID || '').trim().toLowerCase();
-    const version = String(process.env.DIRAC_S2S_KEY_VERSION || '').trim();
-    const preflightStartV340 = Date.now();
-    securityResetMailDiagnosticV340(req, 'dispatch.preflight', 'begin', { server_id_valid: /^[a-z0-9][a-z0-9_.-]{0,79}$/.test(role), key_version_valid: /^[A-Za-z0-9_.-]{1,80}$/.test(version) });
-    if (!/^[a-z0-9][a-z0-9_.-]{0,79}$/.test(role) || !/^[A-Za-z0-9_.-]{1,80}$/.test(version)) throw resetError('PASSWORD_RESET_MAIL_CONFIGURATION_UNAVAILABLE', 503);
-    const records = await Promise.all([
-      supabaseFetch('/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent('s2s-server-registry:' + role) + '&select=security_key,record_json,expires_at&limit=2', { method: 'GET', auth: 'service' }),
-      supabaseFetch('/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent('s2s-revocation:' + role + ':' + version) + '&select=security_key,record_json,expires_at&limit=2', { method: 'GET', auth: 'service' })
-    ]);
-    securityResetMailDiagnosticV340(req, 'dispatch.preflight', records.some((result) => !result || result.ok !== true || !Array.isArray(result.data)) || records[0].data.length !== 1 || records[1].data.length > 1 ? 'error' : 'success', { registry_ok: Boolean(records[0] && records[0].ok === true), registry_status: Number(records[0] && records[0].status || 0), registry_rows: Array.isArray(records[0] && records[0].data) ? records[0].data.length : -1, revocations_ok: Boolean(records[1] && records[1].ok === true), revocations_status: Number(records[1] && records[1].status || 0), revocations_rows: Array.isArray(records[1] && records[1].data) ? records[1].data.length : -1, stage_elapsed_ms: Date.now() - preflightStartV340 });
-    if (records.some((result) => !result || result.ok !== true || !Array.isArray(result.data)) || records[0].data.length !== 1 || records[1].data.length > 1) throw resetError('PASSWORD_RESET_MAIL_PREFLIGHT_UNAVAILABLE', 503);
-    const result = await centralHandler.__diracPasswordResetMailNotifyCommittedV338(req, notice.commitId,
-      { registry: records[0].data[0], revocations: records[1].data }, SECURITY_RESET_MAIL_DIAGNOSTICS_V340.get(req));
-    securityResetMailDiagnosticV340(req, 'dispatch.result', result && result.ok === true ? 'success' : 'error', { delivered: Boolean(result && result.ok === true), code: result && result.code, provider: result && result.provider, upstream_status: Number(result && result.status || 0) });
-    if (!result || result.ok !== true) diracResetDiagnosticV335(req, 'notification.password_changed', 'error',
-      { delivered: false, code: String(result && result.code || 'PASSWORD_RESET_MAIL_UNCONFIRMED') });
-    else diracResetDiagnosticV335(req, 'notification.password_changed', 'success', { delivered: true });
+    const record = securityResetValidateCommittedMailV342(notice.record, notice.commitId);
+    if (!record) throw resetError('PASSWORD_RESET_MAIL_RECORD_UNCONFIRMED', 503);
+
+    const claimKey = 'password-reset-mail-dispatch-v338:' + record.commit_id;
+    const claimAt = Date.now();
+    const claim = await supabaseFetch('/rest/v1/dirac_persistent_bans?on_conflict=security_key', {
+      method: 'POST',
+      auth: 'service',
+      prefer: 'resolution=ignore-duplicates,return=representation',
+      body: [{
+        security_key: claimKey,
+        record_json: {
+          type: 'password_reset_mail_dispatch_v338',
+          commit_id: record.commit_id,
+          customer_id: record.customer_id,
+          auth_user_id: record.auth_user_id,
+          record_mac: record.mac,
+          claimed_at_ms: claimAt
+        },
+        blocked_until_ms: 0,
+        updated_at: new Date(claimAt).toISOString(),
+        expires_at: new Date(claimAt + 900000).toISOString()
+      }]
+    });
+    const claimed = Boolean(claim && claim.ok === true && Array.isArray(claim.data) && claim.data.length === 1
+      && claim.data[0] && claim.data[0].security_key === claimKey);
+    securityResetMailDiagnosticV340(req, 'dispatch.preflight', claimed ? 'success' : 'error', {
+      registry_ok: Boolean(claim && claim.ok === true),
+      registry_status: Number(claim && claim.status || 0),
+      registry_rows: Array.isArray(claim && claim.data) ? claim.data.length : -1
+    });
+    if (!claimed) throw resetError('PASSWORD_RESET_MAIL_CLAIM_UNAVAILABLE_OR_USED', 503);
+
+    const result = await securityResetSendCommittedPasswordMailV342(record);
+    securityResetMailDiagnosticV340(req, 'dispatch.result', result && result.ok === true ? 'success' : 'error', {
+      delivered: Boolean(result && result.ok === true),
+      code: result && result.code,
+      provider: result && result.provider,
+      upstream_status: Number(result && result.status || 0)
+    });
+    if (!result || result.ok !== true) {
+      diracResetDiagnosticV335(req, 'notification.password_changed', 'error',
+        { delivered: false, code: String(result && result.code || 'PASSWORD_RESET_MAIL_UNCONFIRMED') });
+    } else {
+      diracResetDiagnosticV335(req, 'notification.password_changed', 'success', { delivered: true });
+    }
     return result;
-  }).catch((error) => { securityResetMailDiagnosticV340(req, 'dispatch.exception', 'error', { delivered: false, code: error && error.code, status: Number(error && (error.statusCode || error.status) || 0) }); diracResetDiagnosticV335(req, 'notification.password_changed', 'error', { delivered: false }, error); });
-  if (typeof req.waitUntil === 'function') { try { req.waitUntil(delivery); securityResetMailDiagnosticV340(req, 'dispatch.lifecycle', 'scheduled', { mode: 'request_wait_until' }); return; } catch (_) {} }
-  if (typeof globalThis.waitUntil === 'function') { try { globalThis.waitUntil(delivery); securityResetMailDiagnosticV340(req, 'dispatch.lifecycle', 'scheduled', { mode: 'global_wait_until' }); return; } catch (_) {} }
+  }).catch((error) => {
+    securityResetMailDiagnosticV340(req, 'dispatch.exception', 'error', {
+      delivered: false,
+      code: error && error.code,
+      status: Number(error && (error.statusCode || error.status) || 0)
+    });
+    diracResetDiagnosticV335(req, 'notification.password_changed', 'error', { delivered: false }, error);
+  });
+  if (typeof req.waitUntil === 'function') {
+    try { req.waitUntil(delivery); securityResetMailDiagnosticV340(req, 'dispatch.lifecycle', 'scheduled', { mode: 'request_wait_until' }); return; } catch (_) {}
+  }
+  if (typeof globalThis.waitUntil === 'function') {
+    try { globalThis.waitUntil(delivery); securityResetMailDiagnosticV340(req, 'dispatch.lifecycle', 'scheduled', { mode: 'global_wait_until' }); return; } catch (_) {}
+  }
   securityResetMailDiagnosticV340(req, 'dispatch.lifecycle', 'awaited', { mode: 'handler_await' });
   await delivery;
 }

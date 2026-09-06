@@ -12288,11 +12288,11 @@ async function customerSecurityWrapLostPasskeyFileKey(input) {
 }
 
 function customerSecurityRecoverySmtpConfig() {
-  const host = String(process.env.DIRAC_RECOVERY_SMTP_HOST || '').trim();
-  const port = Number(process.env.DIRAC_RECOVERY_SMTP_PORT || 465);
-  const secure = String(process.env.DIRAC_RECOVERY_SMTP_SECURE || 'true').trim().toLowerCase() !== 'false';
-  const user = String(process.env.DIRAC_RECOVERY_SMTP_USER || '').trim();
-  const pass = String(process.env.DIRAC_RECOVERY_SMTP_APP_PASSWORD || '').trim();
+  const host = String(process.env.DIRAC_RECOVERY_SMTP_HOST || process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim();
+  const port = Number(process.env.DIRAC_RECOVERY_SMTP_PORT || process.env.DIRAC_USER_SECURITY_SMTP_PORT || 465);
+  const secure = String(process.env.DIRAC_RECOVERY_SMTP_SECURE || process.env.DIRAC_USER_SECURITY_SMTP_SECURE || 'true').trim().toLowerCase() !== 'false';
+  const user = String(process.env.DIRAC_RECOVERY_SMTP_USER || process.env.DIRAC_USER_SECURITY_SMTP_USER || '').trim();
+  const pass = String(process.env.DIRAC_RECOVERY_SMTP_APP_PASSWORD || process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
   if (!host || !port || !secure || !user || !pass) return null;
   return { host, port, secure, user, pass };
 }
@@ -12818,21 +12818,29 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
         : (Number.isInteger(Number(data && data.status)) && Number(data.status) >= 400 && Number(data.status) <= 599 ? Number(data.status) : 502);
       return res.status(failureStatus).json(workerFailureBody);
     }
-    const deliveryPayload = customerSecurityLostPasskeyGenerateSuccessPayloadV182({
-      requestId: customerSecurityNormalizeLostPasskeyRequestId(data.request_id),
-      expiresAt: String(data.expires_at || ''),
-      websiteRecoveryCode: data.website_recovery_code,
-      message: 'Link pemulihan dan kode email sudah dikirim ke email resmi akun.',
-      time: data.time || diracNowIso()
-    });
-    if (!deliveryPayload || !Number.isFinite(Date.parse(deliveryPayload.expires_at)) || Date.parse(deliveryPayload.expires_at) <= Date.now()) {
+    const deliveryRequestIdV342 = customerSecurityNormalizeLostPasskeyRequestId(data.request_id);
+    const deliveryExpiresAtV342 = String(data.expires_at || '').trim();
+    const deliveryProviderV342 = String(data.email_code_delivery || data.provider || '').trim();
+    if (!deliveryRequestIdV342
+        || String(data.delivery || '') !== 'email_code_100'
+        || !Number.isFinite(Date.parse(deliveryExpiresAtV342))
+        || Date.parse(deliveryExpiresAtV342) <= Date.now()
+        || !['gmail_smtp', 'smtp'].includes(deliveryProviderV342)) {
       return res.status(502).json({
         ok: false,
-        code: 'RECOVERY_DUAL_DELIVERY_CONTRACT_INVALID',
-        message: 'Respons pemulihan belum lengkap. Nomor referensi dan kode website 100 karakter wajib diterima bersama.'
+        code: 'RECOVERY_EMAIL100_DELIVERY_CONTRACT_INVALID',
+        message: 'Recovery worker belum membuktikan pengiriman kode email 100 karakter.'
       });
     }
-    return res.status(200).json(deliveryPayload);
+    return res.status(200).json({
+      ok: true,
+      request_id: deliveryRequestIdV342,
+      expires_at: deliveryExpiresAtV342,
+      delivery: 'email_code_100',
+      email_code_delivery: 'sent_to_official_email',
+      message: 'Kode keamanan 100 karakter sudah dikirim ke email resmi akun.',
+      time: String(data.time || diracNowIso())
+    });
   } catch (error) {
     const workerErrorName = String(error && error.name || '').slice(0, 80);
     const workerErrorMessage = diracSecurityRedactDiagnosticV210(error, 240);
@@ -12915,7 +12923,7 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
 }
 
 
-async function customerSecurityVerifyRecoveryCodeViaWorker(req, res, action, access, owner, activePasskeys, bindings, requestId, recoveryCode) {
+async function customerSecurityVerifyRecoveryCodeViaWorker(req, res, action, access, owner, activePasskeys, bindings, requestId, recoveryCode, accountPassword) {
   const workerEnvDiagnostics = customerSecurityRecoveryWorkerMainEnvDiagnostics();
   if (!workerEnvDiagnostics.ok) {
     try {
@@ -12963,7 +12971,8 @@ async function customerSecurityVerifyRecoveryCodeViaWorker(req, res, action, acc
     user_agent_hash: bindings.userAgentHash,
     active_passkey_count: Math.max(0, Array.isArray(activePasskeys) ? activePasskeys.length : 0),
     request_id: String(requestId || ''),
-    recovery_code: String(recoveryCode || '')
+    recovery_code: String(recoveryCode || ''),
+    password_latest_material: String(accountPassword || '')
   };
 
   const timestamp = String(Date.now());
@@ -13347,20 +13356,36 @@ async function diracRecoveryBrowserOpenV287(req, body) {
       }
       openedBody = { action, account_password: accountPassword, current_password: accountPassword };
     } else {
-      const expectedInnerKeys = ['action', 'recovery_code', 'request_id'];
+      const expectedInnerKeys = ['action', 'password_b64url', 'recovery_code', 'request_id'];
       const requestIdInner = customerSecurityNormalizeLostPasskeyRequestId(parsed && parsed.request_id || '');
-      const recoveryCodeInner = customerSecurityNormalizeRecoveryCodeInput(parsed && parsed.recovery_code || '');
+      const recoveryCodeInner = customerSecurityLostPasskeyExactSecret100V182(
+        customerSecurityNormalizeRecoveryCodeInput(parsed && parsed.recovery_code || '')
+      );
+      let passwordBytes = null;
+      let accountPassword = '';
+      try {
+        passwordBytes = diracRecoveryBrowserDecodeB64uV287(parsed && parsed.password_b64url, null, 2048);
+        if (passwordBytes.length < 6 || passwordBytes.length > 1024) throw new Error('RECOVERY_BROWSER_TRANSPORT_PASSWORD_LENGTH_INVALID');
+        accountPassword = new TextDecoder('utf-8', { fatal: true }).decode(passwordBytes).normalize('NFC');
+      } catch (_) {
+        accountPassword = '';
+      } finally {
+        if (passwordBytes) passwordBytes.fill(0);
+      }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
           || innerKeys.length !== expectedInnerKeys.length
           || innerKeys.some((key, index) => key !== expectedInnerKeys[index])
           || parsed.action !== action
           || !requestIdInner
-          || Array.from(recoveryCodeInner).length !== LOST_PASSKEY_RECOVERY_CODE_LENGTH_V157) {
+          || !recoveryCodeInner
+          || !accountPassword
+          || Buffer.byteLength(accountPassword, 'utf8') < 6
+          || Buffer.byteLength(accountPassword, 'utf8') > 1024) {
         const error = new Error('RECOVERY_BROWSER_TRANSPORT_INNER_BINDING_INVALID');
         error.code = 'RECOVERY_BROWSER_TRANSPORT_INNER_BINDING_INVALID';
         throw error;
       }
-      openedBody = { action, request_id: requestIdInner, recovery_code: recoveryCodeInner };
+      openedBody = { action, request_id: requestIdInner, recovery_code: recoveryCodeInner, account_password: accountPassword, current_password: accountPassword };
     }
     if (typeof claimPersistentSecurityKeyOnceV194 !== 'function') {
       const error = new Error('RECOVERY_BROWSER_TRANSPORT_REPLAY_STORE_UNAVAILABLE');
@@ -14199,18 +14224,26 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
     return res.status(403).json({ ok: false, code, message: 'Permintaan verifikasi recovery terenkripsi ditolak.' });
   }
   const requestId = customerSecurityNormalizeLostPasskeyRequestId(body.request_id || '');
-  const code = customerSecurityNormalizeRecoveryCodeInput(body.recovery_code || '');
+  const code = customerSecurityLostPasskeyExactSecret100V182(
+    customerSecurityNormalizeRecoveryCodeInput(body.recovery_code || '')
+  );
+  const accountPassword = customerSecurityExtractAccountPasswordForPdfV156(body);
 
   if (!requestId) {
     await customerSecurityRegisterFailedVerification(req, action, 'invalid_recovery_request_id', access.customerId);
     return res.status(400).json({ ok: false, message: 'Request recovery tidak valid.' });
   }
-  if (Array.from(code).length !== LOST_PASSKEY_RECOVERY_CODE_LENGTH_V157) {
-    await customerSecurityRegisterFailedVerification(req, action, 'invalid_recovery_code_length', access.customerId);
+  if (!code) {
+    await customerSecurityRegisterFailedVerification(req, action, 'invalid_email_code_100', access.customerId);
     return res.status(400).json({
       ok: false,
-      message: 'Recovery code tidak valid. Masukkan tepat ' + LOST_PASSKEY_RECOVERY_CODE_LENGTH_V157 + ' karakter dari file recovery terenkripsi.'
+      code: 'EMAIL_CODE_100_INVALID',
+      message: 'Kode email harus tepat 100 karakter.'
     });
+  }
+  if (!accountPassword) {
+    await customerSecurityRegisterFailedVerification(req, action, 'recovery_password_missing_on_verify', access.customerId);
+    return res.status(400).json({ ok: false, code: 'ACCOUNT_PASSWORD_REQUIRED', message: 'Password akun wajib diverifikasi bersama kode email.' });
   }
 
   // SERVER 1 proxy-only boundary: no customer-table or passkey-table recovery lookup.
@@ -14230,7 +14263,11 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
   const activePasskeys = [];
   const bindings = customerSecurityLostPasskeyBindings(req, owner);
 
-  return customerSecurityVerifyRecoveryCodeViaWorker(req, res, action, access, owner, activePasskeys, bindings, requestId, code);
+  // SERVER 1 remains proxy-only for password verification. The password is sealed
+  // inside the existing hybrid worker envelope and verified authoritatively on SERVER 2.
+  return customerSecurityVerifyRecoveryCodeViaWorker(
+    req, res, action, access, owner, activePasskeys, bindings, requestId, code, accountPassword
+  );
 
 
 
@@ -47544,7 +47581,7 @@ diracS2SProcessSecurityReportV206 = async function diracS2SProcessSecurityReport
    - User notification after completed account login, detected password
      change, and passkey activation/replacement.
    - Central Guard owner/cyber alert uses the same corporate recovery design.
-   - Resend is the primary user provider; Gmail SMTP is used only after HTTP 429.
+   - Gmail SMTP is the primary user provider; Brevo/Resend remain delivery fallbacks.
    - Login/register/passkey mutations fail closed when either dedicated mail
      configuration is absent or invalid. No table or ENV is added here.
    ============================================================ */
@@ -49415,7 +49452,16 @@ diracUserSecuritySendV327 = async function diracUserSecuritySendCascadeV330(even
     if (event.kind === 'password_changed' && markerV340 && event.reference === markerV340.commitId.slice(0, 10).toUpperCase())
       diagnosticV340 = DIRAC_PASSWORD_RESET_MAIL_DIAGNOSTICS_V340.get(ctxV340.req) || null;
   } catch (_) { void 0; }
-  return diracSecurityMailProviderCascadeV330(message, config, () => diracUserSecuritySendSmtpV327(event, config), diagnosticV340);
+
+  // User meminta Gmail SMTP sebagai jalur utama. Tetap gunakan provider API
+  // yang sudah ada hanya sebagai fallback; tidak ada ENV/tabel baru dan tidak
+  // ada perubahan pada Central Guard atau syarat otorisasi event.
+  const smtpSenderV342 = () => diracUserSecuritySendSmtpV327(event, config);
+  const smtpFirstV342 = diagnosticV340
+    ? await diracPasswordResetMailProviderAttemptV340(diagnosticV340, 'gmail_smtp', smtpSenderV342)
+    : await smtpSenderV342();
+  if (smtpFirstV342 && smtpFirstV342.ok === true) return smtpFirstV342;
+  return diracSecurityMailProviderCascadeV330(message, config, smtpSenderV342, diagnosticV340);
 };
 
 const diracSecurityAlertSmtpSendBeforeCascadeV330 = diracSecurityAlertSendV320;
