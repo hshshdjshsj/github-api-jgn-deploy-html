@@ -13301,6 +13301,19 @@ async function diracRecoveryBrowserDecryptCompatV288(material, ephemeralPublic, 
   }
 }
 
+async function diracRecoveryBrowserDecryptCompatSafeV343(material, ephemeralPublic, salt, nonce, sealed, aad, requestId, bindingDigest) {
+  try {
+    return await diracRecoveryBrowserDecryptCompatV288(
+      material, ephemeralPublic, salt, nonce, sealed, aad, requestId, bindingDigest
+    );
+  } catch (error) {
+    if (error && error.code === 'RECOVERY_BROWSER_TRANSPORT_AUTHENTICATION_FAILED') throw error;
+    const wrapped = new Error('RECOVERY_BROWSER_TRANSPORT_AUTHENTICATION_FAILED');
+    wrapped.code = 'RECOVERY_BROWSER_TRANSPORT_AUTHENTICATION_FAILED';
+    throw wrapped;
+  }
+}
+
 async function diracRecoveryBrowserOpenV287(req, body) {
   const source = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
   const expectedKeys = [
@@ -13375,39 +13388,15 @@ async function diracRecoveryBrowserOpenV287(req, body) {
   let aad = null;
   let plaintext = null;
   try {
-    shared = Buffer.from(material.ecdh.computeSecret(ephemeralPublic));
-    if (shared.length !== 32 || crypto.timingSafeEqual(shared, Buffer.alloc(32))) {
-      const error = new Error('RECOVERY_BROWSER_TRANSPORT_SHARED_SECRET_INVALID');
-      error.code = 'RECOVERY_BROWSER_TRANSPORT_SHARED_SECRET_INVALID';
-      throw error;
-    }
-    const requestInfo = diracRecoveryBrowserHkdfInfoV287('request', requestId, material.keyId, bindingDigest);
-    const responseInfo = diracRecoveryBrowserHkdfInfoV287('response', requestId, material.keyId, bindingDigest);
-    try {
-      requestKey = Buffer.from(crypto.hkdfSync('sha256', shared, salt, requestInfo, 32));
-      responseKey = Buffer.from(crypto.hkdfSync('sha256', shared, salt, responseInfo, 32));
-    } finally {
-      requestInfo.fill(0);
-      responseInfo.fill(0);
-    }
+    // Browser and Server 1 now use the same standards-based WebCrypto semantics
+    // for ECDH P-256 + HKDF-SHA256 + AES-256-GCM. All origin, CSRF, page-nonce,
+    // key-id, binding, TTL and replay checks above remain mandatory and unchanged.
+    // Node/OpenSSL remains a same-suite fallback only if WebCrypto cannot open the
+    // authenticated envelope; there is never a plaintext or unauthenticated fallback.
     aad = diracRecoveryBrowserAadV287(source, origin, bindingDigest);
-    const tag = Buffer.from(sealed.subarray(sealed.length - 16));
-    const ciphertext = Buffer.from(sealed.subarray(0, sealed.length - 16));
-    let primaryAuthenticationError = null;
+    let webcryptoOpenError = null;
     try {
-      const decipher = crypto.createDecipheriv('aes-256-gcm', requestKey, nonce, { authTagLength: 16 });
-      decipher.setAAD(aad, { plaintextLength: ciphertext.length });
-      decipher.setAuthTag(tag);
-      plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    } catch (error) {
-      primaryAuthenticationError = error;
-    } finally {
-      tag.fill(0);
-      ciphertext.fill(0);
-    }
-    if (primaryAuthenticationError) {
-      if (responseKey) { responseKey.fill(0); responseKey = null; }
-      const compat = await diracRecoveryBrowserDecryptCompatV288(
+      const compat = await diracRecoveryBrowserDecryptCompatSafeV343(
         material,
         ephemeralPublic,
         salt,
@@ -13419,6 +13408,43 @@ async function diracRecoveryBrowserOpenV287(req, body) {
       );
       plaintext = compat.plaintext;
       responseKey = compat.responseKey;
+    } catch (error) {
+      webcryptoOpenError = error;
+    }
+
+    if (webcryptoOpenError) {
+      try {
+        shared = Buffer.from(material.ecdh.computeSecret(ephemeralPublic));
+        if (shared.length !== 32 || crypto.timingSafeEqual(shared, Buffer.alloc(32))) {
+          const error = new Error('RECOVERY_BROWSER_TRANSPORT_SHARED_SECRET_INVALID');
+          error.code = 'RECOVERY_BROWSER_TRANSPORT_SHARED_SECRET_INVALID';
+          throw error;
+        }
+        const requestInfo = diracRecoveryBrowserHkdfInfoV287('request', requestId, material.keyId, bindingDigest);
+        const responseInfo = diracRecoveryBrowserHkdfInfoV287('response', requestId, material.keyId, bindingDigest);
+        try {
+          requestKey = Buffer.from(crypto.hkdfSync('sha256', shared, salt, requestInfo, 32));
+          responseKey = Buffer.from(crypto.hkdfSync('sha256', shared, salt, responseInfo, 32));
+        } finally {
+          requestInfo.fill(0);
+          responseInfo.fill(0);
+        }
+        const tag = Buffer.from(sealed.subarray(sealed.length - 16));
+        const ciphertext = Buffer.from(sealed.subarray(0, sealed.length - 16));
+        try {
+          const decipher = crypto.createDecipheriv('aes-256-gcm', requestKey, nonce, { authTagLength: 16 });
+          decipher.setAAD(aad, { plaintextLength: ciphertext.length });
+          decipher.setAuthTag(tag);
+          plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+        } finally {
+          tag.fill(0);
+          ciphertext.fill(0);
+        }
+      } catch (_) {
+        const error = new Error('RECOVERY_BROWSER_TRANSPORT_AUTHENTICATION_FAILED');
+        error.code = 'RECOVERY_BROWSER_TRANSPORT_AUTHENTICATION_FAILED';
+        throw error;
+      }
     }
     let parsed;
     let text;
@@ -13628,9 +13654,11 @@ async function customerSecurityGenerateRecoveryCodes(req, res, action, override 
       requestBody = openedBrowserTransportV287.body;
       diracRecoveryBrowserInstallResponseGuardV287(res, openedBrowserTransportV287);
     } catch (error) {
-      const code = /^[A-Z0-9_]{1,120}$/.test(String(error && error.code || ''))
-        ? String(error.code)
-        : 'RECOVERY_BROWSER_TRANSPORT_REJECTED';
+      const errorCode = String(error && error.code || '');
+      const errorMessageCode = String(error && error.message || '');
+      const code = /^[A-Z0-9_]{1,120}$/.test(errorCode)
+        ? errorCode
+        : (/^[A-Z0-9_]{1,120}$/.test(errorMessageCode) ? errorMessageCode : 'RECOVERY_BROWSER_TRANSPORT_REJECTED');
       try { console.error('[dirac-recovery-browser-transport-v287]', JSON.stringify({ event: 'request_rejected', code, secrets_logged: false })); } catch (_) {}
       return res.status(403).json({ ok: false, code, message: 'Permintaan recovery terenkripsi ditolak.' });
     }
@@ -14319,9 +14347,11 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
     body = openedBrowserTransportV287.body;
     diracRecoveryBrowserInstallResponseGuardV287(res, openedBrowserTransportV287);
   } catch (error) {
-    const code = /^[A-Z0-9_]{1,120}$/.test(String(error && error.code || ''))
-      ? String(error.code)
-      : 'RECOVERY_BROWSER_TRANSPORT_REJECTED';
+    const errorCode = String(error && error.code || '');
+    const errorMessageCode = String(error && error.message || '');
+    const code = /^[A-Z0-9_]{1,120}$/.test(errorCode)
+      ? errorCode
+      : (/^[A-Z0-9_]{1,120}$/.test(errorMessageCode) ? errorMessageCode : 'RECOVERY_BROWSER_TRANSPORT_REJECTED');
     try { console.error('[dirac-recovery-browser-transport-v287]', JSON.stringify({ event: 'verify_request_rejected', code, secrets_logged: false })); } catch (_) {}
     return res.status(403).json({ ok: false, code, message: 'Permintaan verifikasi recovery terenkripsi ditolak.' });
   }
@@ -47683,7 +47713,7 @@ diracS2SProcessSecurityReportV206 = async function diracS2SProcessSecurityReport
    - User notification after completed account login, detected password
      change, and passkey activation/replacement.
    - Central Guard owner/cyber alert uses the same corporate recovery design.
-   - Gmail SMTP is the primary user provider; Brevo/Resend remain delivery fallbacks.
+   - User delivery order is Brevo -> Resend only on provider limit -> Gmail SMTP only on Resend limit.
    - Login/register/passkey mutations fail closed when either dedicated mail
      configuration is absent or invalid. No table or ENV is added here.
    ============================================================ */
@@ -49555,14 +49585,10 @@ diracUserSecuritySendV327 = async function diracUserSecuritySendCascadeV330(even
       diagnosticV340 = DIRAC_PASSWORD_RESET_MAIL_DIAGNOSTICS_V340.get(ctxV340.req) || null;
   } catch (_) { void 0; }
 
-  // User meminta Gmail SMTP sebagai jalur utama. Tetap gunakan provider API
-  // yang sudah ada hanya sebagai fallback; tidak ada ENV/tabel baru dan tidak
-  // ada perubahan pada Central Guard atau syarat otorisasi event.
+  // User-security delivery is isolated to DIRAC_USER_SECURITY_* configuration:
+  // Brevo first; only provider-limit responses continue to Resend; only a Resend
+  // provider-limit continues to Google SMTP. Central/cyber alert ENV is untouched.
   const smtpSenderV342 = () => diracUserSecuritySendSmtpV327(event, config);
-  const smtpFirstV342 = diagnosticV340
-    ? await diracPasswordResetMailProviderAttemptV340(diagnosticV340, 'gmail_smtp', smtpSenderV342)
-    : await smtpSenderV342();
-  if (smtpFirstV342 && smtpFirstV342.ok === true) return smtpFirstV342;
   return diracSecurityMailProviderCascadeV330(message, config, smtpSenderV342, diagnosticV340);
 };
 
