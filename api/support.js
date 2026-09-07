@@ -25,6 +25,7 @@ const SERVICE_STATES = new Set(['operational', 'degraded', 'partial_outage', 'ma
 const INCIDENT_STAGES = new Set(['detected', 'investigating', 'identified', 'fixing', 'monitoring', 'resolved']);
 const PUBLIC_GET_ACTIONS = new Set(['status_bootstrap', 'chat_public_config', 'admin_public_config']);
 const CUSTOMER_GET_ACTIONS = new Set(['chat_bootstrap']);
+const CUSTOMER_CONFIG_ACTIONS_V357 = new Set(['chat_public_config', 'chat_bootstrap', 'chat_start', 'chat_send', 'chat_close', 'customer_access_refresh']);
 const ADMIN_GET_ACTIONS = new Set(['admin_bootstrap', 'admin_queue', 'admin_thread', 'admin_status_snapshot']);
 const MUTATION_ACTIONS = new Set([
   'chat_start', 'chat_send', 'chat_close', 'customer_access_refresh',
@@ -73,13 +74,16 @@ function config() {
   const adminBindingSecret = env('DIRAC_SUPPORT_ADMIN_BINDING_SECRET');
   const turnstileSiteKey = env('DIRAC_SUPPORT_TURNSTILE_SITE_KEY'); const turnstileSecretKey = env('DIRAC_SUPPORT_TURNSTILE_SECRET_KEY');
   const turnstileRequired = envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', isProduction());
+  const currentContext = supportCentralCurrentContextV146();
+  const customerConfigOnly = Boolean(currentContext && CUSTOMER_CONFIG_ACTIONS_V357.has(String(currentContext.action || '')));
   if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(supabaseUrl)) throw new PublicError(503, 'SUPPORT_CONFIG_INVALID', 'Konfigurasi database support belum valid.');
   const publishableRole = decodeJwt(publishableKey).role; const secretRole = decodeJwt(secretKey).role;
   const publishableValid = /^sb_publishable_[A-Za-z0-9_-]{10,}$/.test(publishableKey) || publishableRole === 'anon';
   const secretValid = /^sb_secret_[A-Za-z0-9_-]{10,}$/.test(secretKey) || secretRole === 'service_role';
   if (!publishableValid || !secretValid || timingEqual(publishableKey, secretKey)) throw new PublicError(503, 'SUPPORT_KEYS_INVALID', 'Kelas kunci Supabase support tidak valid atau tertukar.');
-  const securitySecrets = [cookieSecret, csrfSecret, ipSecret, mfaEnrollmentSecret, adminBindingSecret];
-  if (isProduction() && (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(primaryAdminUserId)
+  const customerSecuritySecrets = [cookieSecret, csrfSecret, ipSecret];
+  const securitySecrets = customerConfigOnly ? customerSecuritySecrets : customerSecuritySecrets.concat([mfaEnrollmentSecret, adminBindingSecret]);
+  if (isProduction() && !customerConfigOnly && (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(primaryAdminUserId)
       || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(primaryAdminEmail)
       || Buffer.byteLength(adminBindingSecret, 'utf8') < 32)) {
     throw new PublicError(503, 'PRIMARY_ADMIN_BINDING_CONFIG_INVALID', 'Binding admin utama belum dikonfigurasi lengkap.');
