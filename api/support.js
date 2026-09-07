@@ -2292,6 +2292,10 @@ async function handler(req, res) {
   const ctx = supportCentralContextV146(req, res);
   return DIRAC_SUPPORT_CENTRAL_CONTEXT_V146.run(ctx, async () => {
     req.diracRequestId = ctx.requestId;
+    try {
+      const diagnosticEntryActionV359 = String(queryValue(req, 'action') || '').trim().toLowerCase();
+      if (diagnosticEntryActionV359 === 'chat_public_config') console.error('[dirac-support-chat-public-config-entry-v359]', JSON.stringify({ patch: 'dirac-support-chat-public-config-diagnostic-v359', event: 'entry', requestId: ctx.requestId, method: ctx.method, originPresent: Boolean(requestOrigin(req)), originAllowed: originAllowed(req) }));
+    } catch (_) {}
     let caught = null;
     try {
       securityHeaders(req, res, String(queryValue(req, 'action') || '').trim().toLowerCase());
@@ -2331,7 +2335,9 @@ async function handler(req, res) {
       if (safe.allow) setHeader(res, 'Allow', safe.allow);
       if (safe.retryAfter) setHeader(res, 'Retry-After', String(safe.retryAfter));
       supportCentralRecordOutcomeV146(ctx, error);
-      if (error instanceof PublicError && ctx.action === 'chat_public_config') {
+      let diagnosticRequestedActionV359 = String(ctx.action || '').trim().toLowerCase();
+      try { if (!diagnosticRequestedActionV359) diagnosticRequestedActionV359 = String(queryValue(req, 'action') || '').trim().toLowerCase(); } catch (_) {}
+      if (diagnosticRequestedActionV359 === 'chat_public_config') {
         try {
           const diagnosticPublishableKeyV358 = env('DIRAC_SUPPORT_SUPABASE_PUBLISHABLE_KEY') || env('DIRAC_SUPPORT_SUPABASE_ANON_KEY');
           const diagnosticSecretKeyV358 = env('DIRAC_SUPPORT_SUPABASE_SECRET_KEY') || env('DIRAC_SUPPORT_SUPABASE_SERVICE_ROLE_KEY');
@@ -2340,11 +2346,16 @@ async function handler(req, res) {
           const diagnosticIpSecretV358 = env('DIRAC_SUPPORT_IP_HMAC_SECRET');
           const diagnosticCustomerSecretsV358 = [diagnosticCookieSecretV358, diagnosticCsrfSecretV358, diagnosticIpSecretV358];
           const diagnosticTurnstileRequiredV358 = envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', isProduction());
-          console.error('[dirac-support-chat-public-config-diagnostic-v358]', JSON.stringify({
+          console.error('[dirac-support-chat-public-config-diagnostic-v359]', JSON.stringify({
+            patch: 'dirac-support-chat-public-config-diagnostic-v359',
             event: 'chat_public_config_failed',
             requestId: ctx.requestId,
+            requestedAction: diagnosticRequestedActionV359,
+            parsedAction: String(ctx.action || '').slice(0, 64),
             status: safe.status,
             code: safe.code,
+            rawCode: String(error && (error.code || '') || '').slice(0, 80),
+            rawName: String(error && (error.name || '') || '').slice(0, 80),
             boundary: ctx.fullyPassed === true ? 'handler' : 'guard',
             stage: String(ctx.currentStage || '').slice(0, 80),
             passportHex: ctx.passport.toString(16),
