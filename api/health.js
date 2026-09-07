@@ -64593,6 +64593,81 @@ async function diracCentralBanAuthorityDatabaseV355(operation, payload) {
 const DIRAC_CENTRAL_SUPPORT_EGRESS_BROKER_V355 = 'dirac-central-support-egress-broker-v355';
 const DIRAC_CENTRAL_SUPPORT_EGRESS_BRIDGE_V355 = 'dirac-support-health-egress-bridge-v355';
 const DIRAC_CENTRAL_SUPPORT_EGRESS_AUTHORIZE_SHA256_V355 = '705a19bf5ac3928cc148e13511367205fbe4afb8d426ab19272c24eed40ea721';
+const DIRAC_CENTRAL_SUPPORT_EGRESS_AUTHORIZE_TOKEN_SHA256_V360 = '996afb8b09f32675b48325082b8819223d838b42617d2c1787bb534c4a829e91';
+
+function diracCentralSupportAuthorizeTokenHashV360(authorize) {
+  let source = '';
+  try { source = Function.prototype.toString.call(authorize).replace(/\r\n?/g, '\n'); }
+  catch (_) { return ''; }
+  const canonical = [];
+  const restrictedLineBreakAfter = new Set(['return', 'throw', 'break', 'continue', 'yield', 'await', 'async']);
+  const punctuators = [
+    '>>>=', '===', '!==', '>>>', '**=', '<<=', '>>=', '&&=', '||=', '??=', '...',
+    '=>', '==', '!=', '<=', '>=', '++', '--', '&&', '||', '??', '**', '<<', '>>', '?.',
+    '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '=>'
+  ];
+  let index = 0;
+  let previousToken = '';
+  let lineBreakBefore = false;
+  const pushToken = (value, stringValue) => {
+    if (lineBreakBefore && (restrictedLineBreakAfter.has(previousToken) || value === '++' || value === '--')) canonical.push('N:LF');
+    canonical.push(stringValue === true ? 'S:' + value : 'T:' + value);
+    previousToken = value;
+    lineBreakBefore = false;
+  };
+  while (index < source.length) {
+    const ch = source[index];
+    if (/\s/.test(ch)) {
+      let hasLineBreak = false;
+      while (index < source.length && /\s/.test(source[index])) {
+        if (source[index] === '\n' || source[index] === '\u2028' || source[index] === '\u2029') hasLineBreak = true;
+        index += 1;
+      }
+      lineBreakBefore = lineBreakBefore || hasLineBreak;
+      continue;
+    }
+    if (ch === '`') return '';
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      index += 1;
+      const begin = index;
+      while (index < source.length && source[index] !== quote) {
+        if (source[index] === '\\' || source[index] === '\n' || source[index] === '\u2028' || source[index] === '\u2029') return '';
+        index += 1;
+      }
+      if (index >= source.length || source[index] !== quote) return '';
+      pushToken(source.slice(begin, index), true);
+      index += 1;
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(ch)) {
+      const begin = index++;
+      while (index < source.length && /[A-Za-z0-9_$]/.test(source[index])) index += 1;
+      pushToken(source.slice(begin, index), false);
+      continue;
+    }
+    if (/[0-9]/.test(ch)) {
+      const begin = index++;
+      while (index < source.length && /[0-9]/.test(source[index])) index += 1;
+      pushToken(source.slice(begin, index), false);
+      continue;
+    }
+    if (source.startsWith('//', index) || source.startsWith('/*', index)) return '';
+    let token = '';
+    for (const candidate of punctuators) {
+      if (source.startsWith(candidate, index)) { token = candidate; break; }
+    }
+    if (!token) {
+      if (!/[{}()[\].,;:?!~+\-*\/%<>=&|^]/.test(ch)) return '';
+      token = ch;
+    }
+    pushToken(token, false);
+    index += token.length;
+  }
+  if (!canonical.length) return '';
+  try { return crypto.createHash('sha256').update(canonical.join('\x1f')).digest('hex'); }
+  catch (_) { return ''; }
+}
 
 function diracCentralSupportBrokerRouteV355(input, options) {
   let target;
@@ -64725,14 +64800,20 @@ function diracCentralCreateSupportEgressBrokerV355(bridge) {
   let sourceHash = '';
   try {
     sourceHash = crypto.createHash('sha256')
-      .update(Function.prototype.toString.call(candidate.authorize))
+      .update(Function.prototype.toString.call(candidate.authorize).replace(/\r\n?/g, '\n'))
       .digest('hex');
   } catch (_) {
     return null;
   }
   const expected = Buffer.from(DIRAC_CENTRAL_SUPPORT_EGRESS_AUTHORIZE_SHA256_V355, 'utf8');
   const actual = Buffer.from(sourceHash, 'utf8');
-  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) return null;
+  const rawSourceMatch = actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+  if (!rawSourceMatch) {
+    const canonicalHash = diracCentralSupportAuthorizeTokenHashV360(candidate.authorize);
+    const canonicalExpected = Buffer.from(DIRAC_CENTRAL_SUPPORT_EGRESS_AUTHORIZE_TOKEN_SHA256_V360, 'utf8');
+    const canonicalActual = Buffer.from(canonicalHash, 'utf8');
+    if (canonicalActual.length !== canonicalExpected.length || !crypto.timingSafeEqual(canonicalActual, canonicalExpected)) return null;
+  }
   const authorize = candidate.authorize;
   return Object.freeze({
     version: DIRAC_CENTRAL_SUPPORT_EGRESS_BROKER_V355,
@@ -64811,6 +64892,7 @@ const DIRAC_CENTRAL_GUARD_REFERENCE_LIST_V230 = Object.freeze([
   diracCentralBanAuthorityDatabaseV355,
   diracCentralSupportBrokerRouteV355,
   diracCentralSupportBrokerTransportV355,
+  diracCentralSupportAuthorizeTokenHashV360,
   diracCentralCreateSupportEgressBrokerV355,
   diracCentralDirectNetworkBypassBlockedV230,
   diracCentralNativeNetworkSurfaceIntactV231,
