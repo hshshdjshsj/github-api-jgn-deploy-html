@@ -567,10 +567,16 @@ function verifyQueryShape(req, action) {
 }
 
 async function fetchJson(url, options, timeoutMs) {
-  supportCentralAssertFixedEgress(url);
+  if (!supportCentralAuthorizeHealthEgressV355(url, options)) {
+    throw new PublicError(500, 'CENTRAL_EGRESS_CONTEXT_REQUIRED', 'Konteks keamanan egress tidak tersedia.');
+  }
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs || 8000);
   try {
-    const response = await fetch(url, Object.assign({}, options, { signal: controller.signal, redirect: 'error' }));
+    const requestOptions = Object.assign({}, options, { signal: controller.signal, redirect: 'error' });
+    const broker = DIRAC_SUPPORT_HEALTH_EGRESS_BROKER_V355;
+    const response = broker && broker.version === 'dirac-central-support-egress-broker-v355' && typeof broker.fetch === 'function'
+      ? await broker.fetch(url, requestOptions)
+      : await fetch(url, requestOptions);
     const maxBytes = 2 * 1024 * 1024;
     const declared = Number(response.headers.get('content-length') || 0);
     if (Number.isFinite(declared) && declared > maxBytes) {
@@ -1453,13 +1459,25 @@ async function supportCentralBanAuthorityV354() {
   }
   const handler = await DIRAC_SUPPORT_HEALTH_HANDLER_PROMISE_V354.catch(() => null);
   const authority = handler && handler.__diracCentralBanAuthorityV354;
+  const createEgressBroker = handler && handler.__diracCentralCreateSupportEgressBrokerV355;
   if (typeof handler !== 'function' || Object.isFrozen(handler) !== true
       || handler.__diracCentralSecurityGuardV146 !== true
       || handler.__diracCentralHardeningV221 !== true
       || !authority || authority.version !== 'dirac-central-ban-authority-v354'
-      || typeof authority.check !== 'function' || typeof authority.ban !== 'function') {
+      || typeof authority.check !== 'function' || typeof authority.ban !== 'function'
+      || typeof createEgressBroker !== 'function') {
     DIRAC_SUPPORT_HEALTH_HANDLER_PROMISE_V354 = null;
     throw new PublicError(503, 'CENTRAL_BAN_AUTHORITY_INVALID', 'Otoritas blokir keamanan pusat tidak tersedia.');
+  }
+  if (!DIRAC_SUPPORT_HEALTH_EGRESS_BROKER_V355) {
+    const broker = createEgressBroker(DIRAC_SUPPORT_HEALTH_EGRESS_BRIDGE_OBJECT_V355);
+    if (!broker || Object.isFrozen(broker) !== true
+        || broker.version !== 'dirac-central-support-egress-broker-v355'
+        || typeof broker.fetch !== 'function') {
+      DIRAC_SUPPORT_HEALTH_HANDLER_PROMISE_V354 = null;
+      throw new PublicError(503, 'CENTRAL_EGRESS_BROKER_INVALID', 'Broker egress pusat untuk support tidak tersedia.');
+    }
+    DIRAC_SUPPORT_HEALTH_EGRESS_BROKER_V355 = broker;
   }
   return authority;
 }
@@ -1939,6 +1957,42 @@ function supportCentralAssertDynamicEgress(kind) {
   if (!actionAllowed) throw new PublicError(500, 'CENTRAL_DYNAMIC_EGRESS_REJECTED', 'Egress dinamis tidak diizinkan untuk action ini.');
   return true;
 }
+
+const DIRAC_SUPPORT_HEALTH_EGRESS_BRIDGE_V355 = 'dirac-support-health-egress-bridge-v355';
+let DIRAC_SUPPORT_HEALTH_EGRESS_BROKER_V355 = null;
+
+function supportCentralAuthorizeHealthEgressV355(input, options) {
+  const ctx = supportCentralCurrentContextV146();
+  if (!ctx) return !isProduction();
+  const method = String(options && options.method || 'GET').trim().toUpperCase();
+  if (ctx.phase === 'guard') {
+    if (ctx.currentStage !== 'rate limit' || method !== 'POST') return false;
+    let target;
+    let supportDatabaseOrigin;
+    try {
+      target = new URL(String(input || ''));
+      supportDatabaseOrigin = new URL(config().supabaseUrl).origin;
+    } catch (_) {
+      return false;
+    }
+    return target.origin === supportDatabaseOrigin
+      && target.pathname === '/rest/v1/rpc/support_take_rate_limit'
+      && target.search === '';
+  }
+  if (ctx.fullyPassed !== true || !['handler', 'audit'].includes(ctx.phase)) return false;
+  try {
+    supportCentralAssertFixedEgress(input);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+const DIRAC_SUPPORT_HEALTH_EGRESS_BRIDGE_OBJECT_V355 = Object.freeze({
+  version: DIRAC_SUPPORT_HEALTH_EGRESS_BRIDGE_V355,
+  guardVersion: DIRAC_SUPPORT_CENTRAL_SECURITY_GUARD_V146,
+  authorize: supportCentralAuthorizeHealthEgressV355
+});
 
 async function supportCentralGuardIdentityV202(ctx) {
   if (!ctx.req || !ctx.res || typeof ctx.req !== 'object' || typeof ctx.res !== 'object') throw new PublicError(400, 'CENTRAL_REQUEST_INVALID', 'Object request tidak valid.');
