@@ -357,37 +357,129 @@ function mainIdentityHeaders(req, cookieHeader) {
   return headers;
 }
 
+function mainIdentityDiagnosticV360(req, route, cookieHeader, headers) {
+  const incomingPairs = rawCookiePairs(req);
+  const allowedPairs = incomingPairs.filter((item) => mainCookieNameAllowed(item.name, route.cookieBases));
+  const headerNames = Object.keys(headers || {}).map((value) => String(value).toLowerCase()).sort();
+  let endpoint; try { endpoint = new URL(route.endpoint); } catch (_) { endpoint = null; }
+  return {
+    patch: 'dirac-support-main-identity-diagnostic-v360',
+    phase: 'prepared',
+    route: {
+      protocol: endpoint ? endpoint.protocol : '',
+      host: endpoint ? endpoint.host : '',
+      pathname: endpoint ? endpoint.pathname : '',
+      action: endpoint ? String(endpoint.searchParams.get('action') || '') : ''
+    },
+    source: {
+      origin: requestOrigin(req).slice(0, 300),
+      host: normalizeAuthority(req && req.headers && req.headers.host),
+      forwardedHost: normalizeAuthority(req && req.headers && req.headers['x-forwarded-host']),
+      forwardedProto: String(req && req.headers && (req.headers['x-forwarded-proto'] || req.headers['x-vercel-forwarded-proto']) || '').split(',')[0].trim().toLowerCase().slice(0, 16),
+      userAgentPresent: Boolean(forwardedBrowserHeader(req, 'user-agent', 512)),
+      secFetchSite: forwardedBrowserHeader(req, 'sec-fetch-site', 32),
+      secFetchMode: forwardedBrowserHeader(req, 'sec-fetch-mode', 32),
+      secFetchDest: forwardedBrowserHeader(req, 'sec-fetch-dest', 32)
+    },
+    cookies: {
+      incomingHeaderBytes: Buffer.byteLength(String(req && req.headers && req.headers.cookie || ''), 'utf8'),
+      incomingPairCount: incomingPairs.length,
+      allowedPairCount: allowedPairs.length,
+      allowedNames: allowedPairs.map((item) => item.name).slice(0, 64),
+      allowedBytes: allowedPairs.map((item) => ({ name: item.name, bytes: Buffer.byteLength(item.raw, 'utf8') })).slice(0, 64),
+      forwardedHeaderBytes: Buffer.byteLength(String(cookieHeader || ''), 'utf8'),
+      forwardedPairCount: String(cookieHeader || '').split(';').map((value) => value.trim()).filter(Boolean).length,
+      expectedBaseCount: route.cookieBases.length,
+      expectedBases: route.cookieBases.slice(0, 32)
+    },
+    outbound: { headerNames, cookiePresent: headerNames.includes('cookie'), authorizationPresent: headerNames.includes('authorization') },
+    egress: { authorized: null },
+    response: null,
+    decision: ''
+  };
+}
+
+function mainIdentityResponseDiagnosticV360(result) {
+  const headers = result && result.headers;
+  const data = result && result.data;
+  const objectData = data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+  const user = objectData && objectData.user && typeof objectData.user === 'object' && !Array.isArray(objectData.user) ? objectData.user : null;
+  const setCookieNames = responseSetCookies(headers).map((value) => {
+    const first = String(value || '').split(';', 1)[0]; const separator = first.indexOf('=');
+    return separator > 0 ? safeCookieName(first.slice(0, separator)) : '';
+  }).filter(Boolean).slice(0, 64);
+  return {
+    ok: Boolean(result && result.ok),
+    status: Number(result && result.status || 0),
+    contentType: String(headers && headers.get && headers.get('content-type') || '').slice(0, 120),
+    contentLength: String(headers && headers.get && headers.get('content-length') || '').slice(0, 32),
+    upstreamRequestId: String(headers && headers.get && headers.get('x-dirac-request-id') || '').slice(0, 100),
+    upstreamCentralGuard: String(headers && headers.get && headers.get('x-dirac-central-security-guard') || '').slice(0, 120),
+    vercelId: String(headers && headers.get && headers.get('x-vercel-id') || '').slice(0, 160),
+    setCookieNames,
+    body: {
+      kind: objectData ? 'object' : Array.isArray(data) ? 'array' : data === null ? 'null' : typeof data,
+      keys: objectData ? Object.keys(objectData).sort().slice(0, 40) : [],
+      ok: objectData ? objectData.ok === true : false,
+      code: objectData ? String(objectData.code || '').slice(0, 120) : '',
+      message: objectData ? supportSafeDiagnosticMessageV356({ message: objectData.message || '' }) : '',
+      requestId: objectData ? String(objectData.requestId || objectData.request_id || '').slice(0, 100) : '',
+      userPresent: Boolean(user),
+      userIdShapeOk: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(user && user.id || '').trim().toLowerCase()),
+      userEmailShapeOk: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(user && user.email || '').trim().toLowerCase())
+    }
+  };
+}
+
 async function resolveMainIdentity(req, res, required) {
   const route = mainIdentityRoute(req); const cookieHeader = mainCookieHeader(req, route);
+  const diagnosticEnabledV360 = String(req && req.diracSupportAction || '').trim().toLowerCase() === 'chat_public_config';
+  const identityHeadersV360 = cookieHeader ? mainIdentityHeaders(req, cookieHeader) : {};
+  const identityDiagnosticV360 = diagnosticEnabledV360 ? mainIdentityDiagnosticV360(req, route, cookieHeader, identityHeadersV360) : null;
+  if (identityDiagnosticV360) req.__diracSupportMainIdentityDiagnosticV360 = identityDiagnosticV360;
   if (!cookieHeader) {
+    if (identityDiagnosticV360) { identityDiagnosticV360.phase = 'no_cookie'; identityDiagnosticV360.decision = required ? 'main_login_required' : 'anonymous'; }
     clearCookie(res, CUSTOMER_COOKIE, 'Strict');
     if (required) throw new PublicError(401, 'MAIN_LOGIN_REQUIRED', 'Silakan masuk ke akun Dirac terlebih dahulu.');
     return null;
   }
   let result;
   try {
+    if (identityDiagnosticV360) { identityDiagnosticV360.phase = 'before_fetch'; identityDiagnosticV360.egress.authorized = supportCentralAuthorizeHealthEgressV355(route.endpoint, { method: 'GET', headers: identityHeadersV360 }); }
     result = await fetchJson(route.endpoint, {
       method: 'GET',
-      headers: mainIdentityHeaders(req, cookieHeader)
+      headers: identityHeadersV360
     }, 9000);
+    if (identityDiagnosticV360) { identityDiagnosticV360.phase = 'after_fetch'; identityDiagnosticV360.response = mainIdentityResponseDiagnosticV360(result); }
   } catch (_) {
+    if (identityDiagnosticV360) {
+      identityDiagnosticV360.phase = 'fetch_error';
+      identityDiagnosticV360.decision = 'main_identity_unavailable';
+      identityDiagnosticV360.fetchError = { name: String(_ && _.name || '').slice(0, 80), code: String(_ && _.code || '').slice(0, 120), status: Number(_ && _.status || 0), message: supportSafeDiagnosticMessageV356(_) };
+    }
     throw new PublicError(502, 'MAIN_IDENTITY_UNAVAILABLE', 'Sesi akun Dirac belum dapat diverifikasi.');
   }
   forwardMainCookies(res, result.headers, route);
   if (result.status === 401 || result.status === 403) {
+    if (identityDiagnosticV360) identityDiagnosticV360.decision = required ? 'main_login_required' : 'anonymous_upstream_auth_rejected';
     clearCookie(res, CUSTOMER_COOKIE, 'Strict');
     if (required) throw new PublicError(401, 'MAIN_LOGIN_REQUIRED', 'Sesi akun Dirac tidak ditemukan atau sudah berakhir.');
     return null;
   }
-  if (!result.ok) throw new PublicError(502, 'MAIN_IDENTITY_UNAVAILABLE', 'Sesi akun Dirac belum dapat diverifikasi.');
+  if (!result.ok) {
+    if (identityDiagnosticV360) identityDiagnosticV360.decision = 'upstream_non_2xx_mapped_to_502';
+    throw new PublicError(502, 'MAIN_IDENTITY_UNAVAILABLE', 'Sesi akun Dirac belum dapat diverifikasi.');
+  }
   const user = result.data && result.data.ok === true && result.data.user && typeof result.data.user === 'object' ? result.data.user : null;
   const userId = String(user && user.id || '').trim().toLowerCase();
   const userEmail = String(user && user.email || '').trim().toLowerCase();
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(userId)
       || userEmail.length > 254
       || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail)) {
+    if (identityDiagnosticV360) identityDiagnosticV360.decision = 'upstream_2xx_identity_invalid';
     throw new PublicError(502, 'MAIN_IDENTITY_INVALID', 'Identitas akun Dirac tidak valid.');
   }
+  if (identityDiagnosticV360) identityDiagnosticV360.decision = 'identity_valid';
   return { id: userId, email: userEmail, displayName: mainDisplayName(userEmail) };
 }
 
@@ -2360,6 +2452,7 @@ async function handler(req, res) {
             stage: String(ctx.currentStage || '').slice(0, 80),
             passportHex: ctx.passport.toString(16),
             request: { method: ctx.method, originPresent: Boolean(requestOrigin(req)), originAllowed: originAllowed(req) },
+            mainIdentity: req.__diracSupportMainIdentityDiagnosticV360 || null,
             customerConfig: {
               supabaseUrlShapeOk: /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(env('DIRAC_SUPPORT_SUPABASE_URL').replace(/\/+$/, '')),
               publishableKeyClassOk: /^sb_publishable_[A-Za-z0-9_-]{10,}$/.test(diagnosticPublishableKeyV358) || decodeJwt(diagnosticPublishableKeyV358).role === 'anon',
