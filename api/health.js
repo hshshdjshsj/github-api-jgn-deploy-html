@@ -64694,7 +64694,7 @@ function diracCentralSupportBrokerRouteV355(input, options) {
   } catch (_) { supportDatabase = null; }
 
   let mainApi = null;
-  try { mainApi = new URL(diracRoleOriginV250('api')); } catch (_) { mainApi = null; }
+  try { mainApi = new URL('https://api.' + diracBaseDomainV250()); } catch (_) { mainApi = null; }
 
   let policy = '';
   let maxBytes = 2 * 1024 * 1024;
