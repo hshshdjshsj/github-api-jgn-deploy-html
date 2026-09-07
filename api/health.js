@@ -3026,7 +3026,27 @@ const DIRAC_REGISTER_EMAIL_VERIFICATION_PATCH_V331 = 'dirac-register-email-verif
 const DIRAC_REGISTER_EMAIL_CHALLENGE_COOKIE_V331 = '__Host-dirac_register_email_v331';
 const DIRAC_REGISTER_EMAIL_CHALLENGE_TYPE_V331 = 'dirac-register-email-challenge-v331';
 const DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331 = 10 * 60;
+const DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354 = 100;
+const DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354 = 512;
+const DIRAC_REGISTER_EMAIL_PROOF_ALPHABET_V354 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 const DIRAC_REGISTER_EMAIL_AUTHORITY_V331 = new WeakMap();
+
+function diracRegisterEmailCreateProofV354() {
+  const length = crypto.randomInt(
+    DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354,
+    DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354 + 1
+  );
+  const entropy = crypto.randomBytes(length);
+  let proof = '';
+  try {
+    for (let index = 0; index < entropy.length; index += 1) {
+      proof += DIRAC_REGISTER_EMAIL_PROOF_ALPHABET_V354[entropy[index] & 63];
+    }
+    return proof;
+  } finally {
+    entropy.fill(0);
+  }
+}
 
 function diracRegisterEmailGuardContextV331(req) {
   const ctx = typeof diracCentralCurrentContextV149 === 'function'
@@ -3108,7 +3128,11 @@ function diracRegisterEmailDecodeChallengeV331(value) {
   }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const keys = Object.keys(payload).sort().join(',');
-  if (keys !== 'binding_hash,exp,iat,jti,proof_hash,request_hash,typ') return null;
+  if (keys !== 'binding_hash,exp,iat,jti,proof_hash,proof_length,request_hash,typ') return null;
+  const proofLength = Number(payload.proof_length || 0);
+  if (!Number.isSafeInteger(proofLength)
+      || proofLength < DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354
+      || proofLength > DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354) return null;
   const now = Math.floor(Date.now() / 1000);
   const iat = Number(payload.iat || 0);
   const exp = Number(payload.exp || 0);
@@ -3128,7 +3152,7 @@ function diracRegisterEmailDecodeChallengeV331(value) {
 function diracRegisterEmailCreateChallengeV331(req, input) {
   diracRegisterEmailGuardContextV331(req);
   const now = Math.floor(Date.now() / 1000);
-  const proof = crypto.randomBytes(32).toString('base64url');
+  const proof = diracRegisterEmailCreateProofV354();
   const jti = crypto.randomBytes(24).toString('base64url');
   const requestHash = diracRegisterEmailRequestHashV331(input);
   const bindingHash = diracRegisterEmailBindingHashV331(req);
@@ -3139,7 +3163,8 @@ function diracRegisterEmailCreateChallengeV331(req, input) {
     jti,
     request_hash: requestHash,
     binding_hash: bindingHash,
-    proof_hash: diracRegisterEmailProofHashV331(jti, requestHash, bindingHash, proof)
+    proof_hash: diracRegisterEmailProofHashV331(jti, requestHash, bindingHash, proof),
+    proof_length: proof.length
   });
   return Object.freeze({
     proof,
@@ -3191,13 +3216,17 @@ function diracRegisterEmailReadChallengeV331(req) {
 function diracRegisterEmailVerifyProofV331(req, input, proof) {
   diracRegisterEmailGuardContextV331(req);
   const candidate = String(proof || '').trim();
-  if (!/^[A-Za-z0-9_-]{43}$/.test(candidate)) {
-    return { ok: false, status: 400, code: 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID', restart: false };
-  }
   const token = diracRegisterEmailReadChallengeV331(req);
   const payload = token ? diracRegisterEmailDecodeChallengeV331(token) : null;
   if (!payload) {
     return { ok: false, status: 409, code: 'REGISTER_EMAIL_VERIFICATION_RESTART_REQUIRED', restart: true };
+  }
+  const expectedProofLength = Number(payload.proof_length || 0);
+  const validProofLength = Number.isSafeInteger(expectedProofLength)
+    && expectedProofLength >= DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354
+    && expectedProofLength <= DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354;
+  if (!validProofLength || candidate.length !== expectedProofLength || !/^[A-Za-z0-9_-]+$/.test(candidate)) {
+    return { ok: false, status: 400, code: 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID', restart: false };
   }
   const requestHash = diracRegisterEmailRequestHashV331(input);
   const bindingHash = diracRegisterEmailBindingHashV331(req);
@@ -3748,7 +3777,7 @@ async function domainRegister(req, res, preloadedBody) {
       registration_stage: 'verify_email',
       verification_required: true,
       verification_sent: true,
-      verification_token_length: 43,
+      verification_token_length: challenge.proof.length,
       expires_in_seconds: DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331,
       message: 'Kode verifikasi telah dikirim ke email Anda. Masukkan kode tersebut untuk menyelesaikan pendaftaran.'
     });
@@ -3833,7 +3862,11 @@ async function domainRegister(req, res, preloadedBody) {
   const registerBanDecisionV321 = await domainLoginEffectiveAccessBlockV320(req, signupSession)
     .catch(() => ({ ok: false }));
   if (!registerBanDecisionV321 || registerBanDecisionV321.ok !== true) {
-    clearSessionCookies(res);
+    clearCurrentRequestSessionCookiesV235(req, res);
+    appendSetCookie(res, [
+      makeCookie(diracCentralDeviceSessionCookieNameV223(), '', { maxAge: 0, domain: '' }),
+      makeCookie(diracCentralDeviceCookieNameV221(), '', { maxAge: 0, domain: '' })
+    ]);
     return res.status(503).json({
       ok: false,
       code: 'REGISTER_SESSION_BAN_CHECK_UNAVAILABLE',
@@ -3841,7 +3874,11 @@ async function domainRegister(req, res, preloadedBody) {
     });
   }
   if (registerBanDecisionV321.blocked) {
-    clearSessionCookies(res);
+    clearCurrentRequestSessionCookiesV235(req, res);
+    appendSetCookie(res, [
+      makeCookie(diracCentralDeviceSessionCookieNameV223(), '', { maxAge: 0, domain: '' }),
+      makeCookie(diracCentralDeviceCookieNameV221(), '', { maxAge: 0, domain: '' })
+    ]);
     return res.status(403).json({
       ok: false,
       code: 'REGISTER_ACCOUNT_BLOCKED',
@@ -6609,7 +6646,9 @@ async function supabaseFetch(path, options = {}) {
     ? domainLoginBanGetLookupMarkerV321(banContextV320.req)
     : null;
   if (banMarkerV320) {
-    const expectedTargetV320 = banMarkerV320.stage === 'access_block'
+    const banTableV320 = getDiracRestTableFromPath(cleanPath);
+    const expectedTargetV320 = (banMarkerV320.stage === 'access_block'
+        || (banMarkerV320.stage === 'publication_secondary' && banTableV320 === DIRAC_PERSISTENT_BAN_TABLE))
       ? 'security'
       : shouldUseDiracMultiDbRouter()
         ? banMarkerV320.stage === 'customer_by_email'
