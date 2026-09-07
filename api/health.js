@@ -61309,7 +61309,7 @@ function diracCentralValidateFieldFormatV146(key, value) {
   const text = String(value === undefined || value === null ? '' : value).trim();
   if (!text) return { ok: true };
   if (clean === 'email' && !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(text)) return { ok: false, reason: 'email_format_invalid' };
-  if (clean === 'email_verification_token' && !/^[A-Za-z0-9_-]{43}$/.test(text)) return { ok: false, reason: 'email_verification_token_format_invalid' };
+  if (clean === 'email_verification_token' && !/^[A-Za-z0-9_-]{100,512}$/.test(text)) return { ok: false, reason: 'email_verification_token_format_invalid' };
   if (/domain/.test(clean) && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(text)) return { ok: false, reason: 'domain_format_invalid' };
   if (/uuid|customer_id|user_id|auth_user_id|owner_user_id|session_id|recovery_code_id|credential_id|project_id|document_id|item_id/.test(clean) && !diracCentralLooksLikeUuidV146(text)) {
     if (/_id$/.test(clean)) return { ok: false, reason: clean + '_format_invalid' };
