@@ -37201,10 +37201,21 @@ async function diracBolaIdorV128ResolveRequestOwner(req) {
     return verifiedOwnerV215;
   }
 
-  if (typeof requireDomainUser !== 'function' || typeof customerSecurityFetchAuthLink !== 'function') return { ok: false };
-  const fakeRes = diracBolaIdorV128FakeResponse();
-  const user = await requireDomainUser(req, fakeRes).catch(() => null);
-  const authUserId = String(user && user.id || '').trim();
+  if (typeof customerSecurityFetchAuthLink !== 'function') return { ok: false };
+  const centralCtxV361 = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
+  const bootstrapBindingV361 = centralCtxV361 && centralCtxV361.__diracCentralOwnerBootstrapBindingV213;
+  const exactDomainMeBootstrapV361 = centralCtxV361 && centralCtxV361.req === req
+    && centralCtxV361.action === 'domain_me' && centralCtxV361.method === 'GET'
+    && centralCtxV361.__diracCentralOwnerScopeResolvingV146 === true
+    && bootstrapBindingV361 && typeof diracCentralHandlerContextFullyPassedV211 === 'function'
+    && diracCentralHandlerContextFullyPassedV211(centralCtxV361, req) === true;
+  let authUserId = exactDomainMeBootstrapV361 ? String(bootstrapBindingV361.authUserId || '').trim() : '';
+  if (!diracBolaIdorV128LooksLikeUuid(authUserId)) {
+    if (typeof requireDomainUser !== 'function') return { ok: false };
+    const fakeRes = diracBolaIdorV128FakeResponse();
+    const user = await requireDomainUser(req, fakeRes).catch(() => null);
+    authUserId = String(user && user.id || '').trim();
+  }
   if (!authUserId || !diracBolaIdorV128LooksLikeUuid(authUserId)) return { ok: false };
 
   const linkResult = await customerSecurityFetchAuthLink(authUserId).catch(() => null);
@@ -38943,10 +38954,20 @@ async function diracBolaIdorV133ResolveStrictOwner(req) {
     return verifiedOwnerV215;
   }
 
-  if (typeof requireDomainUser !== 'function') return { ok: false, reason: 'auth_user_unavailable' };
-  const fakeRes = diracBolaIdorV133FakeResponse();
-  const user = await requireDomainUser(req || {}, fakeRes).catch(() => null);
-  const authUserId = String(user && user.id || '').trim();
+  const centralCtxV361 = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
+  const bootstrapBindingV361 = centralCtxV361 && centralCtxV361.__diracCentralOwnerBootstrapBindingV213;
+  const exactDomainMeBootstrapV361 = centralCtxV361 && centralCtxV361.req === req
+    && centralCtxV361.action === 'domain_me' && centralCtxV361.method === 'GET'
+    && centralCtxV361.__diracCentralOwnerScopeResolvingV146 === true
+    && bootstrapBindingV361 && typeof diracCentralHandlerContextFullyPassedV211 === 'function'
+    && diracCentralHandlerContextFullyPassedV211(centralCtxV361, req) === true;
+  let authUserId = exactDomainMeBootstrapV361 ? String(bootstrapBindingV361.authUserId || '').trim() : '';
+  if (!diracBolaIdorV133LooksLikeUuid(authUserId)) {
+    if (typeof requireDomainUser !== 'function') return { ok: false, reason: 'auth_user_unavailable' };
+    const fakeRes = diracBolaIdorV133FakeResponse();
+    const user = await requireDomainUser(req || {}, fakeRes).catch(() => null);
+    authUserId = String(user && user.id || '').trim();
+  }
   if (!diracBolaIdorV133LooksLikeUuid(authUserId)) return { ok: false, reason: 'auth_user_unavailable' };
 
   const linkResult = await diracBolaIdorV133FetchValidAuthLinks(authUserId).catch(() => null);
@@ -55553,6 +55574,9 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
           return diracCentralRateLimitedResponseV280(res, ctx, reason);
         }
         if (result && result.directCode) return diracCentralBlockedResponseV146(res, result.directCode);
+        if (reason === 'distributed_rate_limit_atomic_storage_unavailable' || reason === 'distributed_rate_limit_atomic_storage_required') {
+          return diracCentralPersistenceUnavailableResponseV210(res);
+        }
         return await diracCentralBanAndBlockV146(req, res, ctx, String(result && result.action || ctx.action || 'central_guard_error'), method, reason);
       }
       diracCentralStampV146(ctx, stage.stamp, result.decision || 'passed');
@@ -57497,7 +57521,13 @@ async function diracCentralPrepareOwnerBootstrapBindingV213(req, ctx, debug) {
   const fake = diracCentralFakeResponseV146();
   let user = null;
   try {
-    user = await requireDomainUser(req, fake);
+    const exactDomainMeOwnerBootstrapV361 = ctx && ctx.action === 'domain_me' && ctx.method === 'GET'
+      && ctx.__diracCentralOwnerScopeResolvingV146 === true
+      && typeof diracCentralHandlerContextFullyPassedV211 === 'function'
+      && diracCentralHandlerContextFullyPassedV211(ctx, req) === true;
+    user = exactDomainMeOwnerBootstrapV361
+      ? await readSignedDomainSessionUser(parseCookies(req))
+      : await requireDomainUser(req, fake);
   } catch (error) {
     if (debug && typeof debug === 'object') {
       debug.bootstrap_v213 = { result: 'require_domain_user_exception', response_status: Number(fake.statusCode || 0), error: diracCentralSafeDiagnosticErrorV212(error) };
