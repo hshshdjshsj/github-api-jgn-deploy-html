@@ -1442,12 +1442,27 @@ async function actionMonitorRun(req, res) {
 const DIRAC_SUPPORT_CENTRAL_SECURITY_GUARD_V146 = 'dirac-support-central-security-guard-v146';
 const DIRAC_SUPPORT_CENTRAL_HARDENING_V221 = 'dirac-support-central-owasp-hardening-v221';
 const DIRAC_SUPPORT_CENTRAL_CONTEXT_V146 = new AsyncLocalStorage();
-const DIRAC_SUPPORT_CENTRAL_MEMORY_BAN_V146 = globalThis.__DIRAC_SUPPORT_CENTRAL_MEMORY_BAN_V146__ || new Map();
-const DIRAC_SUPPORT_CENTRAL_RATE_V146 = globalThis.__DIRAC_SUPPORT_CENTRAL_RATE_V146__ || new Map();
 const DIRAC_SUPPORT_CENTRAL_CIRCUIT_V146 = globalThis.__DIRAC_SUPPORT_CENTRAL_CIRCUIT_V146__ || new Map();
-globalThis.__DIRAC_SUPPORT_CENTRAL_MEMORY_BAN_V146__ = DIRAC_SUPPORT_CENTRAL_MEMORY_BAN_V146;
-globalThis.__DIRAC_SUPPORT_CENTRAL_RATE_V146__ = DIRAC_SUPPORT_CENTRAL_RATE_V146;
 globalThis.__DIRAC_SUPPORT_CENTRAL_CIRCUIT_V146__ = DIRAC_SUPPORT_CENTRAL_CIRCUIT_V146;
+const DIRAC_SUPPORT_CENTRAL_BAN_AUTHORITY_V354 = 'dirac-support-health-ban-authority-v354';
+let DIRAC_SUPPORT_HEALTH_HANDLER_PROMISE_V354 = null;
+
+async function supportCentralBanAuthorityV354() {
+  if (!DIRAC_SUPPORT_HEALTH_HANDLER_PROMISE_V354) {
+    DIRAC_SUPPORT_HEALTH_HANDLER_PROMISE_V354 = import('./health.js').then((loaded) => loaded && (loaded.default || loaded));
+  }
+  const handler = await DIRAC_SUPPORT_HEALTH_HANDLER_PROMISE_V354.catch(() => null);
+  const authority = handler && handler.__diracCentralBanAuthorityV354;
+  if (typeof handler !== 'function' || Object.isFrozen(handler) !== true
+      || handler.__diracCentralSecurityGuardV146 !== true
+      || handler.__diracCentralHardeningV221 !== true
+      || !authority || authority.version !== 'dirac-central-ban-authority-v354'
+      || typeof authority.check !== 'function' || typeof authority.ban !== 'function') {
+    DIRAC_SUPPORT_HEALTH_HANDLER_PROMISE_V354 = null;
+    throw new PublicError(503, 'CENTRAL_BAN_AUTHORITY_INVALID', 'Otoritas blokir keamanan pusat tidak tersedia.');
+  }
+  return authority;
+}
 
 function supportCentralPolicyV146(methods, principal, options) {
   const settings = options || {};
@@ -1833,32 +1848,10 @@ function supportCentralMfaPrecheckV146(ctx) {
   }
 }
 
-function supportCentralMemoryRateV146(ctx) {
-  const now = Date.now();
-  const key = ctx.fingerprint + '|' + ctx.action;
+async function supportCentralDistributedRateV354(ctx) {
   const policyLimit = ctx.policy.principal === 'cron' ? 30 : ctx.policy.principal === 'public' ? 180 : 360;
-  let state = DIRAC_SUPPORT_CENTRAL_RATE_V146.get(key);
-  if (!state || now - state.startedAt >= 60_000) state = { startedAt: now, count: 0, blockedUntil: 0 };
-  if (state.blockedUntil > now) {
-    const error = new PublicError(429, 'CENTRAL_RATE_LIMITED', 'Terlalu banyak permintaan. Coba kembali beberapa saat lagi.');
-    error.retryAfter = Math.max(1, Math.ceil((state.blockedUntil - now) / 1000));
-    throw error;
-  }
-  state.count += 1;
-  if (state.count > policyLimit) {
-    state.blockedUntil = now + 60_000;
-    DIRAC_SUPPORT_CENTRAL_RATE_V146.set(key, state);
-    const error = new PublicError(429, 'CENTRAL_RATE_LIMITED', 'Terlalu banyak permintaan. Coba kembali beberapa saat lagi.');
-    error.retryAfter = 60;
-    throw error;
-  }
-  DIRAC_SUPPORT_CENTRAL_RATE_V146.set(key, state);
-  if (DIRAC_SUPPORT_CENTRAL_RATE_V146.size > 4096) {
-    for (const [entryKey, entry] of DIRAC_SUPPORT_CENTRAL_RATE_V146) {
-      if (now - Number(entry && entry.startedAt || 0) > 10 * 60_000) DIRAC_SUPPORT_CENTRAL_RATE_V146.delete(entryKey);
-      if (DIRAC_SUPPORT_CENTRAL_RATE_V146.size <= 3072) break;
-    }
-  }
+  const key = hmac(config().ipSecret, 'central-guard-rate-v354|' + ctx.fingerprint + '|' + ctx.action, 'hex');
+  return takeRateLimit('central_guard_rate_v354', key, policyLimit, 60, 60);
 }
 
 function supportCentralCircuitCheckV146(ctx) {
@@ -1953,13 +1946,18 @@ async function supportCentralGuardIdentityV202(ctx) {
   ctx.fingerprint = supportCentralRequestFingerprintV146(ctx.req);
 }
 async function supportCentralGuardMemoryBanV202(ctx) {
-  const until = Number(DIRAC_SUPPORT_CENTRAL_MEMORY_BAN_V146.get(ctx.fingerprint) || 0);
-  if (until > Date.now()) throw new PublicError(403, 'CENTRAL_CLIENT_BLOCKED', 'Permintaan diblokir oleh sistem keamanan.');
-  if (until) DIRAC_SUPPORT_CENTRAL_MEMORY_BAN_V146.delete(ctx.fingerprint);
+  if (!ctx || !ctx.req) throw new PublicError(400, 'CENTRAL_REQUEST_INVALID', 'Object request tidak valid.');
 }
 async function supportCentralGuardPersistentBanV202(ctx) {
-  // Persistent rate limits remain in support_take_rate_limit inside each protected action.
   if (typeof takeRateLimit !== 'function' || typeof accountRateLimit !== 'function') throw new PublicError(503, 'CENTRAL_RATE_GUARD_UNAVAILABLE', 'Rate guard support tidak tersedia.');
+  const authority = await supportCentralBanAuthorityV354();
+  const decision = await authority.check(ctx.req);
+  if (!decision || decision.ok !== true) throw new PublicError(503, 'CENTRAL_BAN_CHECK_UNAVAILABLE', 'Status blokir keamanan pusat tidak tersedia.');
+  if (decision.blocked === true) {
+    const error = new PublicError(403, 'CENTRAL_CLIENT_BLOCKED', 'Permintaan diblokir oleh sistem keamanan pusat.');
+    error.retryAfter = Math.max(1, Math.floor(Number(decision.retry_after_seconds || 300)));
+    throw error;
+  }
 }
 async function supportCentralGuardActionFormatV202(ctx) {
   ctx.rawAction = queryValue(ctx.req, 'action');
@@ -1978,7 +1976,7 @@ async function supportCentralGuardEnvironmentV202() { config(); }
 async function supportCentralGuardClassificationV202(ctx) {
   if (!ctx.policy || !Object.isFrozen(ctx.policy)) throw new PublicError(500, 'CENTRAL_POLICY_INVALID', 'Policy action support tidak valid.');
 }
-async function supportCentralGuardRateV202(ctx) { supportCentralMemoryRateV146(ctx); }
+async function supportCentralGuardRateV202(ctx) { await supportCentralDistributedRateV354(ctx); }
 async function supportCentralGuardServerAuthenticationV202(ctx) {
   if (ctx.policy.principal !== 'cron') return;
   const authorization = String(ctx.req.headers && ctx.req.headers.authorization || '');
@@ -2052,8 +2050,12 @@ async function supportCentralGuardRequestSampleV202(ctx) { ctx.sample = supportC
 async function supportCentralGuardThreatV202(ctx) {
   for (const [name, pattern] of DIRAC_SUPPORT_CENTRAL_STRUCTURAL_THREATS_V146) {
     if (pattern.test(ctx.sample || '')) {
-      DIRAC_SUPPORT_CENTRAL_MEMORY_BAN_V146.set(ctx.fingerprint, Date.now() + 15 * 60_000);
-      throw new PublicError(403, 'CENTRAL_THREAT_REJECTED', 'Request diblokir oleh pemeriksaan keamanan: ' + name + '.');
+      const authority = await supportCentralBanAuthorityV354();
+      const persisted = await authority.ban(ctx.req, 'support_' + name, 15 * 60);
+      if (!persisted || persisted.ok !== true) throw new PublicError(503, 'CENTRAL_BAN_PERSISTENCE_FAILED', 'Blokir keamanan pusat tidak dapat dipastikan tersimpan.');
+      const error = new PublicError(403, 'CENTRAL_THREAT_REJECTED', 'Request diblokir oleh pemeriksaan keamanan: ' + name + '.');
+      error.retryAfter = Math.max(1, Math.floor(Number(persisted.ttl_seconds || 15 * 60)));
+      throw error;
     }
   }
 }
@@ -2233,6 +2235,7 @@ if (JSON.stringify(supportActionNamesV146) !== JSON.stringify(supportHandlerName
 
 handler.config = { api: { bodyParser: false } };
 handler.__diracSupportCentralSecurityGuardV146 = true;
+handler.__diracSupportCentralBanAuthorityV354 = DIRAC_SUPPORT_CENTRAL_BAN_AUTHORITY_V354;
 handler.__diracSupportCentralActionCountV146 = supportActionNamesV146.length;
 handler.__test = Object.freeze({
   text, messageText, email, seal, unseal, isPrivateIp, normalizeMonitorUrl,

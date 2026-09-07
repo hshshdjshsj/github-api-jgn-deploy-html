@@ -258,7 +258,8 @@ async function passwordResetEngine(req, res, ops, body) {
       const email = String(inner.email || '').trim().toLowerCase();
       if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) || email.length > 120) throw resetError('PASSWORD_RESET_EMAIL_INVALID', 400);
       const rpId = String(await ops.rpId());
-      diracResetDiagnosticV335(req, 'start.challenge_issue', 'begin', { rp_id: rpId, email_binding_hash: diracPasswordResetBindingHashV333('diag-email', email).slice(0, 20) });
+      const allowCredentials = await ops.allowCredentials(email);
+      diracResetDiagnosticV335(req, 'start.challenge_issue', 'begin', { rp_id: rpId, email_binding_hash: diracPasswordResetBindingHashV333('diag-email', email).slice(0, 20), allow_credentials_count: allowCredentials.length });
       const issued = await ops.issueChallenge({ email, browserHash, requestBinding: bindingNow, keyId, rpId });
       diracResetDiagnosticV335(req, 'start.challenge_issue', 'success', { challenge_id_length: String(issued && issued.challenge_id || '').length, challenge_length: String(issued && issued.challenge || '').length, expires_in_ms: Number(issued && issued.expires_at_ms || 0) - Date.now() });
       if (!issued || !/^[A-Za-z0-9_-]{43,86}$/.test(String(issued.challenge_id || ''))
@@ -270,6 +271,7 @@ async function passwordResetEngine(req, res, ops, body) {
           challenge: String(issued.challenge),
           rpId,
           timeout: 180000,
+          allowCredentials,
           userVerification: 'required',
           device_binding_required: true,
           device_binding_policy: 'webcrypto-nonextractable-v1'
@@ -1222,6 +1224,57 @@ function diracPasswordResetCredentialRowSelectV333() {
   ].join(',');
 }
 
+const DIRAC_PASSWORD_RESET_ACCOUNT_SCOPED_PASSKEYS_V354 = 'dirac-password-reset-account-scoped-passkeys-v354';
+
+async function diracPasswordResetAllowCredentialsV354(emailValue) {
+  const email = normalizeAuthEmail(emailValue || '');
+  if (!isValidAuthEmail(email) || email.length > 120) throw diracPasswordResetErrorV333('PASSWORD_RESET_EMAIL_INVALID', 400);
+  const select = 'user_id,email,credential_id,transports,is_active,rotation_state,updated_at';
+  const path = '/rest/v1/domain_passkeys?select=' + encodeURIComponent(select)
+    + '&email=eq.' + encodeURIComponent(email)
+    + '&is_active=eq.true&rotation_state=eq.active'
+    + '&order=updated_at.desc&limit=21';
+  const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+  const rows = result && result.ok === true && Array.isArray(result.data) ? result.data : [];
+  if (!result || result.ok !== true) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_READ_FAILED', 503);
+  if (!rows.length) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_NOT_FOUND', 403);
+  if (rows.length > 20) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_AMBIGUOUS', 403);
+
+  const allowedTransports = new Set(['usb', 'nfc', 'ble', 'internal', 'hybrid']);
+  const seen = new Set();
+  const userIds = new Set();
+  const descriptors = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)
+        || row.is_active !== true || String(row.rotation_state || '') !== 'active'
+        || !safeEqual(normalizeAuthEmail(row.email || ''), email)
+        || !customerSecurityLooksLikeUuid(String(row.user_id || ''))) {
+      throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_ROW_INVALID', 503);
+    }
+    userIds.add(String(row.user_id));
+    if (userIds.size !== 1) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_AMBIGUOUS', 503);
+    const credentialId = diracPasskeyA2FSafeString(row.credential_id, 4096);
+    if (!/^[A-Za-z0-9_-]{16,4096}$/.test(credentialId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_CREDENTIAL_ID_INVALID', 503);
+    const rawCredential = diracPasskeyA2FBase64UrlToBuffer(credentialId);
+    if (!rawCredential.length || rawCredential.length > 1024) throw diracPasswordResetErrorV333('PASSWORD_RESET_CREDENTIAL_ID_INVALID', 503);
+    rawCredential.fill(0);
+    if (seen.has(credentialId)) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_AMBIGUOUS', 503);
+    seen.add(credentialId);
+
+    const descriptor = { type: 'public-key', id: credentialId };
+    if (Array.isArray(row.transports)) {
+      const transports = [];
+      for (const value of row.transports) {
+        const clean = String(value || '').trim().toLowerCase();
+        if (allowedTransports.has(clean) && !transports.includes(clean)) transports.push(clean);
+      }
+      if (transports.length) descriptor.transports = transports;
+    }
+    descriptors.push(Object.freeze(descriptor));
+  }
+  return Object.freeze(descriptors);
+}
+
 async function diracPasswordResetFetchCredentialByIdV333(credentialId, customerId) {
   const id = diracPasskeyA2FSafeString(credentialId, 4096);
   if (!id) throw diracPasswordResetErrorV333('PASSWORD_RESET_CREDENTIAL_ID_INVALID', 400);
@@ -2138,6 +2191,7 @@ function diracPasswordResetOpsV333(req) {
     unsealPrivateKey: diracPasswordResetUnsealX25519PrivateV333,
     hashBinding: diracPasswordResetBindingHashV333,
     requestBinding: () => diracPasswordResetRequestBindingV333(req),
+    allowCredentials: diracPasswordResetAllowCredentialsV354,
     issueChallenge: diracPasswordResetIssueChallengeV333,
     readChallenge: diracPasswordResetReadChallengeV333,
     issueGrant: diracPasswordResetIssueGrantV333,
@@ -2168,6 +2222,25 @@ function hasCentralSecurityParity(handler) {
     && handler.__diracCentralRuntimeLockV230 && handler.__diracCentralRuntimeLockV230.ok === true;
 }
 if (!hasCentralSecurityParity(centralHandler)) throw new Error('DIRAC_SECURITY_ROUTE_CENTRAL_HANDLER_INVALID');
+
+const DIRAC_SECURITY_RESET_CENTRAL_BAN_AUTHORITY_V354 = 'dirac-security-reset-central-ban-authority-v354';
+function securityResetCentralBanAuthorityV354() {
+  const authority = centralHandler && centralHandler.__diracCentralBanAuthorityV354;
+  if (!authority || authority.version !== 'dirac-central-ban-authority-v354' || typeof authority.check !== 'function') {
+    throw resetError('SECURITY_RESET_CENTRAL_BAN_AUTHORITY_INVALID', 503);
+  }
+  return authority;
+}
+async function securityResetCheckCentralBanV354(req) {
+  const decision = await securityResetCentralBanAuthorityV354().check(req);
+  if (!decision || decision.ok !== true) throw resetError('SECURITY_RESET_CENTRAL_BAN_CHECK_UNAVAILABLE', 503);
+  if (decision.blocked === true) {
+    const error = resetError('SECURITY_RESET_CENTRAL_BAN_ACTIVE', 403, 'Akses diblokir oleh kebijakan keamanan pusat.');
+    error.retryAfter = Math.max(1, Math.floor(Number(decision.retry_after_seconds || 300)));
+    throw error;
+  }
+  return true;
+}
 
 const ACTION_METHODS = Object.freeze({
   security_report: Object.freeze(new Set(['POST', 'OPTIONS'])),
@@ -2261,6 +2334,7 @@ async function handleResetBootstrapV334(req,res,targetAction){
   const origin=securityResetValidateBrowserV334(req,'GET');
   diracResetDiagnosticV335(req, 'bootstrap.browser', 'success', { target_action: String(targetAction || ''), origin });
   if (String(req&&req.method||'').toUpperCase()!=='GET') return reject(res,405,'SECURITY_RESET_BOOTSTRAP_METHOD_INVALID');
+  await securityResetCheckCentralBanV354(req);
   const bootstrapParams=new URLSearchParams(String(req&&req.url||'').split('?').slice(1).join('?'));
   const bootstrapProbeMs=Number(bootstrapParams.get('_csrf_probe'));
   const bootstrapNowMs=Date.now();
@@ -2284,6 +2358,7 @@ async function handleStandaloneResetPostV334(req,res,parsed){
   diracResetDiagnosticV335(req, 'post', 'begin', { parsed_action: String(parsed && parsed.action || ''), parsed_method: String(parsed && parsed.method || '') });
   const origin=securityResetValidateBrowserV334(req,'POST'); securityResetApplyHeadersV334(req,res,origin);
   diracResetDiagnosticV335(req, 'post.browser', 'success', { origin });
+  await securityResetCheckCentralBanV354(req);
   const ct=securityResetHeaderV334(req,'content-type').toLowerCase(); if(!ct.startsWith('application/json')) throw resetError('SECURITY_RESET_CONTENT_TYPE_INVALID',415);
   diracResetDiagnosticV335(req, 'post.content_type', 'success', { content_type: ct.slice(0,120) });
   const primary=securityResetHeaderV334(req,'x-dirac-csrf-token').trim(),compat=securityResetHeaderV334(req,'x-csrf-token').trim();

@@ -1737,18 +1737,37 @@ async function domainLoginEffectiveAccessBlockV320(req, authData) {
   const accessIdentityV325 = customerSecurityAccessBlockIdentity(req);
 
   try {
-    if (customerId) {
-      domainLoginBanSetLookupMarkerV320(req, {
-        action: centralActionV320,
-        stage: 'account_settings',
-        auth_user_id: authUserId,
-        customer_id: customerId
-      });
-      const settingsSelect = 'customer_id,account_locked,locked_until,updated_at';
-      const settingsPath = '/rest/v1/security_customer_settings?select=' + encodeURIComponent(settingsSelect)
+    const blockedAfterMs = Date.now();
+    const settingsSelect = 'customer_id,account_locked,locked_until,updated_at';
+    const settingsPath = customerId
+      ? '/rest/v1/security_customer_settings?select=' + encodeURIComponent(settingsSelect)
         + '&customer_id=eq.' + encodeURIComponent(customerId)
-        + '&order=updated_at.desc&limit=2';
-      const settingsResult = await supabaseFetch(settingsPath, { method: 'GET', auth: 'service' });
+        + '&order=updated_at.desc&limit=2'
+      : '';
+    const accessScopesV325 = [
+      ['ip', accessIdentityV325.ip_hash],
+      ['device', accessIdentityV325.device_hash],
+      ...(customerId ? [['account', customerId]] : [])
+    ];
+    domainLoginBanSetLookupMarkerV320(req, {
+      action: centralActionV320,
+      stage: 'publication_secondary',
+      auth_user_id: authUserId,
+      customer_id: customerId,
+      ip_hash: accessIdentityV325.ip_hash,
+      device_hash: accessIdentityV325.device_hash,
+      blocked_after_ms: blockedAfterMs
+    });
+    const [settingsResult, accessResultsV325] = await Promise.all([
+      customerId
+        ? supabaseFetch(settingsPath, { method: 'GET', auth: 'service' })
+        : Promise.resolve(null),
+      Promise.all(accessScopesV325.map(([scope, value]) =>
+        customerSecurityReadPersistentAccessBlocksV325(scope, value, blockedAfterMs)
+      ))
+    ]);
+
+    if (customerId) {
       if (!settingsResult || settingsResult.ok !== true || !Array.isArray(settingsResult.data) || settingsResult.data.length > 1) {
         return { ok: false, reason: 'login_account_lock_store_unavailable' };
       }
@@ -1785,24 +1804,6 @@ async function domainLoginEffectiveAccessBlockV320(req, authData) {
       }
     }
 
-    const blockedAfterMs = Date.now();
-    domainLoginBanSetLookupMarkerV320(req, {
-      action: centralActionV320,
-      stage: 'access_block',
-      auth_user_id: authUserId,
-      customer_id: customerId,
-      ip_hash: accessIdentityV325.ip_hash,
-      device_hash: accessIdentityV325.device_hash,
-      blocked_after_ms: blockedAfterMs
-    });
-    const accessScopesV325 = [
-      ['ip', accessIdentityV325.ip_hash],
-      ['device', accessIdentityV325.device_hash],
-      ...(customerId ? [['account', customerId]] : [])
-    ];
-    const accessResultsV325 = await Promise.all(accessScopesV325.map(([scope, value]) =>
-      customerSecurityReadPersistentAccessBlocksV325(scope, value, blockedAfterMs)
-    ));
     if (accessResultsV325.some((result) => !result || result.ok !== true || !Array.isArray(result.rows))) {
       return { ok: false, reason: 'login_ban_store_unavailable' };
     }
@@ -12446,8 +12447,9 @@ function customerSecurityRecoverySmtpConfig() {
   const host = String(process.env.DIRAC_RECOVERY_SMTP_HOST || process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim();
   const port = Number(process.env.DIRAC_RECOVERY_SMTP_PORT || process.env.DIRAC_USER_SECURITY_SMTP_PORT || 465);
   const secure = String(process.env.DIRAC_RECOVERY_SMTP_SECURE || process.env.DIRAC_USER_SECURITY_SMTP_SECURE || 'true').trim().toLowerCase() !== 'false';
-  const user = String(process.env.DIRAC_RECOVERY_SMTP_USER || process.env.DIRAC_USER_SECURITY_SMTP_USER || '').trim();
-  const pass = String(process.env.DIRAC_RECOVERY_SMTP_APP_PASSWORD || process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
+  const userSecurityPrimary = diracUserSecuritySmtpCredentialV354(1);
+  const user = String(process.env.DIRAC_RECOVERY_SMTP_USER || (userSecurityPrimary && userSecurityPrimary.user) || '').trim();
+  const pass = String(process.env.DIRAC_RECOVERY_SMTP_APP_PASSWORD || (userSecurityPrimary && userSecurityPrimary.appPassword) || '').replace(/\s+/g, '');
   if (!host || !port || !secure || !user || !pass) return null;
   return { host, port, secure, user, pass };
 }
@@ -12944,15 +12946,19 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
     const deliveryRequestIdV342 = customerSecurityNormalizeLostPasskeyRequestId(data.request_id);
     const deliveryExpiresAtV342 = String(data.expires_at || '').trim();
     const deliveryProviderV342 = String(data.email_code_delivery || data.provider || '').trim();
+    const deliveryCodeLengthV355 = Number(data.code_length || 0);
     if (!deliveryRequestIdV342
         || String(data.delivery || '') !== 'email_code_100'
+        || !Number.isSafeInteger(deliveryCodeLengthV355)
+        || deliveryCodeLengthV355 < DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_MIN_LENGTH_V355
+        || deliveryCodeLengthV355 > DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_MAX_LENGTH_V355
         || !Number.isFinite(Date.parse(deliveryExpiresAtV342))
         || Date.parse(deliveryExpiresAtV342) <= Date.now()
         || !['gmail_smtp', 'smtp'].includes(deliveryProviderV342)) {
       return res.status(502).json({
         ok: false,
         code: 'RECOVERY_EMAIL100_DELIVERY_CONTRACT_INVALID',
-        message: 'Recovery worker belum membuktikan pengiriman kode email 100 karakter.'
+        message: 'Recovery worker belum membuktikan panjang dan pengiriman kode email secara valid.'
       });
     }
     return res.status(200).json({
@@ -12961,7 +12967,8 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
       expires_at: deliveryExpiresAtV342,
       delivery: 'email_code_100',
       email_code_delivery: 'sent_to_official_email',
-      message: 'Kode keamanan 100 karakter sudah dikirim ke email resmi akun.',
+      code_length: deliveryCodeLengthV355,
+      message: 'Kode keamanan ' + deliveryCodeLengthV355 + ' karakter sudah dikirim ke email resmi akun.',
       time: String(data.time || diracNowIso())
     });
   } catch (error) {
@@ -13693,6 +13700,20 @@ function diracRecoveryBrowserExactSecret100V345(value) {
   return value;
 }
 
+const DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_MIN_LENGTH_V355 = 100;
+const DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_MAX_LENGTH_V355 = 512;
+const DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_ALPHABET_V355 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+function diracRecoveryBrowserDynamicCodeV355(value) {
+  if (typeof value !== 'string') return '';
+  if (value.length < DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_MIN_LENGTH_V355
+      || value.length > DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_MAX_LENGTH_V355) return '';
+  for (const char of value) {
+    if (!DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_ALPHABET_V355.includes(char)) return '';
+  }
+  return value;
+}
+
 async function diracRecoveryBrowserOpenV287(req, body) {
   diracRecoveryBrowserDiagnosticStageV344(req, 'open.entry');
   const source = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
@@ -13876,7 +13897,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
     } else {
       const expectedInnerKeys = ['action', 'password_b64url', 'recovery_code', 'request_id'];
       const requestIdInner = customerSecurityNormalizeLostPasskeyRequestId(parsed && parsed.request_id || '');
-      const recoveryCodeInner = diracRecoveryBrowserExactSecret100V345(
+      const recoveryCodeInner = diracRecoveryBrowserDynamicCodeV355(
         customerSecurityNormalizeRecoveryCodeInput(parsed && parsed.recovery_code || '')
       );
       let passwordBytes = null;
@@ -14756,7 +14777,7 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
     return res.status(403).json({ ok: false, code, message: 'Permintaan verifikasi recovery terenkripsi ditolak.' });
   }
   const requestId = customerSecurityNormalizeLostPasskeyRequestId(body.request_id || '');
-  const code = diracRecoveryBrowserExactSecret100V345(
+  const code = diracRecoveryBrowserDynamicCodeV355(
     customerSecurityNormalizeRecoveryCodeInput(body.recovery_code || '')
   );
   const accountPassword = customerSecurityExtractAccountPasswordForPdfV156(body);
@@ -14770,7 +14791,7 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
     return res.status(400).json({
       ok: false,
       code: 'EMAIL_CODE_100_INVALID',
-      message: 'Kode email harus tepat 100 karakter.'
+      message: 'Panjang atau format kode email tidak sesuai dengan request recovery.'
     });
   }
   if (!accountPassword) {
@@ -42529,6 +42550,8 @@ const DIRAC_LOST_PASSKEY_VAULT_PATCH_V157 = 'lost-passkey-html-vault-aes256gcm-a
 
 /* RECO donor source lines 2795-2795 */
 const LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157 = 100;
+const LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355 = 100;
+const LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355 = 512;
 
 /* RECO donor source lines 2798-2798 */
 const LOST_PASSKEY_LINK_TOKEN_BYTES_V157 = 250;
@@ -43342,6 +43365,35 @@ function customerSecurityLostPasskeyExactSecret100V182(value) {
   return value;
 }
 
+function customerSecurityLostPasskeyDynamicCodeV355(value, expectedLength = 0) {
+  if (typeof value !== 'string') return '';
+  const length = value.length;
+  if (!Number.isSafeInteger(length)
+      || length < LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355
+      || length > LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355) return '';
+  const expected = Number(expectedLength || 0);
+  if (expectedLength
+      && (!Number.isSafeInteger(expected)
+        || expected < LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355
+        || expected > LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355
+        || length !== expected)) return '';
+  for (const char of value) {
+    if (!LOST_PASSKEY_SECRET_100_ALPHABET_V157.includes(char)) return '';
+  }
+  return value;
+}
+
+function customerSecurityLostPasskeyGenerateDynamicCodeV355() {
+  const length = crypto.randomInt(
+    LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355,
+    LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355 + 1
+  );
+  return customerSecurityLostPasskeyDynamicCodeV355(
+    customerSecurityLostPasskeyRandomTextV157(length),
+    length
+  );
+}
+
 /* RECO donor source lines 3854-3872 */
 function customerSecurityLostPasskeyGenerateSuccessPayloadV182(input = {}) {
   const websiteRecoveryCode = customerSecurityLostPasskeyExactSecret100V182(input.websiteRecoveryCode);
@@ -43623,7 +43675,7 @@ function customerSecurityLostPasskeyWorkerRootCauseDebugV173(reason, ctx = {}) {
   if (!owner || owner.ok !== true) rootCauseCandidates.push('owner_not_resolved_or_invalid');
   if (!bindings) rootCauseCandidates.push('worker_binding_payload_invalid_or_owner_core_binding_mismatch');
   if (!customerSecurityNormalizeLostPasskeyRequestId(ctx.requestId || body.request_id || '')) rootCauseCandidates.push('request_id_missing_or_invalid');
-  if (codeText && Array.from(codeText).length !== LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157) rootCauseCandidates.push('email_code_length_not_100_after_normalization');
+  if (codeText && !customerSecurityLostPasskeyDynamicCodeV355(codeText)) rootCauseCandidates.push('email_code_length_or_alphabet_outside_dynamic_policy');
   if (rowState.found === false && (ctx.rowChecked === true || cleanReason.includes('not_found'))) rootCauseCandidates.push('request_row_not_found_in_security_lost_passkey_recovery_requests');
   if (rowState.found && rowState.status !== 'pending') rootCauseCandidates.push('request_status_not_pending');
   if (rowState.found && rowState.used_present) rootCauseCandidates.push('request_already_used');
@@ -43643,7 +43695,8 @@ function customerSecurityLostPasskeyWorkerRootCauseDebugV173(reason, ctx = {}) {
     request_id_present: Boolean(customerSecurityNormalizeLostPasskeyRequestId(ctx.requestId || body.request_id || '')),
     request_id_hash: customerSecurityLostPasskeyDiagnosticHashV210('request_id', customerSecurityNormalizeLostPasskeyRequestId(ctx.requestId || body.request_id || '')),
     code_length_after_normalization: codeText ? Array.from(codeText).length : 0,
-    expected_code_length: LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157,
+    expected_code_length_min: LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355,
+    expected_code_length_max: LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355,
     owner: {
       ok: Boolean(owner && owner.ok === true),
       customer_match_row: Boolean(owner && row && String(owner.customerId || '') === String(row.customer_id || '')),
@@ -43742,7 +43795,8 @@ function customerSecurityLostPasskeyWorkerVerifyTraceV174(stage, reason, ctx = {
       server2_worker_task: DIRAC_RECOVERY_WORKER_TASK_VERIFY,
       recovery_request_table: LOST_PASSKEY_RECOVERY_REQUEST_TABLE,
       recovery_session_table: LOST_PASSKEY_RECOVERY_SESSION_TABLE,
-      code_length_expected: LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157,
+      code_length_expected_min: LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355,
+      code_length_expected_max: LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355,
       session_insert_attempted_by_this_branch: Boolean(safeCtx.sessionInsertAttempted),
       response_includes_recovery_session_token: Boolean(responseBody && responseBody.recovery_session_token),
       response_includes_recovery_session_expires_at: Boolean(responseBody && responseBody.recovery_session_expires_at),
@@ -44072,12 +44126,20 @@ async function customerSecurityLostPasskeyEmail100IssuanceGateV349(owner, observ
       && customerSecurityLostPasskeyEmail100BindingMatchV349(metadata, observedBindings));
   }) || null;
   if (active) {
+    const activeMetadataV355 = active.metadata && typeof active.metadata === 'object' && !Array.isArray(active.metadata) ? active.metadata : {};
+    const activeCodeLengthV355 = Number(activeMetadataV355.email_code_length || activeMetadataV355.recovery_code_length || activeMetadataV355.secret_email_length || 0);
+    if (!Number.isSafeInteger(activeCodeLengthV355)
+        || activeCodeLengthV355 < LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355
+        || activeCodeLengthV355 > LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355) {
+      return { ok: false, code: 'RECOVERY_EMAIL_CODE_LENGTH_METADATA_INVALID' };
+    }
     return {
       ok: true,
       reuse: true,
       requestId: String(active.request_id),
       expiresAt: String(active.expires_at),
-      sentAt: String(active.sent_at || '')
+      sentAt: String(active.sent_at || ''),
+      codeLength: activeCodeLengthV355
     };
   }
   const issued = rows.filter((row) => {
@@ -44156,8 +44218,9 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
         expires_at: String(issuanceGateV349.expiresAt),
         delivery: 'email_code_100',
         email_code_delivery: 'gmail_smtp',
+        code_length: Number(issuanceGateV349.codeLength),
         reused_pending: true,
-        message: 'Kode keamanan 100 karakter yang masih aktif sudah tersedia di email resmi akun.',
+        message: 'Kode keamanan ' + Number(issuanceGateV349.codeLength) + ' karakter yang masih aktif sudah tersedia di email resmi akun.',
         time: diracNowIso()
       });
     }
@@ -44204,9 +44267,8 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
       });
     }
 
-    const emailCode100V346 = customerSecurityLostPasskeyExactSecret100V182(
-      customerSecurityLostPasskeyRandomTextV157(LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157)
-    );
+    const emailCode100V346 = customerSecurityLostPasskeyGenerateDynamicCodeV355();
+    const emailCodeLengthV355 = emailCode100V346.length;
     if (!emailCode100V346) {
       return res.status(500).json({
         ok: false,
@@ -44251,7 +44313,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
     // Preserve the established table shape without making these compatibility
     // columns authoritative for the new flow. Authentication authority remains
     // password re-verification + a root-secret/pepper keyed HMAC over the
-    // 100-character CSPRNG email code + the authoritative owner/passkey binding.
+    // variable-length CSPRNG email code + the authoritative owner/passkey binding.
     const compatCipherV346 = crypto.randomBytes(32);
     const compatNonceV346 = crypto.randomBytes(12);
     const compatTagV346 = crypto.randomBytes(16);
@@ -44316,8 +44378,8 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
         browser_ip_and_user_agent_are_risk_snapshot_only: true,
         root_secret_version: vaultSecretsV346.rootSecretVersion,
         passkey_count: activePasskeys.length,
-        email_code_length: LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157,
-        recovery_code_length: LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157,
+        email_code_length: emailCodeLengthV355,
+        recovery_code_length: emailCodeLengthV355,
         argon2id_params: customerSecurityLostPasskeyArgon2ParamsV157(64),
         argon2id_authoritative: false,
         compatibility_fields_non_authoritative: true,
@@ -44349,8 +44411,9 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
       const smtpHostV346 = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim().toLowerCase();
       const smtpPortV346 = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 0);
       const smtpSecureV346 = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || '').trim().toLowerCase() === 'true';
-      const smtpUserV346 = diracSecurityMailEmailV327(process.env.DIRAC_USER_SECURITY_SMTP_USER);
-      const smtpPassV346 = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
+      const smtpPrimaryV346 = diracUserSecuritySmtpCredentialV354(1);
+      const smtpUserV346 = smtpPrimaryV346 && smtpPrimaryV346.valid ? smtpPrimaryV346.user : '';
+      const smtpPassV346 = smtpPrimaryV346 && smtpPrimaryV346.valid ? smtpPrimaryV346.appPassword : '';
       const smtpTimeoutRawV346 = Number(process.env.DIRAC_USER_SECURITY_TIMEOUT_MS || 7000);
       const smtpTimeoutV346 = Number.isSafeInteger(smtpTimeoutRawV346) ? Math.max(3000, Math.min(15000, smtpTimeoutRawV346)) : 7000;
       const replyToV346 = diracSecurityMailEmailV327(process.env.DIRAC_USER_SECURITY_REPLY_TO) || diracSecurityMailEmailV327(diracSupportEmailV250());
@@ -44364,21 +44427,21 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
 
       const referenceV346 = crypto.createHash('sha256').update(requestIdV346, 'utf8').digest('hex').slice(0, 10).toUpperCase();
       const htmlInputV346 = {
-        preheader: 'Kode pemulihan Passkey 100 karakter. Berlaku sampai ' + customerSecurityRecoveryFormatWibV326(expiresAtV346) + '.',
+        preheader: 'Kode pemulihan Passkey ' + emailCodeLengthV355 + ' karakter. Berlaku sampai ' + customerSecurityRecoveryFormatWibV326(expiresAtV346) + '.',
         brandLabel: 'SECURE ACCOUNT RECOVERY',
         eyebrow: 'PASSKEY RECOVERY CODE',
         title: 'Kode Pemulihan\nPasskey',
         greeting: 'Yth. Pengguna Dirac Group,',
-        summary: 'Password akun sudah diverifikasi. Gunakan kode 100 karakter di bawah hanya pada halaman masuk resmi Dirac Group.',
+        summary: 'Password akun sudah diverifikasi. Gunakan kode ' + emailCodeLengthV355 + ' karakter di bawah hanya pada halaman masuk resmi Dirac Group.',
         statusLabel: 'STATUS PEMULIHAN',
         statusValue: 'PASSWORD TERVERIFIKASI',
         statusNote: 'Kode hanya berlaku untuk request ini dan tidak pernah ditampilkan kembali oleh API.',
         detailsLabel: 'DETAIL PEMULIHAN',
         rows: [
-          ['KODE EMAIL — 100 KARAKTER', emailCode100V346],
+          ['KODE EMAIL — ' + emailCodeLengthV355 + ' KARAKTER', emailCode100V346],
           ['REFERENSI', referenceV346],
           ['BERLAKU SAMPAI', customerSecurityRecoveryFormatWibV326(expiresAtV346)],
-          ['METODE', 'Password + kode email 100 karakter']
+          ['METODE', 'Password + kode email ' + emailCodeLengthV355 + ' karakter']
         ],
         actionUrl: diracRoleOriginV250('auth') + '/masuk.html',
         actionText: 'KEMBALI KE HALAMAN MASUK',
@@ -44417,14 +44480,15 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
         expires_at: expiresAtV346,
         delivery: 'email_code_100',
         email_code_delivery: 'gmail_smtp',
-        message: 'Kode keamanan 100 karakter sudah dikirim ke email resmi akun.',
+        code_length: emailCodeLengthV355,
+        message: 'Kode keamanan ' + emailCodeLengthV355 + ' karakter sudah dikirim ke email resmi akun.',
         time: nowIsoV346
       });
       await customerSecurityWriteGuardEvent(access.customerId, {
         event_type: 'lost_passkey_recovery_email_code_sent',
         status: 'success',
         risk_level: 'high',
-        description: 'Kode recovery Passkey 100 karakter dikirim melalui Gmail SMTP ke email resmi customer.',
+        description: 'Kode recovery Passkey ' + emailCodeLengthV355 + ' karakter dikirim melalui Gmail SMTP ke email resmi customer.',
         req,
         metadata: { action, request_id: requestIdV346, delivery_provider: 'gmail_smtp', delivery: 'email_code_100', patch: 'lost-passkey-password-email100-v347' }
       }).catch(() => null);
@@ -44761,7 +44825,7 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     await customerSecurityRegisterFailedVerification(req, action, 'invalid_recovery_worker_verify_payload', access && access.customerId).catch(() => null);
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 400, 'invalid_recovery_worker_verify_payload', { request_id: requestId, customer_id: owner && owner.customerId, auth_user_id: owner && owner.authUserId, email: owner && owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
-  if (!customerSecurityLostPasskeyExactSecret100V182(code)) {
+  if (!customerSecurityLostPasskeyDynamicCodeV355(code)) {
     await customerSecurityRegisterFailedVerification(req, action, 'invalid_email_code_100', access.customerId).catch(() => null);
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 400, 'invalid_email_code_100', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
@@ -44861,8 +44925,10 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     user_agent: !safeEqual(String(row.user_agent_hash || ''), bindings.userAgentHash)
   };
   const verifierModeV347 = String(metadata.mode || '') === 'password_email_code_100_v347';
+  const expectedEmailCodeLengthV355 = Number(metadata.email_code_length || metadata.recovery_code_length || metadata.secret_email_length || 0);
   if (verifierModeV347
-      && (String(metadata.code_verifier || '') !== 'hmac_sha512_root_pepper_v347'
+      && (!customerSecurityLostPasskeyDynamicCodeV355(code, expectedEmailCodeLengthV355)
+        || String(metadata.code_verifier || '') !== 'hmac_sha512_root_pepper_v347'
         || String(metadata.binding_verifier || '') !== 'hmac_sha512_root_pepper_v347')) {
     await customerSecurityRegisterFailedVerification(req, action, 'recovery_verifier_profile_invalid', access.customerId).catch(() => null);
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_verifier_profile_invalid', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
@@ -48021,6 +48087,20 @@ function diracRecoverySecurityDbProxyScopeV252(parsedPath, method, prefer, reque
       && Buffer.byteLength(String(rows[0].password || ''), 'utf8') >= 1
       && Buffer.byteLength(String(rows[0].password || ''), 'utf8') <= 4096) return true;
 
+  if (pathname === '/rest/v1/rpc/dirac_central_atomic_rate_limit_v230'
+      && parsedPath.search === ''
+      && method === 'POST'
+      && prefer === ''
+      && oneObjectRow
+      && Object.keys(rows[0]).sort().join(',') === 'p_block_seconds,p_limit,p_security_key,p_window_seconds'
+      && /^recovery-central-rate-v354:[a-f0-9]{64}$/.test(String(rows[0].p_security_key || ''))
+      && Number.isSafeInteger(Number(rows[0].p_limit))
+      && Number(rows[0].p_limit) >= 1 && Number(rows[0].p_limit) <= 10000
+      && Number.isSafeInteger(Number(rows[0].p_window_seconds))
+      && Number(rows[0].p_window_seconds) >= 1 && Number(rows[0].p_window_seconds) <= 86400
+      && Number.isSafeInteger(Number(rows[0].p_block_seconds))
+      && Number(rows[0].p_block_seconds) >= 0 && Number(rows[0].p_block_seconds) <= 86400) return true;
+
   if (!table || pathname !== '/rest/v1/' + table || !search) return false;
   if (['dirac_persistent_bans', 'dirac_s2s_security'].includes(table)) {
     if (table === DIRAC_PERSISTENT_BAN_TABLE) {
@@ -48398,6 +48478,81 @@ function diracSecurityMailEmailV327(value) {
   return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(email) ? email : '';
 }
 
+const DIRAC_USER_SECURITY_SMTP_POOL_V354 = 'dirac-user-security-smtp-pool-v354';
+
+function diracUserSecuritySmtpCredentialV354(slotValue) {
+  const slot = Number(slotValue);
+  if (!Number.isInteger(slot) || slot < 1 || slot > 10) return null;
+  const canonicalUserName = 'DIRAC_USER_SECURITY_SMTP_USER_' + slot;
+  const canonicalPassName = 'DIRAC_USER_SECURITY_SMTP_APP_PASSWORD_' + slot;
+  const canonicalUser = String(process.env[canonicalUserName] || '').trim();
+  const canonicalPass = String(process.env[canonicalPassName] || '');
+  const canonicalConfigured = Boolean(canonicalUser || canonicalPass);
+  let rawUser = canonicalUser;
+  let rawPass = canonicalPass;
+  let source = 'canonical';
+  if (!canonicalConfigured && slot === 1) {
+    rawUser = String(process.env.DIRAC_USER_SECURITY_SMTP_USER || '').trim();
+    rawPass = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '');
+    source = 'legacy_primary';
+  } else if (!canonicalConfigured && slot === 2) {
+    rawUser = String(process.env.DIRAC_REGISTER_SMTP_USER_2 || '').trim();
+    rawPass = String(process.env.DIRAC_REGISTER_SMTP_APP_PASSWORD_2 || '');
+    source = 'legacy_secondary';
+  }
+  const configured = Boolean(rawUser || rawPass);
+  if (!configured) return Object.freeze({ slot, configured: false, valid: false, user: '', appPassword: '', source });
+  const user = diracSecurityMailEmailV327(rawUser);
+  const appPassword = rawPass.replace(/\s+/g, '');
+  const valid = Boolean(user)
+    && /^[A-Za-z0-9]{16,128}$/.test(appPassword)
+    && !diracSecurityMailPlaceholderV327(rawUser)
+    && !diracSecurityMailPlaceholderV327(rawPass);
+  return Object.freeze({ slot, configured: true, valid, user, appPassword, source });
+}
+
+function diracUserSecuritySmtpPoolV354() {
+  const accounts = [];
+  const users = new Set();
+  const passwords = new Set();
+  for (let slot = 1; slot <= 10; slot += 1) {
+    const account = diracUserSecuritySmtpCredentialV354(slot);
+    if (!account || !account.configured) continue;
+    if (!account.valid) return Object.freeze({ ok: false, code: 'CUSTOMER_GMAIL_SMTP_SLOT_' + slot + '_INVALID', accounts: Object.freeze([]) });
+    const userKey = String(account.user || '').toLowerCase();
+    const passwordKey = String(account.appPassword || '');
+    if (users.has(userKey) || passwords.has(passwordKey)) {
+      return Object.freeze({ ok: false, code: 'CUSTOMER_GMAIL_SMTP_SLOT_DUPLICATE', accounts: Object.freeze([]) });
+    }
+    users.add(userKey);
+    passwords.add(passwordKey);
+    accounts.push(Object.freeze({ slot, user: account.user, appPassword: account.appPassword }));
+  }
+  if (!accounts.length || accounts[0].slot !== 1) {
+    return Object.freeze({ ok: false, code: 'CUSTOMER_GMAIL_SMTP_PRIMARY_REQUIRED', accounts: Object.freeze([]) });
+  }
+  return Object.freeze({ ok: true, code: '', accounts: Object.freeze(accounts) });
+}
+
+function diracUserSecuritySmtpSecretValuesV354() {
+  const values = [];
+  for (let slot = 1; slot <= 10; slot += 1) {
+    const account = diracUserSecuritySmtpCredentialV354(slot);
+    if (account && account.configured) {
+      const canonicalPass = String(process.env['DIRAC_USER_SECURITY_SMTP_APP_PASSWORD_' + slot] || '');
+      if (canonicalPass) values.push(canonicalPass, canonicalPass.replace(/\s+/g, ''));
+      else if (slot === 1) {
+        const legacy = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '');
+        if (legacy) values.push(legacy, legacy.replace(/\s+/g, ''));
+      } else if (slot === 2) {
+        const legacy = String(process.env.DIRAC_REGISTER_SMTP_APP_PASSWORD_2 || '');
+        if (legacy) values.push(legacy, legacy.replace(/\s+/g, ''));
+      }
+    }
+  }
+  return values;
+}
+
 function diracUserSecurityConfigV327() {
   if (String(process.env.DIRAC_USER_SECURITY_EMAIL_ENABLED || '').trim().toLowerCase() !== 'true') return null;
   const resendApiKey = String(process.env.DIRAC_USER_SECURITY_RESEND_API_KEY || '').trim();
@@ -48406,8 +48561,9 @@ function diracUserSecurityConfigV327() {
   const smtpHost = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim().toLowerCase();
   const smtpPort = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 0);
   const smtpSecure = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || '').trim().toLowerCase() === 'true';
-  const smtpUser = diracSecurityMailEmailV327(process.env.DIRAC_USER_SECURITY_SMTP_USER);
-  const smtpAppPassword = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
+  const smtpPrimary = diracUserSecuritySmtpCredentialV354(1);
+  const smtpUser = smtpPrimary && smtpPrimary.valid ? smtpPrimary.user : '';
+  const smtpAppPassword = smtpPrimary && smtpPrimary.valid ? smtpPrimary.appPassword : '';
   const timeoutRaw = Number(process.env.DIRAC_USER_SECURITY_TIMEOUT_MS || 7000);
   const timeoutMs = Number.isSafeInteger(timeoutRaw) ? Math.max(3000, Math.min(15000, timeoutRaw)) : 7000;
   const senderDomain = resendFromEmail.split('@')[1] || '';
@@ -48897,7 +49053,7 @@ function diracUserSecurityReadinessDiagnosticV341(configuration) {
     const envPresent = {};
     const allowedChecks = ['email_enabled', 'brevo_key_valid', 'brevo_sender_valid', 'resend_key_valid', 'resend_sender_valid', 'resend_sender_official', 'reply_to_valid', 'timeout_valid', 'smtp_host_valid', 'smtp_port_valid', 'smtp_secure', 'smtp_user_valid', 'smtp_password_valid', 'provider_secrets_distinct'];
     for (const name of allowedChecks) if (source && source.checks && typeof source.checks[name] === 'boolean') checks[name] = source.checks[name];
-    for (const name of ['DIRAC_USER_SECURITY_EMAIL_ENABLED', 'DIRAC_USER_SECURITY_BREVO_API_KEY', 'DIRAC_USER_SECURITY_BREVO_FROM_EMAIL', 'DIRAC_USER_SECURITY_RESEND_API_KEY', 'DIRAC_USER_SECURITY_RESEND_FROM_EMAIL', 'DIRAC_USER_SECURITY_REPLY_TO', 'DIRAC_USER_SECURITY_TIMEOUT_MS', 'DIRAC_USER_SECURITY_SMTP_HOST', 'DIRAC_USER_SECURITY_SMTP_PORT', 'DIRAC_USER_SECURITY_SMTP_SECURE', 'DIRAC_USER_SECURITY_SMTP_USER', 'DIRAC_USER_SECURITY_SMTP_APP_PASSWORD']) {
+    for (const name of DIRAC_PASSWORD_RESET_MAIL_ENV_V340) {
       envPresent[name] = Boolean(source && source.env_present && source.env_present[name] === true);
     }
     console.info('[dirac-user-security-mail-diagnostic-v341] ' + JSON.stringify({
@@ -49286,8 +49442,7 @@ function diracSecurityAlertExplicitReadyV328() {
     appPasswordRaw,
     appPassword,
     process.env.DIRAC_USER_SECURITY_RESEND_API_KEY,
-    process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD,
-    String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '')
+    ...diracUserSecuritySmtpSecretValuesV354()
   ]);
   const valid = enabled
     && host === 'smtp.gmail.com'
@@ -49332,10 +49487,11 @@ function diracUserSecurityExplicitReadyV328() {
   const smtpHost = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SMTP_HOST').toLowerCase();
   const smtpPort = diracSecurityMailExplicitIntegerV328('DIRAC_USER_SECURITY_SMTP_PORT', 465, 465);
   const smtpSecure = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SMTP_SECURE').toLowerCase() === 'true';
-  const smtpUserRaw = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SMTP_USER');
-  const smtpUser = diracSecurityMailEmailV327(smtpUserRaw);
-  const smtpAppPasswordRaw = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SMTP_APP_PASSWORD');
-  const smtpAppPassword = smtpAppPasswordRaw.replace(/\s+/g, '');
+  const smtpPrimary = diracUserSecuritySmtpCredentialV354(1);
+  const smtpUserRaw = smtpPrimary && smtpPrimary.configured ? smtpPrimary.user : '';
+  const smtpUser = smtpPrimary && smtpPrimary.valid ? smtpPrimary.user : '';
+  const smtpAppPasswordRaw = smtpPrimary && smtpPrimary.configured ? smtpPrimary.appPassword : '';
+  const smtpAppPassword = smtpPrimary && smtpPrimary.valid ? smtpPrimary.appPassword : '';
   const senderDomain = resendFromEmail.split('@')[1] || '';
   let officialSender = false;
   try {
@@ -49354,6 +49510,7 @@ function diracUserSecurityExplicitReadyV328() {
     && smtpHost === 'smtp.gmail.com'
     && smtpPort === 465
     && smtpSecure
+    && Boolean(smtpPrimary && smtpPrimary.configured && smtpPrimary.valid)
     && Boolean(smtpUser)
     && !diracSecurityMailPlaceholderV327(smtpUserRaw)
     && /^[A-Za-z0-9]{16,128}$/.test(smtpAppPassword)
@@ -49976,11 +50133,13 @@ diracUserSecurityExplicitReadyV328 = function diracUserSecurityExplicitReadyCasc
   const brevoApiKey = diracSecurityMailProviderKeyV330(diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_BREVO_API_KEY'), 24, 2048);
   const brevoFromEmail = diracSecurityMailProviderEmailV330(diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_BREVO_FROM_EMAIL'));
   const resendApiKey = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_RESEND_API_KEY');
-  const smtpPassword = diracSecurityMailExplicitEnvV328('DIRAC_USER_SECURITY_SMTP_APP_PASSWORD').replace(/\s+/g, '');
+  const smtpPool = diracUserSecuritySmtpPoolV354();
+  const smtpPasswords = smtpPool.ok ? smtpPool.accounts.map((account) => account.appPassword) : [];
   const valid = Boolean(previous && previous.valid)
     && Boolean(brevoApiKey)
     && Boolean(brevoFromEmail)
-    && diracSecurityMailProviderKeysDistinctV330([brevoApiKey, resendApiKey, smtpPassword]);
+    && smtpPool.ok === true
+    && diracSecurityMailProviderKeysDistinctV330([brevoApiKey, resendApiKey, ...smtpPasswords]);
   return Object.freeze({ valid });
 };
 
@@ -50014,8 +50173,7 @@ diracSecurityAlertExplicitReadyV328 = function diracSecurityAlertExplicitReadyCa
     resendApiKey,
     process.env.DIRAC_USER_SECURITY_BREVO_API_KEY,
     process.env.DIRAC_USER_SECURITY_RESEND_API_KEY,
-    process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD,
-    String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '')
+    ...diracUserSecuritySmtpSecretValuesV354()
   ]);
   const providerSecrets = [smtpPassword];
   if (brevoConfigured && brevoReady) providerSecrets.push(brevoApiKey);
@@ -50113,8 +50271,7 @@ function diracSecurityAlertReadinessDiagnosticV332() {
     process.env.DIRAC_SECURITY_ALERT_RESEND_API_KEY,
     process.env.DIRAC_USER_SECURITY_BREVO_API_KEY,
     process.env.DIRAC_USER_SECURITY_RESEND_API_KEY,
-    process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD,
-    String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '')
+    ...diracUserSecuritySmtpSecretValuesV354()
   ])) failures.push('DIRAC_SECURITY_ALERT_HMAC_SECRET_INVALID_OR_NOT_INDEPENDENT');
 
   for (const check of [
@@ -50339,22 +50496,24 @@ diracSecurityAlertSendV320 = async function diracSecurityAlertSendCascadeV330(sn
    - Paid customer invoice reuses the customer cascade.
    - Paid owner/admin invoice uses ORDER_OWNER_SMTP_* Google SMTP only.
    - All affected HTML uses diracSecurityCorporateEmailHtmlV327.
-   - No Central Guard bypass, no table addition. The second customer Gmail reuses the already-existing
-     DIRAC_REGISTER_SMTP_USER_2 / DIRAC_REGISTER_SMTP_APP_PASSWORD_2 slot so no
-     new ENV is introduced.
+   - No Central Guard bypass and no table addition. Customer Gmail SMTP uses a quota-only
+     failover pool of slots 1..10; legacy primary and slot-2 names remain accepted as fallbacks.
    ============================================================ */
 const DIRAC_MAIL_ROLE_PARTITION_V352 = 'dirac-mail-role-partition-v352';
 
-function diracCustomerMailSecondarySmtpV352(config) {
-  const rawUser = String(process.env.DIRAC_REGISTER_SMTP_USER_2 || '').trim();
-  const rawPass = String(process.env.DIRAC_REGISTER_SMTP_APP_PASSWORD_2 || '');
-  const user = diracSecurityMailEmailV327(rawUser);
-  const appPassword = rawPass.replace(/\s+/g, '');
-  if (!config || config.smtpHost !== 'smtp.gmail.com' || Number(config.smtpPort) !== 465 || config.smtpSecure !== true
-      || !user || !/^[A-Za-z0-9]{16,128}$/.test(appPassword)
-      || diracSecurityMailPlaceholderV327(rawUser) || diracSecurityMailPlaceholderV327(rawPass)
-      || safeEqual(user, String(config.smtpUser || '')) || safeEqual(appPassword, String(config.smtpAppPassword || ''))) return null;
-  return Object.freeze({ user, appPassword });
+function diracCustomerMailSmtpPoolV354(config) {
+  if (!config || config.smtpHost !== 'smtp.gmail.com' || Number(config.smtpPort) !== 465 || config.smtpSecure !== true) {
+    return Object.freeze({ ok: false, code: 'CUSTOMER_GMAIL_SMTP_TRANSPORT_INVALID', accounts: Object.freeze([]) });
+  }
+  const pool = diracUserSecuritySmtpPoolV354();
+  if (!pool.ok || !pool.accounts.length) return pool;
+  const primary = pool.accounts[0];
+  if (primary.slot !== 1
+      || !safeEqual(primary.user, String(config.smtpUser || ''))
+      || !safeEqual(primary.appPassword, String(config.smtpAppPassword || ''))) {
+    return Object.freeze({ ok: false, code: 'CUSTOMER_GMAIL_SMTP_PRIMARY_CONFIG_MISMATCH', accounts: Object.freeze([]) });
+  }
+  return pool;
 }
 
 function diracCustomerMailMimeV352(message, account, replyTo) {
@@ -50441,13 +50600,18 @@ async function diracCustomerMailGmailAttemptV352(message, config, account, slot)
 }
 
 async function diracCustomerMailSmtpCascadeV352(message, config) {
-  const primary = Object.freeze({ user: String(config.smtpUser || ''), appPassword: String(config.smtpAppPassword || '') });
-  const first = await diracCustomerMailGmailAttemptV352(message, config, primary, 1);
-  if (first.ok) return first;
-  if (!first.quotaLimited || first.deliveryAmbiguous) return first;
-  const secondary = diracCustomerMailSecondarySmtpV352(config);
-  if (!secondary) return Object.freeze({ ...first, code: 'CUSTOMER_GMAIL_SECONDARY_UNAVAILABLE_AFTER_LIMIT' });
-  return diracCustomerMailGmailAttemptV352(message, config, secondary, 2);
+  const pool = diracCustomerMailSmtpPoolV354(config);
+  if (!pool || pool.ok !== true || !Array.isArray(pool.accounts) || !pool.accounts.length) {
+    return Object.freeze({ ok: false, provider: 'gmail_smtp', smtp_slot: 0, status: 0, limited: false, quotaLimited: false, deliveryAmbiguous: false, stage: 'configuration', code: String(pool && pool.code || 'CUSTOMER_GMAIL_SMTP_POOL_INVALID') });
+  }
+  let last = null;
+  for (const account of pool.accounts) {
+    const result = await diracCustomerMailGmailAttemptV352(message, config, account, account.slot);
+    if (result.ok) return result;
+    last = result;
+    if (!result.quotaLimited || result.deliveryAmbiguous) return result;
+  }
+  return Object.freeze({ ...last, code: 'CUSTOMER_GMAIL_ALL_CONFIGURED_SLOTS_QUOTA_LIMITED' });
 }
 
 // User security events (login, passkey, password notices, lock/ban notices): exact requested cascade.
@@ -53357,6 +53521,26 @@ async function diracCentralDeviceCredentialGuardV221(req, res, ctx) {
       return { ok: true, upgraded: true };
     } catch (_) {
       return { ok: false, reason: 'device_credential_upgrade_failed' };
+    }
+  }
+
+  if (verified.reason === 'device_credential_fingerprint_mismatch') {
+    const transition = diracCentralSupportDeviceTransitionProofV354(req, token);
+    if (transition && transition.ok === true && transition.patch === DIRAC_CENTRAL_SUPPORT_DEVICE_TRANSITION_V354
+        && transition.payload && safeEqual(String(transition.payload.session || ''), session)) {
+      try {
+        const rotated = diracCentralDeviceTokenV221(req, session);
+        if (!diracStageAuthPublicationV321(req, { cookies: [makeCookie(name, rotated, { maxAge: 24 * 60 * 60, domain: '' })] })) {
+          return { ok: false, reason: 'support_device_credential_rotation_stage_failed' };
+        }
+        return {
+          ok: true,
+          rotated: true,
+          decision: DIRAC_CENTRAL_SUPPORT_DEVICE_TRANSITION_V354
+        };
+      } catch (_) {
+        return { ok: false, reason: 'support_device_credential_rotation_failed' };
+      }
     }
   }
 
@@ -56541,6 +56725,80 @@ function diracCentralAdvancedBrowserSignalV146(req, ctx, ua, headers) {
   return { ok: true };
 }
 
+const DIRAC_CENTRAL_SUPPORT_DEVICE_TRANSITION_V354 = 'dirac-central-support-device-transition-v354';
+
+function diracCentralSupportDeviceTransitionRequestV354(req) {
+  try {
+    if (!req || String(req.method || 'GET').toUpperCase() !== 'GET') return null;
+    const parsedRequest = new URL(String(req.url || ''), 'https://dirac-support-device.invalid');
+    if (parsedRequest.origin !== 'https://dirac-support-device.invalid'
+        || parsedRequest.pathname !== '/api/health'
+        || parsedRequest.searchParams.size !== 1
+        || parsedRequest.searchParams.getAll('action').length !== 1
+        || parsedRequest.searchParams.get('action') !== 'domain_me') return null;
+    const base = diracBaseDomainV250();
+    const expectedOrigin = 'https://cs.' + base;
+    const headers = req.headers || {};
+    const origin = diracCentralNormalizeOriginV146(headers.origin || '');
+    if (!origin || !safeEqual(origin, expectedOrigin)) return null;
+    const referer = new URL(String(headers.referer || headers.referrer || '').trim());
+    const allowedPaths = new Set(['/', '/chat', '/chat/', '/chat.html', '/livechat.html']);
+    if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
+        || !safeEqual(referer.origin.toLowerCase(), expectedOrigin)
+        || referer.search || referer.hash || !allowedPaths.has(referer.pathname)) return null;
+    return Object.freeze({ origin: expectedOrigin, pathname: referer.pathname });
+  } catch (_) {
+    return null;
+  }
+}
+
+function diracCentralSupportDeviceTransitionProofV354(req, token) {
+  try {
+    const target = diracCentralSupportDeviceTransitionRequestV354(req);
+    if (!target || !token) return null;
+    const boundSession = diracCentralVerifyDeviceSessionCookieV223(req);
+    const binding = String(boundSession && boundSession.binding || '');
+    const identity = boundSession && boundSession.identity;
+    if (!/^[a-f0-9]{64}$/.test(binding)
+        || !identity || !String(identity.userId || '').trim()
+        || !normalizeAuthEmail(identity.email || '')) return null;
+
+    const base = diracBaseDomainV250();
+    const trusted = typeof diracUniversalBrowserOriginsV250 === 'function'
+      ? Array.from(diracUniversalBrowserOriginsV250())
+      : [];
+    for (const value of trusted) {
+      const sourceOrigin = String(value || '').trim().toLowerCase();
+      if (!sourceOrigin || safeEqual(sourceOrigin, target.origin)) continue;
+      let sourceUrl;
+      try { sourceUrl = new URL(sourceOrigin); } catch (_) { continue; }
+      const host = String(sourceUrl.hostname || '').toLowerCase();
+      if (sourceUrl.protocol !== 'https:' || sourceUrl.port || sourceUrl.username || sourceUrl.password
+          || !(host === base || host.endsWith('.' + base)) || host === 'api.' + base || host === 'cs.' + base) continue;
+      const syntheticHeaders = { ...(req.headers || {}), origin: sourceOrigin, referer: sourceOrigin + '/' };
+      delete syntheticHeaders.referrer;
+      const syntheticReq = { ...req, headers: syntheticHeaders };
+      const verified = diracCentralVerifyDeviceTokenV221(syntheticReq, token);
+      const payload = verified && verified.payload;
+      if (!verified || verified.ok !== true || verified.upgrade === true
+          || !payload || Number(payload.sbv || 0) !== 2
+          || !safeEqual(String(payload.session || ''), binding)) continue;
+      const sourceConsistencyHash = diracAppOriginHandoffDeviceConsistencyHashV317(syntheticReq);
+      if (!/^[a-f0-9]{64}$/.test(String(sourceConsistencyHash || ''))) continue;
+      return Object.freeze({
+        ok: true,
+        patch: DIRAC_CENTRAL_SUPPORT_DEVICE_TRANSITION_V354,
+        source_origin: sourceOrigin,
+        source_consistency_hash: sourceConsistencyHash,
+        payload
+      });
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
 const DIRAC_CENTRAL_DEVICE_CONSISTENCY_SIGNED_RECONCILE_V325 = 'dirac-central-device-consistency-signed-reconcile-v325';
 
 function diracCentralDeviceConsistencySignedReconcileV325(req, sessionKey, currentHash, previous) {
@@ -56571,11 +56829,20 @@ function diracCentralDeviceConsistencySignedReconcileV325(req, sessionKey, curre
     if (candidates.length !== 1) return false;
 
     const verified = diracCentralVerifyDeviceTokenV221(req, candidates[0]);
-    const payload = verified && verified.payload;
-    if (!verified || verified.ok !== true || verified.upgrade === true
+    const transition = verified && verified.ok === true
+      ? null
+      : diracCentralSupportDeviceTransitionProofV354(req, candidates[0]);
+    const payload = verified && verified.ok === true
+      ? verified.payload
+      : transition && transition.payload;
+    const normalDeviceMatch = Boolean(verified && verified.ok === true && verified.upgrade !== true
+      && payload && safeEqual(String(payload.device || ''), diracCentralDeviceFingerprintV221(req)));
+    const supportDeviceMatch = Boolean(transition && transition.ok === true
+      && transition.patch === DIRAC_CENTRAL_SUPPORT_DEVICE_TRANSITION_V354
+      && safeEqual(String(transition.source_consistency_hash || ''), previousHash));
+    if ((!normalDeviceMatch && !supportDeviceMatch)
         || !payload || Number(payload.sbv || 0) !== 2
-        || !safeEqual(String(payload.session || ''), binding)
-        || !safeEqual(String(payload.device || ''), diracCentralDeviceFingerprintV221(req))) return false;
+        || !safeEqual(String(payload.session || ''), binding)) return false;
 
     const issuedAt = Number(payload.iat || 0);
     const expiresAt = Number(payload.exp || 0);
@@ -57940,7 +58207,7 @@ function diracCentralIsAuthenticatedBanLookupV320(ctx, table, path, options = {}
         && params.get('limit') === '1';
     }
 
-    if (marker.stage === 'account_settings' && cleanTable === 'security_customer_settings') {
+    if ((marker.stage === 'account_settings' || marker.stage === 'publication_secondary') && cleanTable === 'security_customer_settings') {
       const select = 'customer_id,account_locked,locked_until,updated_at';
       return customerSecurityLooksLikeUuid(marker.customer_id)
         && parsed.pathname === '/rest/v1/security_customer_settings'
@@ -57962,7 +58229,7 @@ function diracCentralIsAuthenticatedBanLookupV320(ctx, table, path, options = {}
         && params.get('limit') === '2';
     }
 
-    if (marker.stage === 'access_block' && cleanTable === DIRAC_PERSISTENT_BAN_TABLE) {
+    if ((marker.stage === 'access_block' || marker.stage === 'publication_secondary') && cleanTable === DIRAC_PERSISTENT_BAN_TABLE) {
       const blockedAfterMs = Number(marker.blocked_after_ms);
       const ipHash = String(marker.ip_hash || '').trim().toLowerCase();
       const deviceHash = String(marker.device_hash || '').trim().toLowerCase();
@@ -60668,6 +60935,92 @@ async function diracCentralWritePersistentBanV146(req, res, action, method, thre
     }
   }
   return lastResult && typeof lastResult === 'object' ? lastResult : { ok: false };
+}
+
+const DIRAC_CENTRAL_BAN_AUTHORITY_V354 = 'dirac-central-ban-authority-v354';
+
+async function diracCentralBanAuthorityCheckV354(req) {
+  try {
+    const keys = typeof diracV107BuildKeys === 'function' ? diracV107BuildKeys(req || {}) : [];
+    const cleanKeys = keys.map((item) => String(item && item.key || '')).filter(Boolean).slice(0, 12);
+    if (!cleanKeys.length || typeof diracV107DirectFetch !== 'function') return Object.freeze({ ok: false, blocked: true, reason: 'central_ban_identity_unavailable' });
+    const suffix = '?select=security_key,blocked_until_ms'
+      + '&security_key=in.(' + cleanKeys.map(encodeURIComponent).join(',') + ')'
+      + '&limit=' + String(cleanKeys.length);
+    const result = await diracV107DirectFetch('GET', suffix).catch(() => null);
+    if (!result || result.ok !== true || !Array.isArray(result.data)) return Object.freeze({ ok: false, blocked: true, reason: 'central_ban_store_unavailable' });
+    const now = Date.now();
+    const active = result.data.filter((row) => row && cleanKeys.includes(String(row.security_key || ''))
+      && Number(row.blocked_until_ms || 0) > now)
+      .sort((left, right) => Number(right.blocked_until_ms || 0) - Number(left.blocked_until_ms || 0));
+    if (!active.length) return Object.freeze({ ok: true, blocked: false });
+    const blockedUntilMs = Number(active[0].blocked_until_ms || 0);
+    return Object.freeze({
+      ok: true,
+      blocked: true,
+      blocked_until_ms: blockedUntilMs,
+      retry_after_seconds: Math.max(1, Math.ceil((blockedUntilMs - now) / 1000))
+    });
+  } catch (_) {
+    return Object.freeze({ ok: false, blocked: true, reason: 'central_ban_check_exception' });
+  }
+}
+
+async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue) {
+  try {
+    const reason = String(reasonValue || '').trim().toLowerCase();
+    const ttlSeconds = Math.max(60, Math.min(10 * 365 * 24 * 60 * 60, Math.floor(Number(ttlSecondsValue || 900))));
+    if (!/^[a-z0-9_:-]{3,96}$/.test(reason)) return Object.freeze({ ok: false, reason: 'central_ban_reason_invalid' });
+    const keys = typeof diracV107BuildKeys === 'function' ? diracV107BuildKeys(req || {}) : [];
+    const unique = Array.from(new Map(keys.map((item) => [String(item && item.key || ''), item])).values())
+      .filter((item) => item && item.key)
+      .slice(0, 12);
+    if (!unique.length || typeof diracV107WriteRows !== 'function') return Object.freeze({ ok: false, reason: 'central_ban_identity_unavailable' });
+    const now = Date.now();
+    const blockedUntilMs = now + ttlSeconds * 1000;
+    const expiresAt = new Date(blockedUntilMs).toISOString();
+    const record = Object.freeze({
+      type: 'central_external_ban_v354',
+      patch: DIRAC_CENTRAL_BAN_AUTHORITY_V354,
+      action: 'external_security_violation',
+      method: String(req && req.method || 'GET').toUpperCase().slice(0, 12),
+      reason,
+      source: 'health.js',
+      risk: 'high',
+      blocked_until_ms: blockedUntilMs,
+      created_at: new Date(now).toISOString()
+    });
+    const rows = unique.map((item) => ({
+      security_key: item.key,
+      record_json: { ...record, key_type: String(item.type || 'identity').slice(0, 40) },
+      blocked_until_ms: blockedUntilMs,
+      updated_at: new Date(now).toISOString(),
+      expires_at: expiresAt
+    }));
+    let write = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      write = await diracV107WriteRows(rows).catch(() => null);
+      if (write && write.ok === true && Number(write.wrote || 0) === rows.length) break;
+    }
+    if (!write || write.ok !== true || Number(write.wrote || 0) !== rows.length) {
+      return Object.freeze({ ok: false, reason: 'central_ban_persistence_failed' });
+    }
+    for (const item of unique) {
+      if (typeof diracBoundedMapSetV321 === 'function' && typeof DIRAC_GLOBAL_HARD_BAN_STORE_V107 !== 'undefined') {
+        diracBoundedMapSetV321(
+          DIRAC_GLOBAL_HARD_BAN_STORE_V107,
+          item.key,
+          { blockedUntilMs, updatedAtMs: now, type: item.type },
+          10000,
+          now,
+          (value) => Number(value && value.blockedUntilMs || 0)
+        );
+      }
+    }
+    return Object.freeze({ ok: true, blocked: true, blocked_until_ms: blockedUntilMs, ttl_seconds: ttlSeconds });
+  } catch (_) {
+    return Object.freeze({ ok: false, reason: 'central_ban_write_exception' });
+  }
 }
 
 function diracCentralBlockedResponseV146(res, reason) {
@@ -64335,7 +64688,10 @@ const DIRAC_PASSWORD_RESET_MAIL_ENV_V340 = Object.freeze([
   'DIRAC_USER_SECURITY_RESEND_FROM_EMAIL', 'DIRAC_USER_SECURITY_REPLY_TO',
   'DIRAC_USER_SECURITY_TIMEOUT_MS', 'DIRAC_USER_SECURITY_SMTP_HOST',
   'DIRAC_USER_SECURITY_SMTP_PORT', 'DIRAC_USER_SECURITY_SMTP_SECURE',
-  'DIRAC_USER_SECURITY_SMTP_USER', 'DIRAC_USER_SECURITY_SMTP_APP_PASSWORD'
+  ...Array.from({ length: 10 }, (_, index) => 'DIRAC_USER_SECURITY_SMTP_USER_' + (index + 1)),
+  ...Array.from({ length: 10 }, (_, index) => 'DIRAC_USER_SECURITY_SMTP_APP_PASSWORD_' + (index + 1)),
+  'DIRAC_USER_SECURITY_SMTP_USER', 'DIRAC_USER_SECURITY_SMTP_APP_PASSWORD',
+  'DIRAC_REGISTER_SMTP_USER_2', 'DIRAC_REGISTER_SMTP_APP_PASSWORD_2'
 ]);
 function diracPasswordResetMailDiagnosticStateV340(req, supplied) {
   try {
@@ -64420,8 +64776,9 @@ function diracPasswordResetMailConfigurationDiagnosticV340() {
     const sender = diracSecurityMailEmailV327(from);
     const domain = sender.split('@')[1] || '';
     const base = diracBaseDomainV250();
-    const passwordRaw = values.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD;
-    const password = passwordRaw.replace(/\s+/g, '');
+    const smtpPrimary = diracUserSecuritySmtpCredentialV354(1);
+    const smtpPool = diracUserSecuritySmtpPoolV354();
+    const password = smtpPrimary && smtpPrimary.valid ? smtpPrimary.appPassword : '';
     const brevo = diracSecurityMailProviderKeyV330(values.DIRAC_USER_SECURITY_BREVO_API_KEY, 24, 2048);
     return { env_present: Object.fromEntries(DIRAC_PASSWORD_RESET_MAIL_ENV_V340.map((name) => [name, Boolean(values[name])])), checks: {
       email_enabled: values.DIRAC_USER_SECURITY_EMAIL_ENABLED.toLowerCase() === 'true',
@@ -64434,9 +64791,9 @@ function diracPasswordResetMailConfigurationDiagnosticV340() {
       smtp_host_valid: values.DIRAC_USER_SECURITY_SMTP_HOST.toLowerCase() === 'smtp.gmail.com',
       smtp_port_valid: diracSecurityMailExplicitIntegerV328('DIRAC_USER_SECURITY_SMTP_PORT', 465, 465) === 465,
       smtp_secure: values.DIRAC_USER_SECURITY_SMTP_SECURE.toLowerCase() === 'true',
-      smtp_user_valid: Boolean(diracSecurityMailEmailV327(values.DIRAC_USER_SECURITY_SMTP_USER)) && !diracSecurityMailPlaceholderV327(values.DIRAC_USER_SECURITY_SMTP_USER),
-      smtp_password_valid: /^[A-Za-z0-9]{16,128}$/.test(password) && !diracSecurityMailPlaceholderV327(passwordRaw),
-      provider_secrets_distinct: diracSecurityMailProviderKeysDistinctV330([brevo, resend, password])
+      smtp_user_valid: Boolean(smtpPrimary && smtpPrimary.valid && smtpPrimary.user),
+      smtp_password_valid: Boolean(smtpPrimary && smtpPrimary.valid && /^[A-Za-z0-9]{16,128}$/.test(password)),
+      provider_secrets_distinct: Boolean(smtpPool.ok) && diracSecurityMailProviderKeysDistinctV330([brevo, resend, ...smtpPool.accounts.map((account) => account.appPassword)])
     } };
   } catch (_) { return {}; }
 }
@@ -65206,6 +65563,15 @@ if (__diracRecoveryRoleV250) {
 }
 Object.defineProperty(module.exports, '__diracRecoveryRoleAwareV250', { value: true, enumerable: false });
 Object.defineProperty(module.exports, '__diracPasswordResetMailNotifyCommittedV338', { value: diracPasswordResetMailNotifyCommittedV338, enumerable: false, writable: false, configurable: false });
+Object.defineProperty(module.exports, '__diracCentralBanAuthorityV354', {
+  value: Object.freeze({
+    version: DIRAC_CENTRAL_BAN_AUTHORITY_V354,
+    check: diracCentralBanAuthorityCheckV354,
+    ban: diracCentralBanAuthorityBanV354
+  }),
+  enumerable: false, writable: false, configurable: false
+});
+Object.defineProperty(module.exports, '__diracCentralSupportDeviceTransitionV354', { value: true, enumerable: false, writable: false, configurable: false });
 
 Object.freeze(module.exports);
 if (!Object.isFrozen(module.exports)) {
