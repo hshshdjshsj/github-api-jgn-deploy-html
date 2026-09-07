@@ -669,6 +669,7 @@ function securityResetVerifyPageNonceV334(req, token, action) {
 function securityResetApplyHeadersV334(req, res, origin) {
   const allowed = String(origin || requestOrigin(req) || '');
   try {
+    if (!res || typeof res.setHeader !== 'function') throw new Error('RESET_RESPONSE_HEADERS_UNAVAILABLE');
     if (allowed) res.setHeader('Access-Control-Allow-Origin', allowed);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Expose-Headers', 'X-Dirac-CSRF-Token, X-CSRF-Token, X-Dirac-Page-Nonce, X-Page-Nonce');
@@ -677,7 +678,12 @@ function securityResetApplyHeadersV334(req, res, origin) {
     res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0');
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
-  } catch (_) {}
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+    res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+    if (process.env.NODE_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+  } catch (_) { throw resetError('SECURITY_RESET_RESPONSE_HEADERS_FAILED', 503); }
 }
 function securityResetValidateBrowserV334(req, method) {
   const base = diracBaseDomainV250();
@@ -705,7 +711,19 @@ function securityResetValidateBrowserV334(req, method) {
   return origin;
 }
 async function securityResetReadJsonV334(req) {
-  if (req && req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body) && !Array.isArray(req.body)) return req.body;
+  const contentType = securityResetHeaderV334(req, 'content-type').split(';')[0].trim().toLowerCase();
+  if (contentType !== 'application/json') throw resetError('SECURITY_RESET_CONTENT_TYPE_INVALID', 415);
+  const transferEncoding = securityResetHeaderV334(req, 'transfer-encoding').trim();
+  const contentEncoding = securityResetHeaderV334(req, 'content-encoding').trim().toLowerCase();
+  if (transferEncoding) throw resetError('SECURITY_RESET_TRANSFER_ENCODING_REJECTED', 400);
+  if (contentEncoding && contentEncoding !== 'identity') throw resetError('SECURITY_RESET_CONTENT_ENCODING_REJECTED', 415);
+  const declaredLength = securityResetHeaderV334(req, 'content-length').trim();
+  if (declaredLength && (!/^\d{1,12}$/.test(declaredLength) || Number(declaredLength) > SECURITY_RESET_MAX_BODY_V334)) throw resetError('SECURITY_RESET_BODY_TOO_LARGE', 413);
+  if (req && req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body) && !Array.isArray(req.body)) {
+    const measured = Buffer.byteLength(JSON.stringify(req.body), 'utf8');
+    if (measured > SECURITY_RESET_MAX_BODY_V334) throw resetError('SECURITY_RESET_BODY_TOO_LARGE', 413);
+    return req.body;
+  }
   let raw = '';
   if (req && Buffer.isBuffer(req.body)) raw = req.body.toString('utf8');
   else if (req && typeof req.body === 'string') raw = req.body;

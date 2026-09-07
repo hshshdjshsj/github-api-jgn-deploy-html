@@ -16,6 +16,8 @@ const MAIN_COOKIE_MAX_CHUNKS = 12;
 const ADMIN_COOKIE = '__Host-dirac_support_admin';
 const MFA_COOKIE = '__Host-dirac_support_mfa';
 const CSRF_COOKIE = '__Host-dirac_support_csrf_seed';
+const SUPPORT_CSRF_TTL_MS_V356 = 15 * 60 * 1000;
+const SUPPORT_CSRF_VERSION_V356 = 'dirac-support-csrf-session-bound-v356';
 const ADMIN_BINDING_HEADER = 'x-dirac-admin-binding';
 const ADMIN_BINDING_VERSION = 'dirac-support-admin-binding-v1';
 const ACTIVE_CHAT_STATES = ['new', 'queued', 'active', 'waiting_customer', 'waiting_admin'];
@@ -427,17 +429,46 @@ function writeSession(res, name, payload, maxAge, sameSite) {
   appendCookie(res, cookieString(name, seal(name, payload), { maxAge, sameSite }));
 }
 
-function csrfBundle(req, res) {
-  const cookies = parseCookies(req); const cookieName = runtimeCookieName(CSRF_COOKIE);
-  let seed = String(cookies[cookieName] || '');
-  if (!/^[A-Za-z0-9_-]{32,96}$/.test(seed)) {
-    seed = b64u(crypto.randomBytes(32));
-    appendCookie(res, cookieString(CSRF_COOKIE, seed, { maxAge: 8 * 60 * 60, sameSite: 'Strict' }));
+function supportCsrfScopeV356(action) {
+  const clean = String(action || '');
+  if (clean === 'chat_public_config' || clean === 'chat_start') return 'chat_start';
+  if (clean === 'admin_public_config' || clean === 'admin_login') return 'admin_login';
+  if (clean === 'admin_mfa_verify') return 'admin_mfa_verify';
+  if (['chat_bootstrap', 'chat_send', 'chat_close', 'customer_access_refresh'].includes(clean)) return 'customer_mutation';
+  if (['admin_bootstrap', 'admin_send', 'admin_conversation_update', 'admin_component_update', 'admin_monitor_config_update', 'admin_incident_create', 'admin_incident_advance', 'admin_maintenance_create', 'admin_logout'].includes(clean)) return 'admin_mutation';
+  return 'public';
+}
+
+function supportCsrfSessionBindingV356(req, action, explicitSession) {
+  let session = explicitSession;
+  if (session === undefined) {
+    if (String(action || '') === 'admin_mfa_verify') session = readSession(req, MFA_COOKIE);
+    else if (String(action || '').startsWith('admin_') && String(action || '') !== 'admin_login' && String(action || '') !== 'admin_public_config') session = readSession(req, ADMIN_COOKIE);
+    else if (['chat_bootstrap', 'chat_send', 'chat_close', 'customer_access_refresh'].includes(String(action || ''))) session = readSession(req, CUSTOMER_COOKIE);
+    else if (String(action || '') === 'chat_start' || String(action || '') === 'chat_public_config') session = readSession(req, CUSTOMER_COOKIE) || null;
+    else if (String(action || '') === 'admin_public_config') session = null;
+    else session = null;
   }
-  const exp = Date.now() + 2 * 60 * 60 * 1000;
-  // Origin is enforced independently on every mutation. Browsers commonly
-  // omit Origin on the GET that issues this token and include it on POST.
-  return String(exp) + '.' + hmac(config().csrfSecret, seed + '|' + exp);
+  if (!session || typeof session !== 'object') return 'public';
+  if (session.kind === 'admin' && session.uid && session.sessionId) return 'admin|' + String(session.uid) + '|' + String(session.sessionId) + '|' + String(session.sessionVersion || 0) + '|' + String(session.iat || 0);
+  if (session.kind === 'admin_mfa' && session.uid && session.challengeId) return 'admin_mfa|' + String(session.uid) + '|' + String(session.challengeId);
+  if (session.kind === 'customer' && session.uid && session.mainUid) return 'customer|' + String(session.uid) + '|' + String(session.mainUid) + '|' + String(session.iat || 0);
+  return 'public';
+}
+
+function csrfBundle(req, res, options = {}) {
+  const cookies = parseCookies(req); const cookieName = runtimeCookieName(CSRF_COOKIE);
+  let seed = options.rotate === true ? '' : String(cookies[cookieName] || '');
+  if (!/^[A-Za-z0-9_-]{32,96}$/.test(seed)) seed = b64u(crypto.randomBytes(32));
+  appendCookie(res, cookieString(CSRF_COOKIE, seed, { maxAge: Math.ceil(SUPPORT_CSRF_TTL_MS_V356 / 1000), sameSite: 'Strict' }));
+  const action = String(options.action || queryValue(req, 'action') || '');
+  const scope = String(options.scope || supportCsrfScopeV356(action));
+  const origin = requestOrigin(req);
+  if (!origin || !allowedOrigins().has(origin)) throw new PublicError(403, 'ORIGIN_NOT_ALLOWED', 'Origin permintaan tidak diizinkan.');
+  const binding = supportCsrfSessionBindingV356(req, action, Object.prototype.hasOwnProperty.call(options, 'session') ? options.session : undefined);
+  const exp = Date.now() + SUPPORT_CSRF_TTL_MS_V356;
+  const material = SUPPORT_CSRF_VERSION_V356 + '|' + seed + '|' + exp + '|' + scope + '|POST|' + origin + '|' + binding;
+  return String(exp) + '.' + hmac(config().csrfSecret, material);
 }
 
 function verifyCsrf(req) {
@@ -446,9 +477,13 @@ function verifyCsrf(req) {
   if (fetchSite && !['same-origin', 'same-site', 'none'].includes(fetchSite)) throw new PublicError(403, 'FETCH_SITE_REJECTED', 'Konteks browser tidak diizinkan.');
   const token = String(req.headers && req.headers['x-dirac-csrf'] || '');
   const match = /^(\d{13})\.([A-Za-z0-9_-]{43})$/.exec(token);
-  if (!match || Number(match[1]) <= Date.now()) throw new PublicError(403, 'CSRF_INVALID', 'Token keamanan halaman tidak valid atau kedaluwarsa.');
+  const exp = match ? Number(match[1]) : 0;
+  if (!match || exp <= Date.now() || exp > Date.now() + SUPPORT_CSRF_TTL_MS_V356 + 60_000) throw new PublicError(403, 'CSRF_INVALID', 'Token keamanan halaman tidak valid atau kedaluwarsa.');
   const cookies = parseCookies(req); const seed = String(cookies[runtimeCookieName(CSRF_COOKIE)] || '');
-  const expected = hmac(config().csrfSecret, seed + '|' + match[1]);
+  const action = queryValue(req, 'action'); const scope = supportCsrfScopeV356(action); const origin = requestOrigin(req);
+  const binding = supportCsrfSessionBindingV356(req, action);
+  const material = SUPPORT_CSRF_VERSION_V356 + '|' + seed + '|' + match[1] + '|' + scope + '|POST|' + origin + '|' + binding;
+  const expected = hmac(config().csrfSecret, material);
   if (!seed || !timingEqual(expected, match[2])) throw new PublicError(403, 'CSRF_INVALID', 'Token keamanan halaman tidak valid.');
 }
 
@@ -464,8 +499,14 @@ function verifyAuthenticatedReadOrigin(req) {
 async function readJson(req) {
   const type = String(req.headers && req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
   if (type !== 'application/json') throw new PublicError(415, 'CONTENT_TYPE_INVALID', 'Content-Type wajib application/json.');
-  const declared = Number(req.headers && req.headers['content-length'] || 0);
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
+  const transferEncoding = String(req.headers && req.headers['transfer-encoding'] || '').trim();
+  const contentEncoding = String(req.headers && req.headers['content-encoding'] || '').trim().toLowerCase();
+  if (transferEncoding) throw new PublicError(400, 'TRANSFER_ENCODING_REJECTED', 'Framing request tidak diizinkan.');
+  if (contentEncoding && contentEncoding !== 'identity') throw new PublicError(415, 'CONTENT_ENCODING_REJECTED', 'Content-Encoding request tidak diizinkan.');
+  const declaredRaw = String(req.headers && req.headers['content-length'] || '').trim();
+  if (declaredRaw && !/^\d{1,12}$/.test(declaredRaw)) throw new PublicError(400, 'CONTENT_LENGTH_INVALID', 'Content-Length request tidak valid.');
+  const declared = declaredRaw ? Number(declaredRaw) : 0;
+  if (declared > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
   if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
     const raw = JSON.stringify(req.body);
     if (Buffer.byteLength(raw, 'utf8') > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
@@ -952,7 +993,7 @@ async function actionChatPublicConfig(req, res) {
   return json(res, 200, {
     ok: true,
     code: 'CHAT_CONFIG_OK',
-    csrfToken: csrfBundle(req, res),
+    csrfToken: csrfBundle(req, res, { session: hasSession ? session : null, scope: hasSession ? 'customer_mutation' : 'chat_start' }),
     authenticated: Boolean(identity),
     user: identity ? { displayName: identity.displayName, email: identity.email } : null,
     hasSession,
@@ -962,8 +1003,8 @@ async function actionChatPublicConfig(req, res) {
 }
 
 async function actionAdminPublicConfig(req, res) {
-  const cfg = config(); const session = readSession(req, ADMIN_COOKIE);
-  return json(res, 200, { ok: true, code: 'ADMIN_CONFIG_OK', csrfToken: csrfBundle(req, res), hasSession: Boolean(session && session.kind === 'admin'), mfaRequired: cfg.adminMfaRequired, turnstileRequired: cfg.turnstileRequired, turnstileSiteKey: cfg.turnstileRequired ? cfg.turnstileSiteKey : '' });
+  const cfg = config(); const session = readSession(req, ADMIN_COOKIE); const hasSession = Boolean(session && session.kind === 'admin');
+  return json(res, 200, { ok: true, code: 'ADMIN_CONFIG_OK', csrfToken: csrfBundle(req, res, { session: hasSession ? session : null, scope: hasSession ? 'admin_mutation' : 'admin_login' }), hasSession, mfaRequired: cfg.adminMfaRequired, turnstileRequired: cfg.turnstileRequired, turnstileSiteKey: cfg.turnstileRequired ? cfg.turnstileSiteKey : '' });
 }
 
 async function findActiveConversation(userId) {
@@ -1031,7 +1072,7 @@ async function actionChatStart(req, res, body) {
   session = { v: 1, kind: 'customer', uid: userId, mainUid: identity.id, mainEmail: identity.email, refreshToken: authSession.refresh_token, iat: Date.now(), exp: Date.now() + 180 * 24 * 60 * 60 * 1000 };
   writeSession(res, CUSTOMER_COOKIE, session, 180 * 24 * 60 * 60, 'Strict');
   const messages = Array.isArray(result.messages) ? result.messages : result.message ? [result.message] : await messagesForConversation(result.conversation.id, 0, 50);
-  return json(res, 201, { ok: true, code: 'CHAT_OPENED', csrfToken: csrfBundle(req, res), conversation: result.conversation, messages, realtime: chatRealtime(result.conversation.id, authSession.access_token) });
+  return json(res, 201, { ok: true, code: 'CHAT_OPENED', csrfToken: csrfBundle(req, res, { rotate: true, session, scope: 'customer_mutation' }), conversation: result.conversation, messages, realtime: chatRealtime(result.conversation.id, authSession.access_token) });
 }
 
 async function requireCustomer(req, res, conversationId) {
@@ -1081,7 +1122,7 @@ async function actionCustomerRefresh(req, res) {
   await accountRateLimit('customer_refresh', identity.id, 20, 600, 600);
   const refreshed = await refreshCustomerAuth(res, session, identity); const conversation = await findActiveConversation(identity.id);
   const next = Object.assign({}, session, { mainEmail: identity.email, refreshToken: refreshed.refresh_token, exp: Date.now() + 180 * 24 * 60 * 60 * 1000 }); writeSession(res, CUSTOMER_COOKIE, next, 180 * 24 * 60 * 60, 'Strict');
-  return json(res, 200, { ok: true, code: 'CUSTOMER_ACCESS_REFRESHED', realtime: conversation ? chatRealtime(conversation.id, refreshed.access_token) : null });
+  return json(res, 200, { ok: true, code: 'CUSTOMER_ACCESS_REFRESHED', csrfToken: csrfBundle(req, res, { rotate: true, session: next, scope: 'customer_mutation' }), realtime: conversation ? chatRealtime(conversation.id, refreshed.access_token) : null });
 }
 
 async function issueAdminSession(res, authSession, staff, mfaAt) {
@@ -1108,10 +1149,10 @@ async function actionAdminLogin(req, res, body) {
   const staff = await staffByUser(login.data.user.id); if (String(staff.email).toLowerCase() !== adminEmail) throw new PublicError(403, 'STAFF_IDENTITY_MISMATCH', 'Identitas staff tidak cocok.');
   const claims = decodeJwt(login.data.access_token); const mustMfa = config().adminMfaRequired || staff.mfa_required === true;
   if (!mustMfa || claims.aal === 'aal2') {
-    await issueAdminSession(res, login.data, staff, Date.now());
+    const adminSession = await issueAdminSession(res, login.data, staff, Date.now());
     req.diracAuthOutcome = 'success'; await recordAdminAuth(req, staff.user_id, 'admin.auth.session_issued', adminEmail, 'success', 'ADMIN_LOGIN_OK');
     const queue = await adminQueue(staff, 'active', 50); const snapshot = await statusSnapshot(canManageStatus(staff));
-    return json(res, 200, { ok: true, code: 'ADMIN_LOGIN_OK', admin: publicAdmin(staff), queue, status: snapshot, realtime: adminRealtime(login.data.access_token) });
+    return json(res, 200, { ok: true, code: 'ADMIN_LOGIN_OK', csrfToken: csrfBundle(req, res, { rotate: true, session: adminSession, scope: 'admin_mutation' }), admin: publicAdmin(staff), queue, status: snapshot, realtime: adminRealtime(login.data.access_token) });
   }
   const factors = Array.isArray(login.data.user.factors) ? login.data.user.factors : [];
   let factor = factors.find((item) => item && item.status === 'verified' && item.factor_type === 'totp'); let enrollmentPayload = null;
@@ -1120,7 +1161,10 @@ async function actionAdminLogin(req, res, body) {
     // binding an attacker's authenticator before the legitimate first login.
     if (!timingEqual(config().mfaEnrollmentSecret, String(body.enrollmentSecret || ''))) throw new PublicError(403, 'MFA_ENROLLMENT_AUTH_REQUIRED', 'Secret bootstrap enrollment TOTP tidak valid.');
     for (const stale of factors.filter((item) => item && item.status !== 'verified' && item.factor_type === 'totp').slice(0, 5)) {
-      try { await auth('/factors/' + encodeURIComponent(stale.id), { method: 'DELETE', token: login.data.access_token, body: {} }); } catch (_) {}
+      let removed;
+      try { removed = await auth('/factors/' + encodeURIComponent(stale.id), { method: 'DELETE', token: login.data.access_token, body: {} }); }
+      catch (_) { throw new PublicError(502, 'MFA_ENROLLMENT_CLEANUP_FAILED', 'Faktor TOTP lama belum dapat dibersihkan dengan aman.'); }
+      if (!removed || removed.ok !== true) throw new PublicError(502, 'MFA_ENROLLMENT_CLEANUP_FAILED', 'Faktor TOTP lama belum dapat dibersihkan dengan aman.');
     }
     const enrolled = await auth('/factors', { token: login.data.access_token, body: { factor_type: 'totp', friendly_name: 'Dirac Support Console' } });
     const totp = enrolled.data && enrolled.data.totp; const factorId = enrolled.data && enrolled.data.id;
@@ -1134,7 +1178,7 @@ async function actionAdminLogin(req, res, body) {
   const temp = { v: 1, kind: 'admin_mfa', uid: staff.user_id, accessToken: login.data.access_token, refreshToken: login.data.refresh_token, factorId: factor.id, challengeId: challenge.data.id, exp: Date.now() + 5 * 60 * 1000 };
   writeSession(res, MFA_COOKIE, temp, 5 * 60, 'Strict');
   req.diracAuthOutcome = 'success'; await recordAdminAuth(req, staff.user_id, 'admin.auth.mfa_required', adminEmail, 'challenge_issued', enrollmentPayload ? 'MFA_ENROLLMENT_STARTED' : 'MFA_CHALLENGE_STARTED');
-  return json(res, 200, { ok: true, code: 'ADMIN_MFA_REQUIRED', mfaRequired: true, mfaEnrollment: enrollmentPayload });
+  return json(res, 200, { ok: true, code: 'ADMIN_MFA_REQUIRED', csrfToken: csrfBundle(req, res, { rotate: true, session: temp, scope: 'admin_mfa_verify' }), mfaRequired: true, mfaEnrollment: enrollmentPayload });
 }
 
 async function actionAdminMfaVerify(req, res, body) {
@@ -1145,10 +1189,10 @@ async function actionAdminMfaVerify(req, res, body) {
   const verified = await auth('/factors/' + encodeURIComponent(temp.factorId) + '/verify', { token: temp.accessToken, body: { challenge_id: temp.challengeId, code } });
   if (!verified.ok || !verified.data || !verified.data.access_token || !verified.data.refresh_token) throw new PublicError(401, 'MFA_CODE_REJECTED', 'Kode autentikator tidak valid.');
   const claims = decodeJwt(verified.data.access_token); if (claims.aal !== 'aal2' || String(claims.sub || '') !== String(temp.uid)) throw new PublicError(403, 'MFA_ASSURANCE_INVALID', 'Tingkat jaminan MFA belum terpenuhi.');
-  const staff = await staffByUser(temp.uid); await issueAdminSession(res, verified.data, staff, Date.now());
+  const staff = await staffByUser(temp.uid); const adminSession = await issueAdminSession(res, verified.data, staff, Date.now());
   req.diracAuthOutcome = 'success'; await recordAdminAuth(req, staff.user_id, 'admin.auth.session_issued', staff.email, 'success', 'ADMIN_MFA_OK');
   const queue = await adminQueue(staff, 'active', 50); const snapshot = await statusSnapshot(canManageStatus(staff));
-  return json(res, 200, { ok: true, code: 'ADMIN_MFA_OK', admin: publicAdmin(staff), queue, status: snapshot, realtime: adminRealtime(verified.data.access_token) });
+  return json(res, 200, { ok: true, code: 'ADMIN_MFA_OK', csrfToken: csrfBundle(req, res, { rotate: true, session: adminSession, scope: 'admin_mutation' }), admin: publicAdmin(staff), queue, status: snapshot, realtime: adminRealtime(verified.data.access_token) });
 }
 
 async function adminQueue(staff, filter, limit) {
@@ -1274,12 +1318,21 @@ async function actionAdminMaintenanceCreate(req, res, body) {
 }
 
 async function actionAdminLogout(req, res) {
-  const session = readSession(req, ADMIN_COOKIE);
+  const session = readSession(req, ADMIN_COOKIE); let upstreamConfirmed = true;
   if (session && session.refreshToken) {
-    try { const refreshed = await refreshAuth(session.refreshToken); await auth('/logout?scope=local', { token: refreshed.access_token, body: {} }); } catch (_) {}
+    try {
+      const refreshed = await refreshAuth(session.refreshToken);
+      const logout = await auth('/logout?scope=local', { token: refreshed.access_token, body: {} });
+      if (!logout || logout.ok !== true) upstreamConfirmed = false;
+    } catch (_) { upstreamConfirmed = false; }
+  }
+  clearCookie(res, ADMIN_COOKIE, 'Strict'); clearCookie(res, MFA_COOKIE, 'Strict');
+  if (!upstreamConfirmed) {
+    if (session && session.uid) await recordAdminAuth(req, session.uid, 'admin.auth.logout', session.email, 'upstream_unconfirmed', 'ADMIN_LOGOUT_UPSTREAM_UNCONFIRMED');
+    throw new PublicError(503, 'ADMIN_LOGOUT_UPSTREAM_UNCONFIRMED', 'Sesi lokal ditutup, tetapi pencabutan sesi upstream belum dapat dikonfirmasi.');
   }
   if (session && session.uid) await recordAdminAuth(req, session.uid, 'admin.auth.logout', session.email, 'success', 'ADMIN_LOGGED_OUT');
-  clearCookie(res, ADMIN_COOKIE, 'Strict'); clearCookie(res, MFA_COOKIE, 'Strict'); return json(res, 200, { ok: true, code: 'ADMIN_LOGGED_OUT' });
+  return json(res, 200, { ok: true, code: 'ADMIN_LOGGED_OUT', csrfToken: csrfBundle(req, res, { rotate: true, session: null, scope: 'admin_login' }) });
 }
 
 function ipv4Number(address) {
@@ -1651,6 +1704,14 @@ function supportCentralRecordSuppressedExceptionV221(error) {
     const code = String(error && error.code || 'UNCLASSIFIED').slice(0, 120);
     console.error('[dirac-support-central-suppressed]', JSON.stringify({ name, code, patch: DIRAC_SUPPORT_CENTRAL_HARDENING_V221 }));
   } catch (_) {}
+}
+
+function supportSafeDiagnosticMessageV356(error) {
+  let value = String(error && error.message || '').replace(/[\r\n\t]+/g, ' ');
+  value = value.replace(/\b(authorization|bearer|cookie|set-cookie|password|secret|access[_ -]?token|refresh[_ -]?token|token|otp|totp)\s*[:=]\s*[^,;\s]{4,}/gi, '$1=[redacted]');
+  value = value.replace(/[A-Za-z0-9_-]{48,}/g, '[redacted]');
+  value = value.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]');
+  return value.slice(0, 160);
 }
 
 function supportCentralExpectedAuthoritiesV146() {
@@ -2048,7 +2109,7 @@ async function supportCentralGuardPageNonceV202(ctx) {
   const token = String(ctx.req.headers && ctx.req.headers['x-dirac-csrf'] || '');
   const match = /^(\d{13})\.[A-Za-z0-9_-]{43}$/.exec(token);
   const expiresAt = match ? Number(match[1]) : 0;
-  if (!expiresAt || expiresAt > Date.now() + 2 * 60 * 60 * 1000 + 60_000) throw new PublicError(403, 'PAGE_NONCE_INVALID', 'Nonce halaman tidak valid.');
+  if (!expiresAt || expiresAt > Date.now() + SUPPORT_CSRF_TTL_MS_V356 + 60_000) throw new PublicError(403, 'PAGE_NONCE_INVALID', 'Nonce halaman tidak valid.');
 }
 async function supportCentralGuardBrowserSignalsV202(ctx) {
   if (!ctx.policy.browser) return;
@@ -2061,7 +2122,7 @@ async function supportCentralGuardAdminAuthenticationV202(ctx) {
   if (ctx.preflight) return;
   if (ctx.policy.principal === 'admin_mfa_pending') {
     const pending = readSession(ctx.req, MFA_COOKIE);
-    if (!pending || pending.kind !== 'mfa' || !pending.uid || !pending.refreshToken) throw new PublicError(401, 'MFA_SESSION_REQUIRED', 'Sesi verifikasi MFA tidak ditemukan.');
+    if (!pending || pending.kind !== 'admin_mfa' || !pending.uid || !pending.refreshToken || !pending.challengeId) throw new PublicError(401, 'MFA_SESSION_REQUIRED', 'Sesi verifikasi MFA tidak ditemukan.');
   }
 }
 async function supportCentralGuardPublicReadV202(ctx) {
@@ -2267,7 +2328,7 @@ async function handler(req, res) {
       if (safe.retryAfter) setHeader(res, 'Retry-After', String(safe.retryAfter));
       supportCentralRecordOutcomeV146(ctx, error);
       if (!(error instanceof PublicError)) {
-        try { console.error('[dirac-support]', JSON.stringify({ requestId: ctx.requestId, action: ctx.action, stage: ctx.currentStage, code: String(error && (error.code || error.name) || 'ERROR').slice(0, 80), message: String(error && error.message || '').slice(0, 160) })); } catch (_) {}
+        try { console.error('[dirac-support]', JSON.stringify({ requestId: ctx.requestId, action: ctx.action, stage: ctx.currentStage, code: String(error && (error.code || error.name) || 'ERROR').slice(0, 80), message: supportSafeDiagnosticMessageV356(error) })); } catch (_) {}
       }
       return json(res, safe.status, { ok: false, code: safe.code, message: safe.message, requestId: ctx.requestId, time: nowIso() });
     } finally {
