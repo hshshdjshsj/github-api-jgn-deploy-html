@@ -7568,7 +7568,7 @@ async function diracPasskeyResolveStrictSignedIdentityV308(value) {
     fullGuardPassed = false;
   }
 
-  if (!fullGuardPassed) {
+  if (!fullGuardPassed || (ctx.action === 'domain_me' && ctx.method === 'GET' && ctx.__diracCentralOwnerScopeResolvingV146 === true && !ctx.__diracCentralOwnerBootstrapBindingV213 && typeof diracCentralOwnerBootstrapModeV213 === 'function' && diracCentralOwnerBootstrapModeV213(ctx, ctx.req) === true)) {
     return Object.freeze({
       strict: true,
       ok: true,
