@@ -2331,6 +2331,39 @@ async function handler(req, res) {
       if (safe.allow) setHeader(res, 'Allow', safe.allow);
       if (safe.retryAfter) setHeader(res, 'Retry-After', String(safe.retryAfter));
       supportCentralRecordOutcomeV146(ctx, error);
+      if (error instanceof PublicError && ctx.action === 'chat_public_config') {
+        try {
+          const diagnosticPublishableKeyV358 = env('DIRAC_SUPPORT_SUPABASE_PUBLISHABLE_KEY') || env('DIRAC_SUPPORT_SUPABASE_ANON_KEY');
+          const diagnosticSecretKeyV358 = env('DIRAC_SUPPORT_SUPABASE_SECRET_KEY') || env('DIRAC_SUPPORT_SUPABASE_SERVICE_ROLE_KEY');
+          const diagnosticCookieSecretV358 = env('DIRAC_SUPPORT_COOKIE_SECRET');
+          const diagnosticCsrfSecretV358 = env('DIRAC_SUPPORT_CSRF_SECRET');
+          const diagnosticIpSecretV358 = env('DIRAC_SUPPORT_IP_HMAC_SECRET');
+          const diagnosticCustomerSecretsV358 = [diagnosticCookieSecretV358, diagnosticCsrfSecretV358, diagnosticIpSecretV358];
+          const diagnosticTurnstileRequiredV358 = envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', isProduction());
+          console.error('[dirac-support-chat-public-config-diagnostic-v358]', JSON.stringify({
+            event: 'chat_public_config_failed',
+            requestId: ctx.requestId,
+            status: safe.status,
+            code: safe.code,
+            boundary: ctx.fullyPassed === true ? 'handler' : 'guard',
+            stage: String(ctx.currentStage || '').slice(0, 80),
+            passportHex: ctx.passport.toString(16),
+            request: { method: ctx.method, originPresent: Boolean(requestOrigin(req)), originAllowed: originAllowed(req) },
+            customerConfig: {
+              supabaseUrlShapeOk: /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(env('DIRAC_SUPPORT_SUPABASE_URL').replace(/\/+$/, '')),
+              publishableKeyClassOk: /^sb_publishable_[A-Za-z0-9_-]{10,}$/.test(diagnosticPublishableKeyV358) || decodeJwt(diagnosticPublishableKeyV358).role === 'anon',
+              secretKeyClassOk: /^sb_secret_[A-Za-z0-9_-]{10,}$/.test(diagnosticSecretKeyV358) || decodeJwt(diagnosticSecretKeyV358).role === 'service_role',
+              customerCookieSecretStrong: Buffer.byteLength(diagnosticCookieSecretV358, 'utf8') >= 32,
+              customerCsrfSecretStrong: Buffer.byteLength(diagnosticCsrfSecretV358, 'utf8') >= 32,
+              customerIpSecretStrong: Buffer.byteLength(diagnosticIpSecretV358, 'utf8') >= 32,
+              customerSecretsDistinct: new Set(diagnosticCustomerSecretsV358).size === diagnosticCustomerSecretsV358.length,
+              turnstileRequired: diagnosticTurnstileRequiredV358,
+              turnstileSiteKeyPresent: Boolean(env('DIRAC_SUPPORT_TURNSTILE_SITE_KEY')),
+              turnstileSecretKeyPresent: Boolean(env('DIRAC_SUPPORT_TURNSTILE_SECRET_KEY'))
+            }
+          }));
+        } catch (diagnosticErrorV358) { supportCentralRecordSuppressedExceptionV221(diagnosticErrorV358); }
+      }
       if (!(error instanceof PublicError)) {
         try { console.error('[dirac-support]', JSON.stringify({ requestId: ctx.requestId, action: ctx.action, stage: ctx.currentStage, code: String(error && (error.code || error.name) || 'ERROR').slice(0, 80), message: supportSafeDiagnosticMessageV356(error) })); } catch (_) {}
       }
