@@ -37786,6 +37786,37 @@ async function diracBolaIdorV128ResolveKnownObjectOwners(objectIds, preferredTab
   if (!ids.length) return [];
 
   const preferred = String(preferredTable || '').toLowerCase();
+  if (preferred === 'customers' && ids.length === 1) {
+    const profileContext = diracCentralCurrentContextV149();
+    const profileLegacyContext = diracBolaIdorV128CurrentContext();
+    const profileOwner = profileContext && diracCentralOwnerFromVerifiedContextV215(profileContext.req);
+    const profileTarget = diracAppOriginHandoffTargetV313('parfum');
+    const profilePermit = diracCentralCurrentDatabaseEgressPermitV230();
+    const profilePermitBinding = profilePermit && DIRAC_CENTRAL_DATABASE_PERMIT_BINDINGS_V362.get(profilePermit);
+    const profilePath = '/rest/v1/customers?select=' + encodeURIComponent('id,email,name,phone')
+      + '&id=eq.' + encodeURIComponent(ids[0]) + '&limit=1';
+    if (profileContext && profileContext.req
+        && profileContext.action === 'domain_dashboard_me' && profileContext.method === 'GET'
+        && diracCentralHandlerContextFullyPassedV211(profileContext, profileContext.req) === true
+        && profileLegacyContext && profileLegacyContext.req === profileContext.req
+        && profileLegacyContext.action === 'domain_dashboard_me' && profileLegacyContext.method === 'GET'
+        && profileOwner && profileOwner.ok === true && profileOwner.customerIds.length === 1
+        && profileOwner.customerIds[0] === ids[0]
+        && profileTarget && diracCsrfRequestOrigin(profileContext.req) === profileTarget.origin
+        && profilePermit && profilePermit.action === profileContext.action
+        && profilePermit.method === 'GET' && profilePermit.authMode === 'service'
+        && profilePermit.path === profilePath && profilePermit.prefer === ''
+        && profilePermit.bodyBytes === 0
+        && profilePermit.bodyHash === crypto.createHash('sha256').update('').digest('hex')
+        && Number.isSafeInteger(profilePermit.expiresAtMs) && profilePermit.expiresAtMs > Date.now()
+        && profilePermitBinding && profilePermitBinding.ctx === profileContext
+        && profilePermitBinding.req === profileContext.req
+        && profilePermitBinding.requestId === String(profileContext.requestId || '')
+        && profilePermitBinding.dispatched === false) {
+      // A customer's primary key is its owner ID; the guarded profile read still follows.
+      return [Object.freeze({ id: ids[0], customer_id: ids[0], table: 'customers' })];
+    }
+  }
   const hasExactPreferredTable = Boolean(preferred && diracBolaIdorV128DirectOwnerTable(preferred));
   const tables = hasExactPreferredTable
     ? [preferred]
