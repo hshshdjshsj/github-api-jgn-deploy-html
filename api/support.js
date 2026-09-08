@@ -3,12 +3,180 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import https from 'node:https';
 import { promises as dns } from 'node:dns';
 import net from 'node:net';
+const securityJson = (() => {
+'use strict';
+
+// Shared JSON trust boundary. Retain the original string representation until
+// duplicate names and Unicode have been checked; JSON.parse alone loses both.
+function inputError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
+function validUnicode(value) {
+  if (value.includes('\u0000')) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(++index);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+  }
+  return true;
+}
+
+function parseStrictJson(input, options = {}) {
+  const maxBytes = options.maxBytes || 196608;
+  const maxDepth = options.maxDepth || 12;
+  const maxNodes = options.maxNodes || 4096;
+  let source;
+  if (Buffer.isBuffer(input) || input instanceof Uint8Array) {
+    if (input.byteLength > maxBytes) throw inputError('JSON_SIZE_LIMIT');
+    try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(input); }
+    catch (_) { throw inputError('JSON_UTF8_INVALID'); }
+  } else if (typeof input === 'string') source = input;
+  else throw inputError('JSON_RAW_BODY_REQUIRED');
+  if (!source || Buffer.byteLength(source, 'utf8') > maxBytes) throw inputError('JSON_SIZE_LIMIT');
+  let index = 0;
+  let nodes = 0;
+  const fail = (code = 'JSON_INVALID') => { throw inputError(code); };
+  const whitespace = () => { while (/[\x20\t\r\n]/.test(source[index] || '\0')) index += 1; };
+  const string = () => {
+    const start = index;
+    if (source[index++] !== '"') fail();
+    while (index < source.length) {
+      const char = source[index++];
+      if (char === '"') {
+        let value;
+        try { value = JSON.parse(source.slice(start, index)); } catch (_) { fail(); }
+        if (!validUnicode(value)) fail('JSON_UNICODE_INVALID');
+        return value;
+      }
+      if (char.charCodeAt(0) < 32) fail();
+      if (char === '\\') {
+        const escape = source[index++];
+        if (escape === 'u') {
+          if (!/^[a-fA-F0-9]{4}$/.test(source.slice(index, index + 4))) fail();
+          index += 4;
+        } else if (!['"', '\\', '/', 'b', 'f', 'n', 'r', 't'].includes(escape)) fail();
+      }
+    }
+    fail();
+  };
+  const value = (depth) => {
+    if (depth > maxDepth || ++nodes > maxNodes) fail('JSON_COMPLEXITY_LIMIT');
+    whitespace();
+    const char = source[index];
+    if (char === '"') { string(); return; }
+    if (char === '{') {
+      index += 1; whitespace();
+      const names = new Set();
+      if (source[index] === '}') { index += 1; return; }
+      while (index < source.length) {
+        const key = string();
+        if (['__proto__', 'proto', 'prototype', 'constructor'].includes(key)) fail('JSON_KEY_REJECTED');
+        if (names.has(key)) fail('JSON_DUPLICATE_KEY');
+        names.add(key);
+        whitespace(); if (source[index++] !== ':') fail();
+        value(depth + 1); whitespace();
+        const delimiter = source[index++];
+        if (delimiter === '}') return;
+        if (delimiter !== ',') fail();
+        whitespace();
+      }
+      fail();
+    }
+    if (char === '[') {
+      index += 1; whitespace();
+      if (source[index] === ']') { index += 1; return; }
+      while (index < source.length) {
+        value(depth + 1); whitespace();
+        const delimiter = source[index++];
+        if (delimiter === ']') return;
+        if (delimiter !== ',') fail();
+      }
+      fail();
+    }
+    for (const literal of ['true', 'false', 'null']) {
+      if (source.startsWith(literal, index)) { index += literal.length; return; }
+    }
+    const number = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(source.slice(index));
+    if (!number) fail();
+    const numeric = Number(number[0]);
+    if (!Number.isFinite(numeric) || (Number.isInteger(numeric) && !Number.isSafeInteger(numeric))) fail('JSON_NUMBER_INVALID');
+    index += number[0].length;
+  };
+  value(0); whitespace();
+  if (index !== source.length) fail();
+  return JSON.parse(source);
+}
+
+return Object.freeze({ parseStrictJson, validUnicode });
+})();
+const securityProxy = (() => {
+'use strict';
+
+const { isIP } = net;
+
+function normalizeIp(value) {
+  if (typeof value !== 'string' || value.length > 128 || /[,\s%\u0000-\u001f]/.test(value)) return '';
+  let clean = value.toLowerCase();
+  if (clean.startsWith('[') && clean.endsWith(']')) clean = clean.slice(1, -1);
+  if (/^::ffff:\d{1,3}(?:\.\d{1,3}){3}$/.test(clean)) clean = clean.slice(7);
+  const version = isIP(clean);
+  if (version === 4) return clean;
+  if (version !== 6) return '';
+  try {
+    const canonical = new URL('http://[' + clean + ']/').hostname.slice(1, -1);
+    const mapped = /^::ffff:([a-f0-9]{1,4}):([a-f0-9]{1,4})$/.exec(canonical);
+    if (mapped) {
+      const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
+      return [high >>> 8, high & 255, low >>> 8, low & 255].join('.');
+    }
+    return canonical;
+  } catch (_) { return ''; }
+}
+
+function trustedClientIp(req, env = process.env) {
+  const socketIp = normalizeIp(req && req.socket && req.socket.remoteAddress || '');
+  const headers = req && req.headers || {};
+  const mode = String(env.DIRAC_TRUSTED_PROXY_MODE || (env.VERCEL === '1' ? 'vercel' : 'none')).trim().toLowerCase();
+  if (mode === 'none') return socketIp || 'unknown';
+  if (mode === 'vercel') {
+    // This mode is valid only in the provider runtime, where the platform owns
+    // this header. A deployment setting alone does not authenticate a proxy.
+    if (env.VERCEL !== '1') return socketIp || 'unknown';
+    return normalizeIp(headers['x-vercel-forwarded-for']) || socketIp || 'unknown';
+  }
+  if (mode !== 'standard') return 'unknown';
+  const rawTrusted = String(env.DIRAC_TRUSTED_PROXY_IPS || '');
+  if (rawTrusted.length > 4096) return 'unknown';
+  const configured = rawTrusted.split(',').map(item => item.trim()).filter(Boolean);
+  const trusted = configured.map(normalizeIp);
+  if (!trusted.length || trusted.some(item => !item) || !socketIp || !trusted.includes(socketIp)) {
+    return socketIp || 'unknown';
+  }
+  const raw = headers['x-forwarded-for'];
+  if (typeof raw !== 'string' || raw.length > 2048) return socketIp;
+  const chain = raw.split(',').map(item => normalizeIp(item.trim()));
+  if (!chain.length || chain.length > 16 || chain.some(item => !item)) return 'unknown';
+  let current = socketIp;
+  for (let index = chain.length - 1; index >= 0 && trusted.includes(current); index -= 1) {
+    current = chain[index];
+  }
+  return current;
+}
+
+return Object.freeze({ normalizeIp, trustedClientIp });
+})();
+
+const { parseStrictJson, validUnicode } = securityJson;
 
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_MESSAGE_CHARS = 2000;
 const MAX_MESSAGE_BYTES = 8 * 1024;
 const MAX_CONVERSATION_MESSAGES = 1000;
-const ADMIN_AUTH_RECHECK_MS = 5 * 60 * 1000;
 const CUSTOMER_COOKIE = '__Host-dirac_support_guest';
 const CUSTOMER_IDENTITY_MARKER = 'dirac_support_main_session_v1';
 const CUSTOMER_AUTH_EMAIL_DOMAIN = 'support-auth.diracgroup.store';
@@ -88,7 +256,7 @@ function config() {
       || Buffer.byteLength(adminBindingSecret, 'utf8') < 32)) {
     throw new PublicError(503, 'PRIMARY_ADMIN_BINDING_CONFIG_INVALID', 'Binding admin utama belum dikonfigurasi lengkap.');
   }
-  if (isProduction() && (securitySecrets.some((value) => Buffer.byteLength(value, 'utf8') < 32) || new Set(securitySecrets).size !== securitySecrets.length)) {
+  if (securitySecrets.some((value) => Buffer.byteLength(value, 'utf8') < 32) || new Set(securitySecrets).size !== securitySecrets.length) {
     throw new PublicError(503, 'SUPPORT_SECRETS_WEAK', 'Secret keamanan support wajib kuat dan berbeda satu sama lain.');
   }
   if (turnstileRequired && (!turnstileSiteKey || !turnstileSecretKey)) throw new PublicError(503, 'TURNSTILE_CONFIG_MISSING', 'Verifikasi anti-bot support belum dikonfigurasi lengkap.');
@@ -96,13 +264,13 @@ function config() {
     supabaseUrl,
     publishableKey,
     secretKey,
-    cookieSecret: cookieSecret || 'development-cookie-secret-change-before-production',
-    csrfSecret: csrfSecret || 'development-csrf-secret-change-before-production',
-    ipSecret: ipSecret || 'development-ip-secret-change-before-production',
-    mfaEnrollmentSecret: mfaEnrollmentSecret || 'development-mfa-enrollment-secret-change-before-production',
+    cookieSecret,
+    csrfSecret,
+    ipSecret,
+    mfaEnrollmentSecret,
     primaryAdminUserId,
     primaryAdminEmail,
-    adminBindingSecret: adminBindingSecret || 'development-admin-binding-secret-change-before-production',
+    adminBindingSecret,
     turnstileSiteKey,
     turnstileSecretKey,
     turnstileRequired,
@@ -228,7 +396,8 @@ function safeCookieName(value) {
 function escapeRegex(value) { return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 function normalizeAuthority(value) {
-  const raw = String(value || '').split(',')[0].trim().toLowerCase();
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw.includes(',')) return '';
   if (!raw || /[\r\n\s/@]/.test(raw) || raw.length > 255) return '';
   try {
     const parsed = new URL('https://' + raw);
@@ -480,6 +649,8 @@ async function resolveMainIdentity(req, res, required) {
     throw new PublicError(502, 'MAIN_IDENTITY_INVALID', 'Identitas akun Dirac tidak valid.');
   }
   if (identityDiagnosticV360) identityDiagnosticV360.decision = 'identity_valid';
+  const context = supportCentralCurrentContextV146();
+  if (context) context.verifiedCustomerId = userId;
   return { id: userId, email: userEmail, displayName: mainDisplayName(userEmail) };
 }
 
@@ -506,13 +677,15 @@ function seal(name, payload) {
 }
 function unseal(name, value) {
   try {
-    const packed = Buffer.from(String(value || ''), 'base64url');
+    const encoded = String(value || '');
+    const packed = Buffer.from(encoded, 'base64url');
+    if (packed.toString('base64url') !== encoded) return null;
     if (packed.length < 29 || packed.length > 7000) return null;
     const nonce = packed.subarray(0, 12); const tag = packed.subarray(12, 28); const ciphertext = packed.subarray(28);
     const decipher = crypto.createDecipheriv('aes-256-gcm', sessionKey(), nonce, { authTagLength: 16 });
     decipher.setAAD(Buffer.from(name, 'utf8')); decipher.setAuthTag(tag);
-    const payload = JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8'));
-    if (!payload || payload.v !== 1 || Number(payload.exp || 0) <= Date.now()) return null;
+    const payload = parseStrictJson(Buffer.concat([decipher.update(ciphertext), decipher.final()]), { maxBytes: 7000 });
+    if (!payload || payload.v !== 1 || !Number.isSafeInteger(payload.exp) || payload.exp <= Date.now()) return null;
     return payload;
   } catch (_) { return null; }
 }
@@ -593,33 +766,30 @@ function verifyAuthenticatedReadOrigin(req) {
 }
 
 async function readJson(req) {
-  const type = String(req.headers && req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-  if (type !== 'application/json') throw new PublicError(415, 'CONTENT_TYPE_INVALID', 'Content-Type wajib application/json.');
-  const transferEncoding = String(req.headers && req.headers['transfer-encoding'] || '').trim();
-  const contentEncoding = String(req.headers && req.headers['content-encoding'] || '').trim().toLowerCase();
-  if (transferEncoding) throw new PublicError(400, 'TRANSFER_ENCODING_REJECTED', 'Framing request tidak diizinkan.');
-  if (contentEncoding && contentEncoding !== 'identity') throw new PublicError(415, 'CONTENT_ENCODING_REJECTED', 'Content-Encoding request tidak diizinkan.');
-  const declaredRaw = String(req.headers && req.headers['content-length'] || '').trim();
-  if (declaredRaw && !/^\d{1,12}$/.test(declaredRaw)) throw new PublicError(400, 'CONTENT_LENGTH_INVALID', 'Content-Length request tidak valid.');
-  const declared = declaredRaw ? Number(declaredRaw) : 0;
-  if (declared > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
-  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
-    const raw = JSON.stringify(req.body);
-    if (Buffer.byteLength(raw, 'utf8') > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
-    return req.body;
+  const type = String(req.headers && req.headers['content-type'] || '').trim().toLowerCase();
+  if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/.test(type)) throw new PublicError(415, 'CONTENT_TYPE_INVALID', 'Content-Type wajib application/json UTF-8.');
+  if (String(req.headers && req.headers['transfer-encoding'] || '').trim()) throw new PublicError(400, 'TRANSFER_ENCODING_REJECTED', 'Framing request tidak diizinkan.');
+  const encoding = String(req.headers && req.headers['content-encoding'] || '').trim().toLowerCase();
+  if (encoding && encoding !== 'identity') throw new PublicError(415, 'CONTENT_ENCODING_REJECTED', 'Content-Encoding request tidak diizinkan.');
+  const declared = String(req.headers && req.headers['content-length'] || '').trim();
+  if (declared && !/^(?:0|[1-9][0-9]{0,11})$/.test(declared)) throw new PublicError(400, 'CONTENT_LENGTH_INVALID', 'Content-Length request tidak valid.');
+  if (declared && Number(declared) > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
+  let raw = Buffer.isBuffer(req.rawBody) || typeof req.rawBody === 'string' ? req.rawBody : req.body;
+  if (raw !== undefined && raw !== null && !Buffer.isBuffer(raw) && typeof raw !== 'string') throw new PublicError(400, 'RAW_BODY_REQUIRED', 'Request wajib mempertahankan JSON asli.');
+  if (raw === undefined || raw === null) {
+    const chunks = []; let total = 0;
+    for await (const chunk of req) {
+      const bytes = Buffer.from(chunk); total += bytes.length;
+      if (total > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
+      chunks.push(bytes);
+    }
+    raw = Buffer.concat(chunks, total);
   }
-  if (typeof req.body === 'string' || Buffer.isBuffer(req.body)) {
-    const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : req.body;
-    if (Buffer.byteLength(raw, 'utf8') > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
-    try { return JSON.parse(raw || '{}'); } catch (_) { throw new PublicError(400, 'JSON_INVALID', 'JSON request tidak valid.'); }
-  }
-  const chunks = []; let total = 0;
-  for await (const chunk of req) {
-    total += chunk.length;
-    if (total > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
-    chunks.push(chunk);
-  }
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch (_) { throw new PublicError(400, 'JSON_INVALID', 'JSON request tidak valid.'); }
+  const size = Buffer.byteLength(raw);
+  if (size > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
+  if (declared && size !== Number(declared)) throw new PublicError(400, 'CONTENT_LENGTH_MISMATCH', 'Framing request tidak cocok.');
+  try { return parseStrictJson(raw, { maxBytes: MAX_BODY_BYTES, maxDepth: 8, maxNodes: 512 }); }
+  catch (_) { throw new PublicError(400, 'JSON_INVALID', 'JSON request tidak valid.'); }
 }
 
 function exactKeys(body, allowed) {
@@ -629,7 +799,8 @@ function exactKeys(body, allowed) {
 }
 
 function text(value, min, max, label) {
-  const normalized = String(value || '').normalize('NFC').trim();
+  if (typeof value !== 'string' || !validUnicode(value)) throw new PublicError(400, 'TEXT_INVALID', (label || 'Teks') + ' tidak valid.');
+  const normalized = value.normalize('NFC').trim();
   if (normalized.length < min || normalized.length > max || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(normalized)) throw new PublicError(400, 'TEXT_INVALID', (label || 'Teks') + ' tidak valid.');
   return normalized;
 }
@@ -660,20 +831,12 @@ function idempotencyKey(req, fallback, label) {
 }
 
 function queryValue(req, name) {
-  const direct = req.query && req.query[name];
-  if (Array.isArray(direct)) return String(direct[0] || '');
-  if (direct !== undefined) return String(direct || '');
+  // The URL is the sole query representation used by guard and handlers.
   try { return new URL(req.url, 'https://local.invalid').searchParams.get(name) || ''; } catch (_) { return ''; }
 }
 
-function clientIp(req) {
-  // Vercel creates x-vercel-forwarded-for at its trusted edge. Never fall
-  // back to the client-spoofable x-forwarded-for header in production.
-  const platform = String(req.headers && req.headers['x-vercel-forwarded-for'] || '').split(',')[0].trim();
-  const remote = String(req.socket && req.socket.remoteAddress || '').trim();
-  const candidate = (isProduction() ? platform : platform || remote).replace(/^::ffff:/, '');
-  return net.isIP(candidate) ? candidate : 'untrusted-client-ip';
-}
+function clientIp(req) { return securityProxy.trustedClientIp(req, process.env); }
+
 function clientKey(req, suffix) { return hmac(config().ipSecret, clientIp(req) + '|' + String(suffix || ''), 'hex'); }
 
 function verifyQueryShape(req, action) {
@@ -699,7 +862,7 @@ function verifyQueryShape(req, action) {
   }
   for (const name of Object.keys(req.query && typeof req.query === 'object' ? req.query : {})) {
     if (!allowed.has(name)) throw new PublicError(400, 'QUERY_FIELD_UNKNOWN', 'Parameter URL tidak diizinkan.');
-    if (Array.isArray(req.query[name]) && req.query[name].length > 1) throw new PublicError(400, 'QUERY_FIELD_DUPLICATE', 'Parameter URL tidak boleh berulang.');
+    if (Array.isArray(req.query[name]) || typeof req.query[name] !== 'string' || req.query[name] !== queryValue(req, name) || !seen.has(name)) throw new PublicError(400, 'QUERY_REPRESENTATION_MISMATCH', 'Representasi parameter URL tidak cocok.');
   }
 }
 
@@ -711,9 +874,10 @@ async function fetchJson(url, options, timeoutMs) {
   try {
     const requestOptions = Object.assign({}, options, { signal: controller.signal, redirect: 'error' });
     const broker = DIRAC_SUPPORT_HEALTH_EGRESS_BROKER_V355;
-    const response = broker && broker.version === 'dirac-central-support-egress-broker-v355' && typeof broker.fetch === 'function'
-      ? await broker.fetch(url, requestOptions)
-      : await fetch(url, requestOptions);
+    if (!broker || broker.version !== 'dirac-central-support-egress-broker-v355' || typeof broker.fetch !== 'function') {
+      throw new PublicError(503, 'CENTRAL_EGRESS_BROKER_REQUIRED', 'Broker egress pusat untuk support tidak tersedia.');
+    }
+    const response = await broker.fetch(url, requestOptions);
     const maxBytes = 2 * 1024 * 1024;
     const declared = Number(response.headers.get('content-length') || 0);
     if (Number.isFinite(declared) && declared > maxBytes) {
@@ -744,7 +908,51 @@ async function fetchJson(url, options, timeoutMs) {
   } finally { clearTimeout(timer); }
 }
 
+function supportAssertDatabaseOperationV361(path, settings) {
+  const ctx = supportCentralCurrentContextV146();
+  if (!ctx || (!ctx.fullyPassed && ctx.currentStage !== 'rate limit')) throw new PublicError(503, 'SUPPORT_DB_CONTEXT_REQUIRED', 'Konteks database tidak tersedia.');
+  const url = new URL('https://support.invalid' + path);
+  if (url.pathname + url.search !== path || url.hash || /%(?:2f|5c|2e)/i.test(url.pathname)) throw new PublicError(503, 'SUPPORT_DB_PATH_REJECTED', 'Target database tidak valid.');
+  const method = String(settings.method || 'GET');
+  const rpcActions = {
+    support_take_rate_limit: DIRAC_SUPPORT_CENTRAL_EXPECTED_ACTIONS_V146,
+    support_auth_audit: ['admin_login', 'admin_mfa_verify', 'admin_logout'],
+    support_status_snapshot: ['status_bootstrap', 'admin_login', 'admin_mfa_verify', 'admin_bootstrap', 'admin_status_snapshot'],
+    support_chat_open: ['chat_start'], support_chat_send: ['chat_send', 'admin_send'], support_chat_close: ['chat_close'],
+    support_admin_queue: ['admin_login', 'admin_mfa_verify', 'admin_bootstrap', 'admin_queue'],
+    support_admin_thread: ['admin_thread'], support_admin_conversation_update: ['admin_conversation_update'],
+    support_status_component_set: ['admin_component_update'], support_monitor_config_set: ['admin_monitor_config_update'],
+    support_incident_create: ['admin_incident_create'], support_incident_advance: ['admin_incident_advance'],
+    support_maintenance_create: ['admin_maintenance_create'],
+    support_monitor_targets: ['monitor_run'], support_monitor_record: ['monitor_run']
+  };
+  if (url.pathname.startsWith('/rest/v1/rpc/')) {
+    const name = url.pathname.slice('/rest/v1/rpc/'.length);
+    if (method !== 'POST' || url.search || !rpcActions[name] || !rpcActions[name].includes(ctx.action)) throw new PublicError(503, 'SUPPORT_DB_RPC_REJECTED', 'Operasi database tidak diizinkan.');
+    const body = settings.body || {};
+    if (body.p_admin_user_id !== undefined && (!ctx.verifiedAdminId || body.p_admin_user_id !== ctx.verifiedAdminId)) throw new PublicError(403, 'SUPPORT_DB_ADMIN_REQUIRED', 'Identitas admin belum diverifikasi.');
+    if (body.p_customer_user_id !== undefined && (!ctx.verifiedCustomerId || body.p_customer_user_id !== ctx.verifiedCustomerId)) throw new PublicError(403, 'SUPPORT_DB_OWNER_REQUIRED', 'Pemilik belum diverifikasi.');
+    if (name === 'support_status_snapshot' && body.p_admin === true && !ctx.verifiedAdminId) throw new PublicError(403, 'SUPPORT_DB_ADMIN_REQUIRED', 'Identitas admin belum diverifikasi.');
+    if (name === 'support_chat_send') {
+      const expectedId = body.p_sender_kind === 'customer' ? ctx.verifiedCustomerId : body.p_sender_kind === 'admin' ? ctx.verifiedAdminId : '';
+      if (!expectedId || body.p_sender_user_id !== expectedId || body.p_conversation_id !== String(ctx.body && ctx.body.conversationId || '')) throw new PublicError(403, 'SUPPORT_DB_OWNER_REQUIRED', 'Pemilik belum diverifikasi.');
+    }
+    return;
+  }
+  if (method !== 'GET' || !['/rest/v1/support_staff', '/rest/v1/support_chat_sessions', '/rest/v1/support_chat_messages'].includes(url.pathname)) throw new PublicError(503, 'SUPPORT_DB_TABLE_REJECTED', 'Operasi database tidak diizinkan.');
+  if (url.pathname === '/rest/v1/support_staff') {
+    const expected = ctx.verifiedCustomerId || config().primaryAdminUserId;
+    if (!expected || url.searchParams.get('user_id') !== 'eq.' + expected) throw new PublicError(403, 'SUPPORT_DB_OWNER_REQUIRED', 'Pemilik belum diverifikasi.');
+  } else if (!ctx.verifiedAdminId && !ctx.verifiedCustomerId) throw new PublicError(403, 'SUPPORT_DB_OWNER_REQUIRED', 'Pemilik belum diverifikasi.');
+  else if (url.pathname === '/rest/v1/support_chat_sessions' && !ctx.verifiedAdminId && url.searchParams.get('customer_user_id') !== 'eq.' + ctx.verifiedCustomerId) throw new PublicError(403, 'SUPPORT_DB_OWNER_REQUIRED', 'Pemilik belum diverifikasi.');
+  if (url.pathname === '/rest/v1/support_chat_messages' && !ctx.verifiedAdminId) {
+    const conversationId = String(url.searchParams.get('conversation_id') || '').slice(3);
+    if (!ctx.authorizedConversations || !ctx.authorizedConversations.has(conversationId)) throw new PublicError(403, 'SUPPORT_DB_RESOURCE_REQUIRED', 'Percakapan belum diverifikasi.');
+  }
+}
+
 async function supabase(path, options) {
+  supportAssertDatabaseOperationV361(path, options || {});
   const cfg = config(); const settings = options || {}; const key = settings.token ? cfg.publishableKey : cfg.secretKey;
   const headers = Object.assign({ apikey: key, Accept: 'application/json' }, settings.headers || {});
   // Modern sb_secret_/sb_publishable_ keys belong only in apikey. JWT bearer
@@ -776,6 +984,11 @@ async function auth(path, options) {
 async function supportAuthAdmin(path, options) {
   if (!/^\/admin\/users(?:\/[0-9a-f-]{36})?$/.test(String(path || ''))) throw new PublicError(500, 'SUPPORT_AUTH_ADMIN_PATH_INVALID', 'Path administrasi Auth tidak valid.');
   const cfg = config(); const settings = options || {};
+  const context = supportCentralCurrentContextV146();
+  if (!context || context.action !== 'chat_start' || !context.verifiedCustomerId
+      || (path !== '/admin/users' && path !== '/admin/users/' + context.verifiedCustomerId)
+      || (settings.body && (settings.body.email !== supportCustomerMaterial({ id: context.verifiedCustomerId }).email
+          || (settings.body.id !== undefined && settings.body.id !== context.verifiedCustomerId)))) throw new PublicError(403, 'SUPPORT_IDENTITY_SCOPE_INVALID', 'Pemetaan identitas tidak diizinkan.');
   const headers = { apikey: cfg.secretKey, Accept: 'application/json' };
   if (decodeJwt(cfg.secretKey).role === 'service_role') headers.Authorization = 'Bearer ' + cfg.secretKey;
   if (settings.body !== undefined) headers['Content-Type'] = 'application/json';
@@ -827,9 +1040,39 @@ function audAuthenticated(value) {
   return String(value || '') === 'authenticated';
 }
 
+function supportProviderUserAllowed(user) {
+  if (!user || typeof user !== 'object' || Array.isArray(user)) return false;
+  const ban = user.banned_until;
+  const banTime = ban === undefined || ban === null || ban === '' ? 0 : Date.parse(String(ban));
+  const emailConfirmed = Date.parse(String(user.email_confirmed_at || ''));
+  return (user.email_verified === true || (Number.isFinite(emailConfirmed) && emailConfirmed <= Date.now()))
+    && !user.deleted_at && !user.disabled_at && user.disabled !== true && user.is_disabled !== true
+    && user.is_anonymous !== true && Number.isFinite(banTime) && banTime <= Date.now();
+}
+
+function supportProviderClaims(authSession) {
+  // Call only on the authenticated provider response, never a request bearer.
+  const token = String(authSession && authSession.access_token || '');
+  const parts = token.split('.');
+  if (parts.length !== 3 || parts.some(part => !/^[A-Za-z0-9_-]+$/.test(part)) || token.length > 16000) throw new PublicError(401, 'AUTH_PROVIDER_TOKEN_INVALID', 'Sesi Auth tidak valid.');
+  let header, claims;
+  try { header = parseStrictJson(Buffer.from(parts[0], 'base64url')); claims = parseStrictJson(Buffer.from(parts[1], 'base64url')); }
+  catch (_) { throw new PublicError(401, 'AUTH_PROVIDER_TOKEN_INVALID', 'Sesi Auth tidak valid.'); }
+  const now = Math.floor(Date.now() / 1000);
+  if (!['HS256', 'RS256', 'ES256'].includes(header.alg) || header.crit !== undefined
+      || !claims || !supportCentralCanonicalUuidV146(claims.sub) || claims.role !== 'authenticated'
+      || !audAuthenticated(claims.aud) || claims.iss !== config().supabaseUrl + '/auth/v1'
+      || !Number.isSafeInteger(claims.exp) || claims.exp <= now
+      || !Number.isSafeInteger(claims.iat) || claims.iat > now + 30 || claims.exp <= claims.iat
+      || (claims.nbf !== undefined && (!Number.isSafeInteger(claims.nbf) || claims.nbf > now))) {
+    throw new PublicError(401, 'AUTH_PROVIDER_TOKEN_INVALID', 'Sesi Auth tidak valid.');
+  }
+  return claims;
+}
+
 function verifySupportCustomerCore(user, material) {
   const metadata = authAppMetadata(user); const bannedUntil = Date.parse(String(user && user.banned_until || ''));
-  if (!user
+  if (!supportProviderUserAllowed(user)
       || String(user.id || '').toLowerCase() !== material.userId
       || String(user.email || '').toLowerCase() !== material.email
       || user.is_anonymous === true
@@ -860,7 +1103,7 @@ async function supportCustomerById(userId) {
 
 function verifySupportAuthSession(authSession, material) {
   if (!authSession || !authSession.access_token || !authSession.refresh_token || !authSession.user) throw new PublicError(503, 'SUPPORT_IDENTITY_LOGIN_FAILED', 'Sesi support terhubung belum dapat diterbitkan.');
-  const metadata = verifySupportCustomerCore(authSession.user, material); const claims = decodeJwt(authSession.access_token); const claimMetadata = claims.app_metadata && typeof claims.app_metadata === 'object' ? claims.app_metadata : {};
+  const metadata = verifySupportCustomerCore(authSession.user, material); const claims = supportProviderClaims(authSession); const claimMetadata = claims.app_metadata && typeof claims.app_metadata === 'object' ? claims.app_metadata : {};
   if (String(claims.sub || '').toLowerCase() !== material.userId
       || String(claims.role || '') !== 'authenticated'
       || !audAuthenticated(claims.aud)
@@ -875,7 +1118,7 @@ function verifySupportAuthSession(authSession, material) {
 }
 
 async function signInSupportCustomer(material, turnstileToken) {
-  const token = text(turnstileToken, config().turnstileRequired ? 10 : 0, 4096, 'Token Turnstile');
+  const token = text(turnstileToken === undefined ? '' : turnstileToken, config().turnstileRequired ? 10 : 0, 4096, 'Token Turnstile');
   const body = { email: material.email, password: material.password };
   if (token) body.gotrue_meta_security = { captcha_token: token };
   const result = await auth('/token?grant_type=password', { body });
@@ -886,6 +1129,7 @@ async function signInSupportCustomer(material, turnstileToken) {
 async function provisionSupportCustomer(identity, turnstileToken) {
   const material = supportCustomerMaterial(identity); await rejectStaffCollision(material.userId);
   let user = await supportCustomerById(material.userId);
+  let createdWithCurrentMaterial = false;
   if (!user) {
     const created = await supportAuthAdmin('/admin/users', {
       method: 'POST',
@@ -898,25 +1142,35 @@ async function provisionSupportCustomer(identity, turnstileToken) {
         user_metadata: material.userMetadata
       }
     });
-    if (created.ok) user = supportAuthUser(created.data);
+    if (created.ok) {
+      user = supportAuthUser(created.data);
+      const appMetadata = authAppMetadata(user);
+      const userMetadata = user && user.user_metadata || {};
+      createdWithCurrentMaterial = Object.entries(material.appMetadata).every(([key, value]) => JSON.stringify(appMetadata[key]) === JSON.stringify(value))
+        && Object.entries(material.userMetadata).every(([key, value]) => JSON.stringify(userMetadata[key]) === JSON.stringify(value));
+    }
     else if ([409, 422].includes(created.status)) user = await supportCustomerById(material.userId);
     else throw new PublicError(503, 'SUPPORT_IDENTITY_CREATE_FAILED', 'Akun support terhubung belum dapat dibuat.');
   }
   if (!user) throw new PublicError(409, 'SUPPORT_IDENTITY_COLLISION', 'Pemetaan akun support sudah digunakan oleh identitas lain.');
   verifySupportCustomerCore(user, material);
-  const updated = await supportAuthAdmin('/admin/users/' + material.userId, {
-    method: 'PUT',
-    body: {
-      email: material.email,
-      password: material.password,
-      email_confirm: true,
-      app_metadata: material.appMetadata,
-      user_metadata: material.userMetadata
-    }
-  });
-  if (!updated.ok) throw new PublicError(503, 'SUPPORT_IDENTITY_UPDATE_FAILED', 'Akun support terhubung belum dapat disinkronkan.');
-  const updatedUser = supportAuthUser(updated.data) || await supportCustomerById(material.userId);
-  verifySupportCustomerCore(updatedUser, material);
+  // A successful create already wrote this exact credential material. Existing
+  // accounts still resynchronize, and every path performs a fresh Auth login.
+  if (!createdWithCurrentMaterial) {
+    const updated = await supportAuthAdmin('/admin/users/' + material.userId, {
+      method: 'PUT',
+      body: {
+        email: material.email,
+        password: material.password,
+        email_confirm: true,
+        app_metadata: material.appMetadata,
+        user_metadata: material.userMetadata
+      }
+    });
+    if (!updated.ok) throw new PublicError(503, 'SUPPORT_IDENTITY_UPDATE_FAILED', 'Akun support terhubung belum dapat disinkronkan.');
+    const updatedUser = supportAuthUser(updated.data) || await supportCustomerById(material.userId);
+    verifySupportCustomerCore(updatedUser, material);
+  }
   await rejectStaffCollision(material.userId);
   return signInSupportCustomer(material, turnstileToken);
 }
@@ -937,6 +1191,8 @@ function decodeJwt(token) {
 async function refreshAuth(refreshToken) {
   const result = await auth('/token?grant_type=refresh_token', { body: { refresh_token: refreshToken } });
   if (!result.ok || !result.data || !result.data.access_token || !result.data.refresh_token || !result.data.user) throw new PublicError(401, 'SESSION_REFRESH_FAILED', 'Sesi sudah berakhir. Silakan masuk kembali.');
+  if (!supportProviderUserAllowed(result.data.user)) throw new PublicError(403, 'AUTH_ACCOUNT_BLOCKED', 'Akun tidak diizinkan.');
+  supportProviderClaims(result.data);
   return result.data;
 }
 
@@ -970,9 +1226,9 @@ async function requireAdmin(req, res, forceAuthCheck) {
   const mustMfa = config().adminMfaRequired || staff.mfa_required === true;
   if (mustMfa && (session.aal !== 'aal2' || Number(session.mfaAt || 0) < Date.now() - 12 * 60 * 60 * 1000)) throw new PublicError(401, 'ADMIN_MFA_EXPIRED', 'Verifikasi MFA admin sudah berakhir. Silakan masuk kembali.');
   let authSession = null;
-  if (forceAuthCheck || Number(session.authCheckedAt || 0) < Date.now() - ADMIN_AUTH_RECHECK_MS) {
+  { // Recheck the provider on every privileged read or mutation, including logout revocation.
     authSession = await refreshAuth(session.refreshToken);
-    const claims = decodeJwt(authSession.access_token);
+    const claims = supportProviderClaims(authSession);
     if (String(authSession.user.id || '') !== String(session.uid)
        || String(claims.sub || '') !== String(session.uid)
        || String(claims.session_id || '') !== String(session.sessionId)
@@ -987,6 +1243,8 @@ async function requireAdmin(req, res, forceAuthCheck) {
     const remainingSeconds = Math.max(1, Math.ceil((Number(session.exp) - Date.now()) / 1000));
     writeSession(res, ADMIN_COOKIE, session, Math.min(12 * 60 * 60, remainingSeconds), 'Strict');
   }
+  const context = supportCentralCurrentContextV146();
+  if (context) context.verifiedAdminId = staff.user_id;
   return { session, staff, authSession };
 }
 
@@ -1105,7 +1363,16 @@ async function actionAdminPublicConfig(req, res) {
 
 async function findActiveConversation(userId) {
   const path = '/rest/v1/support_chat_sessions?select=id,public_code,customer_name,customer_email,category,subject,status,priority,assigned_to,created_at,updated_at,last_message_at,revision&customer_user_id=eq.' + encodeURIComponent(userId) + '&status=in.(' + ACTIVE_CHAT_STATES.join(',') + ')&expires_at=gt.' + encodeURIComponent(nowIso()) + '&order=last_message_at.desc.nullslast&limit=1';
-  const result = await supabase(path, {}); return Array.isArray(result.data) && result.data[0] ? result.data[0] : null;
+  const result = await supabase(path, {}); const conversation = Array.isArray(result.data) && result.data[0] ? result.data[0] : null;
+  if (conversation) supportRememberConversationV361(conversation.id);
+  return conversation;
+}
+
+function supportRememberConversationV361(conversationId) {
+  const context = supportCentralCurrentContextV146();
+  if (!context || !context.verifiedCustomerId || !supportCentralCanonicalUuidV146(conversationId)) throw new PublicError(503, 'SUPPORT_CONVERSATION_INVALID', 'Identitas percakapan tidak valid.');
+  if (!context.authorizedConversations) context.authorizedConversations = new Set();
+  context.authorizedConversations.add(conversationId);
 }
 
 async function messagesForConversation(conversationId, after, limit) {
@@ -1165,6 +1432,7 @@ async function actionChatStart(req, res, body) {
     if (Array.isArray(result)) result = result[0];
   }
   if (!result || !result.conversation) throw new PublicError(500, 'CHAT_OPEN_FAILED', 'Percakapan belum dapat dibuka.');
+  supportRememberConversationV361(result.conversation.id);
   session = { v: 1, kind: 'customer', uid: userId, mainUid: identity.id, mainEmail: identity.email, refreshToken: authSession.refresh_token, iat: Date.now(), exp: Date.now() + 180 * 24 * 60 * 60 * 1000 };
   writeSession(res, CUSTOMER_COOKIE, session, 180 * 24 * 60 * 60, 'Strict');
   const messages = Array.isArray(result.messages) ? result.messages : result.message ? [result.message] : await messagesForConversation(result.conversation.id, 0, 50);
@@ -1183,8 +1451,10 @@ async function requireCustomer(req, res, conversationId) {
   const path = '/rest/v1/support_chat_sessions?select=id,customer_user_id,status,expires_at,message_count,revision&id=eq.' + encodeURIComponent(conversationId) + '&customer_user_id=eq.' + encodeURIComponent(identity.id) + '&limit=2';
   const result = await supabase(path, {}); const rows = Array.isArray(result.data) ? result.data : [];
   if (rows.length !== 1) throw new PublicError(404, 'CONVERSATION_NOT_FOUND', 'Percakapan tidak ditemukan.');
+  if (rows[0].id !== conversationId || rows[0].customer_user_id !== identity.id) throw new PublicError(403, 'SUPPORT_DB_OWNER_REQUIRED', 'Pemilik belum diverifikasi.');
+  supportRememberConversationV361(conversationId);
   if (rows[0].status === 'blocked') throw new PublicError(403, 'CONVERSATION_BLOCKED', 'Percakapan diblokir oleh sistem keamanan.');
-  if (!rows[0].expires_at || Date.parse(rows[0].expires_at) <= Date.now()) throw new PublicError(409, 'CONVERSATION_EXPIRED', 'Masa simpan percakapan telah berakhir. Silakan buka percakapan baru.');
+  if (!rows[0].expires_at || !Number.isFinite(Date.parse(rows[0].expires_at)) || Date.parse(rows[0].expires_at) <= Date.now()) throw new PublicError(409, 'CONVERSATION_EXPIRED', 'Masa simpan percakapan telah berakhir. Silakan buka percakapan baru.');
   return { session: next, conversation: rows[0] };
 }
 
@@ -1222,19 +1492,21 @@ async function actionCustomerRefresh(req, res) {
 }
 
 async function issueAdminSession(res, authSession, staff, mfaAt) {
-  const claims = decodeJwt(authSession.access_token); const sessionId = id(claims.session_id, 'Auth session ID');
+  const claims = supportProviderClaims(authSession); const sessionId = id(claims.session_id, 'Auth session ID');
   if (claims.aal !== 'aal2'
      || String(claims.sub || '') !== String(staff.user_id)
      || authSession.user && String(authSession.user.id || '') !== String(staff.user_id)) {
     throw new PublicError(403, 'MFA_ASSURANCE_INVALID', 'Identitas atau tingkat jaminan sesi admin tidak valid.');
   }
   const session = { v: 1, kind: 'admin', uid: staff.user_id, email: staff.email, role: staff.role, sessionVersion: Number(staff.session_version), sessionId, refreshToken: authSession.refresh_token, aal: 'aal2', mfaAt: mfaAt || Date.now(), authCheckedAt: Date.now(), iat: Date.now(), exp: Date.now() + 12 * 60 * 60 * 1000 };
+  const context = supportCentralCurrentContextV146();
+  if (context) context.verifiedAdminId = staff.user_id;
   writeSession(res, ADMIN_COOKIE, session, 12 * 60 * 60, 'Strict'); clearCookie(res, MFA_COOKIE, 'Strict');
   return session;
 }
 
 async function actionAdminLogin(req, res, body) {
-  exactKeys(body, ['email', 'password', 'turnstileToken', 'enrollmentSecret']); const adminEmail = email(body.email, true); const password = String(body.password || ''); const token = text(body.turnstileToken, config().turnstileRequired ? 10 : 0, 4096, 'Token Turnstile');
+  exactKeys(body, ['email', 'password', 'turnstileToken', 'enrollmentSecret']); const adminEmail = email(body.email, true); const password = String(body.password || ''); const token = text(body.turnstileToken === undefined ? '' : body.turnstileToken, config().turnstileRequired ? 10 : 0, 4096, 'Token Turnstile');
   if (adminEmail !== config().primaryAdminEmail) throw new PublicError(401, 'CREDENTIALS_INVALID', 'Email atau password belum sesuai.');
   if (password.length < 8 || password.length > 256) throw new PublicError(400, 'CREDENTIALS_INVALID', 'Email atau password belum sesuai.');
   await rateLimit(req, 'admin_login_ip', 5, 900, 1800, 'ip'); await accountRateLimit('admin_login_account', adminEmail, 5, 900, 1800);
@@ -1242,8 +1514,9 @@ async function actionAdminLogin(req, res, body) {
   const loginBody = { email: adminEmail, password }; if (token) loginBody.gotrue_meta_security = { captcha_token: token };
   const login = await auth('/token?grant_type=password', { body: loginBody });
   if (!login.ok || !login.data || !login.data.access_token || !login.data.refresh_token || !login.data.user) throw new PublicError(401, 'CREDENTIALS_INVALID', 'Email atau password belum sesuai.');
+  if (!supportProviderUserAllowed(login.data.user)) throw new PublicError(403, 'AUTH_ACCOUNT_BLOCKED', 'Akun tidak diizinkan.');
   const staff = await staffByUser(login.data.user.id); if (String(staff.email).toLowerCase() !== adminEmail) throw new PublicError(403, 'STAFF_IDENTITY_MISMATCH', 'Identitas staff tidak cocok.');
-  const claims = decodeJwt(login.data.access_token); const mustMfa = config().adminMfaRequired || staff.mfa_required === true;
+  const claims = supportProviderClaims(login.data); const mustMfa = config().adminMfaRequired || staff.mfa_required === true;
   if (!mustMfa || claims.aal === 'aal2') {
     const adminSession = await issueAdminSession(res, login.data, staff, Date.now());
     req.diracAuthOutcome = 'success'; await recordAdminAuth(req, staff.user_id, 'admin.auth.session_issued', adminEmail, 'success', 'ADMIN_LOGIN_OK');
@@ -1284,7 +1557,7 @@ async function actionAdminMfaVerify(req, res, body) {
   req.diracAuthAuditEligible = true;
   const verified = await auth('/factors/' + encodeURIComponent(temp.factorId) + '/verify', { token: temp.accessToken, body: { challenge_id: temp.challengeId, code } });
   if (!verified.ok || !verified.data || !verified.data.access_token || !verified.data.refresh_token) throw new PublicError(401, 'MFA_CODE_REJECTED', 'Kode autentikator tidak valid.');
-  const claims = decodeJwt(verified.data.access_token); if (claims.aal !== 'aal2' || String(claims.sub || '') !== String(temp.uid)) throw new PublicError(403, 'MFA_ASSURANCE_INVALID', 'Tingkat jaminan MFA belum terpenuhi.');
+  const claims = supportProviderClaims(verified.data); if (claims.aal !== 'aal2' || String(claims.sub || '') !== String(temp.uid)) throw new PublicError(403, 'MFA_ASSURANCE_INVALID', 'Tingkat jaminan MFA belum terpenuhi.');
   const staff = await staffByUser(temp.uid); const adminSession = await issueAdminSession(res, verified.data, staff, Date.now());
   req.diracAuthOutcome = 'success'; await recordAdminAuth(req, staff.user_id, 'admin.auth.session_issued', staff.email, 'success', 'ADMIN_MFA_OK');
   const queue = await adminQueue(staff, 'active', 50); const snapshot = await statusSnapshot(canManageStatus(staff));
@@ -1948,7 +2221,7 @@ function supportCentralComplexityV146(value, depth, state) {
   state.keys += entries.length;
   if (state.keys > 128) throw new PublicError(400, 'CENTRAL_BODY_COMPLEXITY_REJECTED', 'Jumlah field request melebihi batas.');
   for (const [key, item] of entries) {
-    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key) || ['__proto__', 'prototype', 'constructor'].includes(key)) {
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key) || ['__proto__', 'proto', 'prototype', 'constructor'].includes(key)) {
       throw new PublicError(400, 'CENTRAL_BODY_KEY_REJECTED', 'Nama field request tidak diizinkan.');
     }
     supportCentralComplexityV146(item, depth + 1, state);
@@ -1980,6 +2253,33 @@ function supportCentralValidateIdentifiersV146(ctx) {
     if (!supportCentralCanonicalUuidV146(header)) throw new PublicError(400, 'IDEMPOTENCY_KEY_INVALID', 'Idempotency-Key wajib berupa UUID kanonis.');
     if (policy.idempotency === 'header_matches_body' && header !== String(body.clientMessageId || '').trim().toLowerCase()) {
       throw new PublicError(400, 'IDEMPOTENCY_MISMATCH', 'Idempotency-Key tidak cocok dengan clientMessageId.');
+    }
+  }
+}
+
+function supportValidateBodySchemaV361(action, body) {
+  const required = {
+    chat_start: ['subject', 'message', 'consent'], chat_send: ['conversationId', 'clientMessageId', 'body'],
+    chat_close: ['conversationId'], admin_login: ['email', 'password'], admin_mfa_verify: ['code'],
+    admin_send: ['conversationId', 'clientMessageId', 'body'], admin_conversation_update: ['conversationId', 'operation'],
+    admin_component_update: ['componentId', 'status'],
+    admin_monitor_config_update: ['componentId', 'enabled', 'url', 'timeoutMs', 'expectedMin', 'expectedMax'],
+    admin_incident_create: ['title', 'summary', 'componentIds'],
+    admin_incident_advance: ['incidentId', 'expectedRevision', 'stage', 'progress', 'message'],
+    admin_maintenance_create: ['title', 'message', 'startsAt', 'endsAt', 'componentIds']
+  };
+  for (const key of required[action] || []) {
+    if (!Object.prototype.hasOwnProperty.call(body, key)) throw new PublicError(400, 'FIELD_REQUIRED', 'Field wajib tidak tersedia.');
+  }
+  for (const [key, value] of Object.entries(body)) {
+    if (['consent', 'enabled'].includes(key)) {
+      if (typeof value !== 'boolean') throw new PublicError(400, 'FIELD_TYPE_INVALID', 'Tipe field tidak valid.');
+    } else if (['timeoutMs', 'expectedMin', 'expectedMax', 'expectedRevision', 'progress'].includes(key)) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) throw new PublicError(400, 'FIELD_TYPE_INVALID', 'Tipe field tidak valid.');
+    } else if (key === 'componentIds') {
+      if (!Array.isArray(value) || value.length > 20 || new Set(value).size !== value.length) throw new PublicError(400, 'FIELD_TYPE_INVALID', 'Daftar komponen tidak valid.');
+    } else if (typeof value !== 'string' || !validUnicode(value)) {
+      throw new PublicError(400, 'FIELD_TYPE_INVALID', 'Tipe field tidak valid.');
     }
   }
 }
@@ -2058,6 +2358,7 @@ function supportCentralOutputSecretsV146() {
     env('DIRAC_SUPPORT_CSRF_SECRET'),
     env('DIRAC_SUPPORT_IP_HMAC_SECRET'),
     env('DIRAC_SUPPORT_MFA_ENROLLMENT_SECRET'),
+    env('DIRAC_SUPPORT_ADMIN_BINDING_SECRET'),
     env('DIRAC_SUPPORT_TURNSTILE_SECRET_KEY'),
     env('CRON_SECRET')
   ].filter((value) => Buffer.byteLength(value, 'utf8') >= 16);
@@ -2243,7 +2544,10 @@ async function supportCentralGuardContractV202(ctx) {
     error.allow = ctx.policy.methods.join(', ');
     throw error;
   }
-  if (ctx.method === 'POST') exactKeys(ctx.body, ctx.policy.bodyKeys);
+  if (ctx.method === 'POST') {
+    exactKeys(ctx.body, ctx.policy.bodyKeys);
+    supportValidateBodySchemaV361(ctx.action, ctx.body);
+  }
 }
 async function supportCentralGuardA2FV202(ctx) {
   if (ctx.preflight) return;
@@ -2497,6 +2801,8 @@ handler.__test = Object.freeze({
   text, messageText, email, seal, unseal, isPrivateIp, normalizeMonitorUrl,
   resolveMonitorAddress, probeTarget, canManageStatus, decodeJwt, normalizeSnapshot,
   runtimeCookieName, clientIp, verifyQueryShape, fetchJson, normalizeAuthority,
+  readJson, supportValidateBodySchemaV361, supportProviderUserAllowed, supportProviderClaims,
+  csrfBundle, verifyCsrf, supportAssertDatabaseOperationV361,
   mainDisplayName, supportCustomerMaterial, customerSessionMatches,
   centralActionNames: Object.freeze(supportActionNamesV146.slice()),
   centralPipelineNames: Object.freeze(DIRAC_SUPPORT_CENTRAL_PIPELINE_V146.map((stage) => stage.name)),
