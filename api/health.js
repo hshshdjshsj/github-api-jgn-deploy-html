@@ -9580,6 +9580,25 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
       if (!Number.isSafeInteger(previousSecurityEpoch) || previousSecurityEpoch < 1) {
         return { ok: false, reason: 'session_update_previous_epoch_invalid', status: 409 };
       }
+      const sessionOwnerContext = diracCentralCurrentContextV149();
+      const sessionOwnerLegacyContext = diracBolaIdorV128CurrentContext();
+      const sessionOwner = diracCentralOwnerFromVerifiedContextV215(req);
+      const sessionOwnerCache = !issuancePermit && verifiedRow
+        && sessionOwnerContext && sessionOwnerContext.req === req
+        && sessionOwnerContext.action === 'domain_dashboard_me' && sessionOwnerContext.method === 'GET'
+        && diracCentralHandlerContextFullyPassedV211(sessionOwnerContext, req) === true
+        && sessionOwner && sessionOwner.ok === true && sessionOwner.customerIds.length === 1
+        && sessionOwner.customerIds[0] === String(verifiedExistingSession.customer_id || '')
+        && sessionOwnerLegacyContext && sessionOwnerLegacyContext.req === req
+        && sessionOwnerLegacyContext.action === 'domain_dashboard_me' && sessionOwnerLegacyContext.method === 'GET'
+        && sessionOwnerLegacyContext.ownerRowsCacheV128 instanceof Map
+        ? sessionOwnerLegacyContext.ownerRowsCacheV128 : null;
+      const sessionOwnerCacheKey = 'security_customer_sessions:' + String(rows[0].id);
+      const sessionOwnerRows = sessionOwnerCache && !sessionOwnerCache.has(sessionOwnerCacheKey)
+        ? Object.freeze([Object.freeze({ id: verifiedRow.id, customer_id: String(verifiedExistingSession.customer_id), table: 'security_customer_sessions' })])
+        : null;
+      // Reuse the just-verified row only for this unchanged owner-bound CAS.
+      if (sessionOwnerRows) sessionOwnerCache.set(sessionOwnerCacheKey, sessionOwnerRows);
       const patched = await supabaseFetch('/rest/v1/security_customer_sessions?select=' +
         encodeURIComponent('id,customer_id,session_token_hash,status,security_epoch,revoked_at,expires_at') +
         '&customer_id=eq.' + encodeURIComponent(customerId) +
@@ -9592,6 +9611,8 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
         auth: 'service',
         prefer: 'return=representation',
         body: updateBody
+      }).finally(() => {
+        if (sessionOwnerRows && sessionOwnerCache.get(sessionOwnerCacheKey) === sessionOwnerRows) sessionOwnerCache.delete(sessionOwnerCacheKey);
       });
 
       if (!patched.ok) {
@@ -33740,7 +33761,7 @@ function diracUltraXssV2CleanSecurityTelemetryRow(row) {
   if (clean.ip_address && !clean.ip_hash) {
     try {
       const ipValue = String(clean.ip_address || '').trim();
-      if (ipValue) clean.ip_hash = crypto.createHash('sha256').update('dirac-ip-log-v2:' + ipValue).digest('hex');
+      if (ipValue && String(clean.metadata && clean.metadata.ip_hash || '') !== crypto.createHash('sha256').update('dirac-ip-log-v2:' + ipValue).digest('hex')) clean.ip_hash = crypto.createHash('sha256').update('dirac-ip-log-v2:' + ipValue).digest('hex');
     } catch (_) {}
   }
 
