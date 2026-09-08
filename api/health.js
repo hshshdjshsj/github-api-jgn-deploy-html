@@ -9585,12 +9585,12 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
       const sessionOwner = diracCentralOwnerFromVerifiedContextV215(req);
       const sessionOwnerCache = !issuancePermit && verifiedRow
         && sessionOwnerContext && sessionOwnerContext.req === req
-        && sessionOwnerContext.action === 'domain_dashboard_me' && sessionOwnerContext.method === 'GET'
+        && sessionOwnerContext.action && sessionOwnerContext.method === String(req.method || '').toUpperCase()
         && diracCentralHandlerContextFullyPassedV211(sessionOwnerContext, req) === true
         && sessionOwner && sessionOwner.ok === true && sessionOwner.customerIds.length === 1
         && sessionOwner.customerIds[0] === String(verifiedExistingSession.customer_id || '')
         && sessionOwnerLegacyContext && sessionOwnerLegacyContext.req === req
-        && sessionOwnerLegacyContext.action === 'domain_dashboard_me' && sessionOwnerLegacyContext.method === 'GET'
+        && sessionOwnerLegacyContext.action === sessionOwnerContext.action && sessionOwnerLegacyContext.method === sessionOwnerContext.method
         && sessionOwnerLegacyContext.ownerRowsCacheV128 instanceof Map
         ? sessionOwnerLegacyContext.ownerRowsCacheV128 : null;
       const sessionOwnerCacheKey = 'security_customer_sessions:' + String(rows[0].id);
@@ -16725,6 +16725,10 @@ __diracV202RegisterMiddleware(async function myOrdersWrapper(req, res, nextHandl
     return await myOrdersReadForCurrentCustomer(req, res);
   } catch (error) {
     console.error('[my-orders]', myOrdersSafeError(error));
+    if (error && error.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE') {
+      return res.status(503).json({ ok: false, code: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE',
+        message: 'Validasi kepemilikan pesanan belum tersedia. Silakan coba lagi.' });
+    }
     return res.status(500).json({
       ok: false,
       message: 'Pesanan belum dapat dimuat dengan aman.'
@@ -16885,6 +16889,11 @@ async function myOrdersFetchOrderItems(orderIds, customerIds) {
     + '&customer_id=in.(' + owners.map(encodeURIComponent).join(',') + ')'
     + '&order=created_at.asc';
   const result = await supabaseFetch(path, { method: 'GET', auth: 'service' }).catch(() => null);
+  if (result && result.status === 503 && result.data && result.data.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE') {
+    const error = new Error('ORDER_PARENT_OWNERSHIP_UNAVAILABLE');
+    error.code = 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE';
+    throw error;
+  }
   if (!result || !result.ok || !Array.isArray(result.data)) return map;
   result.data.forEach((item) => {
     const orderId = String(item && item.order_id || '');
@@ -16975,6 +16984,11 @@ async function myOrdersFetchDomainOrderItems(orderIds, customerIds) {
     + '&order_id=in.(' + ids.map(encodeURIComponent).join(',') + ')'
     + '&customer_id=in.(' + owners.map(encodeURIComponent).join(',') + ')';
   const result = await supabaseFetch(path, { method: 'GET', auth: 'service' }).catch(() => null);
+  if (result && result.status === 503 && result.data && result.data.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE') {
+    const error = new Error('ORDER_PARENT_OWNERSHIP_UNAVAILABLE');
+    error.code = 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE';
+    throw error;
+  }
   if (!result || !result.ok || !Array.isArray(result.data)) return map;
   result.data.forEach((item) => {
     const orderId = String(item && item.order_id || '');
@@ -30431,7 +30445,7 @@ async function customerSecurityFeaturePruneSessionsV3(customerId) {
   if (!id || !customerSecurityLooksLikeUuid(id)) return { ok: false, pruned: 0, reason: 'invalid_customer_id' };
 
   const read = await supabaseFetch('/rest/v1/security_customer_sessions?select=' +
-    encodeURIComponent('id,last_seen_at,created_at') +
+    encodeURIComponent('id,customer_id,last_seen_at,created_at') +
     '&customer_id=eq.' + encodeURIComponent(id) +
     '&order=' + encodeURIComponent('last_seen_at.desc') +
     '&limit=100', {
@@ -37233,6 +37247,13 @@ try {
     supabaseFetch = async function supabaseFetchBolaIdorGlobalHardBanV128(path, options = {}) {
       const decision = await diracBolaIdorV128InspectSupabaseAccess(path, options).catch((error) => ({ ok: false, warn: true, block: true, reason: 'bola_idor_v128_supabase_guard_exception', error: diracSecurityRedactDiagnosticV210(error, 120) }));
       if (decision && decision.warn) diracBolaIdorV128LogDecision(decision);
+      if (decision && decision.block && decision.reason === 'child_order_parent_ownership_unavailable'
+          && decision.action === 'my_orders' && decision.method === 'GET'
+          && /^(order_items|domain_order_items)$/.test(decision.table)) {
+        return { ok: false, status: 503, statusText: 'Service Unavailable',
+          data: { ok: false, code: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE', message: 'Kepemilikan item pesanan belum dapat diverifikasi.' },
+          error: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE' };
+      }
       if (decision && decision.block) {
         await diracBolaIdorV128RegisterGlobalHardBanFromContext(decision).catch(() => null);
         return diracBolaIdorV128BlockedSupabaseResult(decision);
@@ -37524,6 +37545,13 @@ async function diracBolaIdorV128InspectSupabaseAccess(path, options = {}) {
           foreign_count: foreign.length
         });
       }
+      if (action === 'my_orders' && method === 'GET'
+          && parentIds.some((id) => !owners.some((row) => row && row.id === id
+            && row.table === (table === 'domain_order_items' ? 'domain_orders' : 'orders')))) {
+        return diracBolaIdorV128BuildBlockDecision('child_order_parent_ownership_unavailable', {
+          source: 'supabase', table, method, action, requested_count: parentIds.length
+        });
+      }
     }
   }
 
@@ -37778,6 +37806,14 @@ async function diracBolaIdorV128ResolveChildParentOwners(childTable, parentIds) 
   const ids = Array.from(new Set((parentIds || []).filter(diracBolaIdorV128LooksLikeUuid))).slice(0, 80);
   if (!ids.length) return [];
   const parentTable = String(childTable || '').toLowerCase() === 'domain_order_items' ? 'domain_orders' : 'orders';
+  const parentContext = diracCentralCurrentContextV149();
+  if (ids.length > 40 && parentContext && parentContext.action === 'my_orders' && parentContext.method === 'GET') {
+    const parentRows = [];
+    for (let index = 0; index < ids.length; index += 40) {
+      parentRows.push(...await diracBolaIdorV128FetchOwnerRows(parentTable, ids.slice(index, index + 40), 'id'));
+    }
+    return parentRows;
+  }
   return diracBolaIdorV128FetchOwnerRows(parentTable, ids, 'id');
 }
 
@@ -37845,6 +37881,56 @@ function diracBolaIdorV128DirectOwnerTable(table) {
 }
 
 async function diracBolaIdorV128FetchOwnerRows(table, ids, column) {
+  const ownerContext = diracCentralCurrentContextV149();
+  const ownerLegacyContext = diracBolaIdorV128CurrentContext();
+  const owner = ownerContext && diracCentralOwnerFromVerifiedContextV215(ownerContext.req);
+  const ownerTable = String(table || '');
+  const ownerIds = Array.from(new Set((ids || []).map((id) => String(id || '').trim()))).slice(0, 40);
+  const ownerCache = ownerContext && ownerContext.req
+    && diracCentralHandlerContextFullyPassedV211(ownerContext, ownerContext.req) === true
+    && ownerLegacyContext && ownerLegacyContext.req === ownerContext.req
+    && ownerLegacyContext.action === ownerContext.action && ownerLegacyContext.method === ownerContext.method
+    && owner && owner.ok === true && owner.customerIds.length === 1
+    && ownerLegacyContext.ownerRowsCacheV128 instanceof Map
+    ? ownerLegacyContext.ownerRowsCacheV128 : null;
+  const ownerSelect = {
+    orders: 'id,customer_id,order_id', domain_orders: 'id,customer_id',
+    payment_transactions: 'id,customer_id,order_id,domain_order_id,gateway_reference',
+    security_customer_sessions: 'id,customer_id', security_customer_settings: 'id,customer_id',
+    security_customer_recovery_codes: 'id,customer_id'
+  };
+  const ownerRows = ownerCache && Object.prototype.hasOwnProperty.call(ownerSelect, ownerTable)
+    && String(column || 'id') === 'id' && ownerIds.length && ownerIds.every(diracBolaIdorV128LooksLikeUuid)
+    ? ownerIds.map((id) => ownerCache.get('owner-row-v364:' + ownerTable + ':' + id)) : [];
+  if (ownerRows.length === ownerIds.length && ownerRows.length && ownerRows.every((row, index) =>
+      row && Object.isFrozen(row) && row.table === ownerTable && row.id === ownerIds[index]
+      && row.customer_id === owner.customerIds[0])) {
+    const ownerPath = '/rest/v1/' + encodeURIComponent(ownerTable)
+      + '?select=' + encodeURIComponent(ownerSelect[ownerTable])
+      + '&or=' + encodeURIComponent('(' + ownerIds.map((id) => 'id.eq.' + id).join(',') + ')')
+      + (ownerContext.action === 'my_orders' && ownerContext.method === 'GET' && /^(orders|domain_orders)$/.test(ownerTable)
+        ? '&customer_id=eq.' + encodeURIComponent(owner.customerIds[0]) : '') + '&limit=80';
+    const ownerPermit = diracCentralCurrentDatabaseEgressPermitV230();
+    const ownerBinding = ownerPermit && DIRAC_CENTRAL_DATABASE_PERMIT_BINDINGS_V362.get(ownerPermit);
+    if (ownerPermit && ownerPermit.action === ownerContext.action && ownerPermit.method === 'GET'
+        && ownerPermit.authMode === 'service' && ownerPermit.path === ownerPath && ownerPermit.prefer === ''
+        && ownerPermit.bodyBytes === 0 && ownerPermit.bodyHash === crypto.createHash('sha256').update('').digest('hex')
+        && Number.isSafeInteger(ownerPermit.expiresAtMs) && ownerPermit.expiresAtMs > Date.now()
+        && ownerBinding && ownerBinding.ctx === ownerContext && ownerBinding.req === ownerContext.req
+        && ownerBinding.requestId === String(ownerContext.requestId || '') && ownerBinding.dispatched === false) {
+      // Only the recursive metadata check reuses evidence; the outer lookup still reads storage.
+      return ownerRows.map((row) => ({ ...row }));
+    }
+    const ownerCacheKey = ownerTable + ':' + ownerIds.slice().sort().join(',');
+    const ownerCacheHadKey = ownerCache.has(ownerCacheKey);
+    const ownerCachePrevious = ownerCache.get(ownerCacheKey);
+    try {
+      return await diracCentralFetchOwnerRowsV194(table, ids, [String(column || 'id')]);
+    } finally {
+      if (ownerCacheHadKey) ownerCache.set(ownerCacheKey, ownerCachePrevious);
+      else ownerCache.delete(ownerCacheKey);
+    }
+  }
   return diracCentralFetchOwnerRowsV194(table, ids, [String(column || 'id')]);
 }
 
@@ -55578,6 +55664,26 @@ function diracCentralBindOwnerScopedSessionRowsV197(ctx, path, options = {}, res
     if (queryIndex <= 0) return false;
     const params = new URLSearchParams(rawPath.slice(queryIndex + 1));
 
+    const rowOwner = diracCentralOwnerFromVerifiedContextV215(ctx.req);
+    const rowLegacyContext = diracBolaIdorV128CurrentContext();
+    if (/^(orders|domain_orders|payment_transactions|security_customer_sessions|security_customer_settings|security_customer_recovery_codes)$/.test(table)
+        && diracCentralCurrentContextV149() === ctx && diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) === true
+        && rowOwner && rowOwner.ok === true && rowOwner.customerIds.length === 1
+        && rowLegacyContext && rowLegacyContext.req === ctx.req
+        && rowLegacyContext.action === ctx.action && rowLegacyContext.method === ctx.method
+        && rowLegacyContext.ownerRowsCacheV128 instanceof Map && params.getAll('customer_id').length === 1) {
+      const rowCustomerId = rowOwner.customerIds[0];
+      const rowCustomerFilter = String(params.get('customer_id') || '');
+      if ((rowCustomerFilter === 'eq.' + rowCustomerId || rowCustomerFilter === 'in.(' + rowCustomerId + ')')
+          && result.data.length && result.data.every((row) => row && diracCentralLooksLikeUuidV146(row.id)
+            && row.customer_id === rowCustomerId)) {
+        for (const row of result.data) {
+          rowLegacyContext.ownerRowsCacheV128.set('owner-row-v364:' + table + ':' + row.id,
+            Object.freeze({ id: row.id, customer_id: row.customer_id, table }));
+        }
+      }
+    }
+
     if (table === 'security_customer_sessions') {
       if (params.getAll('customer_id').length !== 1 || params.has('id')) return false;
       const customerFilter = String(params.get('customer_id') || '');
@@ -58193,12 +58299,26 @@ async function diracCentralFetchOwnerRowsV194(table, requestedValues, columns) {
     }
   }
   if (!clauses.length) return [];
+  const ctx = diracCentralCurrentContextV149();
+  if (!ctx) throw new Error('CENTRAL_OWNER_LOOKUP_CONTEXT_REQUIRED');
+  const lookupOwner = diracCentralOwnerFromVerifiedContextV215(ctx.req);
+  const lookupLegacyContext = diracBolaIdorV128CurrentContext();
+  const lookupCustomerId = ctx.action === 'my_orders' && ctx.method === 'GET'
+    && /^(orders|domain_orders)$/.test(cleanTable) && safeColumns.length === 1 && safeColumns[0] === 'id'
+    && diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) === true
+    && lookupOwner && lookupOwner.ok === true && lookupOwner.customerIds.length === 1
+    && lookupLegacyContext && lookupLegacyContext.req === ctx.req
+    && lookupLegacyContext.action === ctx.action && lookupLegacyContext.method === ctx.method
+    && lookupLegacyContext.ownerRowsCacheV128 instanceof Map && values.every((id) => {
+      const row = lookupLegacyContext.ownerRowsCacheV128.get('owner-row-v364:' + cleanTable + ':' + id);
+      return row && Object.isFrozen(row) && row.id === id && row.table === cleanTable
+        && row.customer_id === lookupOwner.customerIds[0];
+    }) ? lookupOwner.customerIds[0] : '';
   const path = '/rest/v1/' + encodeURIComponent(cleanTable)
     + '?select=' + encodeURIComponent(selectByTable[cleanTable])
     + '&or=' + encodeURIComponent('(' + clauses.slice(0, 80).join(',') + ')')
+    + (lookupCustomerId ? '&customer_id=eq.' + encodeURIComponent(lookupCustomerId) : '')
     + '&limit=80';
-  const ctx = diracCentralCurrentContextV149();
-  if (!ctx) throw new Error('CENTRAL_OWNER_LOOKUP_CONTEXT_REQUIRED');
   const options = { method: 'GET', auth: 'service' };
   DIRAC_CENTRAL_OWNER_LOOKUP_PERMITS_V357.set(options, Object.freeze({
     ctx, req: ctx.req, requestId: String(ctx.requestId || ''), path,
