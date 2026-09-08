@@ -2335,7 +2335,7 @@ function supportCentralCircuitCheckV146(ctx) {
 }
 
 function supportCentralRecordOutcomeV146(ctx, error) {
-  if (!ctx || !ctx.action) return;
+  if (!ctx || !DIRAC_SUPPORT_CENTRAL_ACTIVE_ACTIONS_V146.has(ctx.action)) return;
   const now = Date.now();
   let state = DIRAC_SUPPORT_CENTRAL_CIRCUIT_V146.get(ctx.action) || { startedAt: now, failures: 0, openUntil: 0 };
   if (now - Number(state.startedAt || 0) > 30_000) state = { startedAt: now, failures: 0, openUntil: 0 };

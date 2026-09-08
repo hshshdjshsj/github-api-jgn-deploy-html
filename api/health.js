@@ -12742,15 +12742,21 @@ async function customerSecuritySmtpRead(socket) {
     };
     const onError = (error) => cleanup(reject, error);
     const onTimeout = () => cleanup(reject, new Error('SMTP_TIMEOUT'));
+    const onClose = () => cleanup(reject, new Error('SMTP_CONNECTION_CLOSED'));
     const cleanup = (done, value) => {
       socket.off('data', onData);
       socket.off('error', onError);
       socket.off('timeout', onTimeout);
+      socket.off('end', onClose);
+      socket.off('close', onClose);
       done(value);
     };
     socket.on('data', onData);
     socket.on('error', onError);
     socket.on('timeout', onTimeout);
+    socket.on('end', onClose);
+    socket.on('close', onClose);
+    if (socket.destroyed === true || socket.readableEnded === true) onClose();
   });
 }
 
@@ -27476,6 +27482,11 @@ __diracV202RegisterMiddleware(async function diracUniversalPesananPaymentWrapper
     }
   } catch (error) {
     console.error('[universal-pesanan-payment]', lockedPaymentSafeError(error));
+    if (action === 'my_orders' && req.method === 'GET'
+        && error && error.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE') {
+      return res.status(503).json({ ok: false, code: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE',
+        message: 'Validasi kepemilikan pesanan belum tersedia. Silakan coba lagi.' });
+    }
     return res.status(error && error.statusCode ? error.statusCode : 500).json({
       ok: false,
       message: 'Payment belum dapat diproses dengan aman.',
@@ -27632,21 +27643,67 @@ async function diracUniversalPesananFetchReusableTransactionsForOrders(orders) {
   return map;
 }
 
+const DIRAC_MY_ORDERS_PAYMENT_PARENT_PROOFS_V365 = new WeakMap();
+
 async function diracUniversalPesananFillTxMap(map, type, ids) {
   const cleanIds = Array.from(new Set((ids || []).filter(customerSecurityLooksLikeUuid))).slice(0, 120);
   if (!cleanIds.length) return;
+  const parentContext = diracCentralCurrentContextV149();
+  const parentLegacyContext = diracBolaIdorV128CurrentContext();
+  const parentOwner = parentContext && diracCentralOwnerFromVerifiedContextV215(parentContext.req);
+  const parentTable = type === 'domain' ? 'domain_orders' : 'orders';
+  const parentUnavailable = () => Object.assign(new Error('ORDER_PARENT_OWNERSHIP_UNAVAILABLE'),
+    { code: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE', statusCode: 503 });
+  if (!parentContext || !parentContext.req || parentContext.action !== 'my_orders' || parentContext.method !== 'GET'
+      || diracCentralHandlerContextFullyPassedV211(parentContext, parentContext.req) !== true
+      || !parentLegacyContext || parentLegacyContext.req !== parentContext.req
+      || parentLegacyContext.action !== parentContext.action || parentLegacyContext.method !== parentContext.method
+      || !parentOwner || parentOwner.ok !== true || parentOwner.customerIds.length !== 1
+      || !(parentLegacyContext.ownerRowsCacheV128 instanceof Map)
+      || cleanIds.some((id) => {
+        const row = parentLegacyContext.ownerRowsCacheV128.get('owner-row-v364:' + parentTable + ':' + id);
+        return !row || !Object.isFrozen(row) || row.id !== id || row.table !== parentTable
+          || row.customer_id !== parentOwner.customerIds[0];
+      })) throw parentUnavailable();
+  const parentRows = [];
+  for (let index = 0; index < cleanIds.length; index += 40) {
+    const batch = cleanIds.slice(index, index + 40);
+    const rows = await diracBolaIdorV128FetchOwnerRows(parentTable, batch, 'id').catch(() => null);
+    if (!Array.isArray(rows) || rows.length !== batch.length
+        || batch.some((id) => rows.filter((row) => row && row.id === id && row.table === parentTable
+          && row.customer_id === parentOwner.customerIds[0]).length !== 1)) throw parentUnavailable();
+    parentRows.push(...rows.map((row) => Object.freeze({ id: row.id, customer_id: row.customer_id, table: parentTable })));
+  }
   const column = type === 'domain' ? 'domain_order_id' : 'order_id';
-  const select = 'id,order_id,domain_order_id,gateway_name,gateway_reference,payment_status,amount,currency,payment_url,expired_at,created_at';
+  const select = 'id,customer_id,order_id,domain_order_id,gateway_name,gateway_reference,payment_status,amount,currency,payment_url,expired_at,created_at';
   const path = '/rest/v1/payment_transactions?select=' + encodeURIComponent(select)
     + '&' + column + '=in.(' + cleanIds.map(encodeURIComponent).join(',') + ')'
+    + '&customer_id=eq.' + encodeURIComponent(parentOwner.customerIds[0])
     + '&order=created_at.desc&limit=240';
 
-  const result = await supabaseFetch(path, { method: 'GET', auth: 'service' }).catch(() => null);
+  let parentProofs = DIRAC_MY_ORDERS_PAYMENT_PARENT_PROOFS_V365.get(parentContext.req);
+  if (!parentProofs) {
+    parentProofs = new Map();
+    DIRAC_MY_ORDERS_PAYMENT_PARENT_PROOFS_V365.set(parentContext.req, parentProofs);
+  }
+  if (parentProofs.has(path)) throw parentUnavailable();
+  const parentProof = Object.freeze({ ctx: parentContext, req: parentContext.req,
+    ids: Object.freeze(cleanIds.slice()), rows: Object.freeze(parentRows), table: parentTable,
+    customerId: parentOwner.customerIds[0], requestId: String(parentContext.requestId || '') });
+  parentProofs.set(path, parentProof);
+  let result;
+  try {
+    result = await supabaseFetch(path, { method: 'GET', auth: 'service' }).catch(() => null);
+  } finally {
+    parentProofs.delete(path);
+    if (!parentProofs.size) DIRAC_MY_ORDERS_PAYMENT_PARENT_PROOFS_V365.delete(parentContext.req);
+  }
+  if (result && result.status === 503 && result.data && result.data.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE') throw parentUnavailable();
   if (!result || !result.ok || !Array.isArray(result.data)) return;
 
   const now = Date.now();
   result.data.forEach((tx) => {
-    if (!tx || !midtransTrustedPaymentUrlV352(tx.payment_url)
+    if (!tx || tx.customer_id !== parentOwner.customerIds[0] || !midtransTrustedPaymentUrlV352(tx.payment_url)
         || tx.gateway_name !== 'midtrans' || tx.currency !== 'IDR'
         || !['unpaid', 'pending', 'created'].includes(String(tx.payment_status || ''))) return;
     if (tx.expired_at) {
@@ -37247,9 +37304,9 @@ try {
     supabaseFetch = async function supabaseFetchBolaIdorGlobalHardBanV128(path, options = {}) {
       const decision = await diracBolaIdorV128InspectSupabaseAccess(path, options).catch((error) => ({ ok: false, warn: true, block: true, reason: 'bola_idor_v128_supabase_guard_exception', error: diracSecurityRedactDiagnosticV210(error, 120) }));
       if (decision && decision.warn) diracBolaIdorV128LogDecision(decision);
-      if (decision && decision.block && decision.reason === 'child_order_parent_ownership_unavailable'
-          && decision.action === 'my_orders' && decision.method === 'GET'
-          && /^(order_items|domain_order_items)$/.test(decision.table)) {
+      if (decision && decision.block && decision.action === 'my_orders' && decision.method === 'GET'
+          && ((decision.reason === 'child_order_parent_ownership_unavailable' && /^(order_items|domain_order_items)$/.test(decision.table))
+            || (decision.reason === 'payment_order_parent_ownership_unavailable' && decision.table === 'payment_transactions'))) {
         return { ok: false, status: 503, statusText: 'Service Unavailable',
           data: { ok: false, code: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE', message: 'Kepemilikan item pesanan belum dapat diverifikasi.' },
           error: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE' };
@@ -37516,7 +37573,11 @@ async function diracBolaIdorV128InspectSupabaseAccess(path, options = {}) {
 
   const directObjectIds = diracBolaIdorV128DirectObjectIdsForTable(table, ids);
   if (directObjectIds.length && /^(GET|HEAD|PATCH|PUT|DELETE)$/i.test(method)) {
-    const owners = await diracBolaIdorV128ResolveKnownObjectOwners(directObjectIds, table).catch(() => []);
+    const owners = await diracBolaIdorV128ResolveKnownObjectOwners(directObjectIds, table).catch((error) =>
+      action === 'my_orders' && method === 'GET' && table === 'payment_transactions'
+        && error && error.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE' ? null : []);
+    if (owners === null) return diracBolaIdorV128BuildBlockDecision('payment_order_parent_ownership_unavailable',
+      { source: 'supabase', table, method, action, requested_count: directObjectIds.length });
     const foreign = owners.filter((row) => row && row.customer_id && !allowed.includes(String(row.customer_id)));
     if (foreign.length) {
       return diracBolaIdorV128BuildBlockDecision('supabase_object_id_not_bound_to_authenticated_owner', {
@@ -37822,6 +37883,46 @@ async function diracBolaIdorV128ResolveKnownObjectOwners(objectIds, preferredTab
   if (!ids.length) return [];
 
   const preferred = String(preferredTable || '').toLowerCase();
+  if (preferred === 'payment_transactions') {
+    const paymentContext = diracCentralCurrentContextV149();
+    const paymentLegacyContext = diracBolaIdorV128CurrentContext();
+    const paymentOwner = paymentContext && diracCentralOwnerFromVerifiedContextV215(paymentContext.req);
+    const paymentPermit = diracCentralCurrentDatabaseEgressPermitV230();
+    const paymentBinding = paymentPermit && DIRAC_CENTRAL_DATABASE_PERMIT_BINDINGS_V362.get(paymentPermit);
+    const paymentProofs = paymentContext && paymentContext.req
+      && DIRAC_MY_ORDERS_PAYMENT_PARENT_PROOFS_V365.get(paymentContext.req);
+    const paymentProof = paymentProofs && paymentPermit && paymentProofs.get(paymentPermit.path);
+    if (paymentContext && paymentContext.req && paymentContext.action === 'my_orders' && paymentContext.method === 'GET'
+        && diracCentralHandlerContextFullyPassedV211(paymentContext, paymentContext.req) === true
+        && paymentLegacyContext && paymentLegacyContext.req === paymentContext.req
+        && paymentLegacyContext.action === paymentContext.action && paymentLegacyContext.method === paymentContext.method
+        && paymentOwner && paymentOwner.ok === true && paymentOwner.customerIds.length === 1
+        && paymentProof && Object.isFrozen(paymentProof) && paymentProof.ctx === paymentContext
+        && paymentProof.req === paymentContext.req && paymentProof.requestId === String(paymentContext.requestId || '')
+        && paymentProof.customerId === paymentOwner.customerIds[0]
+        && /^(orders|domain_orders)$/.test(paymentProof.table) && paymentProof.ids.length > 0 && paymentProof.ids.length <= 120
+        && Object.isFrozen(paymentProof.ids) && Object.isFrozen(paymentProof.rows)
+        && ids.length === Math.min(paymentProof.ids.length, 40)
+        && ids.every((id, index) => id === paymentProof.ids[index])
+        && paymentProof.rows.length === paymentProof.ids.length
+        && paymentProof.rows.every((row) => row && Object.isFrozen(row) && row.table === paymentProof.table
+          && row.customer_id === paymentOwner.customerIds[0] && paymentProof.ids.includes(row.id))
+        && paymentPermit && paymentPermit.action === paymentContext.action && paymentPermit.method === 'GET'
+        && paymentPermit.authMode === 'service' && paymentPermit.prefer === '' && paymentPermit.bodyBytes === 0
+        && paymentPermit.bodyHash === crypto.createHash('sha256').update('').digest('hex')
+        && Number.isSafeInteger(paymentPermit.expiresAtMs) && paymentPermit.expiresAtMs > Date.now()
+        && paymentBinding && paymentBinding.ctx === paymentContext && paymentBinding.req === paymentContext.req
+        && paymentBinding.requestId === String(paymentContext.requestId || '') && paymentBinding.dispatched === false) {
+      // The filter contains parent order IDs, not payment transaction primary keys.
+      return paymentProof.rows.map((row) => ({ ...row }));
+    }
+    if (paymentContext && paymentContext.action === 'my_orders' && paymentContext.method === 'GET'
+        && ((paymentProofs && paymentProofs.size) || (paymentPermit && String(paymentPermit.path || '').startsWith(
+          '/rest/v1/payment_transactions?select=' + encodeURIComponent('id,customer_id,order_id,domain_order_id,gateway_name,gateway_reference,payment_status,amount,currency,payment_url,expired_at,created_at') + '&')))) {
+      throw Object.assign(new Error('ORDER_PARENT_OWNERSHIP_UNAVAILABLE'),
+        { code: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE', statusCode: 503 });
+    }
+  }
   if (preferred === 'customers' && ids.length === 1) {
     const profileContext = diracCentralCurrentContextV149();
     const profileLegacyContext = diracBolaIdorV128CurrentContext();
@@ -43222,12 +43323,15 @@ async function customerSecurityLostPasskeyQueueRenewV188(ownerId, context = {}) 
 function customerSecurityLostPasskeyQueueHeartbeatV188(ownerId, context = {}) {
   let active = true;
   let leaseLost = false;
+  let renewing = false;
   let pending = Promise.resolve();
   const tick = () => {
-    if (!active || leaseLost) return;
+    if (!active || leaseLost || renewing) return;
+    renewing = true;
     pending = customerSecurityLostPasskeyQueueRenewV188(ownerId, context)
       .then((renewed) => { if (!renewed) leaseLost = true; })
-      .catch(() => { leaseLost = true; });
+      .catch(() => { leaseLost = true; })
+      .finally(() => { renewing = false; });
   };
   const timer = setInterval(tick, customerSecurityLostPasskeyQueueHeartbeatMsV188());
   if (timer && typeof timer.unref === 'function') timer.unref();
