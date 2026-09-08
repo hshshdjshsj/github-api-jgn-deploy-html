@@ -8750,6 +8750,56 @@ async function customerSecurityBootstrapRegisteredUser(req, responseUser) {
     if (existingRows.length > 1) return { ok: false, reason: 'auth_link_ambiguous', status: 409 };
     const existingLink = existingRows.length === 1 ? existingRows[0] : null;
     if (existingLink && existingLink.link_status === 'active' && existingLink.customer_id) {
+      if (existingLink.match_confidence === 'active' && req && req.method === 'POST'
+          && customerSecurityRegisterBootstrapNormalizeAction(req.query && req.query.action) === 'domain_login') {
+        const ctx = diracCentralCurrentContextV149();
+        const proof = req && DIRAC_CENTRAL_BAN_VERIFIED_USERS_V357.get(req);
+        const linkId = String(existingLink.id || '');
+        const customerId = String(existingLink.customer_id || '');
+        const rejected = { ok: false, reason: 'auth_link_reverification_failed', status: 403 };
+        if (!ctx || ctx.req !== req || ctx.action !== 'domain_login' || ctx.method !== 'POST' || req.method !== 'POST'
+            || !diracCentralHandlerContextFullyPassedV211(ctx, req)
+            || !proof || proof.ctx !== ctx || proof.requestId !== String(ctx.requestId || '')
+            || !safeEqual(String(proof.userId || ''), authUserId)
+            || !Array.isArray(existingLinkResult.data) || existingLinkResult.data.length !== 1
+            || (!customerSecurityLooksLikeUuid(linkId) && !/^[1-9][0-9]{0,19}$/.test(linkId))
+            || !customerSecurityLooksLikeUuid(customerId)
+            || !safeEqual(String(existingLink.auth_user_id || ''), authUserId)
+            || !safeEqual(normalizeAuthEmail(existingLink.email || ''), email)) return rejected;
+
+        const access = await domainLoginEffectiveAccessBlockV320(req, { user: { id: authUserId, email } });
+        if (!access || access.ok !== true || access.blocked !== false) return rejected;
+        const customer = await supabaseFetch('/rest/v1/customers?select=id%2Cemail'
+          + '&id=eq.' + encodeURIComponent(customerId) + '&email=eq.' + encodeURIComponent(email) + '&limit=2',
+        { method: 'GET', auth: 'service', db: 'core' });
+        if (!customer || customer.ok !== true || !Array.isArray(customer.data) || customer.data.length !== 1
+            || !customer.data[0] || !safeEqual(String(customer.data[0].id || ''), customerId)
+            || !safeEqual(normalizeAuthEmail(customer.data[0].email || ''), email)) return rejected;
+
+        const write = await supabaseFetch('/rest/v1/security_customer_auth_links?id=eq.' + encodeURIComponent(linkId)
+          + '&auth_user_id=eq.' + encodeURIComponent(authUserId) + '&customer_id=eq.' + encodeURIComponent(customerId)
+          + '&email=eq.' + encodeURIComponent(String(existingLink.email))
+          + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&link_method=eq.system_created&match_confidence=eq.active'
+          + (existingLink.updated_at ? '&updated_at=eq.' + encodeURIComponent(String(existingLink.updated_at)) : ''),
+        { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: { match_confidence: 'verified' } });
+        const matchesVerifiedLink = (row) => row && diracBolaIdorV133IsValidActiveAuthLinkRow(row)
+          && row.match_confidence === 'verified' && safeEqual(String(row.id || ''), linkId)
+          && safeEqual(String(row.auth_user_id || ''), authUserId) && safeEqual(String(row.customer_id || ''), customerId)
+          && safeEqual(normalizeAuthEmail(row.email || ''), email);
+        if (!write || write.ok !== true || !Array.isArray(write.data) || write.data.length > 1
+            || write.data.some((row) => !matchesVerifiedLink(row))) return rejected;
+
+        const readPath = '/rest/v1/security_customer_auth_links?select='
+          + encodeURIComponent('id,auth_user_id,customer_id,email,link_status,match_confidence,disabled_at,revoked_at,updated_at')
+          + '&auth_user_id=eq.' + encodeURIComponent(authUserId)
+          + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&order=updated_at.desc&limit=2';
+        if (ctx.__diracCentralSupabaseRequestCacheV151 instanceof Map) {
+          ctx.__diracCentralSupabaseRequestCacheV151.delete(diracCentralSupabaseRequestCacheKeyV151(readPath, { method: 'GET', auth: 'service' }));
+        }
+        const verified = await customerSecurityFetchAuthLink(authUserId);
+        if (!verified || verified.ok !== true || !Array.isArray(verified.data) || verified.data.length !== 1
+            || !matchesVerifiedLink(verified.data[0])) return rejected;
+      }
       const settingsReadyExisting = await customerSecurityEnsureSettingsRow(existingLink.customer_id);
       return {
         ok: Boolean(settingsReadyExisting.ok),
@@ -8942,7 +8992,7 @@ function customerSecurityBuildActiveAuthLinkBody(customerId, email) {
     email,
     link_status: 'active',
     link_method: 'system_created',
-    match_confidence: 'active'
+    match_confidence: 'verified'
   };
 }
 
