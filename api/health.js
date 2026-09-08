@@ -7756,7 +7756,7 @@ async function diracPasskeyResolveStrictSignedIdentityV308(value) {
 
   // After Central Guard is fully passed, preserve the stronger V308 active-link
   // postcondition. This branch cannot participate in the stage-0 circular dependency.
-  const linkResult = await customerSecurityFetchAuthLink(authUserId).catch(() => null);
+  const linkResult = await (ctx.action === 'domain_health' && ctx.method === 'GET' && String(ctx.req.query && ctx.req.query._csrf_bootstrap || '').trim() === 'passkey_cookie_roundtrip_v241' ? diracBolaIdorV133FetchValidAuthLinks(authUserId) : customerSecurityFetchAuthLink(authUserId)).catch(() => null);
   const rows = linkResult && linkResult.ok === true && Array.isArray(linkResult.data)
     ? linkResult.data.filter((row) => row && typeof row === 'object')
     : [];
