@@ -13074,7 +13074,7 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
     const response = await fetch(target.toString(), {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/octet-stream',
         'Accept': 'application/json',
         'X-Dirac-Worker-Caller': caller,
         'X-Dirac-Worker-Timestamp': timestamp,
@@ -13340,7 +13340,7 @@ async function customerSecurityVerifyRecoveryCodeViaWorker(req, res, action, acc
     const response = await fetch(target.toString(), {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/octet-stream',
         'Accept': 'application/json',
         'X-Dirac-Worker-Caller': caller,
         'X-Dirac-Worker-Timestamp': timestamp,
