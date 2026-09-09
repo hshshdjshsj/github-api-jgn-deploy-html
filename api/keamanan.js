@@ -2658,7 +2658,8 @@ const DIRAC_SECURITY_PASSKEY_RESET_PENDING_TTL_MS_V363 = 300000;
 const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_V364 = 'dirac-security-passkey-reset-email-v364';
 const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_TOKEN_SCOPE_V364 = 'security-passkey-reset-email-v364';
 const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_TTL_MS_V364 = 600000;
-const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_LENGTH_V364 = 6;
+const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MIN_LENGTH_V364 = 100;
+const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MAX_LENGTH_V364 = 768;
 
 function diracSecurityPasskeyResetSha256V363(value) {
   return crypto.createHash('sha256').update(String(value === undefined || value === null ? '' : value)).digest('hex');
@@ -2792,7 +2793,18 @@ async function diracSecurityPasskeyResetVerifyPasswordV363(owner, password) {
 }
 
 function diracSecurityPasskeyResetEmailCodeV364() {
-  return String(crypto.randomInt(0, 10 ** DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_LENGTH_V364)).padStart(DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_LENGTH_V364, '0');
+  const length = crypto.randomInt(DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MIN_LENGTH_V364, DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MAX_LENGTH_V364 + 1);
+  let code = '';
+  while (code.length < length) {
+    const entropy = crypto.randomBytes(Math.min(1024, Math.max(64, (length - code.length) * 2)));
+    try {
+      for (let index = 0; index < entropy.length && code.length < length; index += 1) {
+        const value = entropy[index];
+        if (value < 250) code += String(value % 10);
+      }
+    } finally { entropy.fill(0); }
+  }
+  return code;
 }
 
 function diracSecurityPasskeyResetEmailCodeMacV364(payload, code) {
@@ -2801,7 +2813,7 @@ function diracSecurityPasskeyResetEmailCodeMacV364(payload, code) {
     return crypto.createHmac('sha256', key).update([
       DIRAC_SECURITY_PASSKEY_RESET_EMAIL_V364,
       String(payload.jti || ''), String(payload.authUserId || ''), String(payload.customerId || ''), String(payload.sessionId || ''),
-      String(payload.securityEpoch || ''), String(payload.codeSalt || ''), String(code || '')
+      String(payload.securityEpoch || ''), String(payload.codeLength || ''), String(payload.codeSalt || ''), String(code || '')
     ].join('\0')).digest('hex');
   } finally { key.fill(0); }
 }
@@ -2819,7 +2831,7 @@ function diracSecurityPasskeyResetEmailTokenV364(req, context, code) {
     authUserId: String(context.authUserId || ''), customerId: String(context.customerId || ''), emailHash: diracSecurityPasskeyResetSha256V363(normalizeAuthEmail(context.email || '')),
     sessionId: String(context.sessionId || ''), securityEpoch: Number(context.securityEpoch || 0),
     authorizingPasskeyId: String(context.authorizingPasskeyId || ''), authorizingCredentialIdHash: String(context.authorizingCredentialIdHash || ''), activeCredentialSetHash: String(context.activeCredentialSetHash || ''),
-    codeSalt: randomToken(18), issuedAtMs: now, expiresAtMs: now + DIRAC_SECURITY_PASSKEY_RESET_EMAIL_TTL_MS_V364
+    codeLength: String(code || '').length, codeSalt: randomToken(18), issuedAtMs: now, expiresAtMs: now + DIRAC_SECURITY_PASSKEY_RESET_EMAIL_TTL_MS_V364
   };
   const payload = Object.freeze({ ...base, codeMac: diracSecurityPasskeyResetEmailCodeMacV364(base, code) });
   return { token: securityResetTokenSignV334(payload, DIRAC_SECURITY_PASSKEY_RESET_EMAIL_TOKEN_SCOPE_V364), payload };
@@ -2835,6 +2847,7 @@ async function diracSecurityPasskeyResetReadEmailTokenV364(req, token, resolved)
       || !customerSecurityLooksLikeUuid(String(p.authUserId || '')) || !customerSecurityLooksLikeUuid(String(p.customerId || '')) || !customerSecurityLooksLikeUuid(String(p.sessionId || ''))
       || !customerSecurityLooksLikeUuid(String(p.authorizingPasskeyId || '')) || !/^[a-f0-9]{64}$/.test(String(p.authorizingCredentialIdHash || '')) || !/^[a-f0-9]{64}$/.test(String(p.activeCredentialSetHash || ''))
       || !Number.isSafeInteger(Number(p.securityEpoch)) || Number(p.securityEpoch) < 1
+      || !Number.isSafeInteger(Number(p.codeLength)) || Number(p.codeLength) < DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MIN_LENGTH_V364 || Number(p.codeLength) > DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MAX_LENGTH_V364
       || !Number.isSafeInteger(Number(p.issuedAtMs)) || !Number.isSafeInteger(Number(p.expiresAtMs)) || Number(p.issuedAtMs) > now + 30000 || Number(p.expiresAtMs) <= now
       || Number(p.expiresAtMs) - Number(p.issuedAtMs) <= 0 || Number(p.expiresAtMs) - Number(p.issuedAtMs) > DIRAC_SECURITY_PASSKEY_RESET_EMAIL_TTL_MS_V364
       || !safeEqual(String(p.rpId || ''), diracPasskeyA2FRpId(req)) || !safeEqual(String(p.origin || ''), requestOrigin(req)) || !safeEqual(String(p.uaHash || ''), diracSecurityPasskeyResetSha256V363(requestUserAgent(req)))
@@ -2862,12 +2875,15 @@ async function diracSecurityPasskeyResetSendEmailCodeV364(req, owner, code, payl
     preheader: 'Kode verifikasi satu kali untuk mengganti Passkey akun Dirac Group.', brandLabel: 'SECURE PASSKEY REPLACEMENT', eyebrow: 'PASSKEY VERIFICATION CODE',
     title: 'Kode Verifikasi\nGanti Passkey', greeting: 'Yth. Pengguna Dirac Group,',
     summary: 'Permintaan penggantian Passkey telah lolos verifikasi kata sandi pada server utama. Masukkan kode berikut hanya pada halaman keamanan resmi yang sedang Anda gunakan.',
-    statusLabel: 'KODE VERIFIKASI', statusValue: code, statusNote: 'Kode 6 digit ini berlaku selama 10 menit dan hanya dapat digunakan untuk satu proses penggantian Passkey.',
+    statusLabel: 'KODE VERIFIKASI', statusValue: '__DIRAC_PASSKEY_RESET_CODE_' + reference + '__', statusNote: 'Kode ' + String(payload.codeLength) + ' digit ini berlaku selama 10 menit dan hanya dapat digunakan untuk satu proses penggantian Passkey.',
     detailsLabel: 'DETAIL VERIFIKASI', rows: [['AKTIVITAS','Penggantian Passkey'],['METODE OTORISASI','Kata sandi akun + kode email satu kali'],['MASA BERLAKU','10 menit'],['REFERENSI',reference]],
     warningTitle: 'JANGAN BAGIKAN KODE', warning: 'Jangan berikan kode ini kepada siapa pun. Jika Anda tidak meminta penggantian Passkey, abaikan email ini dan periksa sesi aktif pada Pusat Keamanan.',
     actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN'
   };
-  const html = diracSecurityCorporateEmailHtmlV327(htmlInput), text = diracSecurityMailTextV327(htmlInput), record = { email: owner.email };
+  const codeMarker = String(htmlInput.statusValue);
+  const html = diracSecurityCorporateEmailHtmlV327(htmlInput).replace(codeMarker, diracSecurityMailEscapeV327(code));
+  const text = diracSecurityMailTextV327(htmlInput).replace(codeMarker, code);
+  const record = { email: owner.email };
   const context = diracCentralCurrentContextV149();
   if (!context || !context.active || !context.__diracPasswordResetVerifiedOwnerV333
       || !safeEqual(String(context.__diracPasswordResetVerifiedOwnerV333.authUserId || ''), owner.authUserId)
@@ -3094,13 +3110,14 @@ async function diracSecurityPasskeyResetStartV363(req,body) {
   const code=diracSecurityPasskeyResetEmailCodeV364();
   const issued=diracSecurityPasskeyResetEmailTokenV364(req,{authUserId:resolved.owner.authUserId,customerId:resolved.owner.customerId,email:resolved.owner.email,sessionId:resolved.sessionId,securityEpoch:resolved.securityEpoch,authorizingPasskeyId:String(row.id),authorizingCredentialIdHash:credentialHash,activeCredentialSetHash:activeSetHash},code);
   await diracSecurityPasskeyResetSendEmailCodeV364(req,resolved.owner,code,issued.payload);
-  return{ok:true,method:'password_email',passkeyMode:'email_verification',reset_passkey:true,email_verification_required:true,email_sent:true,code_length:DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_LENGTH_V364,setupToken:issued.token,mfaSetupToken:issued.token,expires_in:Math.floor((issued.payload.expiresAtMs-Date.now())/1000),message:'Kode verifikasi 6 digit telah dikirim ke email akun.'};
+  return{ok:true,method:'password_email',passkeyMode:'email_verification',reset_passkey:true,email_verification_required:true,email_sent:true,code_length:code.length,setupToken:issued.token,mfaSetupToken:issued.token,expires_in:Math.floor((issued.payload.expiresAtMs-Date.now())/1000),message:'Kode verifikasi '+String(code.length)+' digit telah dikirim ke email akun.'};
 }
 
 async function diracSecurityPasskeyResetEmailAuthorizeV364(req,body,resolved,tokenData) {
   const p=tokenData.payload,code=String(body.code||'').trim();
   await diracSecurityPasskeyResetEmailRateV364(req,'verify',String(p.jti||''),5,600,600);
-  if(!new RegExp('^\\d{'+DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_LENGTH_V364+'}$').test(code))throw resetError('SECURITY_PASSKEY_RESET_EMAIL_CODE_INVALID',403);
+  const codeLength=Number(p.codeLength);
+  if(!Number.isSafeInteger(codeLength)||codeLength<DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MIN_LENGTH_V364||codeLength>DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MAX_LENGTH_V364||code.length!==codeLength||!/^[0-9]+$/.test(code))throw resetError('SECURITY_PASSKEY_RESET_EMAIL_CODE_INVALID',403);
   const expected=diracSecurityPasskeyResetEmailCodeMacV364(p,code);if(!safeEqual(expected,String(p.codeMac||'')))throw resetError('SECURITY_PASSKEY_RESET_EMAIL_CODE_INVALID',403);
   const active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner)||!safeEqual(String(active[0].id||''),p.authorizingPasskeyId)||!safeEqual(diracSecurityPasskeyResetSha256V363(active[0].credential_id),p.authorizingCredentialIdHash)||!safeEqual(diracSecurityPasskeyResetActiveSetHashV363(active),p.activeCredentialSetHash))throw resetError('SECURITY_PASSKEY_RESET_ACTIVE_SET_CHANGED',409);
   await diracSecurityPasskeyResetConsumeEmailTokenV364(tokenData.token,p);
