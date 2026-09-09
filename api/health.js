@@ -2996,7 +2996,7 @@ async function writeDomainLoginRateRecord(identity, record) {
   if (!saved || saved.security_key !== key || !saved.record_json) throw unavailable('write_row');
   if (Number(saved.record_json.count) !== normalized.count) throw unavailable('write_count');
   if (Number(saved.blocked_until_ms) !== normalized.blockedUntilMs) throw unavailable('write_block');
-  if (Date.parse(saved.updated_at) !== now) throw unavailable('write_timestamp');
+  if (Date.parse(saved.updated_at) !== now && !(typeof saved.updated_at === 'string' && Number.isFinite(Date.parse(saved.updated_at)) && Date.parse(saved.updated_at) > now && Date.parse(saved.updated_at) <= Date.now() && typeof saved.record_json === 'object' && !Array.isArray(saved.record_json) && Object.keys(saved.record_json).length === Object.keys(normalized).length && Object.keys(normalized).every((field) => Object.prototype.hasOwnProperty.call(saved.record_json, field) && saved.record_json[field] === normalized[field]) && Date.parse(saved.expires_at) === Date.parse(payload.expires_at))) throw unavailable('write_timestamp');
   return true;
 }
 
