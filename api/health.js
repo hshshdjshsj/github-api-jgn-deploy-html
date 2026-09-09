@@ -13433,6 +13433,13 @@ const DIRAC_RECOVERY_BROWSER_RESPONSE_VERSION_V287 = 'dirac-recovery-browser-res
 const DIRAC_RECOVERY_BROWSER_TRANSPORT_SUITE_V287 = 'ECDH-P256+HKDF-SHA256+AES-256-GCM';
 const DIRAC_RECOVERY_BROWSER_TRANSPORT_TTL_MS_V287 = 60 * 1000;
 const DIRAC_RECOVERY_BROWSER_ORIGIN_V287 = diracRoleOriginV250('auth');
+const DIRAC_RECOVERY_BROWSER_SECURITY_ORIGIN_V362 = diracRoleOriginV250('security');
+function diracRecoveryBrowserOriginAllowedV362(req, origin) {
+  const clean = String(origin || '');
+  if (clean === DIRAC_RECOVERY_BROWSER_ORIGIN_V287) return true;
+  return clean === DIRAC_RECOVERY_BROWSER_SECURITY_ORIGIN_V362
+    && Boolean(req && req.__diracKeamananSecurityGatewayV362 === true);
+}
 const DIRAC_RECOVERY_BROWSER_ROOT_CAUSE_DIAGNOSTIC_V344 = 'dirac-recovery-browser-root-cause-v344';
 
 function diracRecoveryBrowserDiagnosticStageV344(req, stage) {
@@ -13608,8 +13615,8 @@ function diracRecoveryBrowserRootCauseDiagnosticV344(req, body, error, expectedA
         content_length_header: diracRecoveryBrowserDiagnosticSafeTextV344(diracRecoveryBrowserHeaderV287(req, 'content-length'), 40),
         origin_present: Boolean(originRaw),
         origin_normalized: origin,
-        origin_expected: DIRAC_RECOVERY_BROWSER_ORIGIN_V287,
-        origin_match: origin === DIRAC_RECOVERY_BROWSER_ORIGIN_V287,
+        origin_expected: [DIRAC_RECOVERY_BROWSER_ORIGIN_V287, DIRAC_RECOVERY_BROWSER_SECURITY_ORIGIN_V362],
+        origin_match: diracRecoveryBrowserOriginAllowedV362(req, origin),
         referer_origin: refererOrigin,
         csrf_primary_present: Boolean(csrfPrimary),
         csrf_primary_length: csrfPrimary.length,
@@ -13962,7 +13969,7 @@ async function diracRecoveryBrowserOpenV287(req, body) {
   }
   diracRecoveryBrowserDiagnosticStageV344(req, 'open.time_valid');
   const origin = diracCentralNormalizeOriginV146(diracRecoveryBrowserHeaderV287(req, 'origin'));
-  if (origin !== DIRAC_RECOVERY_BROWSER_ORIGIN_V287) {
+  if (!diracRecoveryBrowserOriginAllowedV362(req, origin)) {
     const error = new Error('RECOVERY_BROWSER_TRANSPORT_ORIGIN_INVALID');
     error.code = 'RECOVERY_BROWSER_TRANSPORT_ORIGIN_INVALID';
     throw error;
@@ -21220,16 +21227,20 @@ function diracPasskeyRecoveryIdempotencyBindingV310(req, body) {
 }
 
 function diracPasskeyRecoveryBrowserBindingV281(req) {
-  const expectedOrigin = diracRoleOriginV250('auth');
+  const authOrigin = diracRoleOriginV250('auth');
+  const securityOrigin = diracRoleOriginV250('security');
   const headers = req && req.headers && typeof req.headers === 'object' ? req.headers : {};
   const origin = String(headers.origin || '').trim();
+  const securityGateway = Boolean(req && req.__diracKeamananSecurityGatewayV362 === true);
+  const expectedOrigin = securityGateway && origin === securityOrigin ? securityOrigin : authOrigin;
+  const expectedPath = expectedOrigin === securityOrigin ? '/keamanan.html' : '/masuk.html';
   const referer = String(headers.referer || headers.referrer || '').trim();
   let parsedReferer = null;
   try { parsedReferer = new URL(referer); } catch (_) { parsedReferer = null; }
   if (origin !== expectedOrigin
       || !parsedReferer
       || parsedReferer.origin !== expectedOrigin
-      || parsedReferer.pathname !== '/masuk.html'
+      || parsedReferer.pathname !== expectedPath
       || parsedReferer.search
       || parsedReferer.hash) {
     return { ok: false, reason: 'passkey_recovery_browser_origin_invalid_v281' };
@@ -56696,6 +56707,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
     'customer_security_revoke_session', 'customer_security_revoke_other_sessions',
     'customer_security_account_request', 'customer_security_recovery_codes_status',
     'customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify',
+    'dirac_mfa_passkey_start', 'dirac_mfa_passkey_verify',
     'customer_security_features_bundle', 'customer_security_features_bundle_v2',
     'customer_security_features_bundle_v3', 'customer_security_trusted_devices',
     'customer_security_login_history', 'customer_security_score', 'customer_security_notifications',
@@ -56796,6 +56808,8 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
 
   if (role === 'auth' && auth.has(clean)) return { ok: true };
   if (role === 'dashboard' && dashboard.has(clean)) return { ok: true };
+  if (role === 'security' && /^(?:dirac_mfa_passkey_start|dirac_mfa_passkey_verify)$/.test(clean)
+      && !(req && req.__diracKeamananSecurityGatewayV362 === true)) return { ok: false, reason: 'security_passkey_gateway_required_v362' };
   if (role === 'security' && security.has(clean)) return { ok: true };
   if (role === 'parfum' && parfum.has(clean)) return { ok: true };
   if (role === 'pesanan' && pesanan.has(clean)) return { ok: true };

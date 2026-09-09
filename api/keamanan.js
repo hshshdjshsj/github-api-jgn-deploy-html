@@ -844,7 +844,7 @@ function securityResetApplyHeadersV334(req, res, origin) {
   try {
     if (!res || typeof res.setHeader !== 'function') throw new Error('RESET_RESPONSE_HEADERS_UNAVAILABLE');
     const base = diracBaseDomainV250();
-    if (['https://' + base, 'https://auth.' + base].includes(allowed)) res.setHeader('Access-Control-Allow-Origin', allowed);
+    if (['https://' + base, 'https://auth.' + base, 'https://security.' + base].includes(allowed)) res.setHeader('Access-Control-Allow-Origin', allowed);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Expose-Headers', 'X-Dirac-CSRF-Token, X-CSRF-Token, X-Dirac-Page-Nonce, X-Page-Nonce');
     res.setHeader('Vary', 'Origin');
@@ -862,7 +862,7 @@ function securityResetApplyHeadersV334(req, res, origin) {
 function securityResetValidateBrowserV334(req, method) {
   const base = diracBaseDomainV250();
   const origin = requestOrigin(req);
-  const allowedOrigins = new Set(['https://' + base, 'https://auth.' + base]);
+  const allowedOrigins = new Set(['https://' + base, 'https://auth.' + base, 'https://security.' + base]);
   if (!allowedOrigins.has(origin)) throw resetError('SECURITY_RESET_ORIGIN_INVALID', 403);
   const host = securityResetHeaderV334(req, 'host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
   const xhost = securityResetHeaderV334(req, 'x-forwarded-host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
@@ -873,7 +873,14 @@ function securityResetValidateBrowserV334(req, method) {
   if (referer) {
     let ref;
     try { ref = new URL(referer); } catch (_) { throw resetError('SECURITY_RESET_REFERER_INVALID', 403); }
-    if (!allowedOrigins.has(ref.origin.toLowerCase()) || !new Set(['/','/masuk.html','/html/masuk.html']).has(ref.pathname)) throw resetError('SECURITY_RESET_REFERER_INVALID', 403);
+    const refOrigin = ref.origin.toLowerCase();
+    const securityOrigin = 'https://security.' + base;
+    const securityRequest = origin === securityOrigin;
+    const securityReferer = refOrigin === securityOrigin;
+    const allowedRefererPaths = securityReferer
+      ? new Set(['/','/keamanan.html'])
+      : new Set(['/','/masuk.html','/html/masuk.html']);
+    if (!allowedOrigins.has(refOrigin) || securityRequest !== securityReferer || !allowedRefererPaths.has(ref.pathname)) throw resetError('SECURITY_RESET_REFERER_INVALID', 403);
   }
   const site = securityResetHeaderV334(req, 'sec-fetch-site').trim().toLowerCase();
   const mode = securityResetHeaderV334(req, 'sec-fetch-mode').trim().toLowerCase();
@@ -2668,11 +2675,21 @@ const ACTION_METHODS = Object.freeze({
   customer_security_revoke_other_sessions: Object.freeze(new Set(['POST', 'OPTIONS'])),
   customer_security_account_request: Object.freeze(new Set(['POST', 'OPTIONS'])),
   customer_security_recovery_codes_generate: Object.freeze(new Set(['POST', 'OPTIONS'])),
+  customer_security_recovery_code_verify: Object.freeze(new Set(['POST', 'OPTIONS'])),
+  dirac_mfa_passkey_start: Object.freeze(new Set(['POST', 'OPTIONS'])),
+  dirac_mfa_passkey_verify: Object.freeze(new Set(['POST', 'OPTIONS'])),
   customer_security_trust_current_device: Object.freeze(new Set(['POST', 'OPTIONS'])),
   customer_security_untrust_device: Object.freeze(new Set(['POST', 'OPTIONS'])),
   request_password_reset: Object.freeze(new Set(['POST', 'OPTIONS'])),
   confirm_password_reset: Object.freeze(new Set(['POST', 'OPTIONS']))
 });
+
+const SECURITY_CENTRAL_RECOVERY_GATEWAY_ACTIONS_V362 = Object.freeze(new Set([
+  'customer_security_recovery_codes_generate',
+  'customer_security_recovery_code_verify',
+  'dirac_mfa_passkey_start',
+  'dirac_mfa_passkey_verify'
+]));
 
 function reject(res, status, code) {
   try {
@@ -2699,7 +2716,7 @@ function handleResetPreflight(req, res) {
   const baseDomain = resetPreflightBaseDomain();
   if (!baseDomain) return reject(res, 503, 'SECURITY_RESET_PREFLIGHT_DOMAIN_INVALID');
   const origin = resetPreflightHeader(req, 'origin').trim().toLowerCase();
-  const allowedOrigins = new Set(['https://' + baseDomain, 'https://auth.' + baseDomain]);
+  const allowedOrigins = new Set(['https://' + baseDomain, 'https://auth.' + baseDomain, 'https://security.' + baseDomain]);
   if (!allowedOrigins.has(origin)) return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_ORIGIN_INVALID');
   const expectedHost = 'api.' + baseDomain;
   const forwardedHost = resetPreflightHeader(req, 'x-forwarded-host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
@@ -2840,17 +2857,21 @@ async function invokeCentral(req, res, parsed) {
   const originalPath = req.path;
   const hadMarker = Object.prototype.hasOwnProperty.call(req, '__diracKeamananResetGatewayV333');
   const originalMarker = req.__diracKeamananResetGatewayV333;
+  const hadSecurityGatewayMarkerV362 = Object.prototype.hasOwnProperty.call(req, '__diracKeamananSecurityGatewayV362');
+  const originalSecurityGatewayMarkerV362 = req.__diracKeamananSecurityGatewayV362;
   try {
     req.url = parsed.canonicalUrl;
     req.originalUrl = parsed.canonicalUrl;
     req.path = CENTRAL_ROUTE_PATH;
     if (parsed.reset) req.__diracKeamananResetGatewayV333 = RESET_GATEWAY_TOKEN;
+    if (SECURITY_CENTRAL_RECOVERY_GATEWAY_ACTIONS_V362.has(parsed.action)) req.__diracKeamananSecurityGatewayV362 = true;
     return await centralHandler(req, res);
   } finally {
     try { req.url = originalUrl; } catch (_) {}
     try { if (hadOriginalUrl) req.originalUrl = originalOriginalUrl; else delete req.originalUrl; } catch (_) {}
     try { if (hadPath) req.path = originalPath; else delete req.path; } catch (_) {}
     try { if (hadMarker) req.__diracKeamananResetGatewayV333 = originalMarker; else delete req.__diracKeamananResetGatewayV333; } catch (_) {}
+    try { if (hadSecurityGatewayMarkerV362) req.__diracKeamananSecurityGatewayV362 = originalSecurityGatewayMarkerV362; else delete req.__diracKeamananSecurityGatewayV362; } catch (_) {}
   }
 }
 
