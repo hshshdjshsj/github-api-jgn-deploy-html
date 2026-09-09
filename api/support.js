@@ -881,23 +881,25 @@ async function fetchJson(url, options, timeoutMs) {
     const maxBytes = 2 * 1024 * 1024;
     const declared = Number(response.headers.get('content-length') || 0);
     if (Number.isFinite(declared) && declared > maxBytes) {
-      if (response.body) await response.body.cancel().catch(() => {});
+      try { if (response.body && typeof response.body.cancel === 'function') Promise.resolve(response.body.cancel()).catch(() => {}); } catch (_) {}
       throw new PublicError(502, 'UPSTREAM_RESPONSE_TOO_LARGE', 'Respons upstream terlalu besar.');
     }
     const chunks = []; let total = 0;
     if (response.body && typeof response.body.getReader === 'function') {
       const reader = response.body.getReader();
-      while (true) {
-        const part = await reader.read();
-        if (part.done) break;
-        const chunk = Buffer.from(part.value);
-        total += chunk.length;
-        if (total > maxBytes) {
-          await reader.cancel().catch(() => {});
-          throw new PublicError(502, 'UPSTREAM_RESPONSE_TOO_LARGE', 'Respons upstream terlalu besar.');
+      try {
+        while (true) {
+          const part = await reader.read();
+          if (part.done) break;
+          const chunk = Buffer.from(part.value);
+          total += chunk.length;
+          if (total > maxBytes) {
+            try { Promise.resolve(reader.cancel()).catch(() => {}); } catch (_) {}
+            throw new PublicError(502, 'UPSTREAM_RESPONSE_TOO_LARGE', 'Respons upstream terlalu besar.');
+          }
+          chunks.push(chunk);
         }
-        chunks.push(chunk);
-      }
+      } finally { reader.releaseLock(); }
     }
     const raw = Buffer.concat(chunks, total).toString('utf8');
     let data = null; try { data = raw ? JSON.parse(raw) : null; } catch (_) { data = raw; }
