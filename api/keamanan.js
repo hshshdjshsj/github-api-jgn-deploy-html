@@ -913,16 +913,52 @@ async function securityResetReadJsonV334(req) {
   const declared = securityResetHeaderV334(req, 'content-length').trim();
   if (declared && !/^(?:0|[1-9][0-9]{0,11})$/.test(declared)) throw resetError('SECURITY_RESET_CONTENT_LENGTH_INVALID', 400);
   if (declared && Number(declared) > SECURITY_RESET_MAX_BODY_V334) throw resetError('SECURITY_RESET_BODY_TOO_LARGE', 413);
-  let raw = Buffer.isBuffer(req.rawBody) || typeof req.rawBody === 'string' ? req.rawBody : req.body;
+  // Inspect data descriptors before reading: a runtime body getter may parse away raw JSON evidence.
+  const ownBodyDescriptor = Object.getOwnPropertyDescriptor(req, 'body');
+  let bodyDescriptor = ownBodyDescriptor;
+  for (let owner = Object.getPrototypeOf(req); !bodyDescriptor && owner; owner = Object.getPrototypeOf(owner)) {
+    bodyDescriptor = Object.getOwnPropertyDescriptor(owner, 'body');
+  }
+  const bodyValue = bodyDescriptor && Object.prototype.hasOwnProperty.call(bodyDescriptor, 'value') ? bodyDescriptor.value : undefined;
+  const rawValue = req.rawBody;
+  let raw = Buffer.isBuffer(rawValue) || typeof rawValue === 'string' ? rawValue : bodyValue;
   if (raw !== undefined && raw !== null && !Buffer.isBuffer(raw) && typeof raw !== 'string') throw resetError('SECURITY_RESET_RAW_BODY_REQUIRED', 400);
+  if (ownBodyDescriptor && !Object.prototype.hasOwnProperty.call(ownBodyDescriptor, 'value') && ownBodyDescriptor.configurable !== true && typeof ownBodyDescriptor.set !== 'function') throw resetError('SECURITY_RESET_RAW_BODY_REQUIRED', 400);
   if (raw === undefined || raw === null) {
-    const chunks = []; let size = 0;
-    for await (const chunk of req) {
-      const bytes = Buffer.from(chunk); size += bytes.length;
-      if (size > SECURITY_RESET_MAX_BODY_V334) throw resetError('SECURITY_RESET_BODY_TOO_LARGE', 413);
-      chunks.push(bytes);
-    }
-    raw = Buffer.concat(chunks, size);
+    if (typeof req.on !== 'function' || typeof req.removeListener !== 'function' || req.aborted === true) throw resetError('SECURITY_RESET_RAW_BODY_REQUIRED', 400);
+    raw = await new Promise((resolve, reject) => {
+      const chunks = []; let size = 0, settled = false, timer;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        for (const [event, listener] of listeners) req.removeListener(event, listener);
+        if (error) {
+          if (typeof req.pause === 'function') req.pause();
+          chunks.length = 0;
+          reject(error);
+        } else resolve(Buffer.concat(chunks, size));
+      };
+      const listeners = [
+        ['error', () => finish(resetError('SECURITY_RESET_BODY_STREAM_ERROR', 400))],
+        ['aborted', () => finish(resetError('SECURITY_RESET_BODY_STREAM_ABORTED', 400))],
+        ['close', () => finish(resetError('SECURITY_RESET_BODY_STREAM_CLOSED', 400))],
+        ['data', (chunk) => {
+          if (settled) return;
+          let bytes;
+          try { bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); }
+          catch (_) { return finish(resetError('SECURITY_RESET_RAW_BODY_REQUIRED', 400)); }
+          size += bytes.length;
+          if (size > SECURITY_RESET_MAX_BODY_V334) return finish(resetError('SECURITY_RESET_BODY_TOO_LARGE', 413));
+          chunks.push(bytes);
+        }],
+        ['end', () => finish()]
+      ];
+      const ended = req.readableEnded === true || req.destroyed === true;
+      timer = setTimeout(() => finish(resetError(ended ? 'SECURITY_RESET_RAW_BODY_REQUIRED' : 'SECURITY_RESET_BODY_TIMEOUT', ended ? 400 : 408)), ended ? 250 : 6500);
+      try { for (const [event, listener] of listeners) if (!settled) req.on(event, listener); }
+      catch (_) { finish(resetError('SECURITY_RESET_BODY_STREAM_ERROR', 400)); }
+    });
   }
   const size = Buffer.byteLength(raw);
   if (size > SECURITY_RESET_MAX_BODY_V334) throw resetError('SECURITY_RESET_BODY_TOO_LARGE', 413);
@@ -931,7 +967,12 @@ async function securityResetReadJsonV334(req) {
   try { parsed = parseStrictJson(raw, { maxBytes: SECURITY_RESET_MAX_BODY_V334, maxDepth: 12, maxNodes: 4096 }); }
   catch (_) { throw resetError('SECURITY_RESET_JSON_INVALID', 400); }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw resetError('SECURITY_RESET_JSON_INVALID', 400);
-  req.body = parsed;
+  const currentBodyDescriptor = Object.getOwnPropertyDescriptor(req, 'body');
+  if (!currentBodyDescriptor || currentBodyDescriptor.configurable === true) {
+    Object.defineProperty(req, 'body', { value: parsed, enumerable: true, writable: true, configurable: true });
+  } else {
+    req.body = parsed;
+  }
   return parsed;
 }
 

@@ -2961,9 +2961,10 @@ async function readDomainLoginRateRecord(identity) {
 }
 
 async function writeDomainLoginRateRecord(identity, record) {
+  const unavailable = (stage) => Object.assign(new Error('LOGIN_SECURITY_STATE_UNAVAILABLE'), { loginRateStageV362: stage });
   const key = String(identity && identity.key || '').trim();
   if (!key || !DOMAIN_LOGIN_RATE_TABLE || !Object.prototype.hasOwnProperty.call(record, '__version')) {
-    throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+    throw unavailable('write_context');
   }
   const version = record.__version;
   const previousMs = version == null ? 0 : Date.parse(version);
@@ -2988,14 +2989,14 @@ async function writeDomainLoginRateRecord(identity, record) {
     body: version === undefined ? [payload] : payload
   });
   if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > 1) {
-    throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+    throw unavailable('write_response');
   }
   if (!result.data.length) return false;
   const saved = result.data[0];
-  if (!saved || saved.security_key !== key || !saved.record_json
-      || Number(saved.record_json.count) !== normalized.count
-      || Number(saved.blocked_until_ms) !== normalized.blockedUntilMs
-      || Date.parse(saved.updated_at) !== now) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+  if (!saved || saved.security_key !== key || !saved.record_json) throw unavailable('write_row');
+  if (Number(saved.record_json.count) !== normalized.count) throw unavailable('write_count');
+  if (Number(saved.blocked_until_ms) !== normalized.blockedUntilMs) throw unavailable('write_block');
+  if (Date.parse(saved.updated_at) !== now) throw unavailable('write_timestamp');
   return true;
 }
 
@@ -3061,7 +3062,9 @@ function shouldCountDomainLoginFailure(result) {
 
 async function registerDomainLoginFailureForIdentityV353(identity) {
   for (let attempt = 0; attempt < 12; attempt += 1) {
-    const record = await readDomainLoginRateRecord(identity);
+    const record = await readDomainLoginRateRecord(identity).catch(() => {
+      throw Object.assign(new Error('LOGIN_SECURITY_STATE_UNAVAILABLE'), { loginRateStageV362: 'read' });
+    });
     const now = Date.now();
     const current = domainLoginRateDecisionV336(identity, record, now);
     if (current.blocked) return { ...current, matched_scope: identity.scope || 'account' };
@@ -3084,7 +3087,10 @@ async function registerDomainLoginFailureForIdentityV353(identity) {
 async function registerDomainLoginFailure(req, email) {
   try {
     const identities = getDomainLoginRateIdentitiesV353(req, email);
-    const decisions = await Promise.all(identities.map((identity) => registerDomainLoginFailureForIdentityV353(identity)));
+    const outcomes = await Promise.allSettled(identities.map((identity) => registerDomainLoginFailureForIdentityV353(identity)));
+    const rejected = outcomes.find((outcome) => outcome.status === 'rejected');
+    if (rejected) throw rejected.reason;
+    const decisions = outcomes.map((outcome) => outcome.value);
     if (decisions.some((decision) => !decision || decision.unavailable)) {
       return { ok: false, blocked: true, unavailable: true, status: 503, code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' };
     }
@@ -3131,7 +3137,13 @@ async function registerDomainLoginFailure(req, email) {
       });
     }
     return selected;
-  } catch (_) {
+  } catch (error) {
+    try {
+      const stage = error && error.loginRateStageV362;
+      diracLoginFatalMarkV324(req, 'login.failure_rate', 'throw', {
+        ok: false, status: 503, reason_code: ['read', 'write_context', 'write_response', 'write_row', 'write_count', 'write_block', 'write_timestamp'].includes(stage) ? stage : 'rate_state'
+      });
+    } catch (_) {}
     return { ok: false, blocked: true, unavailable: true, status: 503, code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' };
   }
 }
