@@ -3297,6 +3297,7 @@ function resetPreflightBaseDomain() {
   return /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value) ? value : '';
 }
 function handleResetPreflight(req, res) {
+  const bootstrapPreflight = DIRAC_SECURITY_PASSKEY_RESET_ACTIONS_V363.has(securityResetBootstrapTargetV334(req));
   const baseDomain = resetPreflightBaseDomain();
   if (!baseDomain) return reject(res, 503, 'SECURITY_RESET_PREFLIGHT_DOMAIN_INVALID');
   const origin = resetPreflightHeader(req, 'origin').trim().toLowerCase();
@@ -3309,7 +3310,7 @@ function handleResetPreflight(req, res) {
   const forwardedProto = resetPreflightHeader(req, 'x-forwarded-proto').split(',')[0].trim().toLowerCase();
   if (process.env.NODE_ENV === 'production' ? forwardedProto !== 'https' : (forwardedProto && forwardedProto !== 'https')) return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_HTTPS_REQUIRED');
   const requestedMethod = resetPreflightHeader(req, 'access-control-request-method').trim().toUpperCase();
-  if (requestedMethod !== 'POST') return reject(res, 405, 'SECURITY_RESET_PREFLIGHT_METHOD_INVALID');
+  if (requestedMethod !== (bootstrapPreflight ? 'GET' : 'POST')) return reject(res, 405, 'SECURITY_RESET_PREFLIGHT_METHOD_INVALID');
   const requestedHeaders = Array.from(new Set(resetPreflightHeader(req, 'access-control-request-headers').split(',').map((v) => v.trim().toLowerCase()).filter(Boolean)));
   if (requestedHeaders.length > RESET_PREFLIGHT_ALLOWED_HEADERS.size || requestedHeaders.some((name) => !/^[a-z0-9-]{1,64}$/.test(name) || !RESET_PREFLIGHT_ALLOWED_HEADERS.has(name))) return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_HEADER_INVALID');
   if (resetPreflightHeader(req, 'access-control-request-private-network').trim().toLowerCase() === 'true') return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_PRIVATE_NETWORK_REJECTED');
@@ -3323,7 +3324,7 @@ function handleResetPreflight(req, res) {
   try {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', bootstrapPreflight ? 'GET, OPTIONS' : 'POST, OPTIONS');
     if (requestedHeaders.length) res.setHeader('Access-Control-Allow-Headers', requestedHeaders.join(', '));
     res.setHeader('Access-Control-Max-Age', '0');
     res.setHeader('Vary', 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers');
@@ -3483,6 +3484,7 @@ async function keamananDispatchV361(req, res) {
   try { securityResetValidateHeadersV361(req); }
   catch (error) { return reject(res, error.statusCode || 400, error.code || 'SECURITY_RESET_HEADER_INVALID'); }
   const bootstrapTarget = securityResetBootstrapTargetV334(req);
+  if (DIRAC_SECURITY_PASSKEY_RESET_ACTIONS_V363.has(bootstrapTarget) && String(req && req.method || 'GET').toUpperCase() === 'OPTIONS') return handleResetPreflight(req, res);
   if (bootstrapTarget && String(req && req.method || 'GET').toUpperCase() === 'GET') {
     try { return await handleResetBootstrapV334(req, res, bootstrapTarget); }
     catch (error) { diracResetDiagnosticV335(req, 'bootstrap', 'error', { target_action: bootstrapTarget }, error); securityResetApplyHeadersV334(req, res, requestOrigin(req)); return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_RESET_BOOTSTRAP_FAILED'), message:'Permintaan keamanan ditolak.' }); }
