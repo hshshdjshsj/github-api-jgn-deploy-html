@@ -316,6 +316,24 @@ function diracRequestPerformanceDatabaseEndV340(marker, result, error) {
     const category = Number.isInteger(status) && status >= 200 && status < 600
       ? String(Math.floor(status / 100)) + 'xx' : 'other';
     aggregate.status_counts[category] += 1;
+    if (error || !result || result.ok !== true) {
+      const allowedCodes = [
+        '42P01', '42703', '42501', '23505', '23503', '23502', '57014', '53300', '40P01',
+        'PGRST116', 'PGRST125', 'PGRST202', 'PGRST204', 'PGRST205',
+        'ORDER_PARENT_OWNERSHIP_UNAVAILABLE', 'CENTRAL_SECURITY_SERVICE_ROLE_BLOCKED',
+        'DIRAC_DATABASE_GATEWAY_OPERATION_INVALID', 'DIRAC_DATABASE_GATEWAY_CONTEXT_NOT_AUTHORIZED',
+        'DIRAC_DATABASE_GATEWAY_POLICY_MISSING', 'DIRAC_DATABASE_EGRESS_PERMIT_REJECTED',
+        'UPSTREAM_RESPONSE_TOO_LARGE', 'ERR_INVALID_URL', 'ETIMEDOUT', 'ECONNRESET',
+        'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT',
+        'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'
+      ];
+      const candidates = [error && error.code, result && result.code,
+        result && result.data && result.data.code, result && result.error];
+      const code = candidates.find(value => typeof value === 'string' && allowedCodes.includes(value)) || 'UNCLASSIFIED';
+      const counts = aggregate.error_code_counts || (aggregate.error_code_counts = Object.create(null));
+      const bucket = Object.prototype.hasOwnProperty.call(counts, code) || Object.keys(counts).length < 8 ? code : 'OTHER';
+      counts[bucket] = (counts[bucket] || 0) + 1;
+    }
   } catch (_) {}
 }
 
@@ -6452,6 +6470,7 @@ async function diracReadResponseTextLimitedV210(response, maximum = 2 * 1024 * 1
     ? response.headers.get('content-length') || ''
     : '').trim();
   if (lengthHeader && (!/^\d+$/.test(lengthHeader) || Number(lengthHeader) > limit)) {
+    try { if (response && response.body && typeof response.body.cancel === 'function') Promise.resolve(response.body.cancel('response_limit_exceeded')).catch(() => {}); } catch (_) {}
     const error = new Error('UPSTREAM_RESPONSE_TOO_LARGE');
     error.code = 'UPSTREAM_RESPONSE_TOO_LARGE';
     throw error;
@@ -6478,7 +6497,7 @@ async function diracReadResponseTextLimitedV210(response, maximum = 2 * 1024 * 1
       total += chunk.length;
       if (total > limit) {
         chunk.fill(0);
-        try { await reader.cancel('response_limit_exceeded'); } catch (_) {}
+        try { Promise.resolve(reader.cancel('response_limit_exceeded')).catch(() => {}); } catch (_) {}
         const error = new Error('UPSTREAM_RESPONSE_TOO_LARGE');
         error.code = 'UPSTREAM_RESPONSE_TOO_LARGE';
         throw error;
@@ -12270,6 +12289,7 @@ async function customerSecurityRecoveryWorkerReadResponseTextV200(response) {
     ? response.headers.get('content-length')
     : 0);
   if (Number.isFinite(contentLength) && contentLength > DIRAC_RECOVERY_WORKER_RESPONSE_MAX_BYTES_V200) {
+    try { if (response.body && typeof response.body.cancel === 'function') Promise.resolve(response.body.cancel('response_limit_exceeded')).catch(() => {}); } catch (_) {}
     throw customerSecurityRecoveryWorkerTransportFailV190('RECOVERY_WORKER_RESPONSE_TOO_LARGE');
   }
 
@@ -12293,7 +12313,7 @@ async function customerSecurityRecoveryWorkerReadResponseTextV200(response) {
       total += chunk.length;
       if (total > DIRAC_RECOVERY_WORKER_RESPONSE_MAX_BYTES_V200) {
         chunk.fill(0);
-        try { await reader.cancel(); } catch (_) {}
+        try { Promise.resolve(reader.cancel()).catch(() => {}); } catch (_) {}
         throw customerSecurityRecoveryWorkerTransportFailV190('RECOVERY_WORKER_RESPONSE_TOO_LARGE');
       }
       chunks.push(chunk);
@@ -47409,6 +47429,7 @@ async function diracRecoveryReadResponseLimitedV201(response, maximum = 2 * 1024
     ? response.headers.get('content-length') || ''
     : '').trim();
   if (lengthHeader && (!/^\d+$/.test(lengthHeader) || Number(lengthHeader) > limit)) {
+    try { if (response && response.body && typeof response.body.cancel === 'function') Promise.resolve(response.body.cancel('response_limit_exceeded')).catch(() => {}); } catch (_) {}
     const error = new Error('UPSTREAM_RESPONSE_TOO_LARGE');
     error.code = 'UPSTREAM_RESPONSE_TOO_LARGE';
     throw error;
@@ -47434,7 +47455,7 @@ async function diracRecoveryReadResponseLimitedV201(response, maximum = 2 * 1024
       total += chunk.length;
       if (total > limit) {
         chunk.fill(0);
-        try { await reader.cancel('response_limit_exceeded'); } catch (_) {}
+        try { Promise.resolve(reader.cancel('response_limit_exceeded')).catch(() => {}); } catch (_) {}
         const error = new Error('UPSTREAM_RESPONSE_TOO_LARGE');
         error.code = 'UPSTREAM_RESPONSE_TOO_LARGE';
         throw error;

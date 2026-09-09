@@ -1079,7 +1079,10 @@ async function securityResetEgressFetchV361(url, options, capability) {
 
 async function securityResetReadUpstreamV361(response, maxBytes = 2097152) {
   const declared = Number(response.headers && response.headers.get('content-length') || 0);
-  if (Number.isFinite(declared) && declared > maxBytes) throw resetError('SECURITY_RESET_UPSTREAM_TOO_LARGE', 503);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    try { if (response.body && typeof response.body.cancel === 'function') Promise.resolve(response.body.cancel('response_limit_exceeded')).catch(() => {}); } catch (_) {}
+    throw resetError('SECURITY_RESET_UPSTREAM_TOO_LARGE', 503);
+  }
   const chunks = []; let total = 0;
   if (response.body && typeof response.body.getReader === 'function') {
     const reader = response.body.getReader();
@@ -1088,7 +1091,7 @@ async function securityResetReadUpstreamV361(response, maxBytes = 2097152) {
         const item = await reader.read();
         if (item.done) break;
         const chunk = Buffer.from(item.value); total += chunk.length;
-        if (total > maxBytes) { await reader.cancel(); throw resetError('SECURITY_RESET_UPSTREAM_TOO_LARGE', 503); }
+        if (total > maxBytes) { try { Promise.resolve(reader.cancel()).catch(() => {}); } catch (_) {} throw resetError('SECURITY_RESET_UPSTREAM_TOO_LARGE', 503); }
         chunks.push(chunk);
       }
     } finally { reader.releaseLock(); }
@@ -2194,6 +2197,7 @@ async function securityResetSmtpReadV342(socket) {
     let buffer = '';
     const cleanup = (done, value) => {
       socket.off('data', onData); socket.off('error', onError); socket.off('timeout', onTimeout);
+      socket.off('end', onClose); socket.off('close', onClose);
       done(value);
     };
     const onData = (chunk) => {
@@ -2205,7 +2209,10 @@ async function securityResetSmtpReadV342(socket) {
     };
     const onError = (error) => cleanup(reject, error);
     const onTimeout = () => cleanup(reject, Object.assign(new Error('SMTP_TIMEOUT'), { code: 'ETIMEDOUT' }));
+    const onClose = () => cleanup(reject, Object.assign(new Error('SMTP_CONNECTION_CLOSED'), { code: 'ECONNRESET' }));
     socket.on('data', onData); socket.on('error', onError); socket.on('timeout', onTimeout);
+    socket.on('end', onClose); socket.on('close', onClose);
+    if (socket.destroyed === true || socket.readableEnded === true) onClose();
   });
 }
 
