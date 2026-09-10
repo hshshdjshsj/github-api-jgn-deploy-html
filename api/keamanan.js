@@ -475,10 +475,10 @@ async function passwordResetEngine(req, res, ops, body) {
       diracResetDiagnosticV335(req, 'commit.grant_read', 'success', { state_kind: String(state && state.kind || ''), expires_in_ms: Number(state && state.expires_at_ms || 0) - Date.now(), security_epoch: Number(state && state.security_epoch || 0) });
       if (!state || state.kind !== 'grant' || Number(state.expires_at_ms || 0) <= Date.now()) throw resetError('PASSWORD_RESET_GRANT_BINDING_INVALID', 403);
       const result = await ops.commitPassword(state, String(inner.new_password || ''), String(inner.confirm_password || ''), grantId);
-      diracResetDiagnosticV335(req, 'commit.password', 'success', { password_changed: result && result.password_changed === true, sessions_revoked: result && result.sessions_revoked === true, login_required: result && result.login_required === true });
-      payload = { ok: true, op: 'commit', password_changed: result.password_changed === true, password_verified: true, smtp_verified: true, owner_bound: true, authorization_method: 'password_smtp', sessions_revoked: result.sessions_revoked === true, login_required: result.login_required === true };
-      if (!payload.password_changed || !payload.sessions_revoked || !payload.login_required) throw resetError('PASSWORD_RESET_COMMIT_POSTCONDITION_FAILED', 503);
-      diracResetDiagnosticV335(req, 'commit', 'success', { password_changed: true, sessions_revoked: true, login_required: true });
+      diracResetDiagnosticV335(req, 'commit.password', 'success', { password_changed: result && result.password_changed === true, sessions_revoked: result && result.sessions_revoked === true, current_session_preserved: result && result.current_session_preserved === true, login_required: result && result.login_required === true });
+      payload = { ok: true, op: 'commit', password_changed: result.password_changed === true, password_verified: true, smtp_verified: true, owner_bound: true, authorization_method: 'password_smtp', sessions_revoked: result.sessions_revoked === true, current_session_preserved: result.current_session_preserved === true, login_required: result.login_required === true };
+      if (!payload.password_changed || !payload.sessions_revoked || !payload.current_session_preserved || payload.login_required) throw resetError('PASSWORD_RESET_COMMIT_POSTCONDITION_FAILED', 503);
+      diracResetDiagnosticV335(req, 'commit', 'success', { password_changed: true, sessions_revoked: true, current_session_preserved: true, login_required: false });
     } else {
       throw resetError('PASSWORD_RESET_OPERATION_INVALID', 400);
     }
@@ -2555,6 +2555,16 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
   const epoch = await diracPasskeyA2FReadSecurityEpoch(owner);
   diracResetDiagnosticV335(req, 'commit.security_epoch', 'success', { current_security_epoch: Number(epoch || 0), grant_security_epoch: Number(state.security_epoch || 0), match: Number(epoch) === Number(state.security_epoch) });
   if (!Number.isSafeInteger(epoch) || epoch !== Number(state.security_epoch)) throw diracPasswordResetErrorV333('PASSWORD_RESET_SECURITY_EPOCH_CHANGED', 409);
+  const currentSecuritySession = await diracSecurityPasskeyResetResolveOwnerV363(req);
+  if (!currentSecuritySession || !currentSecuritySession.owner
+      || !safeEqual(currentSecuritySession.owner.authUserId, authUserId)
+      || !safeEqual(currentSecuritySession.owner.customerId, customerId)
+      || !safeEqual(currentSecuritySession.owner.email, owner.email)
+      || Number(currentSecuritySession.securityEpoch) !== Number(state.security_epoch)
+      || !customerSecurityLooksLikeUuid(String(currentSecuritySession.sessionId || ''))) {
+    throw diracPasswordResetErrorV333('PASSWORD_RESET_CURRENT_SESSION_INVALID', 403);
+  }
+  const preservedSessionId = String(currentSecuritySession.sessionId);
   const cleanPassword = diracPasswordResetStrongPasswordV333(password, owner.email);
   diracResetDiagnosticV335(req, 'commit.password_policy', 'success', { policy_passed: true });
   const params = diracPasswordArgon2V4Params();
@@ -2575,13 +2585,15 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
   }
 
   const sessionPatchPath = '/rest/v1/security_customer_sessions?select=' + encodeURIComponent('id,customer_id,status,revoked_at,revoke_reason')
-    + '&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null';
+    + '&customer_id=eq.' + encodeURIComponent(customerId) + '&id=neq.' + encodeURIComponent(preservedSessionId) + '&status=eq.active&revoked_at=is.null';
   const sessions = await supabaseFetch(sessionPatchPath, {
     method: 'PATCH', auth: 'service', prefer: 'return=representation',
     body: { status: 'revoked', revoked_at: new Date().toISOString(), revoke_reason: 'password_change_password_smtp' }
   });
-  diracResetDiagnosticV335(req, 'commit.session_revoke', sessions && sessions.ok === true ? 'success' : 'error', { http_status: Number(sessions && sessions.status || 0), revoked_row_count: Array.isArray(sessions && sessions.data) ? sessions.data.length : -1 });
-  if (!sessions || sessions.ok !== true || !Array.isArray(sessions.data)) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_REVOCATION_FAILED', 503);
+  const revokedRows = sessions && sessions.ok === true && Array.isArray(sessions.data) ? sessions.data : null;
+  const preservedSessionRevoked = Boolean(revokedRows && revokedRows.some((sessionRow) => safeEqual(String(sessionRow && sessionRow.id || ''), preservedSessionId)));
+  diracResetDiagnosticV335(req, 'commit.session_revoke', sessions && sessions.ok === true && !preservedSessionRevoked ? 'success' : 'error', { http_status: Number(sessions && sessions.status || 0), revoked_row_count: revokedRows ? revokedRows.length : -1, current_session_preserved: !preservedSessionRevoked });
+  if (!revokedRows || preservedSessionRevoked) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_REVOCATION_FAILED', 503);
 
 
   const providerUpdate = await supabaseFetch('/auth/v1/admin/users/' + encodeURIComponent(authUserId), {
@@ -2641,11 +2653,21 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
   if (!shadow || shadow.ok !== true) throw diracPasswordResetErrorV333('PASSWORD_RESET_HASH_WRITE_FAILED', 503);
 
 
-  const activeSessions = await supabaseFetch('/rest/v1/security_customer_sessions?select=id&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null&limit=2', {
+  const activeSessions = await supabaseFetch('/rest/v1/security_customer_sessions?select=' + encodeURIComponent('id,customer_id,status,security_epoch,revoked_at,expires_at') + '&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null&limit=2', {
     method: 'GET', auth: 'service'
   });
-  diracResetDiagnosticV335(req, 'commit.session_postcondition', activeSessions && activeSessions.ok === true ? 'success' : 'error', { http_status: Number(activeSessions && activeSessions.status || 0), active_session_count: Array.isArray(activeSessions && activeSessions.data) ? activeSessions.data.length : -1 });
-  if (!activeSessions || activeSessions.ok !== true || !Array.isArray(activeSessions.data) || activeSessions.data.length !== 0) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_POSTCONDITION_FAILED', 503);
+  const activeRows = activeSessions && activeSessions.ok === true && Array.isArray(activeSessions.data) ? activeSessions.data : [];
+  const preservedSession = activeRows.length === 1 ? activeRows[0] : null;
+  const preservedSessionExpiresAt = Date.parse(String(preservedSession && preservedSession.expires_at || ''));
+  const preservedSessionValid = Boolean(preservedSession
+    && safeEqual(String(preservedSession.id || ''), preservedSessionId)
+    && safeEqual(String(preservedSession.customer_id || ''), customerId)
+    && String(preservedSession.status || '').toLowerCase() === 'active'
+    && !preservedSession.revoked_at
+    && Number(preservedSession.security_epoch || 0) === Number(state.security_epoch)
+    && Number.isFinite(preservedSessionExpiresAt) && preservedSessionExpiresAt > Date.now());
+  diracResetDiagnosticV335(req, 'commit.session_postcondition', activeSessions && activeSessions.ok === true && preservedSessionValid ? 'success' : 'error', { http_status: Number(activeSessions && activeSessions.status || 0), active_session_count: activeRows.length, current_session_preserved: preservedSessionValid });
+  if (!activeSessions || activeSessions.ok !== true || !preservedSessionValid) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_POSTCONDITION_FAILED', 503);
 
   const passkeyReadback = await diracPasswordResetFetchCredentialByIdV333(credentialId, customerId);
   diracResetDiagnosticV335(req, 'commit.passkey_postcondition', passkeyReadback && passkeyReadback.is_active === true && String(passkeyReadback.rotation_state || '') === 'active' ? 'success' : 'error', { is_active: passkeyReadback && passkeyReadback.is_active === true, rotation_state: String(passkeyReadback && passkeyReadback.rotation_state || ''), row_id_match: Boolean(passkeyReadback && safeEqual(String(passkeyReadback.id || ''), String(state.passkey_id || ''))) });
@@ -2653,10 +2675,10 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
       || !safeEqual(String(passkeyReadback.id || ''), String(state.passkey_id || ''))) {
     throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_POSTCONDITION_FAILED', 503);
   }
-  diracResetDiagnosticV335(req, 'commit.server', 'success', { password_changed: true, sessions_revoked: true, login_required: true });
+  diracResetDiagnosticV335(req, 'commit.server', 'success', { password_changed: true, sessions_revoked: true, current_session_preserved: true, login_required: false });
   try { await securityResetRememberCommittedMailV338(req, owner, state, grantId); }
   catch (error) { securityResetMailDiagnosticV340(req, 'persist.exception', 'error', { delivered: false, code: error && error.code, status: Number(error && (error.statusCode || error.status) || 0) }); diracResetDiagnosticV335(req, 'notification.password_changed.persist', 'error', { delivered: false }, error); }
-  return Object.freeze({ password_changed: true, sessions_revoked: true, login_required: true });
+  return Object.freeze({ password_changed: true, sessions_revoked: true, current_session_preserved: true, login_required: false });
 }
 
 
