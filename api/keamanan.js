@@ -1245,6 +1245,8 @@ function diracPasskeyA2FDeviceBindingKeyId(jwk){const x=diracPasskeyA2FSafeStrin
 function diracPasskeyA2FStoredDeviceBinding(row){const j=row&&row.credential_json&&typeof row.credential_json==='object'?row.credential_json:{},b=j.device_binding&&typeof j.device_binding==='object'?j.device_binding:null;if(!b||b.required!==true||b.version!==DIRAC_PASSKEY_DEVICE_BINDING_VERSION||b.algorithm!==DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM||!/^[a-f0-9]{64}$/.test(String(b.key_id||'')))return{ok:false,reason:'stored_device_binding_missing'};const k=diracPasskeyA2FDeviceBindingKeyId(b.public_key_jwk);return k&&safeEqual(k,String(b.key_id))?{ok:true,keyId:k,publicKeyJwk:b.public_key_jwk,binding:b}:{ok:false,reason:'stored_device_binding_key_invalid'};}
 function diracPasskeyA2FDeviceBindingSigningInput({setupToken,payload,credentialId,mode}){return['DIRAC_PASSKEY_DEVICE_BINDING_V1',String(mode||'').toLowerCase(),String(payload&&payload.challenge||''),String(credentialId||''),crypto.createHash('sha256').update(String(setupToken||'')).digest('base64url')].join('\n');}
 function diracPasskeyA2FValidateAuthenticationDeviceBinding({row,body,setupToken,payload,credentialId}){const stored=diracPasskeyA2FStoredDeviceBinding(row);if(!stored.ok)return stored;const parts=diracPasskeyA2FSafeString(body&&body.response,1024).split('.');if(parts.length!==3||parts[0]!=='dpk1a'||!/^[a-f0-9]{64}$/.test(parts[1])||!/^[A-Za-z0-9_-]{86}$/.test(parts[2]))return{ok:false,reason:'device_binding_authentication_envelope_invalid'};if(!safeEqual(stored.keyId,parts[1]))return{ok:false,reason:'device_binding_key_mismatch'};const sig=diracPasskeyA2FBase64UrlToBuffer(parts[2]);if(sig.length!==64)return{ok:false,reason:'device_binding_signature_format_invalid'};try{const key=crypto.createPublicKey({key:stored.publicKeyJwk,format:'jwk'});const input=diracPasskeyA2FDeviceBindingSigningInput({setupToken,payload,credentialId,mode:'authentication'});const ok=crypto.verify('sha256',Buffer.from(input),{key,dsaEncoding:'ieee-p1363'},sig);return ok?{ok:true,keyId:stored.keyId,publicKeyJwk:stored.publicKeyJwk,binding:stored.binding}:{ok:false,reason:'device_binding_authentication_signature_invalid'};}catch(_){return{ok:false,reason:'device_binding_authentication_signature_invalid'};}}
+function diracPasskeyA2FStoredSecurityDeviceBinding(row){const j=row&&row.credential_json&&typeof row.credential_json==='object'?row.credential_json:{},b=j.security_device_binding&&typeof j.security_device_binding==='object'?j.security_device_binding:null;if(!b)return{ok:false,reason:'stored_security_device_binding_missing'};if(b.required!==true||b.version!==DIRAC_PASSKEY_DEVICE_BINDING_VERSION||b.algorithm!==DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM||b.origin!==diracRoleOriginV250('security')||!/^[a-f0-9]{64}$/.test(String(b.key_id||'')))return{ok:false,reason:'stored_security_device_binding_invalid'};const k=diracPasskeyA2FDeviceBindingKeyId(b.public_key_jwk);return k&&safeEqual(k,String(b.key_id))?{ok:true,keyId:k,publicKeyJwk:b.public_key_jwk,binding:b}:{ok:false,reason:'stored_security_device_binding_key_invalid'};}
+function diracPasskeyA2FValidateSecurityDeviceBinding({row,body,setupToken,payload,credentialId,expectedOrigin}){const raw=diracPasskeyA2FSafeString(body&&body.response,1024),stored=diracPasskeyA2FStoredSecurityDeviceBinding(row);if(stored.ok){const parts=raw.split('.');if(parts.length!==3||parts[0]!=='dpk1a'||!/^[a-f0-9]{64}$/.test(parts[1])||!/^[A-Za-z0-9_-]{86}$/.test(parts[2]))return{ok:false,reason:'security_device_binding_authentication_envelope_invalid'};if(!safeEqual(stored.keyId,parts[1]))return{ok:false,reason:'security_device_binding_key_mismatch'};const sig=diracPasskeyA2FBase64UrlToBuffer(parts[2]);if(sig.length!==64||sig.toString('base64url')!==parts[2])return{ok:false,reason:'security_device_binding_signature_format_invalid'};try{const key=crypto.createPublicKey({key:stored.publicKeyJwk,format:'jwk'}),input=diracPasskeyA2FDeviceBindingSigningInput({setupToken,payload,credentialId,mode:'authentication'});return crypto.verify('sha256',Buffer.from(input),{key,dsaEncoding:'ieee-p1363'},sig)?{ok:true,keyId:stored.keyId,publicKeyJwk:stored.publicKeyJwk,binding:stored.binding,enrolledNow:false}:{ok:false,reason:'security_device_binding_authentication_signature_invalid'};}catch(_){return{ok:false,reason:'security_device_binding_authentication_signature_invalid'};}}if(stored.reason!=='stored_security_device_binding_missing')return stored;if(/^dpk1a\./.test(raw))return{ok:false,reason:'security_device_binding_registration_required'};const parts=raw.split('.');if(parts.length!==5||parts[0]!=='dpk1r'||!/^[a-f0-9]{64}$/.test(parts[1])||!/^[A-Za-z0-9_-]{43}$/.test(parts[2])||!/^[A-Za-z0-9_-]{43}$/.test(parts[3])||!/^[A-Za-z0-9_-]{86}$/.test(parts[4]))return{ok:false,reason:'security_device_binding_registration_envelope_invalid'};const publicKeyJwk={kty:'EC',crv:'P-256',x:parts[2],y:parts[3]},keyId=diracPasskeyA2FDeviceBindingKeyId(publicKeyJwk);if(!keyId||!safeEqual(keyId,parts[1]))return{ok:false,reason:'security_device_binding_public_key_id_mismatch'};const sig=diracPasskeyA2FBase64UrlToBuffer(parts[4]);if(sig.length!==64||sig.toString('base64url')!==parts[4])return{ok:false,reason:'security_device_binding_signature_format_invalid'};try{const key=crypto.createPublicKey({key:publicKeyJwk,format:'jwk'}),input=diracPasskeyA2FDeviceBindingSigningInput({setupToken,payload,credentialId,mode:'registration'});if(!crypto.verify('sha256',Buffer.from(input),{key,dsaEncoding:'ieee-p1363'},sig))return{ok:false,reason:'security_device_binding_registration_signature_invalid'};}catch(_){return{ok:false,reason:'security_device_binding_registration_signature_invalid'};}return{ok:true,keyId,publicKeyJwk,binding:null,enrolledNow:true,origin:String(expectedOrigin||'')};}
 function diracPasskeyA2FValidateAuthenticationResponse({row,response,payload,clientData,req}){const authData=diracPasskeyA2FBase64UrlToBuffer(response&&response.authenticatorData),sig=diracPasskeyA2FBase64UrlToBuffer(response&&response.signature),clientRaw=diracPasskeyA2FBase64UrlToBuffer(response&&response.clientDataJSON);if(!authData.length||!sig.length||!clientRaw.length)return{ok:false,reason:'assertion_response_incomplete'};let parsed;try{parsed=diracPasskeyA2FParseAuthData(authData,String(payload&&payload.rpId||diracPasskeyA2FRpId(req)));}catch(_){return{ok:false,reason:'authenticator_data_invalid'};}if(!parsed.ok)return parsed;if(String(clientData&&clientData.type||'')!=='webauthn.get')return{ok:false,reason:'client_data_type_invalid'};const sw=row&&row.credential_json&&row.credential_json.webauthn&&typeof row.credential_json.webauthn==='object'?row.credential_json.webauthn:{};if(typeof sw.backup_eligible!=='boolean')return{ok:false,reason:'stored_passkey_backup_policy_missing'};if(sw.backup_eligible!==parsed.backupEligible)return{ok:false,reason:'passkey_backup_eligibility_changed'};const jwk=diracPasskeyA2FStoredPublicKey(row);if(!jwk)return{ok:false,reason:'stored_public_key_missing'};try{const key=crypto.createPublicKey({key:jwk,format:'jwk'}),signed=Buffer.concat([authData,diracPasskeyA2FSha256Buffer(clientRaw)]);if(!crypto.verify('sha256',signed,key,sig))return{ok:false,reason:'passkey_signature_invalid'};}catch(_){return{ok:false,reason:'passkey_signature_invalid'};}const prev=Math.max(0,Number(row&&row.sign_count||0));if(prev>0&&parsed.signCount>0&&parsed.signCount<=prev)return{...parsed,ok:false,reason:'passkey_sign_count_replay',previousSignCount:prev,newSignCount:parsed.signCount};return{ok:true,...parsed};}
 async function diracPasskeyA2FReadSecurityEpoch(owner){const cid=String(owner&&owner.customerId||'');if(!customerSecurityLooksLikeUuid(cid))throw resetError('PASSKEY_SECURITY_OWNER_INVALID',503);const r=await supabaseFetch('/rest/v1/security_customer_settings?select='+encodeURIComponent('id,customer_id,security_epoch')+'&customer_id=eq.'+encodeURIComponent(cid)+'&order=created_at.desc&limit=2',{method:'GET',auth:'service'});if(!r.ok||!Array.isArray(r.data)||r.data.length!==1)throw resetError('PASSKEY_SECURITY_EPOCH_READ_FAILED',503);const e=Number(r.data[0]&&r.data[0].security_epoch||0);if(!Number.isSafeInteger(e)||e<1)throw resetError('PASSKEY_SECURITY_EPOCH_INVALID',503);return e;}
 
@@ -1815,7 +1817,7 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
       || !safeEqual(String(clientData.challenge || ''), String(state.challenge || ''))
       || clientData.crossOrigin === true) throw diracPasswordResetErrorV333('PASSWORD_RESET_WEBAUTHN_CLIENT_DATA_INVALID', 403);
   const clientOrigin = normalizeDashboardMfaOrigin(clientData.origin || '');
-  const expectedOrigin = normalizeDashboardMfaOrigin(diracRoleOriginV250('auth'));
+  const expectedOrigin = normalizeDashboardMfaOrigin(diracRoleOriginV250('security'));
   if (!clientOrigin || !expectedOrigin || !safeEqual(clientOrigin, expectedOrigin)) throw diracPasswordResetErrorV333('PASSWORD_RESET_WEBAUTHN_ORIGIN_INVALID', 403);
   if (clientData.topOrigin && !safeEqual(normalizeDashboardMfaOrigin(clientData.topOrigin), expectedOrigin)) throw diracPasswordResetErrorV333('PASSWORD_RESET_WEBAUTHN_TOP_ORIGIN_INVALID', 403);
   const rpId = diracPasskeyA2FRpId(req);
@@ -1831,15 +1833,18 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
     }
     throw diracPasswordResetErrorV333(String(assertion.reason || 'PASSKEY_SIGNATURE_INVALID').toUpperCase(), 403);
   }
-  const deviceBinding = diracPasskeyA2FValidateAuthenticationDeviceBinding({
+  const securitySession = diracSecurityPasskeyResetSignedSessionV363(req);
+  if (!safeEqual(securitySession.authUserId, owner.authUserId) || !safeEqual(securitySession.email, owner.email) || !safeEqual(securitySession.sessionId, String(row.current_auth_session_id || ''))) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_SESSION_BINDING_INVALID', 403);
+  const deviceBinding = diracPasskeyA2FValidateSecurityDeviceBinding({
     row,
     body: { response: String(input.device_binding || '') },
     setupToken: String(input.challenge_id || ''),
     payload,
-    credentialId
+    credentialId,
+    expectedOrigin
   });
-  diracResetDiagnosticV335(req, 'verify.passkey.device_binding', deviceBinding.ok ? 'success' : 'rejected', { reason: String(deviceBinding && deviceBinding.reason || ''), key_id_present: Boolean(deviceBinding && deviceBinding.keyId) });
-  if (!deviceBinding.ok) throw diracPasswordResetErrorV333(String(deviceBinding.reason || 'DEVICE_BINDING_AUTHENTICATION_INVALID').toUpperCase(), 403);
+  diracResetDiagnosticV335(req, 'verify.passkey.device_binding', deviceBinding.ok ? 'success' : 'rejected', { reason: String(deviceBinding && deviceBinding.reason || ''), key_id_present: Boolean(deviceBinding && deviceBinding.keyId), enrolled_now: deviceBinding && deviceBinding.enrolledNow === true });
+  if (!deviceBinding.ok) throw diracPasswordResetErrorV333(String(deviceBinding.reason || 'SECURITY_DEVICE_BINDING_INVALID').toUpperCase(), 403);
 
   diracResetDiagnosticV335(req, 'verify.challenge_consume', 'begin', {});
   await diracPasswordResetConsumeStateV333('challenge', input.challenge_id, state.expires_at_ms, state.consume_binding);
@@ -1878,6 +1883,17 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
       ...(currentJson.webauthn && typeof currentJson.webauthn === 'object' ? currentJson.webauthn : {}),
       sign_count: nextSignCount,
       backup_state: assertion.backupState === true,
+      last_verified_at: nowIso
+    },
+    security_device_binding: {
+      ...(currentJson.security_device_binding && typeof currentJson.security_device_binding === 'object' ? currentJson.security_device_binding : {}),
+      version: DIRAC_PASSKEY_DEVICE_BINDING_VERSION,
+      algorithm: DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM,
+      required: true,
+      origin: expectedOrigin,
+      key_id: deviceBinding.keyId,
+      public_key_jwk: deviceBinding.publicKeyJwk,
+      registered_at: currentJson.security_device_binding && currentJson.security_device_binding.registered_at ? currentJson.security_device_binding.registered_at : nowIso,
       last_verified_at: nowIso
     },
     last_authentication: {
@@ -1977,6 +1993,7 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
   });
   let recordedRow = null;
   if (recorded && recorded.ok === true) recordedRow = await diracPasswordResetFetchCredentialByRowIdV333(String(row.id || ''), owner.customerId);
+  const recordedSecurityBinding = diracPasskeyA2FStoredSecurityDeviceBinding(recordedRow);
   diracResetDiagnosticV335(req, 'verify.passkey.sign_count_cas', recorded && recorded.ok === true ? 'success' : 'error', { http_status: Number(recorded && recorded.status || 0), row_count: recordedRow ? 1 : 0, previous_sign_count: previousSignCount, next_sign_count: nextSignCount });
   if (!recorded || recorded.ok !== true || !recordedRow
       || !safeEqual(String(recordedRow.id || ''), String(row.id || ''))
@@ -1984,6 +2001,7 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
       || !safeEqual(String(recordedRow.credential_id || ''), credentialId)
       || Number(recordedRow.sign_count || 0) !== nextSignCount
       || recordedRow.backup_state !== (assertion.backupState === true)
+      || !recordedSecurityBinding.ok || !safeEqual(recordedSecurityBinding.keyId, deviceBinding.keyId)
       || recordedRow.is_active !== true || String(recordedRow.rotation_state || '') !== 'active') {
     throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_USAGE_POSTCONDITION_FAILED', 503);
   }
