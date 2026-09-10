@@ -28706,6 +28706,8 @@ async function orderMailNotifyNewOrderSafe(input) {
     const order = orderMailNormalizeOrderInput(input);
     const messages = orderMailBuildNewOrderMessages(order);
 
+    await Promise.all([
+      (async () => {
     if (summary.customer.enabled && summary.customer.configured && order.customer.email) {
       summary.attempted = true;
       const customerConfig = orderMailSmtpConfig('customer');
@@ -28726,6 +28728,8 @@ async function orderMailNotifyNewOrderSafe(input) {
         : (!summary.customer.configured ? 'smtp_not_configured' : 'customer_email_missing');
     }
 
+      })(),
+      (async () => {
     if (summary.owner.enabled && summary.owner.configured && orderMailSmtpConfig('owner').recipients.length) {
       summary.attempted = true;
       const ownerConfig = orderMailSmtpConfig('owner');
@@ -28746,6 +28750,8 @@ async function orderMailNotifyNewOrderSafe(input) {
         ? 'disabled'
         : (!summary.owner.configured ? 'smtp_not_configured' : 'owner_email_missing');
     }
+      })()
+    ]);
   } catch (error) {
     summary.ok = false;
     summary.error = orderMailSafeError(error);
