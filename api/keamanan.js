@@ -421,70 +421,62 @@ async function passwordResetEngine(req, res, ops, body) {
     const bindingNow = String(await ops.requestBinding());
     const browserHash = String(await ops.hashBinding('browser', inner.browser_binding));
     const keyId = opened.context.keyId;
+    const bindingContext = { browserHash, requestBinding: bindingNow, keyId };
     diracResetDiagnosticV335(req, 'confirm.binding', 'success', { op: String(inner.op || ''), request_binding_length: bindingNow.length, browser_hash_length: browserHash.length, key_id_length: String(keyId || '').length });
     if (inner.op === 'start') {
       diracResetDiagnosticV335(req, 'start', 'begin', {});
-      if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','email'])) throw resetError('PASSWORD_RESET_START_FIELDS_INVALID', 400);
+      if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','email','current_password'])) throw resetError('PASSWORD_RESET_START_FIELDS_INVALID', 400);
       const email = String(inner.email || '').trim().toLowerCase();
       if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) || email.length > 120) throw resetError('PASSWORD_RESET_EMAIL_INVALID', 400);
-      const rpId = String(await ops.rpId());
-      const allowCredentials = await ops.allowCredentials(email);
-      diracResetDiagnosticV335(req, 'start.challenge_issue', 'begin', { rp_id: rpId, email_binding_hash: diracPasswordResetBindingHashV333('diag-email', email).slice(0, 20), allow_credentials_count: allowCredentials.length });
-      const issued = await ops.issueChallenge({ email, browserHash, requestBinding: bindingNow, keyId, rpId });
-      diracResetDiagnosticV335(req, 'start.challenge_issue', 'success', { challenge_id_length: String(issued && issued.challenge_id || '').length, challenge_length: String(issued && issued.challenge || '').length, expires_in_ms: Number(issued && issued.expires_at_ms || 0) - Date.now() });
-      if (!issued || !/^[A-Za-z0-9_-]{43,86}$/.test(String(issued.challenge_id || ''))
-          || !/^[A-Za-z0-9_-]{43}$/.test(String(issued.challenge || ''))
-          || Number(issued.expires_at_ms || 0) <= Date.now()) throw resetError('PASSWORD_RESET_CHALLENGE_ISSUE_FAILED', 503);
-      payload = {
-        ok: true, op: 'start', challenge_id: String(issued.challenge_id),
-        publicKey: {
-          challenge: String(issued.challenge),
-          rpId,
-          timeout: 180000,
-          allowCredentials,
-          userVerification: 'required',
-          device_binding_required: true,
-          device_binding_policy: 'webcrypto-nonextractable-v1'
-        }
-      };
-      diracResetDiagnosticV335(req, 'start', 'success', { rp_id: rpId, user_verification: 'required', device_binding_required: true });
+      const resolved = await ops.resolveOwner();
+      if (!resolved || !resolved.owner || !safeEqual(normalizeAuthEmail(resolved.owner.email || ''), email)) throw resetError('PASSWORD_CHANGE_ACCOUNT_BINDING_INVALID', 403);
+      await ops.verifyPassword(resolved.owner, String(inner.current_password || ''));
+      inner.current_password = '';
+      const active = await ops.listActive(resolved.owner);
+      if (!Array.isArray(active) || active.length !== 1 || !ops.validateOwnerRow(active[0], resolved.owner)) throw resetError('PASSWORD_CHANGE_ACCOUNT_SECURITY_STATE_INVALID', 409);
+      await ops.emailRate('send', resolved.owner.customerId, 3, 600, 600);
+      const row = active[0];
+      const code = ops.emailCode();
+      const issued = ops.issueEmailToken({
+        authUserId: resolved.owner.authUserId, customerId: resolved.owner.customerId, email: resolved.owner.email,
+        sessionId: resolved.sessionId, securityEpoch: resolved.securityEpoch, authorizingPasskeyId: String(row.id),
+        authorizingCredentialIdHash: ops.hashCredential(String(row.credential_id)), activeCredentialSetHash: ops.activeSetHash(active),
+        browserHash, requestBinding: bindingNow, keyId
+      }, code);
+      await ops.sendSmtpCode(resolved.owner, code, issued.payload);
+      payload = { ok: true, op: 'start', password_verified: true, smtp_sent: true, email_verification_required: true, verification_token: issued.token, code_length: code.length, expires_in: Math.max(1, Math.floor((Number(issued.payload.expiresAtMs) - Date.now()) / 1000)), authorization_method: 'password_smtp' };
+      diracResetDiagnosticV335(req, 'start', 'success', { password_verified: true, smtp_sent: true, code_length: code.length });
     } else if (inner.op === 'verify') {
       diracResetDiagnosticV335(req, 'verify', 'begin', {});
-      if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','challenge_id','credential','device_binding'])) throw resetError('PASSWORD_RESET_VERIFY_FIELDS_INVALID', 400);
-      const challengeId = String(inner.challenge_id || '');
-      diracResetDiagnosticV335(req, 'verify.challenge_read', 'begin', { challenge_id_hash: crypto.createHash('sha256').update(challengeId).digest('hex').slice(0, 20) });
-      const state = await ops.readChallenge(challengeId, { browserHash, requestBinding: bindingNow, keyId, rpId: String(await ops.rpId()) });
-      diracResetDiagnosticV335(req, 'verify.challenge_read', 'success', { state_kind: String(state && state.kind || ''), expires_in_ms: Number(state && state.expires_at_ms || 0) - Date.now() });
-      if (!state || state.kind !== 'challenge' || Number(state.expires_at_ms || 0) <= Date.now()) {
-        throw resetError('PASSWORD_RESET_CHALLENGE_BINDING_INVALID', 403);
-      }
-      diracResetDiagnosticV335(req, 'verify.passkey', 'begin', { credential_present: Boolean(inner.credential), device_binding_present: Boolean(inner.device_binding) });
-      const verified = await ops.verifyPasskey(state, {
-        challenge_id: challengeId,
-        credential: inner.credential,
-        device_binding: String(inner.device_binding || '')
-      });
-      diracResetDiagnosticV335(req, 'verify.passkey', 'success', { owner_bound: true, security_epoch: Number(verified && verified.security_epoch || 0), device_binding_key_id_present: Boolean(verified && verified.device_binding_key_id) });
-      diracResetDiagnosticV335(req, 'verify.grant_issue', 'begin', {});
-      const grant = await ops.issueGrant(verified, { browserHash, requestBinding: bindingNow, keyId });
-      diracResetDiagnosticV335(req, 'verify.grant_issue', 'success', { grant_length: String(grant || '').length });
-      if (!/^[A-Za-z0-9_-]{43,256}$/.test(String(grant || ''))) throw resetError('PASSWORD_RESET_GRANT_ISSUE_FAILED', 503);
-      payload = { ok: true, op: 'verify', passkey_verified: true, owner_bound: true, reset_grant: String(grant) };
-      diracResetDiagnosticV335(req, 'verify', 'success', { passkey_verified: true, owner_bound: true });
+      if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','verification_token','verification_code'])) throw resetError('PASSWORD_RESET_VERIFY_FIELDS_INVALID', 400);
+      const resolved = await ops.resolveOwner();
+      const tokenData = ops.readEmailToken(String(inner.verification_token || ''), resolved, bindingContext);
+      const p = tokenData.payload;
+      const code = String(inner.verification_code || '').trim();
+      await ops.emailRate('verify', String(p.jti || ''), 5, 600, 600);
+      if (!ops.emailCodeValid(code, Number(p.codeLength)) || !safeEqual(ops.emailCodeMac(p, code), String(p.codeMac || ''))) throw resetError('PASSWORD_CHANGE_SMTP_CODE_INVALID', 403);
+      const active = await ops.listActive(resolved.owner);
+      if (!Array.isArray(active) || active.length !== 1 || !ops.validateOwnerRow(active[0], resolved.owner)
+          || !safeEqual(String(active[0].id || ''), String(p.authorizingPasskeyId || ''))
+          || !safeEqual(ops.hashCredential(String(active[0].credential_id || '')), String(p.authorizingCredentialIdHash || ''))
+          || !safeEqual(ops.activeSetHash(active), String(p.activeCredentialSetHash || ''))) throw resetError('PASSWORD_CHANGE_ACCOUNT_SECURITY_STATE_CHANGED', 409);
+      await ops.consumeEmailToken(tokenData.token, p);
+      const verified = { auth_user_id: resolved.owner.authUserId, customer_id: resolved.owner.customerId, email: resolved.owner.email, email_hash: diracPasswordResetBindingHashV333('email', resolved.owner.email), passkey_id: String(active[0].id), credential_id: String(active[0].credential_id), security_epoch: resolved.securityEpoch };
+      const grant = await ops.issueGrant(verified, bindingContext);
+      if (!/^[A-Za-z0-9_-]{156}$/.test(String(grant || ''))) throw resetError('PASSWORD_RESET_GRANT_ISSUE_FAILED', 503);
+      payload = { ok: true, op: 'verify', password_verified: true, smtp_verified: true, owner_bound: true, authorization_method: 'password_smtp', reset_grant: String(grant) };
+      diracResetDiagnosticV335(req, 'verify', 'success', { password_verified: true, smtp_verified: true, owner_bound: true });
     } else if (inner.op === 'commit') {
       diracResetDiagnosticV335(req, 'commit', 'begin', {});
       if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','reset_grant','new_password','confirm_password'])) throw resetError('PASSWORD_RESET_COMMIT_FIELDS_INVALID', 400);
       const grantId = String(inner.reset_grant || '');
       diracResetDiagnosticV335(req, 'commit.grant_read', 'begin', { grant_hash: crypto.createHash('sha256').update(grantId).digest('hex').slice(0, 20) });
-      const state = await ops.readGrant(grantId, { browserHash, requestBinding: bindingNow, keyId });
+      const state = await ops.readGrant(grantId, bindingContext);
       diracResetDiagnosticV335(req, 'commit.grant_read', 'success', { state_kind: String(state && state.kind || ''), expires_in_ms: Number(state && state.expires_at_ms || 0) - Date.now(), security_epoch: Number(state && state.security_epoch || 0) });
-      if (!state || state.kind !== 'grant' || Number(state.expires_at_ms || 0) <= Date.now()) {
-        throw resetError('PASSWORD_RESET_GRANT_BINDING_INVALID', 403);
-      }
-      diracResetDiagnosticV335(req, 'commit.password', 'begin', { password_present: Boolean(inner.new_password), confirmation_present: Boolean(inner.confirm_password) });
+      if (!state || state.kind !== 'grant' || Number(state.expires_at_ms || 0) <= Date.now()) throw resetError('PASSWORD_RESET_GRANT_BINDING_INVALID', 403);
       const result = await ops.commitPassword(state, String(inner.new_password || ''), String(inner.confirm_password || ''), grantId);
       diracResetDiagnosticV335(req, 'commit.password', 'success', { password_changed: result && result.password_changed === true, sessions_revoked: result && result.sessions_revoked === true, login_required: result && result.login_required === true });
-      payload = { ok: true, op: 'commit', password_changed: result.password_changed === true, passkey_verified: true, owner_bound: true, sessions_revoked: result.sessions_revoked === true, login_required: result.login_required === true };
+      payload = { ok: true, op: 'commit', password_changed: result.password_changed === true, password_verified: true, smtp_verified: true, owner_bound: true, authorization_method: 'password_smtp', sessions_revoked: result.sessions_revoked === true, login_required: result.login_required === true };
       if (!payload.password_changed || !payload.sessions_revoked || !payload.login_required) throw resetError('PASSWORD_RESET_COMMIT_POSTCONDITION_FAILED', 503);
       diracResetDiagnosticV335(req, 'commit', 'success', { password_changed: true, sessions_revoked: true, login_required: true });
     } else {
@@ -493,7 +485,7 @@ async function passwordResetEngine(req, res, ops, body) {
   } catch (error) {
     diracResetDiagnosticV335(req, 'confirm.operation', 'error', { op: String(inner.op || '') }, error);
     responseStatus = Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503));
-    payload = { ok: false, op: String(inner.op || ''), code: String(error && error.code || 'PASSWORD_RESET_REQUEST_REJECTED'), message: 'Permintaan lost password tidak dapat diproses.' };
+    payload = { ok: false, op: String(inner.op || ''), code: String(error && error.code || 'PASSWORD_RESET_REQUEST_REJECTED'), message: 'Permintaan perubahan kata sandi tidak dapat diproses.' };
   }
   diracResetDiagnosticV335(req, 'd10.seal', 'begin', { op: String(inner.op || ''), payload_ok: payload && payload.ok === true, payload_code: String(payload && payload.code || '') });
   const challenge = await sealD10Response(payload, opened.context);
@@ -1833,8 +1825,11 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
     }
     throw diracPasswordResetErrorV333(String(assertion.reason || 'PASSKEY_SIGNATURE_INVALID').toUpperCase(), 403);
   }
-  const securitySession = diracSecurityPasskeyResetSignedSessionV363(req);
-  if (!safeEqual(securitySession.authUserId, owner.authUserId) || !safeEqual(securitySession.email, owner.email) || !safeEqual(securitySession.sessionId, String(row.current_auth_session_id || ''))) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_SESSION_BINDING_INVALID', 403);
+  const securitySession = await diracSecurityPasskeyResetResolveOwnerV363(req);
+  if (!securitySession || !securitySession.owner
+      || !safeEqual(securitySession.owner.authUserId, owner.authUserId)
+      || !safeEqual(securitySession.owner.customerId, owner.customerId)
+      || !safeEqual(securitySession.owner.email, owner.email)) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_SESSION_BINDING_INVALID', 403);
   const deviceBinding = diracPasskeyA2FValidateSecurityDeviceBinding({
     row,
     body: { response: String(input.device_binding || '') },
@@ -2002,6 +1997,7 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
       || Number(recordedRow.sign_count || 0) !== nextSignCount
       || recordedRow.backup_state !== (assertion.backupState === true)
       || !recordedSecurityBinding.ok || !safeEqual(recordedSecurityBinding.keyId, deviceBinding.keyId)
+      || !safeEqual(String(recordedRow.current_auth_session_id || ''), currentAuthSessionId)
       || recordedRow.is_active !== true || String(recordedRow.rotation_state || '') !== 'active') {
     throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_USAGE_POSTCONDITION_FAILED', 503);
   }
@@ -2404,7 +2400,11 @@ function securityResetGmailQuotaV352(error) {
 
 async function securityResetGmailMailV352(account, record, subject, text, html, slot) {
   const context = diracCentralCurrentContextV149();
-  if (!context || !context.active || !context.banChecked || !context.browserChecked || !context.__diracPasswordResetGrantConsumedV361
+  const passwordChangeSmtp = Boolean(context && context.__diracPasswordChangeSmtpDispatchV365 === true
+    && /^[a-f0-9]{64}$/.test(String(context.__diracPasswordChangeSmtpRecipientHashV365 || ''))
+    && isValidAuthEmail(record && record.email)
+    && safeEqual(diracSecurityPasskeyResetSha256V363(normalizeAuthEmail(record.email)), String(context.__diracPasswordChangeSmtpRecipientHashV365)));
+  if (!context || !context.active || !context.banChecked || !context.browserChecked || (!context.__diracPasswordResetGrantConsumedV361 && !passwordChangeSmtp)
       || !account || account.host !== 'smtp.gmail.com' || account.port !== 465 || !isValidAuthEmail(account.user) || !isValidAuthEmail(record.email)) throw resetError('SECURITY_RESET_SMTP_CONTEXT_REQUIRED', 503);
   const boundary = 'dirac-password-reset-' + crypto.randomBytes(18).toString('hex');
   const mime = [
@@ -2445,9 +2445,9 @@ async function securityResetSendCommittedPasswordMailV342(record) {
   const htmlInput = {
     preheader: 'Password akun Dirac Group berhasil diganti.', brandLabel: 'SECURE ACCOUNT SECURITY', eyebrow: 'PASSWORD SECURITY NOTICE',
     title: 'Password Berhasil\nDiganti', greeting: 'Yth. Pengguna Dirac Group,',
-    summary: 'Password akun Anda telah diganti setelah verifikasi Passkey dan perubahan telah dikomit oleh server.',
+    summary: 'Password akun Anda telah diganti setelah verifikasi kata sandi akun saat ini dan kode SMTP satu kali, lalu perubahan dikomit oleh server.',
     statusLabel: 'STATUS PASSWORD', statusValue: 'PASSWORD BARU AKTIF', statusNote: 'Perubahan ini telah dikonfirmasi oleh server keamanan Dirac Group.',
-    detailsLabel: 'DETAIL PERUBAHAN', rows: [['AKTIVITAS','Perubahan password akun'],['METODE VERIFIKASI','WebAuthn Passkey'],['WAKTU',timeText],['REFERENSI',reference]],
+    detailsLabel: 'DETAIL PERUBAHAN', rows: [['AKTIVITAS','Perubahan password akun'],['METODE VERIFIKASI','Kata sandi akun + kode SMTP'],['WAKTU',timeText],['REFERENSI',reference]],
     actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN',
     warningTitle: 'PERIKSA JIKA BUKAN ANDA', warning: 'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi kanal resmi Dirac Group. Jangan bagikan password, OTP, token, cookie, kode keamanan, atau Passkey.',
     supportLead: 'Jika membutuhkan bantuan terkait keamanan password, gunakan kanal resmi Dirac Group berikut.'
@@ -2578,7 +2578,7 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
     + '&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null';
   const sessions = await supabaseFetch(sessionPatchPath, {
     method: 'PATCH', auth: 'service', prefer: 'return=representation',
-    body: { status: 'revoked', revoked_at: new Date().toISOString(), revoke_reason: 'password_reset_passkey' }
+    body: { status: 'revoked', revoked_at: new Date().toISOString(), revoke_reason: 'password_change_password_smtp' }
   });
   diracResetDiagnosticV335(req, 'commit.session_revoke', sessions && sessions.ok === true ? 'success' : 'error', { http_status: Number(sessions && sessions.status || 0), revoked_row_count: Array.isArray(sessions && sessions.data) ? sessions.data.length : -1 });
   if (!sessions || sessions.ok !== true || !Array.isArray(sessions.data)) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_REVOCATION_FAILED', 503);
@@ -2921,6 +2921,124 @@ async function diracSecurityPasskeyResetSendEmailCodeV364(req, owner, code, payl
   return true;
 }
 
+
+const DIRAC_PASSWORD_CHANGE_SMTP_V365 = 'dirac-password-change-password-smtp-v365';
+const DIRAC_PASSWORD_CHANGE_SMTP_TOKEN_SCOPE_V365 = 'password-change-smtp-code-v365';
+const DIRAC_PASSWORD_CHANGE_SMTP_TTL_MS_V365 = 600000;
+const DIRAC_PASSWORD_CHANGE_SMTP_CODE_MIN_LENGTH_V365 = 100;
+const DIRAC_PASSWORD_CHANGE_SMTP_CODE_MAX_LENGTH_V365 = 160;
+const DIRAC_PASSWORD_CHANGE_SMTP_SYMBOLS_V365 = '!#$%&()*+,-./:;<=>?@[]^_{|}~';
+const DIRAC_PASSWORD_CHANGE_SMTP_ALPHABET_V365 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789' + DIRAC_PASSWORD_CHANGE_SMTP_SYMBOLS_V365;
+
+function diracPasswordChangeSmtpCodeLooksValidV365(code, expectedLength) {
+  const value = String(code || '');
+  return Number.isSafeInteger(Number(expectedLength))
+    && Number(expectedLength) >= DIRAC_PASSWORD_CHANGE_SMTP_CODE_MIN_LENGTH_V365
+    && Number(expectedLength) <= DIRAC_PASSWORD_CHANGE_SMTP_CODE_MAX_LENGTH_V365
+    && value.length === Number(expectedLength)
+    && Array.from(value).every((ch) => DIRAC_PASSWORD_CHANGE_SMTP_ALPHABET_V365.includes(ch))
+    && /[A-Z]/.test(value) && /[a-z]/.test(value) && /[0-9]/.test(value)
+    && Array.from(value).some((ch) => DIRAC_PASSWORD_CHANGE_SMTP_SYMBOLS_V365.includes(ch));
+}
+
+function diracPasswordChangeSmtpCodeV365() {
+  for (;;) {
+    const length = crypto.randomInt(DIRAC_PASSWORD_CHANGE_SMTP_CODE_MIN_LENGTH_V365, DIRAC_PASSWORD_CHANGE_SMTP_CODE_MAX_LENGTH_V365 + 1);
+    let code = '';
+    for (let i = 0; i < length; i += 1) code += DIRAC_PASSWORD_CHANGE_SMTP_ALPHABET_V365[crypto.randomInt(0, DIRAC_PASSWORD_CHANGE_SMTP_ALPHABET_V365.length)];
+    if (diracPasswordChangeSmtpCodeLooksValidV365(code, length)) return code;
+  }
+}
+
+function diracPasswordChangeSmtpCodeMacV365(payload, code) {
+  const key = diracCentralDeriveSecretV146('password-change-smtp-code-v365');
+  try {
+    return crypto.createHmac('sha256', key).update([
+      DIRAC_PASSWORD_CHANGE_SMTP_V365, String(payload.jti || ''), String(payload.authUserId || ''), String(payload.customerId || ''),
+      String(payload.sessionId || ''), String(payload.securityEpoch || ''), String(payload.codeSalt || ''), String(code || '')
+    ].join('\0')).digest('hex');
+  } finally { key.fill(0); }
+}
+
+function diracPasswordChangeSmtpTokenV365(req, context, code) {
+  const now = Date.now();
+  const codeLength = String(code || '').length;
+  if (!diracPasswordChangeSmtpCodeLooksValidV365(code, codeLength)) throw resetError('PASSWORD_CHANGE_SMTP_CODE_GENERATION_INVALID', 500);
+  const base = {
+    typ: DIRAC_PASSWORD_CHANGE_SMTP_V365, phase: 'smtp', jti: randomToken(24),
+    origin: requestOrigin(req), uaHash: diracSecurityPasskeyResetSha256V363(requestUserAgent(req)),
+    authUserId: String(context.authUserId || ''), customerId: String(context.customerId || ''), emailHash: diracSecurityPasskeyResetSha256V363(normalizeAuthEmail(context.email || '')),
+    sessionId: String(context.sessionId || ''), securityEpoch: Number(context.securityEpoch || 0),
+    authorizingPasskeyId: String(context.authorizingPasskeyId || ''), authorizingCredentialIdHash: String(context.authorizingCredentialIdHash || ''), activeCredentialSetHash: String(context.activeCredentialSetHash || ''),
+    browserHash: String(context.browserHash || ''), requestBinding: String(context.requestBinding || ''), keyId: String(context.keyId || ''),
+    codeLength, codeSalt: randomToken(18), issuedAtMs: now, expiresAtMs: now + DIRAC_PASSWORD_CHANGE_SMTP_TTL_MS_V365
+  };
+  const payload = Object.freeze({ ...base, codeMac: diracPasswordChangeSmtpCodeMacV365(base, code) });
+  return { token: securityResetTokenSignV334(payload, DIRAC_PASSWORD_CHANGE_SMTP_TOKEN_SCOPE_V365), payload };
+}
+
+function diracPasswordChangeReadSmtpTokenV365(req, token, resolved, context) {
+  const raw = String(token || '').trim();
+  if (raw.length < 48 || raw.length > 4096) throw resetError('PASSWORD_CHANGE_SMTP_TOKEN_INVALID', 403);
+  const p = securityResetTokenDecodeV334(raw, DIRAC_PASSWORD_CHANGE_SMTP_TOKEN_SCOPE_V365);
+  const now = Date.now();
+  if (!p || p.typ !== DIRAC_PASSWORD_CHANGE_SMTP_V365 || p.phase !== 'smtp'
+      || !/^[A-Za-z0-9_-]{32}$/.test(String(p.jti || '')) || !/^[A-Za-z0-9_-]{24}$/.test(String(p.codeSalt || '')) || !/^[a-f0-9]{64}$/.test(String(p.codeMac || ''))
+      || !customerSecurityLooksLikeUuid(String(p.authUserId || '')) || !customerSecurityLooksLikeUuid(String(p.customerId || '')) || !customerSecurityLooksLikeUuid(String(p.sessionId || ''))
+      || !customerSecurityLooksLikeUuid(String(p.authorizingPasskeyId || '')) || !/^[a-f0-9]{64}$/.test(String(p.authorizingCredentialIdHash || '')) || !/^[a-f0-9]{64}$/.test(String(p.activeCredentialSetHash || ''))
+      || !Number.isSafeInteger(Number(p.codeLength)) || Number(p.codeLength) < DIRAC_PASSWORD_CHANGE_SMTP_CODE_MIN_LENGTH_V365 || Number(p.codeLength) > DIRAC_PASSWORD_CHANGE_SMTP_CODE_MAX_LENGTH_V365
+      || !Number.isSafeInteger(Number(p.securityEpoch)) || Number(p.securityEpoch) < 1
+      || !Number.isSafeInteger(Number(p.issuedAtMs)) || !Number.isSafeInteger(Number(p.expiresAtMs)) || Number(p.issuedAtMs) > now + 30000 || Number(p.expiresAtMs) <= now
+      || Number(p.expiresAtMs) - Number(p.issuedAtMs) !== DIRAC_PASSWORD_CHANGE_SMTP_TTL_MS_V365
+      || !safeEqual(String(p.origin || ''), requestOrigin(req)) || !safeEqual(String(p.uaHash || ''), diracSecurityPasskeyResetSha256V363(requestUserAgent(req)))
+      || !safeEqual(String(p.authUserId), resolved.owner.authUserId) || !safeEqual(String(p.customerId), resolved.owner.customerId) || !safeEqual(String(p.emailHash || ''), diracSecurityPasskeyResetSha256V363(resolved.owner.email))
+      || !safeEqual(String(p.sessionId), resolved.sessionId) || Number(p.securityEpoch) !== resolved.securityEpoch
+      || !safeEqual(String(p.browserHash || ''), String(context.browserHash || '')) || !safeEqual(String(p.requestBinding || ''), String(context.requestBinding || '')) || !safeEqual(String(p.keyId || ''), String(context.keyId || ''))) {
+    throw resetError('PASSWORD_CHANGE_SMTP_TOKEN_INVALID', 403);
+  }
+  return Object.freeze({ token: raw, payload: p });
+}
+
+async function diracPasswordChangeConsumeSmtpTokenV365(token, payload) {
+  const result = await diracCentralAtomicConsumeV230({
+    namespace: 'password_change_smtp_v365', jti: String(payload.jti), expiresAt: Math.floor(Number(payload.expiresAtMs) / 1000),
+    contextHash: [DIRAC_PASSWORD_CHANGE_SMTP_V365, payload.jti, payload.authUserId, payload.customerId, payload.sessionId, String(payload.securityEpoch), diracSecurityPasskeyResetSha256V363(token)].join('|')
+  });
+  if (!result || result.ok !== true) throw resetError('PASSWORD_CHANGE_SMTP_TOKEN_REPLAY', 409);
+  return true;
+}
+
+async function diracPasswordChangeSendSmtpCodeV365(req, owner, code, payload) {
+  const account = securityResetSmtpConfigV342();
+  if (!account) throw resetError('PASSWORD_CHANGE_SMTP_CONFIGURATION_UNAVAILABLE', 503);
+  const reference = diracSecurityPasskeyResetSha256V363(String(payload.jti || '')).slice(0, 10).toUpperCase();
+  const subject = 'DiracGroup Security - Kode Ganti Kata Sandi [' + reference + ']';
+  const htmlInput = {
+    preheader: 'Kode SMTP satu kali untuk mengganti kata sandi akun Dirac Group.', brandLabel: 'SECURE PASSWORD CHANGE', eyebrow: 'PASSWORD VERIFICATION CODE',
+    title: 'Kode Verifikasi\nGanti Kata Sandi', greeting: 'Yth. Pengguna Dirac Group,',
+    summary: 'Kata sandi akun saat ini telah diverifikasi pada server utama. Masukkan kode berikut hanya pada halaman keamanan resmi yang sedang Anda gunakan.',
+    statusLabel: 'KODE VERIFIKASI', statusValue: '__DIRAC_PASSWORD_CHANGE_CODE_' + reference + '__', statusNote: 'Kode ' + String(payload.codeLength) + ' karakter acak (huruf, angka, dan simbol) ini berlaku selama 10 menit dan hanya dapat digunakan satu kali.',
+    detailsLabel: 'DETAIL VERIFIKASI', rows: [['AKTIVITAS','Perubahan kata sandi'],['METODE OTORISASI','Kata sandi akun + kode SMTP'],['MASA BERLAKU','10 menit'],['REFERENSI',reference]],
+    warningTitle: 'JANGAN BAGIKAN KODE', warning: 'Jangan berikan kode ini kepada siapa pun. Jika Anda tidak meminta perubahan kata sandi, abaikan email ini dan tinjau sesi aktif di Pusat Keamanan.',
+    actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN'
+  };
+  const marker = String(htmlInput.statusValue);
+  const html = diracSecurityCorporateEmailHtmlV327(htmlInput).replace(marker, diracSecurityMailEscapeV327(code));
+  const text = diracSecurityMailTextV327(htmlInput).replace(marker, code);
+  const context = diracCentralCurrentContextV149();
+  if (!context || !context.active || !context.__diracPasswordResetVerifiedOwnerV333
+      || !safeEqual(String(context.__diracPasswordResetVerifiedOwnerV333.authUserId || ''), owner.authUserId)
+      || !safeEqual(String(context.__diracPasswordResetVerifiedOwnerV333.customerId || ''), owner.customerId)) throw resetError('PASSWORD_CHANGE_SMTP_CONTEXT_INVALID', 503);
+  context.__diracPasswordChangeSmtpDispatchV365 = true;
+  context.__diracPasswordChangeSmtpRecipientHashV365 = diracSecurityPasskeyResetSha256V363(owner.email);
+  let result;
+  try { result = await securityResetGmailMailV352(account, { email: owner.email }, subject, text, html, 1); }
+  finally { context.__diracPasswordChangeSmtpDispatchV365 = false; context.__diracPasswordChangeSmtpRecipientHashV365 = ''; }
+  securityResetMailDiagnosticV340(req, 'password_change.smtp_code', result && result.ok === true ? 'success' : 'error', { delivered: Boolean(result && result.ok === true), provider: String(result && result.provider || ''), upstream_status: Number(result && result.status || 0), reference });
+  if (!result || result.ok !== true) throw resetError('PASSWORD_CHANGE_SMTP_DELIVERY_FAILED', 503);
+  return true;
+}
+
 async function diracSecurityPasskeyResetConsumeEmailTokenV364(token, payload) {
   const result = await diracCentralAtomicConsumeV230({
     namespace: 'passkey_reset_email_v364', jti: String(payload.jti), expiresAt: Math.floor(Number(payload.expiresAtMs) / 1000),
@@ -3212,14 +3330,23 @@ function diracPasswordResetOpsV333(req) {
     unsealPrivateKey: diracPasswordResetUnsealX25519PrivateV333,
     hashBinding: diracPasswordResetBindingHashV333,
     requestBinding: () => diracPasswordResetRequestBindingV333(req),
-    allowCredentials: diracPasswordResetAllowCredentialsV354,
-    issueChallenge: diracPasswordResetIssueChallengeV333,
-    readChallenge: diracPasswordResetReadChallengeV333,
+    resolveOwner: () => diracSecurityPasskeyResetResolveOwnerV363(req),
+    verifyPassword: diracSecurityPasskeyResetVerifyPasswordV363,
+    listActive: diracSecurityPasskeyResetListActiveV363,
+    validateOwnerRow: diracSecurityPasskeyResetValidateOwnerRowV363,
+    activeSetHash: diracSecurityPasskeyResetActiveSetHashV363,
+    hashCredential: diracSecurityPasskeyResetSha256V363,
+    emailCode: diracPasswordChangeSmtpCodeV365,
+    emailCodeValid: diracPasswordChangeSmtpCodeLooksValidV365,
+    emailCodeMac: diracPasswordChangeSmtpCodeMacV365,
+    issueEmailToken: (context, code) => diracPasswordChangeSmtpTokenV365(req, context, code),
+    readEmailToken: (token, resolved, context) => diracPasswordChangeReadSmtpTokenV365(req, token, resolved, context),
+    consumeEmailToken: diracPasswordChangeConsumeSmtpTokenV365,
+    emailRate: (label, identity, limit, windowSeconds, blockSeconds) => diracSecurityPasskeyResetEmailRateV364(req, 'password_change_' + label, identity, limit, windowSeconds, blockSeconds),
+    sendSmtpCode: (owner, code, payload) => diracPasswordChangeSendSmtpCodeV365(req, owner, code, payload),
     issueGrant: diracPasswordResetIssueGrantV333,
     readGrant: diracPasswordResetReadGrantV333,
-    verifyPasskey: (state, input) => diracPasswordResetVerifyPasskeyV333(req, state, input),
     commitPassword: (state, password, confirmation, grantId) => diracPasswordResetCommitPasswordV333(req, state, password, confirmation, grantId),
-    rpId: () => diracPasskeyA2FRpId(req),
     authOrigin: () => diracRoleOriginV250('auth')
   });
 }
