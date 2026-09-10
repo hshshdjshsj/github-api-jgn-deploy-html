@@ -422,50 +422,98 @@ async function passwordResetEngine(req, res, ops, body) {
     const browserHash = String(await ops.hashBinding('browser', inner.browser_binding));
     const keyId = opened.context.keyId;
     const bindingContext = { browserHash, requestBinding: bindingNow, keyId };
-    diracResetDiagnosticV335(req, 'confirm.binding', 'success', { op: String(inner.op || ''), request_binding_length: bindingNow.length, browser_hash_length: browserHash.length, key_id_length: String(keyId || '').length });
+    const authPasskeyFlow = safeEqual(normalizeDashboardMfaOrigin(requestOrigin(req)), normalizeDashboardMfaOrigin(String(ops.authOrigin())));
+    diracResetDiagnosticV335(req, 'confirm.binding', 'success', { op: String(inner.op || ''), request_binding_length: bindingNow.length, browser_hash_length: browserHash.length, key_id_length: String(keyId || '').length, auth_passkey_flow: authPasskeyFlow });
     if (inner.op === 'start') {
-      diracResetDiagnosticV335(req, 'start', 'begin', {});
-      if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','email','current_password'])) throw resetError('PASSWORD_RESET_START_FIELDS_INVALID', 400);
-      const email = String(inner.email || '').trim().toLowerCase();
-      if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) || email.length > 120) throw resetError('PASSWORD_RESET_EMAIL_INVALID', 400);
-      const resolved = await ops.resolveOwner();
-      if (!resolved || !resolved.owner || !safeEqual(normalizeAuthEmail(resolved.owner.email || ''), email)) throw resetError('PASSWORD_CHANGE_ACCOUNT_BINDING_INVALID', 403);
-      await ops.verifyPassword(resolved.owner, String(inner.current_password || ''));
-      inner.current_password = '';
-      const active = await ops.listActive(resolved.owner);
-      if (!Array.isArray(active) || active.length !== 1 || !ops.validateOwnerRow(active[0], resolved.owner)) throw resetError('PASSWORD_CHANGE_ACCOUNT_SECURITY_STATE_INVALID', 409);
-      await ops.emailRate('send', resolved.owner.customerId, 3, 600, 600);
-      const row = active[0];
-      const code = ops.emailCode();
-      const issued = ops.issueEmailToken({
-        authUserId: resolved.owner.authUserId, customerId: resolved.owner.customerId, email: resolved.owner.email,
-        sessionId: resolved.sessionId, securityEpoch: resolved.securityEpoch, authorizingPasskeyId: String(row.id),
-        authorizingCredentialIdHash: ops.hashCredential(String(row.credential_id)), activeCredentialSetHash: ops.activeSetHash(active),
-        browserHash, requestBinding: bindingNow, keyId
-      }, code);
-      await ops.sendSmtpCode(resolved.owner, code, issued.payload);
-      payload = { ok: true, op: 'start', password_verified: true, smtp_sent: true, email_verification_required: true, verification_token: issued.token, code_length: code.length, expires_in: Math.max(1, Math.floor((Number(issued.payload.expiresAtMs) - Date.now()) / 1000)), authorization_method: 'password_smtp' };
-      diracResetDiagnosticV335(req, 'start', 'success', { password_verified: true, smtp_sent: true, code_length: code.length });
+      diracResetDiagnosticV335(req, 'start', 'begin', { auth_passkey_flow: authPasskeyFlow });
+      if (authPasskeyFlow) {
+        if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','email'])) throw resetError('PASSWORD_RESET_START_FIELDS_INVALID', 400);
+        const email = String(inner.email || '').trim().toLowerCase();
+        if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) || email.length > 120) throw resetError('PASSWORD_RESET_EMAIL_INVALID', 400);
+        const rpId = String(await ops.rpId());
+        const allowCredentials = await ops.allowCredentials(email);
+        diracResetDiagnosticV335(req, 'start.challenge_issue', 'begin', { rp_id: rpId, email_binding_hash: diracPasswordResetBindingHashV333('diag-email', email).slice(0, 20), allow_credentials_count: allowCredentials.length });
+        const issued = await ops.issueChallenge({ email, browserHash, requestBinding: bindingNow, keyId, rpId });
+        diracResetDiagnosticV335(req, 'start.challenge_issue', 'success', { challenge_id_length: String(issued && issued.challenge_id || '').length, challenge_length: String(issued && issued.challenge || '').length, expires_in_ms: Number(issued && issued.expires_at_ms || 0) - Date.now() });
+        if (!issued || !/^[A-Za-z0-9_-]{43,86}$/.test(String(issued.challenge_id || ''))
+            || !/^[A-Za-z0-9_-]{43}$/.test(String(issued.challenge || ''))
+            || Number(issued.expires_at_ms || 0) <= Date.now()) throw resetError('PASSWORD_RESET_CHALLENGE_ISSUE_FAILED', 503);
+        payload = {
+          ok: true, op: 'start', challenge_id: String(issued.challenge_id),
+          publicKey: {
+            challenge: String(issued.challenge),
+            rpId,
+            timeout: 180000,
+            allowCredentials,
+            userVerification: 'required',
+            device_binding_required: true,
+            device_binding_policy: 'webcrypto-nonextractable-v1'
+          }
+        };
+        diracResetDiagnosticV335(req, 'start', 'success', { auth_passkey_flow: true, rp_id: rpId, user_verification: 'required', device_binding_required: true });
+      } else {
+        if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','email','current_password'])) throw resetError('PASSWORD_RESET_START_FIELDS_INVALID', 400);
+        const email = String(inner.email || '').trim().toLowerCase();
+        if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) || email.length > 120) throw resetError('PASSWORD_RESET_EMAIL_INVALID', 400);
+        const resolved = await ops.resolveOwner();
+        if (!resolved || !resolved.owner || !safeEqual(normalizeAuthEmail(resolved.owner.email || ''), email)) throw resetError('PASSWORD_CHANGE_ACCOUNT_BINDING_INVALID', 403);
+        await ops.verifyPassword(resolved.owner, String(inner.current_password || ''));
+        inner.current_password = '';
+        const active = await ops.listActive(resolved.owner);
+        if (!Array.isArray(active) || active.length !== 1 || !ops.validateOwnerRow(active[0], resolved.owner)) throw resetError('PASSWORD_CHANGE_ACCOUNT_SECURITY_STATE_INVALID', 409);
+        await ops.emailRate('send', resolved.owner.customerId, 3, 600, 600);
+        const row = active[0];
+        const code = ops.emailCode();
+        const issued = ops.issueEmailToken({
+          authUserId: resolved.owner.authUserId, customerId: resolved.owner.customerId, email: resolved.owner.email,
+          sessionId: resolved.sessionId, securityEpoch: resolved.securityEpoch, authorizingPasskeyId: String(row.id),
+          authorizingCredentialIdHash: ops.hashCredential(String(row.credential_id)), activeCredentialSetHash: ops.activeSetHash(active),
+          browserHash, requestBinding: bindingNow, keyId
+        }, code);
+        await ops.sendSmtpCode(resolved.owner, code, issued.payload);
+        payload = { ok: true, op: 'start', password_verified: true, smtp_sent: true, email_verification_required: true, verification_token: issued.token, code_length: code.length, expires_in: Math.max(1, Math.floor((Number(issued.payload.expiresAtMs) - Date.now()) / 1000)), authorization_method: 'password_smtp' };
+        diracResetDiagnosticV335(req, 'start', 'success', { auth_passkey_flow: false, password_verified: true, smtp_sent: true, code_length: code.length });
+      }
     } else if (inner.op === 'verify') {
-      diracResetDiagnosticV335(req, 'verify', 'begin', {});
-      if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','verification_token','verification_code'])) throw resetError('PASSWORD_RESET_VERIFY_FIELDS_INVALID', 400);
-      const resolved = await ops.resolveOwner();
-      const tokenData = ops.readEmailToken(String(inner.verification_token || ''), resolved, bindingContext);
-      const p = tokenData.payload;
-      const code = String(inner.verification_code || '').trim();
-      await ops.emailRate('verify', String(p.jti || ''), 5, 600, 600);
-      if (!ops.emailCodeValid(code, Number(p.codeLength)) || !safeEqual(ops.emailCodeMac(p, code), String(p.codeMac || ''))) throw resetError('PASSWORD_CHANGE_SMTP_CODE_INVALID', 403);
-      const active = await ops.listActive(resolved.owner);
-      if (!Array.isArray(active) || active.length !== 1 || !ops.validateOwnerRow(active[0], resolved.owner)
-          || !safeEqual(String(active[0].id || ''), String(p.authorizingPasskeyId || ''))
-          || !safeEqual(ops.hashCredential(String(active[0].credential_id || '')), String(p.authorizingCredentialIdHash || ''))
-          || !safeEqual(ops.activeSetHash(active), String(p.activeCredentialSetHash || ''))) throw resetError('PASSWORD_CHANGE_ACCOUNT_SECURITY_STATE_CHANGED', 409);
-      await ops.consumeEmailToken(tokenData.token, p);
-      const verified = { auth_user_id: resolved.owner.authUserId, customer_id: resolved.owner.customerId, email: resolved.owner.email, email_hash: diracPasswordResetBindingHashV333('email', resolved.owner.email), passkey_id: String(active[0].id), credential_id: String(active[0].credential_id), security_epoch: resolved.securityEpoch };
-      const grant = await ops.issueGrant(verified, bindingContext);
-      if (!/^[A-Za-z0-9_-]{156}$/.test(String(grant || ''))) throw resetError('PASSWORD_RESET_GRANT_ISSUE_FAILED', 503);
-      payload = { ok: true, op: 'verify', password_verified: true, smtp_verified: true, owner_bound: true, authorization_method: 'password_smtp', reset_grant: String(grant) };
-      diracResetDiagnosticV335(req, 'verify', 'success', { password_verified: true, smtp_verified: true, owner_bound: true });
+      diracResetDiagnosticV335(req, 'verify', 'begin', { auth_passkey_flow: authPasskeyFlow });
+      if (authPasskeyFlow) {
+        if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','challenge_id','credential','device_binding'])) throw resetError('PASSWORD_RESET_VERIFY_FIELDS_INVALID', 400);
+        const challengeId = String(inner.challenge_id || '');
+        diracResetDiagnosticV335(req, 'verify.challenge_read', 'begin', { challenge_id_hash: crypto.createHash('sha256').update(challengeId).digest('hex').slice(0, 20) });
+        const state = await ops.readChallenge(challengeId, { browserHash, requestBinding: bindingNow, keyId, rpId: String(await ops.rpId()) });
+        diracResetDiagnosticV335(req, 'verify.challenge_read', 'success', { state_kind: String(state && state.kind || ''), expires_in_ms: Number(state && state.expires_at_ms || 0) - Date.now() });
+        if (!state || state.kind !== 'challenge' || Number(state.expires_at_ms || 0) <= Date.now()) throw resetError('PASSWORD_RESET_CHALLENGE_BINDING_INVALID', 403);
+        diracResetDiagnosticV335(req, 'verify.passkey', 'begin', { credential_present: Boolean(inner.credential), device_binding_present: Boolean(inner.device_binding) });
+        const verified = await ops.verifyPasskey(state, {
+          challenge_id: challengeId,
+          credential: inner.credential,
+          device_binding: String(inner.device_binding || '')
+        });
+        diracResetDiagnosticV335(req, 'verify.passkey', 'success', { owner_bound: true, security_epoch: Number(verified && verified.security_epoch || 0), device_binding_key_id_present: Boolean(verified && verified.device_binding_key_id) });
+        const grant = await ops.issueGrant(verified, bindingContext);
+        if (!/^[A-Za-z0-9_-]{156}$/.test(String(grant || ''))) throw resetError('PASSWORD_RESET_GRANT_ISSUE_FAILED', 503);
+        payload = { ok: true, op: 'verify', passkey_verified: true, owner_bound: true, reset_grant: String(grant) };
+        diracResetDiagnosticV335(req, 'verify', 'success', { auth_passkey_flow: true, passkey_verified: true, owner_bound: true });
+      } else {
+        if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','verification_token','verification_code'])) throw resetError('PASSWORD_RESET_VERIFY_FIELDS_INVALID', 400);
+        const resolved = await ops.resolveOwner();
+        const tokenData = ops.readEmailToken(String(inner.verification_token || ''), resolved, bindingContext);
+        const p = tokenData.payload;
+        const code = String(inner.verification_code || '').trim();
+        await ops.emailRate('verify', String(p.jti || ''), 5, 600, 600);
+        if (!ops.emailCodeValid(code, Number(p.codeLength)) || !safeEqual(ops.emailCodeMac(p, code), String(p.codeMac || ''))) throw resetError('PASSWORD_CHANGE_SMTP_CODE_INVALID', 403);
+        const active = await ops.listActive(resolved.owner);
+        if (!Array.isArray(active) || active.length !== 1 || !ops.validateOwnerRow(active[0], resolved.owner)
+            || !safeEqual(String(active[0].id || ''), String(p.authorizingPasskeyId || ''))
+            || !safeEqual(ops.hashCredential(String(active[0].credential_id || '')), String(p.authorizingCredentialIdHash || ''))
+            || !safeEqual(ops.activeSetHash(active), String(p.activeCredentialSetHash || ''))) throw resetError('PASSWORD_CHANGE_ACCOUNT_SECURITY_STATE_CHANGED', 409);
+        await ops.consumeEmailToken(tokenData.token, p);
+        const verified = { auth_user_id: resolved.owner.authUserId, customer_id: resolved.owner.customerId, email: resolved.owner.email, email_hash: diracPasswordResetBindingHashV333('email', resolved.owner.email), passkey_id: String(active[0].id), credential_id: String(active[0].credential_id), security_epoch: resolved.securityEpoch };
+        const grant = await ops.issueGrant(verified, bindingContext);
+        if (!/^[A-Za-z0-9_-]{156}$/.test(String(grant || ''))) throw resetError('PASSWORD_RESET_GRANT_ISSUE_FAILED', 503);
+        payload = { ok: true, op: 'verify', password_verified: true, smtp_verified: true, owner_bound: true, authorization_method: 'password_smtp', reset_grant: String(grant) };
+        diracResetDiagnosticV335(req, 'verify', 'success', { auth_passkey_flow: false, password_verified: true, smtp_verified: true, owner_bound: true });
+      }
     } else if (inner.op === 'commit') {
       diracResetDiagnosticV335(req, 'commit', 'begin', {});
       if (!exactKeys(inner, ['v','op','request_id','client_nonce','sent_at_ms','browser_binding','reset_grant','new_password','confirm_password'])) throw resetError('PASSWORD_RESET_COMMIT_FIELDS_INVALID', 400);
@@ -475,10 +523,16 @@ async function passwordResetEngine(req, res, ops, body) {
       diracResetDiagnosticV335(req, 'commit.grant_read', 'success', { state_kind: String(state && state.kind || ''), expires_in_ms: Number(state && state.expires_at_ms || 0) - Date.now(), security_epoch: Number(state && state.security_epoch || 0) });
       if (!state || state.kind !== 'grant' || Number(state.expires_at_ms || 0) <= Date.now()) throw resetError('PASSWORD_RESET_GRANT_BINDING_INVALID', 403);
       const result = await ops.commitPassword(state, String(inner.new_password || ''), String(inner.confirm_password || ''), grantId);
-      diracResetDiagnosticV335(req, 'commit.password', 'success', { password_changed: result && result.password_changed === true, sessions_revoked: result && result.sessions_revoked === true, current_session_preserved: result && result.current_session_preserved === true, login_required: result && result.login_required === true });
-      payload = { ok: true, op: 'commit', password_changed: result.password_changed === true, password_verified: true, smtp_verified: true, owner_bound: true, authorization_method: 'password_smtp', sessions_revoked: result.sessions_revoked === true, current_session_preserved: result.current_session_preserved === true, login_required: result.login_required === true };
-      if (!payload.password_changed || !payload.sessions_revoked || !payload.current_session_preserved || payload.login_required) throw resetError('PASSWORD_RESET_COMMIT_POSTCONDITION_FAILED', 503);
-      diracResetDiagnosticV335(req, 'commit', 'success', { password_changed: true, sessions_revoked: true, current_session_preserved: true, login_required: false });
+      diracResetDiagnosticV335(req, 'commit.password', 'success', { auth_passkey_flow: authPasskeyFlow, password_changed: result && result.password_changed === true, sessions_revoked: result && result.sessions_revoked === true, current_session_preserved: result && result.current_session_preserved === true, login_required: result && result.login_required === true });
+      if (authPasskeyFlow) {
+        payload = { ok: true, op: 'commit', password_changed: result.password_changed === true, passkey_verified: true, owner_bound: true, sessions_revoked: result.sessions_revoked === true, login_required: result.login_required === true };
+        if (!payload.password_changed || !payload.sessions_revoked || !payload.login_required) throw resetError('PASSWORD_RESET_COMMIT_POSTCONDITION_FAILED', 503);
+        diracResetDiagnosticV335(req, 'commit', 'success', { auth_passkey_flow: true, password_changed: true, sessions_revoked: true, login_required: true });
+      } else {
+        payload = { ok: true, op: 'commit', password_changed: result.password_changed === true, password_verified: true, smtp_verified: true, owner_bound: true, authorization_method: 'password_smtp', sessions_revoked: result.sessions_revoked === true, current_session_preserved: result.current_session_preserved === true, login_required: result.login_required === true };
+        if (!payload.password_changed || !payload.sessions_revoked || !payload.current_session_preserved || payload.login_required) throw resetError('PASSWORD_RESET_COMMIT_POSTCONDITION_FAILED', 503);
+        diracResetDiagnosticV335(req, 'commit', 'success', { auth_passkey_flow: false, password_changed: true, sessions_revoked: true, current_session_preserved: true, login_required: false });
+      }
     } else {
       throw resetError('PASSWORD_RESET_OPERATION_INVALID', 400);
     }
@@ -1809,7 +1863,7 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
       || !safeEqual(String(clientData.challenge || ''), String(state.challenge || ''))
       || clientData.crossOrigin === true) throw diracPasswordResetErrorV333('PASSWORD_RESET_WEBAUTHN_CLIENT_DATA_INVALID', 403);
   const clientOrigin = normalizeDashboardMfaOrigin(clientData.origin || '');
-  const expectedOrigin = normalizeDashboardMfaOrigin(diracRoleOriginV250('security'));
+  const expectedOrigin = normalizeDashboardMfaOrigin(diracRoleOriginV250('auth'));
   if (!clientOrigin || !expectedOrigin || !safeEqual(clientOrigin, expectedOrigin)) throw diracPasswordResetErrorV333('PASSWORD_RESET_WEBAUTHN_ORIGIN_INVALID', 403);
   if (clientData.topOrigin && !safeEqual(normalizeDashboardMfaOrigin(clientData.topOrigin), expectedOrigin)) throw diracPasswordResetErrorV333('PASSWORD_RESET_WEBAUTHN_TOP_ORIGIN_INVALID', 403);
   const rpId = diracPasskeyA2FRpId(req);
@@ -1825,21 +1879,15 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
     }
     throw diracPasswordResetErrorV333(String(assertion.reason || 'PASSKEY_SIGNATURE_INVALID').toUpperCase(), 403);
   }
-  const securitySession = await diracSecurityPasskeyResetResolveOwnerV363(req);
-  if (!securitySession || !securitySession.owner
-      || !safeEqual(securitySession.owner.authUserId, owner.authUserId)
-      || !safeEqual(securitySession.owner.customerId, owner.customerId)
-      || !safeEqual(securitySession.owner.email, owner.email)) throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_SESSION_BINDING_INVALID', 403);
-  const deviceBinding = diracPasskeyA2FValidateSecurityDeviceBinding({
+  const deviceBinding = diracPasskeyA2FValidateAuthenticationDeviceBinding({
     row,
     body: { response: String(input.device_binding || '') },
     setupToken: String(input.challenge_id || ''),
     payload,
-    credentialId,
-    expectedOrigin
+    credentialId
   });
-  diracResetDiagnosticV335(req, 'verify.passkey.device_binding', deviceBinding.ok ? 'success' : 'rejected', { reason: String(deviceBinding && deviceBinding.reason || ''), key_id_present: Boolean(deviceBinding && deviceBinding.keyId), enrolled_now: deviceBinding && deviceBinding.enrolledNow === true });
-  if (!deviceBinding.ok) throw diracPasswordResetErrorV333(String(deviceBinding.reason || 'SECURITY_DEVICE_BINDING_INVALID').toUpperCase(), 403);
+  diracResetDiagnosticV335(req, 'verify.passkey.device_binding', deviceBinding.ok ? 'success' : 'rejected', { reason: String(deviceBinding && deviceBinding.reason || ''), key_id_present: Boolean(deviceBinding && deviceBinding.keyId) });
+  if (!deviceBinding.ok) throw diracPasswordResetErrorV333(String(deviceBinding.reason || 'DEVICE_BINDING_AUTHENTICATION_INVALID').toUpperCase(), 403);
 
   diracResetDiagnosticV335(req, 'verify.challenge_consume', 'begin', {});
   await diracPasswordResetConsumeStateV333('challenge', input.challenge_id, state.expires_at_ms, state.consume_binding);
@@ -1878,17 +1926,6 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
       ...(currentJson.webauthn && typeof currentJson.webauthn === 'object' ? currentJson.webauthn : {}),
       sign_count: nextSignCount,
       backup_state: assertion.backupState === true,
-      last_verified_at: nowIso
-    },
-    security_device_binding: {
-      ...(currentJson.security_device_binding && typeof currentJson.security_device_binding === 'object' ? currentJson.security_device_binding : {}),
-      version: DIRAC_PASSKEY_DEVICE_BINDING_VERSION,
-      algorithm: DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM,
-      required: true,
-      origin: expectedOrigin,
-      key_id: deviceBinding.keyId,
-      public_key_jwk: deviceBinding.publicKeyJwk,
-      registered_at: currentJson.security_device_binding && currentJson.security_device_binding.registered_at ? currentJson.security_device_binding.registered_at : nowIso,
       last_verified_at: nowIso
     },
     last_authentication: {
@@ -1988,7 +2025,6 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
   });
   let recordedRow = null;
   if (recorded && recorded.ok === true) recordedRow = await diracPasswordResetFetchCredentialByRowIdV333(String(row.id || ''), owner.customerId);
-  const recordedSecurityBinding = diracPasskeyA2FStoredSecurityDeviceBinding(recordedRow);
   diracResetDiagnosticV335(req, 'verify.passkey.sign_count_cas', recorded && recorded.ok === true ? 'success' : 'error', { http_status: Number(recorded && recorded.status || 0), row_count: recordedRow ? 1 : 0, previous_sign_count: previousSignCount, next_sign_count: nextSignCount });
   if (!recorded || recorded.ok !== true || !recordedRow
       || !safeEqual(String(recordedRow.id || ''), String(row.id || ''))
@@ -1996,8 +2032,6 @@ async function diracPasswordResetVerifyPasskeyV333(req, state, input) {
       || !safeEqual(String(recordedRow.credential_id || ''), credentialId)
       || Number(recordedRow.sign_count || 0) !== nextSignCount
       || recordedRow.backup_state !== (assertion.backupState === true)
-      || !recordedSecurityBinding.ok || !safeEqual(recordedSecurityBinding.keyId, deviceBinding.keyId)
-      || !safeEqual(String(recordedRow.current_auth_session_id || ''), currentAuthSessionId)
       || recordedRow.is_active !== true || String(recordedRow.rotation_state || '') !== 'active') {
     throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_USAGE_POSTCONDITION_FAILED', 503);
   }
@@ -2555,16 +2589,20 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
   const epoch = await diracPasskeyA2FReadSecurityEpoch(owner);
   diracResetDiagnosticV335(req, 'commit.security_epoch', 'success', { current_security_epoch: Number(epoch || 0), grant_security_epoch: Number(state.security_epoch || 0), match: Number(epoch) === Number(state.security_epoch) });
   if (!Number.isSafeInteger(epoch) || epoch !== Number(state.security_epoch)) throw diracPasswordResetErrorV333('PASSWORD_RESET_SECURITY_EPOCH_CHANGED', 409);
-  const currentSecuritySession = await diracSecurityPasskeyResetResolveOwnerV363(req);
-  if (!currentSecuritySession || !currentSecuritySession.owner
-      || !safeEqual(currentSecuritySession.owner.authUserId, authUserId)
-      || !safeEqual(currentSecuritySession.owner.customerId, customerId)
-      || !safeEqual(currentSecuritySession.owner.email, owner.email)
-      || Number(currentSecuritySession.securityEpoch) !== Number(state.security_epoch)
-      || !customerSecurityLooksLikeUuid(String(currentSecuritySession.sessionId || ''))) {
-    throw diracPasswordResetErrorV333('PASSWORD_RESET_CURRENT_SESSION_INVALID', 403);
+  const authPasskeyFlow = safeEqual(normalizeDashboardMfaOrigin(requestOrigin(req)), normalizeDashboardMfaOrigin(diracRoleOriginV250('auth')));
+  let preservedSessionId = '';
+  if (!authPasskeyFlow) {
+    const currentSecuritySession = await diracSecurityPasskeyResetResolveOwnerV363(req);
+    if (!currentSecuritySession || !currentSecuritySession.owner
+        || !safeEqual(currentSecuritySession.owner.authUserId, authUserId)
+        || !safeEqual(currentSecuritySession.owner.customerId, customerId)
+        || !safeEqual(currentSecuritySession.owner.email, owner.email)
+        || Number(currentSecuritySession.securityEpoch) !== Number(state.security_epoch)
+        || !customerSecurityLooksLikeUuid(String(currentSecuritySession.sessionId || ''))) {
+      throw diracPasswordResetErrorV333('PASSWORD_RESET_CURRENT_SESSION_INVALID', 403);
+    }
+    preservedSessionId = String(currentSecuritySession.sessionId);
   }
-  const preservedSessionId = String(currentSecuritySession.sessionId);
   const cleanPassword = diracPasswordResetStrongPasswordV333(password, owner.email);
   diracResetDiagnosticV335(req, 'commit.password_policy', 'success', { policy_passed: true });
   const params = diracPasswordArgon2V4Params();
@@ -2585,14 +2623,14 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
   }
 
   const sessionPatchPath = '/rest/v1/security_customer_sessions?select=' + encodeURIComponent('id,customer_id,status,revoked_at,revoke_reason')
-    + '&customer_id=eq.' + encodeURIComponent(customerId) + '&id=neq.' + encodeURIComponent(preservedSessionId) + '&status=eq.active&revoked_at=is.null';
+    + '&customer_id=eq.' + encodeURIComponent(customerId) + (authPasskeyFlow ? '' : '&id=neq.' + encodeURIComponent(preservedSessionId)) + '&status=eq.active&revoked_at=is.null';
   const sessions = await supabaseFetch(sessionPatchPath, {
     method: 'PATCH', auth: 'service', prefer: 'return=representation',
-    body: { status: 'revoked', revoked_at: new Date().toISOString(), revoke_reason: 'password_change_password_smtp' }
+    body: { status: 'revoked', revoked_at: new Date().toISOString(), revoke_reason: authPasskeyFlow ? 'password_reset_passkey' : 'password_change_password_smtp' }
   });
   const revokedRows = sessions && sessions.ok === true && Array.isArray(sessions.data) ? sessions.data : null;
-  const preservedSessionRevoked = Boolean(revokedRows && revokedRows.some((sessionRow) => safeEqual(String(sessionRow && sessionRow.id || ''), preservedSessionId)));
-  diracResetDiagnosticV335(req, 'commit.session_revoke', sessions && sessions.ok === true && !preservedSessionRevoked ? 'success' : 'error', { http_status: Number(sessions && sessions.status || 0), revoked_row_count: revokedRows ? revokedRows.length : -1, current_session_preserved: !preservedSessionRevoked });
+  const preservedSessionRevoked = Boolean(!authPasskeyFlow && revokedRows && revokedRows.some((sessionRow) => safeEqual(String(sessionRow && sessionRow.id || ''), preservedSessionId)));
+  diracResetDiagnosticV335(req, 'commit.session_revoke', sessions && sessions.ok === true && !preservedSessionRevoked ? 'success' : 'error', { auth_passkey_flow: authPasskeyFlow, http_status: Number(sessions && sessions.status || 0), revoked_row_count: revokedRows ? revokedRows.length : -1, current_session_preserved: authPasskeyFlow ? false : !preservedSessionRevoked });
   if (!revokedRows || preservedSessionRevoked) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_REVOCATION_FAILED', 503);
 
 
@@ -2657,17 +2695,21 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
     method: 'GET', auth: 'service'
   });
   const activeRows = activeSessions && activeSessions.ok === true && Array.isArray(activeSessions.data) ? activeSessions.data : [];
-  const preservedSession = activeRows.length === 1 ? activeRows[0] : null;
-  const preservedSessionExpiresAt = Date.parse(String(preservedSession && preservedSession.expires_at || ''));
-  const preservedSessionValid = Boolean(preservedSession
-    && safeEqual(String(preservedSession.id || ''), preservedSessionId)
-    && safeEqual(String(preservedSession.customer_id || ''), customerId)
-    && String(preservedSession.status || '').toLowerCase() === 'active'
-    && !preservedSession.revoked_at
-    && Number(preservedSession.security_epoch || 0) === Number(state.security_epoch)
-    && Number.isFinite(preservedSessionExpiresAt) && preservedSessionExpiresAt > Date.now());
-  diracResetDiagnosticV335(req, 'commit.session_postcondition', activeSessions && activeSessions.ok === true && preservedSessionValid ? 'success' : 'error', { http_status: Number(activeSessions && activeSessions.status || 0), active_session_count: activeRows.length, current_session_preserved: preservedSessionValid });
-  if (!activeSessions || activeSessions.ok !== true || !preservedSessionValid) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_POSTCONDITION_FAILED', 503);
+  let preservedSessionValid = false;
+  if (!authPasskeyFlow) {
+    const preservedSession = activeRows.length === 1 ? activeRows[0] : null;
+    const preservedSessionExpiresAt = Date.parse(String(preservedSession && preservedSession.expires_at || ''));
+    preservedSessionValid = Boolean(preservedSession
+      && safeEqual(String(preservedSession.id || ''), preservedSessionId)
+      && safeEqual(String(preservedSession.customer_id || ''), customerId)
+      && String(preservedSession.status || '').toLowerCase() === 'active'
+      && !preservedSession.revoked_at
+      && Number(preservedSession.security_epoch || 0) === Number(state.security_epoch)
+      && Number.isFinite(preservedSessionExpiresAt) && preservedSessionExpiresAt > Date.now());
+  }
+  const sessionPostcondition = authPasskeyFlow ? activeRows.length === 0 : preservedSessionValid;
+  diracResetDiagnosticV335(req, 'commit.session_postcondition', activeSessions && activeSessions.ok === true && sessionPostcondition ? 'success' : 'error', { auth_passkey_flow: authPasskeyFlow, http_status: Number(activeSessions && activeSessions.status || 0), active_session_count: activeRows.length, current_session_preserved: authPasskeyFlow ? false : preservedSessionValid });
+  if (!activeSessions || activeSessions.ok !== true || !sessionPostcondition) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_POSTCONDITION_FAILED', 503);
 
   const passkeyReadback = await diracPasswordResetFetchCredentialByIdV333(credentialId, customerId);
   diracResetDiagnosticV335(req, 'commit.passkey_postcondition', passkeyReadback && passkeyReadback.is_active === true && String(passkeyReadback.rotation_state || '') === 'active' ? 'success' : 'error', { is_active: passkeyReadback && passkeyReadback.is_active === true, rotation_state: String(passkeyReadback && passkeyReadback.rotation_state || ''), row_id_match: Boolean(passkeyReadback && safeEqual(String(passkeyReadback.id || ''), String(state.passkey_id || ''))) });
@@ -2675,10 +2717,13 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
       || !safeEqual(String(passkeyReadback.id || ''), String(state.passkey_id || ''))) {
     throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_POSTCONDITION_FAILED', 503);
   }
-  diracResetDiagnosticV335(req, 'commit.server', 'success', { password_changed: true, sessions_revoked: true, current_session_preserved: true, login_required: false });
+  const commitResult = authPasskeyFlow
+    ? { password_changed: true, sessions_revoked: true, login_required: true }
+    : { password_changed: true, sessions_revoked: true, current_session_preserved: true, login_required: false };
+  diracResetDiagnosticV335(req, 'commit.server', 'success', { auth_passkey_flow: authPasskeyFlow, password_changed: true, sessions_revoked: true, current_session_preserved: commitResult.current_session_preserved === true, login_required: commitResult.login_required === true });
   try { await securityResetRememberCommittedMailV338(req, owner, state, grantId); }
   catch (error) { securityResetMailDiagnosticV340(req, 'persist.exception', 'error', { delivered: false, code: error && error.code, status: Number(error && (error.statusCode || error.status) || 0) }); diracResetDiagnosticV335(req, 'notification.password_changed.persist', 'error', { delivered: false }, error); }
-  return Object.freeze({ password_changed: true, sessions_revoked: true, current_session_preserved: true, login_required: false });
+  return Object.freeze(commitResult);
 }
 
 
@@ -3352,6 +3397,11 @@ function diracPasswordResetOpsV333(req) {
     unsealPrivateKey: diracPasswordResetUnsealX25519PrivateV333,
     hashBinding: diracPasswordResetBindingHashV333,
     requestBinding: () => diracPasswordResetRequestBindingV333(req),
+    allowCredentials: diracPasswordResetAllowCredentialsV354,
+    issueChallenge: diracPasswordResetIssueChallengeV333,
+    readChallenge: diracPasswordResetReadChallengeV333,
+    verifyPasskey: (state, input) => diracPasswordResetVerifyPasskeyV333(req, state, input),
+    rpId: () => diracPasskeyA2FRpId(req),
     resolveOwner: () => diracSecurityPasskeyResetResolveOwnerV363(req),
     verifyPassword: diracSecurityPasskeyResetVerifyPasswordV363,
     listActive: diracSecurityPasskeyResetListActiveV363,
