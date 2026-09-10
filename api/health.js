@@ -18796,7 +18796,10 @@ async function midtransHandleWebhook(req, res) {
   if (!midtransPaymentTransitionAllowedV350(tx.payment_status, mappedStatus)) {
     return res.status(409).json({ ok: false, message: 'Transisi status pembayaran ditolak oleh state machine.' });
   }
-  const existingEvent = await midtransFetchGatewayEvent(gatewayEventId, tx.customer_id);
+  const [existingEvent, ownerCheck] = await Promise.all([
+    midtransFetchGatewayEvent(gatewayEventId, tx.customer_id),
+    midtransVerifyTransactionOwnerAndAmount(tx, grossAmount)
+  ]);
   if (!existingEvent.ok) {
     return res.status(existingEvent.status >= 500 ? 503 : (existingEvent.status || 409)).json({
       ok: false,
@@ -18820,7 +18823,6 @@ async function midtransHandleWebhook(req, res) {
     return res.status(409).json({ ok: false, message: 'Amount Midtrans tidak cocok dengan transaksi database.' });
   }
 
-  const ownerCheck = await midtransVerifyTransactionOwnerAndAmount(tx, grossAmount);
   if (!ownerCheck.ok) {
     await diracCentralBanCurrentContextV146(ownerCheck.reason || 'midtrans_owner_or_amount_mismatch').catch(() => null);
     await midtransInsertGatewayEventSafe(tx.id, tx.customer_id, gatewayEventId, 'failed', body, {
@@ -18855,13 +18857,21 @@ async function midtransHandleWebhook(req, res) {
   const retryPendingMailEventV368 = effectiveDuplicateEventV351 && duplicateEventStatusV368 === 'received';
   const processedDuplicateEventV368 = effectiveDuplicateEventV351 && duplicateEventStatusV368 === 'processed';
 
+  const paymentAlreadyMatched = midtransAlreadyHasPaymentStatus(tx, mappedStatus);
+  const orderAlreadyPaid = midtransOrderAlreadyPaid(ownerCheck.order);
+  const orderMailDeliveryRequiredV368 = Boolean(success && (retryPendingMailEventV368 || (!effectiveDuplicateEventV351 && !paymentAlreadyMatched && !orderAlreadyPaid)));
+  const orderMailItemsPrefetchV369 = orderMailDeliveryRequiredV368
+    ? (tx.order_id
+      ? diracUniversalPesananFetchRegularItems(tx.order_id, midtransMoney(tx.amount), tx.service_type || 'order', false)
+      : diracUniversalPesananFetchDomainItems(tx.domain_order_id, midtransMoney(tx.amount), '')
+    ).catch(() => ({ items: [], totalItem: 0 }))
+    : null;
+
   const txPatch = await midtransPatchPaymentTransaction(tx, mappedStatus, body, success);
   if (!txPatch.ok) {
     return res.status(txPatch.status || 500).json({ ok: false, message: 'Gagal update payment transaction dari webhook Midtrans.' });
   }
 
-  const paymentAlreadyMatched = midtransAlreadyHasPaymentStatus(tx, mappedStatus);
-  const orderAlreadyPaid = midtransOrderAlreadyPaid(ownerCheck.order);
   let orderPatch = { ok: true, skipped: true };
   let orderMailNotification = orderMailPaidWebhookSkipSummary('midtrans', 'not_paid_status');
   if (success) {
@@ -18871,13 +18881,14 @@ async function midtransHandleWebhook(req, res) {
     if (!orderPatch.ok) {
       return res.status(orderPatch.status || 500).json({ ok: false, message: 'Payment valid, tetapi gagal update status order.' });
     }
-    const orderMailDeliveryRequiredV368 = retryPendingMailEventV368 || (!effectiveDuplicateEventV351 && !paymentAlreadyMatched && !orderAlreadyPaid);
     orderMailNotification = orderMailDeliveryRequiredV368
       ? await orderMailNotifyPaidOrderFromPaymentSafe({
         provider: 'midtrans',
         tx,
         webhookPayload: body,
-        paidAt: capabilityContextV350.capability.evidence.confirmed_at
+        paidAt: capabilityContextV350.capability.evidence.confirmed_at,
+        paidOrder: orderPatch && Array.isArray(orderPatch.data) && orderPatch.data.length === 1 ? orderPatch.data[0] : null,
+        paidItems: orderMailItemsPrefetchV369 ? await orderMailItemsPrefetchV369 : null
       })
       : orderMailPaidWebhookSkipSummary('midtrans', processedDuplicateEventV368 ? 'duplicate_event_reconciled' : 'already_paid');
     if (orderMailDeliveryRequiredV368 && (!orderMailNotification || orderMailNotification.ok !== true
@@ -28531,11 +28542,13 @@ async function orderMailNotifyPaidOrderFromPaymentSafe(input) {
   const provider = orderMailCleanText(input && input.provider || 'payment_gateway', 40);
   const tx = input && input.tx && typeof input.tx === 'object' ? input.tx : null;
   const paidAt = orderMailCleanText(input && input.paidAt || diracNowIso(), 80);
+  const paidOrder = input && input.paidOrder && typeof input.paidOrder === 'object' && !Array.isArray(input.paidOrder) ? input.paidOrder : null;
+  const paidItems = input && input.paidItems && typeof input.paidItems === 'object' && !Array.isArray(input.paidItems) ? input.paidItems : null;
 
   try {
     if (!tx || !tx.id) return orderMailPaidWebhookSkipSummary(provider, 'payment_transaction_missing');
 
-    const context = await orderMailBuildPaidInvoiceContextFromBackend(tx, provider, paidAt);
+    const context = await orderMailBuildPaidInvoiceContextFromBackend(tx, provider, paidAt, paidOrder, paidItems);
     if (!context.ok) {
       const skipped = orderMailPaidWebhookSkipSummary(provider, context.reason || 'paid_order_context_missing');
       skipped.ok = context.soft !== false;
@@ -28561,32 +28574,43 @@ async function orderMailNotifyPaidOrderFromPaymentSafe(input) {
   }
 }
 
-async function orderMailBuildPaidInvoiceContextFromBackend(tx, provider, paidAt) {
-  if (tx.order_id) return orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt);
-  if (tx.domain_order_id) return orderMailBuildPaidDomainInvoiceContext(tx, provider, paidAt);
+async function orderMailBuildPaidInvoiceContextFromBackend(tx, provider, paidAt, paidOrder, paidItems) {
+  if (tx.order_id) return orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, paidOrder, paidItems);
+  if (tx.domain_order_id) return orderMailBuildPaidDomainInvoiceContext(tx, provider, paidAt, paidOrder, paidItems);
   return { ok: false, reason: 'missing_order_reference', message: 'Payment transaction tidak punya order_id/domain_order_id.' };
 }
 
-async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt) {
+async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, paidOrder, paidItems) {
   const orderId = String(tx.order_id || '').trim();
   if (!orderId) return { ok: false, reason: 'regular_order_id_missing' };
 
-  const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at';
-  const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select) + '&id=eq.' + encodeURIComponent(orderId)
-    + '&customer_id=eq.' + encodeURIComponent(tx.customer_id) + '&limit=1', {
-    method: 'GET',
-    auth: 'service'
-  }).catch((error) => ({ ok: false, status: 500, data: { message: orderMailSafeError(error) } }));
+  let order = paidOrder && String(paidOrder.id || '') === orderId
+    && String(paidOrder.customer_id || '') === String(tx.customer_id || '')
+    && paidOrder.payment_status === 'paid'
+    && midtransStrictMoneyV350(paidOrder.total) === midtransStrictMoneyV350(tx.amount) ? paidOrder : null;
+  if (!order) {
+    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at';
+    const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select) + '&id=eq.' + encodeURIComponent(orderId)
+      + '&customer_id=eq.' + encodeURIComponent(tx.customer_id) + '&limit=1', {
+      method: 'GET',
+      auth: 'service'
+    }).catch((error) => ({ ok: false, status: 500, data: { message: orderMailSafeError(error) } }));
 
-  if (!result.ok) return { ok: false, reason: 'regular_order_read_failed', message: lockedPaymentSafeUpstreamError(result.data) };
-  const order = Array.isArray(result.data) ? result.data[0] : null;
+    if (!result.ok) return { ok: false, reason: 'regular_order_read_failed', message: lockedPaymentSafeUpstreamError(result.data) };
+    order = Array.isArray(result.data) ? result.data[0] : null;
+  }
   if (!order || String(order.id || '') !== orderId || String(order.customer_id || '') !== String(tx.customer_id || '')
       || order.payment_status !== 'paid' || midtransStrictMoneyV350(order.total) !== midtransStrictMoneyV350(tx.amount)) return { ok: false, reason: 'regular_paid_order_binding_invalid' };
 
   const amount = orderMailMoney(tx.amount || order.total || order.subtotal || 0);
   const serviceType = orderMailCleanText(order.service_type || tx.service_type || 'order', 80);
-  const itemPack = await diracUniversalPesananFetchRegularItems(order.id, amount, serviceType).catch(() => ({ items: [], totalItem: 0 }));
-  const customerFallback = await orderMailFetchCustomerFallback(order.customer_id);
+  const customerFallbackRequired = !orderMailNormalizeEmail(order.customer_email || '')
+    || !orderMailCleanText(order.customer_name || '', 120)
+    || !orderMailCleanText(order.customer_phone || '', 80);
+  const [itemPack, customerFallback] = await Promise.all([
+    paidItems ? Promise.resolve(paidItems) : diracUniversalPesananFetchRegularItems(order.id, amount, serviceType, false).catch(() => ({ items: [], totalItem: 0 })),
+    customerFallbackRequired ? orderMailFetchCustomerFallback(order.customer_id) : Promise.resolve({ name: '', email: '', phone: '' })
+  ]);
   const customerEmail = orderMailNormalizeEmail(order.customer_email || customerFallback.email || '');
 
   return {
@@ -28625,25 +28649,36 @@ async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt) {
   };
 }
 
-async function orderMailBuildPaidDomainInvoiceContext(tx, provider, paidAt) {
+async function orderMailBuildPaidDomainInvoiceContext(tx, provider, paidAt, paidOrder, paidItems) {
   const domainOrderId = String(tx.domain_order_id || '').trim();
   if (!domainOrderId) return { ok: false, reason: 'domain_order_id_missing' };
 
-  const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at';
-  const result = await supabaseFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(select) + '&id=eq.' + encodeURIComponent(domainOrderId)
-    + '&customer_id=eq.' + encodeURIComponent(tx.customer_id) + '&limit=1', {
-    method: 'GET',
-    auth: 'service'
-  }).catch((error) => ({ ok: false, status: 500, data: { message: orderMailSafeError(error) } }));
+  let order = paidOrder && String(paidOrder.id || '') === domainOrderId
+    && String(paidOrder.customer_id || '') === String(tx.customer_id || '')
+    && paidOrder.payment_status === 'paid'
+    && midtransStrictMoneyV350(paidOrder.total_price) === midtransStrictMoneyV350(tx.amount) ? paidOrder : null;
+  if (!order) {
+    const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at';
+    const result = await supabaseFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(select) + '&id=eq.' + encodeURIComponent(domainOrderId)
+      + '&customer_id=eq.' + encodeURIComponent(tx.customer_id) + '&limit=1', {
+      method: 'GET',
+      auth: 'service'
+    }).catch((error) => ({ ok: false, status: 500, data: { message: orderMailSafeError(error) } }));
 
-  if (!result.ok) return { ok: false, reason: 'domain_order_read_failed', message: lockedPaymentSafeUpstreamError(result.data) };
-  const order = Array.isArray(result.data) ? result.data[0] : null;
+    if (!result.ok) return { ok: false, reason: 'domain_order_read_failed', message: lockedPaymentSafeUpstreamError(result.data) };
+    order = Array.isArray(result.data) ? result.data[0] : null;
+  }
   if (!order || String(order.id || '') !== domainOrderId || String(order.customer_id || '') !== String(tx.customer_id || '')
       || order.payment_status !== 'paid' || midtransStrictMoneyV350(order.total_price) !== midtransStrictMoneyV350(tx.amount)) return { ok: false, reason: 'domain_paid_order_binding_invalid' };
 
   const amount = orderMailMoney(tx.amount || order.total_price || 0);
-  const itemPack = await diracUniversalPesananFetchDomainItems(order.id, amount, order.domain_name).catch(() => ({ items: [], totalItem: 0 }));
-  const customerFallback = await orderMailFetchCustomerFallback(order.customer_id);
+  const customerFallbackRequired = !orderMailNormalizeEmail(order.customer_email || order.owner_email || '')
+    || !orderMailCleanText(order.customer_name || '', 120)
+    || !orderMailCleanText(order.customer_whatsapp || '', 80);
+  const [itemPack, customerFallback] = await Promise.all([
+    paidItems ? Promise.resolve(paidItems) : diracUniversalPesananFetchDomainItems(order.id, amount, order.domain_name).catch(() => ({ items: [], totalItem: 0 })),
+    customerFallbackRequired ? orderMailFetchCustomerFallback(order.customer_id) : Promise.resolve({ name: '', email: '', phone: '' })
+  ]);
   const customerEmail = orderMailNormalizeEmail(order.customer_email || order.owner_email || customerFallback.email || '');
 
   return {
@@ -43412,7 +43447,7 @@ function customerSecurityLostPasskeyQueueTableV164() {
 
 /* RECO donor source lines 2846-2848 */
 function customerSecurityLostPasskeyQueueTtlMsV164() {
-  return customerSecurityLostPasskeyQueueIntV164('DIRAC_LOST_PASSKEY_QUEUE_LOCK_TTL_SECONDS', 360, 60, 1200) * 1000;
+  return customerSecurityLostPasskeyQueueIntV164('DIRAC_LOST_PASSKEY_QUEUE_LOCK_TTL_SECONDS', 360, 360, 1200) * 1000;
 }
 
 /* RECO donor source lines 2851-2853 */
@@ -43549,27 +43584,23 @@ async function customerSecurityLostPasskeyQueueRenewV188(ownerId, context = {}) 
 
 /* RECO donor source lines 2983-3003 */
 function customerSecurityLostPasskeyQueueHeartbeatV188(ownerId, context = {}) {
+  const cleanOwner = String(ownerId || '');
   let active = true;
-  let leaseLost = false;
-  let renewing = false;
-  let pending = Promise.resolve();
-  const tick = () => {
-    if (!active || leaseLost || renewing) return;
-    renewing = true;
-    pending = customerSecurityLostPasskeyQueueRenewV188(ownerId, context)
-      .then((renewed) => { if (!renewed) leaseLost = true; })
-      .catch(() => { leaseLost = true; })
-      .finally(() => { renewing = false; });
+  let leaseLost = !cleanOwner;
+  const healthy = () => {
+    if (!active || leaseLost) return false;
+    const memory = DIRAC_LOST_PASSKEY_GENERATE_QUEUE_MEMORY_V164.get(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164);
+    const valid = Boolean(
+      memory
+      && String(memory.ownerId || '') === cleanOwner
+      && Number(memory.lockUntilMs || 0) > Date.now()
+    );
+    if (!valid) leaseLost = true;
+    return valid;
   };
-  const timer = setInterval(tick, customerSecurityLostPasskeyQueueHeartbeatMsV188());
-  if (timer && typeof timer.unref === 'function') timer.unref();
   return {
-    healthy: () => !leaseLost,
-    stop: async () => {
-      active = false;
-      clearInterval(timer);
-      await pending.catch(() => null);
-    }
+    healthy,
+    stop: async () => { active = false; }
   };
 }
 
@@ -43644,76 +43675,67 @@ async function customerSecurityLostPasskeyQueueAcquireV164(req, body = {}) {
   const ownerId = customerSecurityLostPasskeyQueueOwnerV164();
   const startMs = Date.now();
   const queueTask = String(body && (body.worker_action || body.queue_task) || '').trim();
-  const mayWaitForExistingArgon2 = queueTask === DIRAC_LOST_PASSKEY_RECOVERY_LINK_ACTION_V165
-    || queueTask === DIRAC_RECOVERY_WORKER_TASK_VERIFY
-    || queueTask === DIRAC_RECOVERY_HPKE_VERIFY_ACTION_V159;
-  const deadlineMs = mayWaitForExistingArgon2
-    ? startMs + customerSecurityLostPasskeyQueueMaxWaitForTaskMsV191(queueTask)
-    : startMs;
+  const mayWaitForExistingArgon2 = false;
   const context = {
     nonce: body && body.nonce,
     callerId: body && body.caller_id,
     workerAction: queueTask,
     lockedAtMs: startMs
   };
-  let attempts = 0;
+  const attempts = 1;
   let lastReason = 'queue_lock_busy';
+  const nowMs = Date.now();
+  let memory = DIRAC_LOST_PASSKEY_GENERATE_QUEUE_MEMORY_V164.get(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164);
+  let allowClaim = true;
 
-  while (true) {
-    attempts += 1;
-    const nowMs = Date.now();
-    const memory = DIRAC_LOST_PASSKEY_GENERATE_QUEUE_MEMORY_V164.get(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164);
-    let claimed = null;
-    let patched = null;
-
-    if (memory && Number(memory.lockUntilMs || 0) > nowMs && String(memory.ownerId || '') !== ownerId) {
-      const persistentState = await customerSecurityLostPasskeyQueueReadStateV189();
-      if (!persistentState.ok) {
-        // Never clear a live-looking memory lock when persistent storage cannot
-        // confirm its state. This intentionally remains fail-closed.
-        lastReason = 'memory_lock_busy_persistent_state_unavailable';
-      } else {
-        const persistentOwner = customerSecurityLostPasskeyQueueRowOwnerV164(persistentState.row);
-        const persistentActive = customerSecurityLostPasskeyQueueRowActiveV164(persistentState.row, nowMs);
-        const memoryOwner = String(memory.ownerId || '');
-        if (!persistentActive || !persistentOwner || persistentOwner !== memoryOwner) {
-          DIRAC_LOST_PASSKEY_GENERATE_QUEUE_MEMORY_V164.delete(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164);
-          lastReason = 'stale_memory_lock_cleared';
-          continue;
-        }
-        lastReason = 'memory_and_persistent_lock_busy';
-      }
+  if (memory && Number(memory.lockUntilMs || 0) > nowMs && String(memory.ownerId || '') !== ownerId) {
+    const persistentState = await customerSecurityLostPasskeyQueueReadStateV189();
+    if (!persistentState.ok) {
+      // Never clear a live-looking memory lock when persistent storage cannot
+      // confirm its state. This intentionally remains fail-closed.
+      lastReason = 'memory_lock_busy_persistent_state_unavailable';
+      allowClaim = false;
     } else {
-      if (memory && Number(memory.lockUntilMs || 0) <= nowMs) {
+      const persistentOwner = customerSecurityLostPasskeyQueueRowOwnerV164(persistentState.row);
+      const persistentActive = customerSecurityLostPasskeyQueueRowActiveV164(persistentState.row, nowMs);
+      const memoryOwner = String(memory.ownerId || '');
+      if (!persistentActive || !persistentOwner || persistentOwner !== memoryOwner) {
         DIRAC_LOST_PASSKEY_GENERATE_QUEUE_MEMORY_V164.delete(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164);
+        memory = null;
+        lastReason = 'stale_memory_lock_cleared';
+      } else {
+        lastReason = 'memory_and_persistent_lock_busy';
+        allowClaim = false;
       }
-      patched = await customerSecurityLostPasskeyQueueTryPatchAvailableV167(ownerId, context);
-      claimed = patched.ok ? patched : await customerSecurityLostPasskeyQueueTryInsertAvailableV167(ownerId, context);
-      if (claimed && claimed.ok) {
-        DIRAC_LOST_PASSKEY_GENERATE_QUEUE_MEMORY_V164.set(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164, {
-          ownerId,
-          lockUntilMs: Date.now() + customerSecurityLostPasskeyQueueTtlMsV164()
-        });
-        const heartbeat = customerSecurityLostPasskeyQueueHeartbeatV188(ownerId, context);
-        return {
-          ok: true,
-          ownerId,
-          attempts,
-          waited_ms: Date.now() - startMs,
-          claim_mode: claimed.claimed || 'fast_claim',
-          leaseHealthy: heartbeat.healthy,
-          release: async () => {
-            await heartbeat.stop();
-            return customerSecurityLostPasskeyQueueReleaseV164(ownerId);
-          }
-        };
-      }
-      lastReason = (claimed && claimed.reason) || (patched && patched.reason) || 'queue_lock_busy';
     }
+  } else if (memory && Number(memory.lockUntilMs || 0) <= nowMs) {
+    DIRAC_LOST_PASSKEY_GENERATE_QUEUE_MEMORY_V164.delete(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164);
+    memory = null;
+  }
 
-    const remainingMs = deadlineMs - Date.now();
-    if (!mayWaitForExistingArgon2 || remainingMs <= 0) break;
-    await customerSecurityLostPasskeyQueueSleepV164(Math.min(customerSecurityLostPasskeyQueuePollMsV164(), remainingMs));
+  if (allowClaim) {
+    const patched = await customerSecurityLostPasskeyQueueTryPatchAvailableV167(ownerId, context);
+    const claimed = patched.ok ? patched : await customerSecurityLostPasskeyQueueTryInsertAvailableV167(ownerId, context);
+    if (claimed && claimed.ok) {
+      DIRAC_LOST_PASSKEY_GENERATE_QUEUE_MEMORY_V164.set(DIRAC_LOST_PASSKEY_GENERATE_QUEUE_LOCK_KEY_V164, {
+        ownerId,
+        lockUntilMs: Date.now() + customerSecurityLostPasskeyQueueTtlMsV164()
+      });
+      const heartbeat = customerSecurityLostPasskeyQueueHeartbeatV188(ownerId, context);
+      return {
+        ok: true,
+        ownerId,
+        attempts,
+        waited_ms: Date.now() - startMs,
+        claim_mode: claimed.claimed || 'fast_claim',
+        leaseHealthy: heartbeat.healthy,
+        release: async () => {
+          await heartbeat.stop();
+          return customerSecurityLostPasskeyQueueReleaseV164(ownerId);
+        }
+      };
+    }
+    lastReason = (claimed && claimed.reason) || (patched && patched.reason) || 'queue_lock_busy';
   }
 
   try {
