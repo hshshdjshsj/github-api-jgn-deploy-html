@@ -1174,17 +1174,23 @@ function securityResetEgressCapabilityV361(url, options, purpose) {
   const destination = new URL(url);
   const database = purpose === 'database' && /^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(destination.origin);
   let passkeyResetMail = false;
-  if (purpose === 'mail' && context.__diracPasskeyResetEmailDispatchV364 === true
-      && /^[a-f0-9]{64}$/.test(String(context.__diracPasskeyResetEmailRecipientHashV364 || ''))) {
+  let passwordChangeSmtpMail = false;
+  if (purpose === 'mail' && (context.__diracPasskeyResetEmailDispatchV364 === true || context.__diracPasswordChangeSmtpDispatchV365 === true)) {
     try {
       const outbound = JSON.parse(String(options.body || ''));
       const recipient = destination.href === 'https://api.brevo.com/v3/smtp/email'
         ? normalizeAuthEmail(outbound && Array.isArray(outbound.to) && outbound.to.length === 1 && outbound.to[0] && outbound.to[0].email || '')
         : normalizeAuthEmail(outbound && Array.isArray(outbound.to) && outbound.to.length === 1 && outbound.to[0] || '');
-      passkeyResetMail = isValidAuthEmail(recipient) && safeEqual(diracSecurityPasskeyResetSha256V363(recipient), String(context.__diracPasskeyResetEmailRecipientHashV364));
-    } catch (_) { passkeyResetMail = false; }
+      const recipientHash = isValidAuthEmail(recipient) ? diracSecurityPasskeyResetSha256V363(recipient) : '';
+      passkeyResetMail = context.__diracPasskeyResetEmailDispatchV364 === true
+        && /^[a-f0-9]{64}$/.test(String(context.__diracPasskeyResetEmailRecipientHashV364 || ''))
+        && safeEqual(recipientHash, String(context.__diracPasskeyResetEmailRecipientHashV364));
+      passwordChangeSmtpMail = context.__diracPasswordChangeSmtpDispatchV365 === true
+        && /^[a-f0-9]{64}$/.test(String(context.__diracPasswordChangeSmtpRecipientHashV365 || ''))
+        && safeEqual(recipientHash, String(context.__diracPasswordChangeSmtpRecipientHashV365));
+    } catch (_) { passkeyResetMail = false; passwordChangeSmtpMail = false; }
   }
-  const mail = purpose === 'mail' && (context.__diracPasswordResetGrantConsumedV361 === true || passkeyResetMail === true)
+  const mail = purpose === 'mail' && (context.__diracPasswordResetGrantConsumedV361 === true || passkeyResetMail === true || passwordChangeSmtpMail === true)
     && ['https://api.brevo.com/v3/smtp/email', 'https://api.resend.com/emails'].includes(destination.href) && options.method === 'POST';
   if ((!database && !mail) || destination.username || destination.password || destination.hash || (destination.port && destination.port !== '443')) throw resetError('SECURITY_RESET_EGRESS_DESTINATION_REJECTED', 503);
   const capability = Object.freeze({});
@@ -2316,11 +2322,42 @@ function securityResetSmtpConfigV342() {
   const host = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim();
   const port = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 465);
   const secure = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || '').trim().toLowerCase() === 'true';
-  const user = normalizeAuthEmail(process.env.DIRAC_USER_SECURITY_SMTP_USER || '');
-  const pass = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
+  const canonicalUser = normalizeAuthEmail(process.env.DIRAC_USER_SECURITY_SMTP_USER_1 || '');
+  const canonicalPass = String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD_1 || '').replace(/\s+/g, '');
+  const canonicalConfigured = Boolean(canonicalUser || canonicalPass);
+  const user = canonicalConfigured ? canonicalUser : normalizeAuthEmail(process.env.DIRAC_USER_SECURITY_SMTP_USER || '');
+  const pass = canonicalConfigured ? canonicalPass : String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
   if (host !== 'smtp.gmail.com' || port !== 465 || secure !== true || !isValidAuthEmail(user)
       || !/^[A-Za-z0-9]{16,128}$/.test(pass)) return null;
   return { host, port, user, pass };
+}
+
+function securityResetSmtpPoolV366() {
+  const transport = securityResetSmtpConfigV342();
+  if (!transport) return Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_PRIMARY_REQUIRED', accounts: Object.freeze([]) });
+  const accounts = [];
+  const users = new Set();
+  const passwords = new Set();
+  for (let slot = 1; slot <= 10; slot += 1) {
+    const canonicalUser = normalizeAuthEmail(process.env['DIRAC_USER_SECURITY_SMTP_USER_' + slot] || '');
+    const canonicalPass = String(process.env['DIRAC_USER_SECURITY_SMTP_APP_PASSWORD_' + slot] || '').replace(/\s+/g, '');
+    const canonicalConfigured = Boolean(canonicalUser || canonicalPass);
+    let user = canonicalUser;
+    let pass = canonicalPass;
+    if (!canonicalConfigured && slot === 1) { user = transport.user; pass = transport.pass; }
+    else if (!canonicalConfigured && slot === 2) {
+      user = normalizeAuthEmail(process.env.DIRAC_REGISTER_SMTP_USER_2 || '');
+      pass = String(process.env.DIRAC_REGISTER_SMTP_APP_PASSWORD_2 || '').replace(/\s+/g, '');
+    }
+    if (!user && !pass) continue;
+    if (!isValidAuthEmail(user) || !/^[A-Za-z0-9]{16,128}$/.test(pass)) return Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_SLOT_' + slot + '_INVALID', accounts: Object.freeze([]) });
+    if (users.has(user) || passwords.has(pass)) return Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_SLOT_DUPLICATE', accounts: Object.freeze([]) });
+    users.add(user); passwords.add(pass);
+    accounts.push(Object.freeze({ host: transport.host, port: transport.port, user, pass, slot }));
+  }
+  if (!accounts.length || accounts[0].slot !== 1 || !safeEqual(accounts[0].user, transport.user) || !safeEqual(accounts[0].pass, transport.pass))
+    return Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_PRIMARY_MISMATCH', accounts: Object.freeze([]) });
+  return Object.freeze({ ok: true, code: '', accounts: Object.freeze(accounts) });
 }
 
 async function securityResetSmtpReadV342(socket) {
@@ -2494,11 +2531,14 @@ async function securityResetSendCommittedPasswordMailV342(record) {
   result = await securityResetHttpMailV352('resend', config, record, subject, text, html, reference);
   if (result.ok) return result;
   if (!result.limited) return result;
-  result = await securityResetGmailMailV352(config.primary, record, subject, text, html, 1);
-  if (result.ok) return result;
-  if (!result.limited) return result;
-  if (!config.secondary) return { ...result, code: 'PASSWORD_RESET_SECONDARY_GMAIL_UNAVAILABLE_AFTER_LIMIT' };
-  return securityResetGmailMailV352(config.secondary, record, subject, text, html, 2);
+  const smtpPool = securityResetSmtpPoolV366();
+  if (!smtpPool || smtpPool.ok !== true || !smtpPool.accounts.length) return { ...result, code: 'PASSWORD_RESET_GMAIL_POOL_UNAVAILABLE_AFTER_LIMIT' };
+  for (const account of smtpPool.accounts) {
+    result = await securityResetGmailMailV352(account, record, subject, text, html, account.slot);
+    if (result.ok) return result;
+    if (!result.limited) return result;
+  }
+  return { ...result, code: 'PASSWORD_RESET_GMAIL_ALL_CONFIGURED_SLOTS_LIMITED' };
 }
 
 async function securityResetDispatchCommittedMailV338(req) {
@@ -3076,8 +3116,9 @@ async function diracPasswordChangeConsumeSmtpTokenV365(token, payload) {
 }
 
 async function diracPasswordChangeSendSmtpCodeV365(req, owner, code, payload) {
-  const account = securityResetSmtpConfigV342();
-  if (!account) throw resetError('PASSWORD_CHANGE_SMTP_CONFIGURATION_UNAVAILABLE', 503);
+  const config = securityResetUserMailConfigV352();
+  const smtpPool = securityResetSmtpPoolV366();
+  if (!config || !smtpPool || smtpPool.ok !== true || !smtpPool.accounts.length) throw resetError('PASSWORD_CHANGE_SMTP_CONFIGURATION_UNAVAILABLE', 503);
   const reference = diracSecurityPasskeyResetSha256V363(String(payload.jti || '')).slice(0, 10).toUpperCase();
   const subject = 'DiracGroup Security - Kode Ganti Kata Sandi [' + reference + ']';
   const htmlInput = {
@@ -3092,6 +3133,7 @@ async function diracPasswordChangeSendSmtpCodeV365(req, owner, code, payload) {
   const marker = String(htmlInput.statusValue);
   const html = diracSecurityCorporateEmailHtmlV327(htmlInput).replace(marker, diracSecurityMailEscapeV327(code));
   const text = diracSecurityMailTextV327(htmlInput).replace(marker, code);
+  const record = { email: owner.email };
   const context = diracCentralCurrentContextV149();
   if (!context || !context.active || !context.__diracPasswordResetVerifiedOwnerV333
       || !safeEqual(String(context.__diracPasswordResetVerifiedOwnerV333.authUserId || ''), owner.authUserId)
@@ -3099,8 +3141,17 @@ async function diracPasswordChangeSendSmtpCodeV365(req, owner, code, payload) {
   context.__diracPasswordChangeSmtpDispatchV365 = true;
   context.__diracPasswordChangeSmtpRecipientHashV365 = diracSecurityPasskeyResetSha256V363(owner.email);
   let result;
-  try { result = await securityResetGmailMailV352(account, { email: owner.email }, subject, text, html, 1); }
-  finally { context.__diracPasswordChangeSmtpDispatchV365 = false; context.__diracPasswordChangeSmtpRecipientHashV365 = ''; }
+  try {
+    result = await securityResetHttpMailV352('brevo', config, record, subject, text, html, reference);
+    if (result && result.ok !== true && result.limited === true) result = await securityResetHttpMailV352('resend', config, record, subject, text, html, reference);
+    if (result && result.ok !== true && result.limited === true) {
+      for (const account of smtpPool.accounts) {
+        result = await securityResetGmailMailV352(account, record, subject, text, html, account.slot);
+        if (result && result.ok === true) break;
+        if (!result || result.limited !== true) break;
+      }
+    }
+  } finally { context.__diracPasswordChangeSmtpDispatchV365 = false; context.__diracPasswordChangeSmtpRecipientHashV365 = ''; }
   securityResetMailDiagnosticV340(req, 'password_change.smtp_code', result && result.ok === true ? 'success' : 'error', { delivered: Boolean(result && result.ok === true), provider: String(result && result.provider || ''), upstream_status: Number(result && result.status || 0), reference });
   if (!result || result.ok !== true) throw resetError('PASSWORD_CHANGE_SMTP_DELIVERY_FAILED', 503);
   return true;
