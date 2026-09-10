@@ -3442,7 +3442,7 @@ function resetPreflightBaseDomain() {
   return /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value) ? value : '';
 }
 function handleResetPreflight(req, res) {
-  const bootstrapPreflight = DIRAC_SECURITY_PASSKEY_RESET_ACTIONS_V363.has(securityResetBootstrapTargetV334(req));
+  const bootstrapPreflight = Boolean(securityResetBootstrapTargetV334(req));
   const baseDomain = resetPreflightBaseDomain();
   if (!baseDomain) return reject(res, 503, 'SECURITY_RESET_PREFLIGHT_DOMAIN_INVALID');
   const origin = resetPreflightHeader(req, 'origin').trim().toLowerCase();
@@ -3629,7 +3629,7 @@ async function keamananDispatchV361(req, res) {
   try { securityResetValidateHeadersV361(req); }
   catch (error) { return reject(res, error.statusCode || 400, error.code || 'SECURITY_RESET_HEADER_INVALID'); }
   const bootstrapTarget = securityResetBootstrapTargetV334(req);
-  if (DIRAC_SECURITY_PASSKEY_RESET_ACTIONS_V363.has(bootstrapTarget) && String(req && req.method || 'GET').toUpperCase() === 'OPTIONS') return handleResetPreflight(req, res);
+  if (bootstrapTarget && String(req && req.method || 'GET').toUpperCase() === 'OPTIONS') return handleResetPreflight(req, res);
   if (bootstrapTarget && String(req && req.method || 'GET').toUpperCase() === 'GET') {
     try { return await handleResetBootstrapV334(req, res, bootstrapTarget); }
     catch (error) { diracResetDiagnosticV335(req, 'bootstrap', 'error', { target_action: bootstrapTarget }, error); securityResetApplyHeadersV334(req, res, requestOrigin(req)); return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_RESET_BOOTSTRAP_FAILED'), message:'Permintaan keamanan ditolak.' }); }
