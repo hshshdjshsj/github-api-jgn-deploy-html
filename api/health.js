@@ -18685,6 +18685,7 @@ async function midtransCreateDomainPaymentInvoice(order, orderItems, customer) {
 }
 
 async function midtransHandleWebhook(req, res) {
+  const paidMailTimingV371 = diracPaidMailTimingCreateV371(req);
   if (!midtransPaymentIsConfigured()) {
     return res.status(503).json({ ok: false, message: 'MIDTRANS_SERVER_KEY belum disetel.' });
   }
@@ -18833,6 +18834,7 @@ async function midtransHandleWebhook(req, res) {
   if (!midtransBindWebhookStateV352(capabilityContextV350.ctx, tx, ownerCheck.order)) {
     return res.status(409).json({ ok: false, message: 'Status order tidak mengizinkan mutasi payment.' });
   }
+  diracPaidMailTimingMarkV371(paidMailTimingV371, 'payment_verified');
 
   // Event starts as received. It becomes processed only after every required
   // application mutation for this notification has succeeded.
@@ -18881,8 +18883,9 @@ async function midtransHandleWebhook(req, res) {
     if (!orderPatch.ok) {
       return res.status(orderPatch.status || 500).json({ ok: false, message: 'Payment valid, tetapi gagal update status order.' });
     }
+    diracPaidMailTimingMarkV371(paidMailTimingV371, 'order_paid');
     orderMailNotification = orderMailDeliveryRequiredV368
-      ? await orderMailNotifyPaidOrderFromPaymentSafe({
+      ? await diracPaidMailTimingRunV371(req, paidMailTimingV371, {
         provider: 'midtrans',
         tx,
         webhookPayload: body,
@@ -28513,6 +28516,126 @@ __diracV202RegisterMiddleware(async function diracOrderMailWrapper(req, res, nex
 }, "diracOrderMailWrapper");
 
 
+const DIRAC_PAID_MAIL_TIMING_DIAGNOSTIC_V371 = 'dirac-paid-mail-timing-diagnostic-v371';
+
+function diracPaidMailTimingCreateV371(req) {
+  const now = Date.now();
+  const requestId = String(req && req.__diracCentralRequestIdV211 || '');
+  return {
+    patch: DIRAC_PAID_MAIL_TIMING_DIAGNOSTIC_V371,
+    request_id: /^[a-f0-9]{32}$/.test(requestId) ? requestId : '',
+    webhook_received: now,
+    payment_verified: 0,
+    order_paid: 0,
+    mail_start: 0,
+    provider_accepted: 0,
+    mail_complete: 0,
+    first_provider: '',
+    first_role: '',
+    customer_provider: '',
+    customer_provider_accepted: 0,
+    owner_provider: '',
+    owner_provider_accepted: 0,
+    emitted: false
+  };
+}
+
+function diracPaidMailTimingMarkV371(timing, marker) {
+  if (!timing || timing.emitted === true) return;
+  const now = Date.now();
+  if (marker === 'payment_verified' && !timing.payment_verified) timing.payment_verified = now;
+  else if (marker === 'order_paid' && !timing.order_paid) timing.order_paid = now;
+  else if (marker === 'mail_start' && !timing.mail_start) timing.mail_start = now;
+  else if (marker === 'mail_complete' && !timing.mail_complete) timing.mail_complete = now;
+}
+
+function diracPaidMailTimingProviderAcceptedV371(diagnostic, provider) {
+  const timing = diagnostic && diagnostic.timing;
+  const role = String(diagnostic && diagnostic.role || '');
+  if (!timing || timing.emitted === true || (role !== 'customer' && role !== 'owner')) return;
+  const now = Date.now();
+  const cleanProvider = orderMailCleanText(provider || 'unknown', 32) || 'unknown';
+  if (!timing.provider_accepted) {
+    timing.provider_accepted = now;
+    timing.first_provider = cleanProvider;
+    timing.first_role = role;
+  }
+  if (role === 'customer' && !timing.customer_provider_accepted) {
+    timing.customer_provider_accepted = now;
+    timing.customer_provider = cleanProvider;
+  } else if (role === 'owner' && !timing.owner_provider_accepted) {
+    timing.owner_provider_accepted = now;
+    timing.owner_provider = cleanProvider;
+  }
+}
+
+function diracPaidMailTimingIsoV371(value) {
+  return Number.isFinite(Number(value)) && Number(value) > 0 ? new Date(Number(value)).toISOString() : null;
+}
+
+function diracPaidMailTimingDeltaV371(end, start) {
+  const a = Number(end || 0);
+  const b = Number(start || 0);
+  return a > 0 && b > 0 && a >= b ? Math.min(86400000, a - b) : null;
+}
+
+function diracPaidMailTimingEmitV371(req, timing, notification) {
+  if (!timing || timing.emitted === true) return;
+  timing.emitted = true;
+  const requestId = String(req && req.__diracCentralRequestIdV211 || timing.request_id || '');
+  const safeRequestId = /^[a-f0-9]{32}$/.test(requestId) ? requestId : '';
+  const customerSent = Boolean(notification && notification.customer && notification.customer.sent === true);
+  const ownerSent = Boolean(notification && notification.owner && notification.owner.sent === true);
+  const payload = {
+    v: DIRAC_PAID_MAIL_TIMING_DIAGNOSTIC_V371,
+    request_id: safeRequestId,
+    timeline_complete: Boolean(timing.webhook_received && timing.payment_verified && timing.order_paid && timing.mail_start && timing.provider_accepted && timing.mail_complete),
+    timestamps: {
+      webhook_received: diracPaidMailTimingIsoV371(timing.webhook_received),
+      payment_verified: diracPaidMailTimingIsoV371(timing.payment_verified),
+      order_paid: diracPaidMailTimingIsoV371(timing.order_paid),
+      mail_start: diracPaidMailTimingIsoV371(timing.mail_start),
+      provider_accepted: diracPaidMailTimingIsoV371(timing.provider_accepted),
+      mail_complete: diracPaidMailTimingIsoV371(timing.mail_complete)
+    },
+    elapsed_ms: {
+      webhook_to_payment_verified: diracPaidMailTimingDeltaV371(timing.payment_verified, timing.webhook_received),
+      payment_verified_to_order_paid: diracPaidMailTimingDeltaV371(timing.order_paid, timing.payment_verified),
+      order_paid_to_mail_start: diracPaidMailTimingDeltaV371(timing.mail_start, timing.order_paid),
+      mail_start_to_provider_accepted: diracPaidMailTimingDeltaV371(timing.provider_accepted, timing.mail_start),
+      provider_accepted_to_mail_complete: diracPaidMailTimingDeltaV371(timing.mail_complete, timing.provider_accepted),
+      webhook_to_mail_complete: diracPaidMailTimingDeltaV371(timing.mail_complete, timing.webhook_received)
+    },
+    provider: {
+      first: timing.first_provider || null,
+      first_role: timing.first_role || null,
+      customer: timing.customer_provider || null,
+      customer_accepted_at: diracPaidMailTimingIsoV371(timing.customer_provider_accepted),
+      owner: timing.owner_provider || null,
+      owner_accepted_at: diracPaidMailTimingIsoV371(timing.owner_provider_accepted)
+    },
+    result: {
+      ok: Boolean(notification && notification.ok === true),
+      customer_sent: customerSent,
+      owner_sent: ownerSent
+    },
+    privacy: 'no_email_no_uuid_no_order_id_no_token_no_cookie_no_secret'
+  };
+  try { console.info('[dirac-paid-mail-timing-v371] ' + JSON.stringify(payload)); } catch (_) {}
+}
+
+async function diracPaidMailTimingRunV371(req, timing, input) {
+  diracPaidMailTimingMarkV371(timing, 'mail_start');
+  let result = null;
+  try {
+    result = await orderMailNotifyPaidOrderFromPaymentSafe({ ...input, diagnosticTimingV371: timing });
+    return result;
+  } finally {
+    diracPaidMailTimingMarkV371(timing, 'mail_complete');
+    diracPaidMailTimingEmitV371(req, timing, result);
+  }
+}
+
 function orderMailPendingPaymentSkipSummary(source) {
   return {
     ok: true,
@@ -28540,6 +28663,7 @@ function orderMailPaidWebhookSkipSummary(provider, reason) {
 
 async function orderMailNotifyPaidOrderFromPaymentSafe(input) {
   const provider = orderMailCleanText(input && input.provider || 'payment_gateway', 40);
+  const diagnosticTimingV371 = input && input.diagnosticTimingV371 && typeof input.diagnosticTimingV371 === 'object' ? input.diagnosticTimingV371 : null;
   const tx = input && input.tx && typeof input.tx === 'object' ? input.tx : null;
   const paidAt = orderMailCleanText(input && input.paidAt || diracNowIso(), 80);
   const paidOrder = input && input.paidOrder && typeof input.paidOrder === 'object' && !Array.isArray(input.paidOrder) ? input.paidOrder : null;
@@ -28556,7 +28680,7 @@ async function orderMailNotifyPaidOrderFromPaymentSafe(input) {
       return skipped;
     }
 
-    const notify = await orderMailNotifyNewOrderSafe(context.mail);
+    const notify = await orderMailNotifyNewOrderSafe(context.mail, diagnosticTimingV371);
     notify.provider = provider;
     notify.paid_webhook_only = true;
     notify.payment_transaction_id = orderMailCleanText(tx.id || '', 120);
@@ -28728,7 +28852,7 @@ async function orderMailFetchCustomerFallback(customerId) {
   };
 }
 
-async function orderMailNotifyNewOrderSafe(input) {
+async function orderMailNotifyNewOrderSafe(input, diagnosticTimingV371 = null) {
   const summary = {
     ok: true,
     debugPatch: DIRAC_ORDER_MAIL_PATCH,
@@ -28753,7 +28877,7 @@ async function orderMailNotifyNewOrderSafe(input) {
         html: messages.customerHtml,
         fromName: customerConfig.fromName,
         fromEmail: customerConfig.fromEmail
-      });
+      }, diagnosticTimingV371 ? { timing: diagnosticTimingV371, role: 'customer' } : null);
       summary.customer.sent = Boolean(customerResult.ok);
       summary.customer.error = customerResult.ok ? null : customerResult.error;
     } else {
@@ -28775,7 +28899,7 @@ async function orderMailNotifyNewOrderSafe(input) {
         html: messages.ownerHtml,
         fromName: ownerConfig.fromName,
         fromEmail: ownerConfig.fromEmail
-      });
+      }, diagnosticTimingV371 ? { timing: diagnosticTimingV371, role: 'owner' } : null);
       summary.owner.sent = Boolean(ownerResult.ok);
       summary.owner.error = ownerResult.ok ? null : ownerResult.error;
       summary.owner.recipient_count = ownerConfig.recipients.length;
@@ -29299,7 +29423,7 @@ async function orderMailSendViaSmtpSafeLegacyV1(config, message) {
   }
 }
 
-async function orderMailSendViaSmtp(config, message) {
+async function orderMailSendViaSmtp(config, message, diagnosticV371 = null) {
   if (!config || !config.configured) return { ok: false, error: 'smtp_not_configured' };
   const recipients = Array.from(new Set((message.to || []).map(orderMailNormalizeEmail).filter(Boolean))).slice(0, 50);
   if (!recipients.length) return { ok: false, error: 'recipient_missing' };
@@ -29439,6 +29563,7 @@ async function orderMailSendViaSmtp(config, message) {
       socket.write(orderMailBuildMimeMessage({ ...message, to: recipients, fromName: message.fromName || config.fromName, fromEmail: message.fromEmail || config.fromEmail }) + '\r\n.\r\n');
       const dataResponse = await readResponse();
       if (dataResponse.code !== 250) throw new Error(`smtp_data_${dataResponse.code}_${orderMailCleanText(dataResponse.text, 120)}`);
+      diracPaidMailTimingProviderAcceptedV371(diagnosticV371, 'smtp');
       try { await command('QUIT', 221); } catch (_) {}
       done({ ok: true, recipient_count: recipients.length });
     };
@@ -38773,16 +38898,20 @@ function orderMailProviderConfiguredV129(kindUpper, fromEmail) {
   return Boolean(fromEmail && (resendKey || brevoKey));
 }
 
-async function orderMailSendViaSmtpSafe(config, message) {
+async function orderMailSendViaSmtpSafe(config, message, diagnosticV371 = null) {
   try {
-    if (config && config.smtpConfigured) return await orderMailSendViaSmtp(config, message);
-    return await orderMailSendViaProviderFallbackSafeV129(config, message);
+    if (config && config.smtpConfigured) {
+      const smtpResult = await orderMailSendViaSmtp(config, message, diagnosticV371);
+      if (smtpResult && smtpResult.ok === true) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, 'smtp');
+      return smtpResult;
+    }
+    return await orderMailSendViaProviderFallbackSafeV129(config, message, diagnosticV371);
   } catch (error) {
     return { ok: false, error: orderMailSafeError(error) };
   }
 }
 
-async function orderMailSendViaProviderFallbackSafeV129(config, message) {
+async function orderMailSendViaProviderFallbackSafeV129(config, message, diagnosticV371 = null) {
   const cfg = config && typeof config === 'object' ? config : {};
   const recipients = Array.from(new Set((message.to || []).map(orderMailNormalizeEmail).filter(Boolean))).slice(0, 50);
   if (!recipients.length) return { ok: false, error: 'recipient_missing' };
@@ -38813,6 +38942,7 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message) {
           html: String(message.html || '<p>Dirac Group</p>')
         })
       });
+      if (response && response.ok) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, 'resend');
       const body = await parseFetchResponse(response, 256 * 1024).catch(() => ({}));
       if (response.ok) return { ok: true, provider: 'resend', id: body && body.id || null, recipient_count: recipients.length };
       return { ok: false, provider: 'resend', error: 'resend_' + response.status };
@@ -38842,6 +38972,7 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message) {
           htmlContent: String(message.html || '<p>Dirac Group</p>')
         })
       });
+      if (response && response.ok) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, 'brevo');
       const body = await parseFetchResponse(response, 256 * 1024).catch(() => ({}));
       if (response.ok) return { ok: true, provider: 'brevo', id: body && body.messageId || null, recipient_count: recipients.length };
       return { ok: false, provider: 'brevo', error: 'brevo_' + response.status };
