@@ -1572,6 +1572,8 @@ async function domainLogin(req, res, preloadedBody) {
       ok: false,
       code: 'LOGIN_ACCESS_BLOCKED',
       message: 'Akses masuk ditolak oleh kebijakan keamanan.',
+      blocked_scope: preAuthAccessBlockV350.matched_scope || '',
+      network_lock: preAuthAccessBlockV350.matched_scope === 'ip',
       blocked_until: preAuthAccessBlockV350.blocked_until,
       retry_after_seconds: preAuthAccessBlockV350.retry_after_seconds || 300
     });
@@ -1694,6 +1696,8 @@ async function domainLogin(req, res, preloadedBody) {
       ok: false,
       code: 'LOGIN_ACCESS_BLOCKED',
       message: 'Akses masuk ditolak oleh kebijakan keamanan.',
+      blocked_scope: publicationLoginBlockV321.matched_scope || '',
+      network_lock: publicationLoginBlockV321.matched_scope === 'ip',
       blocked_until: publicationLoginBlockV321.blocked_until,
       retry_after_seconds: publicationLoginBlockV321.retry_after_seconds || 300
     });
@@ -11645,7 +11649,7 @@ async function customerSecurityCheckAccessBlock(req, action) {
         now,
         (value) => Number(value || 0)
       );
-      return { blocked: true, blocked_until: new Date(until).toISOString(), retry_after_seconds: Math.max(1, Math.ceil((until - now) / 1000)), source: 'database' };
+      return { blocked: true, blocked_until: new Date(until).toISOString(), retry_after_seconds: Math.max(1, Math.ceil((until - now) / 1000)), source: 'database', matched_scope: merged[0].ip_hash === identity.ip_hash ? 'ip' : 'device' };
     }
   } catch (_) {
     return { blocked: false, unavailable: true, source: 'database' };
@@ -32224,7 +32228,7 @@ __diracV202RegisterMiddleware(async function diracGlobalHardBanStableWrapperV107
       if (existing && existing.blocked) {
         try { res.setHeader('Retry-After', String(existing.retryAfterSeconds || 86400)); } catch (_) {}
         try { res.setHeader('X-Dirac-V107-Blocked-By', String(existing.keyType || 'global').slice(0, 80)); } catch (_) {}
-        return diracV107BlockedResponse(res, 'GLOBAL_HARD_BAN_ACTIVE');
+        return diracV107BlockedResponse(req, res, 'GLOBAL_HARD_BAN_ACTIVE', existing.retryAfterSeconds || 86400);
       }
 
       const threat = diracV107DetectThreat(req, action, method);
@@ -32234,12 +32238,12 @@ __diracV202RegisterMiddleware(async function diracGlobalHardBanStableWrapperV107
           return { ok: false, wrote: 0 };
         });
         try { res.setHeader('X-Dirac-V107-Hard-Ban-Write', write && write.ok ? 'active' : 'memory'); } catch (_) {}
-        return diracV107BlockedResponse(res, threat.kind || 'SECURITY_THREAT');
+        return diracV107BlockedResponse(req, res, threat.kind || 'SECURITY_THREAT', write && write.blockedUntilMs > Date.now() ? Math.max(1, Math.ceil((write.blockedUntilMs - Date.now()) / 1000)) : 86400);
       }
     }
   } catch (error) {
     try { console.error('[dirac-v107-hard-ban]', diracV107SafeError(error)); } catch (_) {}
-    return diracV107BlockedResponse(res, 'SECURITY_GUARD_ERROR');
+    return diracV107BlockedResponse(req, res, 'SECURITY_GUARD_ERROR', 60);
   }
 
   return nextHandlerV202(req, res);
@@ -32617,13 +32621,24 @@ function diracV107Table() {
   return DIRAC_PERSISTENT_BAN_TABLE;
 }
 
-function diracV107BlockedResponse(res, reason) {
+function diracV107BlockedResponse(req, res, reason, retryAfterSeconds) {
+  try { if (typeof setCors === 'function') setCors(req, res, { isDomainAction: true }); } catch (_) {}
   try { if (typeof diracApplySecurityResponseHeaders === 'function') diracApplySecurityResponseHeaders(res); } catch (_) {}
   try { res.setHeader('Cache-Control', 'no-store'); } catch (_) {}
+  const networkIp = String(typeof diracV107Ip === 'function' ? diracV107Ip(req) : '').trim();
+  const networkLock = Boolean(networkIp && networkIp !== 'unknown' && networkIp !== 'no-ip');
+  const retryAfter = Math.max(1, Math.ceil(Number(retryAfterSeconds || 86400)));
+  try { res.setHeader('Retry-After', String(retryAfter)); } catch (_) {}
   return res.status(403).json({
     ok: false,
     code: 'GLOBAL_HARD_BAN',
-    message: 'Akses dibatasi oleh sistem keamanan.',
+    ban_active: true,
+    ban_scope: networkLock ? 'public_ip' : 'request_identity',
+    network_lock: networkLock,
+    retry_after_seconds: retryAfter,
+    message: networkLock
+      ? 'Jaringan/IP publik ini sedang diblokir oleh sistem keamanan. Semua perangkat yang keluar melalui IP publik yang sama ikut diblokir.'
+      : 'Akses dibatasi oleh sistem keamanan.',
     reason: String(reason || 'blocked').slice(0, 80)
   });
 }
@@ -40984,7 +40999,7 @@ try {
         const existing = await diracV143CheckActiveGlobalBan(req).catch(() => ({ blocked: false }));
         if (existing && existing.blocked) {
           try { if (res && typeof res.setHeader === 'function') res.setHeader('Retry-After', String(existing.retryAfterSeconds || 86400)); } catch (_) {}
-          return diracV143BlockedResponse(res, 'GLOBAL_BAN_ACTIVE');
+          return diracV143BlockedResponse(req, res, 'GLOBAL_BAN_ACTIVE', existing.retryAfterSeconds || 86400);
         }
 
         if (action === 'security_report') {
@@ -40996,13 +41011,13 @@ try {
             risk: 'critical',
             reason
           }).catch(() => null);
-          return diracV143BlockedResponse(res, 'HTML_SECURITY_REPORT');
+          return diracV143BlockedResponse(req, res, 'HTML_SECURITY_REPORT', 86400);
         }
 
         const threat = diracV143DetectRequestThreat(req, action, method);
         if (threat && threat.detected) {
           await diracV143WriteGlobalBanOnce(req, res, action, method, threat).catch(() => null);
-          return diracV143BlockedResponse(res, threat.kind || 'GLOBAL_API_THREAT');
+          return diracV143BlockedResponse(req, res, threat.kind || 'GLOBAL_API_THREAT', 86400);
         }
       } catch (error) {
         try { console.error('[dirac-global-api-threat-v143]', diracV143SafeError(error)); } catch (_) {}
@@ -41012,7 +41027,7 @@ try {
           source: 'guard',
           risk: 'high'
         }).catch(() => null);
-        return diracV143BlockedResponse(res, 'GLOBAL_API_GUARD_ERROR');
+        return diracV143BlockedResponse(req, res, 'GLOBAL_API_GUARD_ERROR', 60);
       }
 
       return nextHandlerV202(req, res);
@@ -41477,13 +41492,24 @@ function diracV143ThrowBlocked(threat) {
   throw error;
 }
 
-function diracV143BlockedResponse(res, reason) {
+function diracV143BlockedResponse(req, res, reason, retryAfterSeconds) {
+  try { if (typeof setCors === 'function') setCors(req, res, { isDomainAction: true }); } catch (_) {}
   try { if (typeof diracApplySecurityResponseHeaders === 'function') diracApplySecurityResponseHeaders(res); } catch (_) {}
   try { if (res && typeof res.setHeader === 'function') res.setHeader('Cache-Control', 'no-store'); } catch (_) {}
+  const networkIp = String(typeof diracV107Ip === 'function' ? diracV107Ip(req) : '').trim();
+  const networkLock = Boolean(networkIp && networkIp !== 'unknown' && networkIp !== 'no-ip');
+  const retryAfter = Math.max(1, Math.ceil(Number(retryAfterSeconds || 86400)));
+  try { if (res && typeof res.setHeader === 'function') res.setHeader('Retry-After', String(retryAfter)); } catch (_) {}
   return res.status(403).json({
     ok: false,
     code: 'GLOBAL_API_THREAT_BLOCKED',
-    message: 'Permintaan ditolak oleh sistem keamanan.',
+    ban_active: true,
+    ban_scope: networkLock ? 'public_ip' : 'request_identity',
+    network_lock: networkLock,
+    retry_after_seconds: retryAfter,
+    message: networkLock
+      ? 'Jaringan/IP publik ini sedang diblokir oleh sistem keamanan. Semua perangkat yang keluar melalui IP publik yang sama ikut diblokir.'
+      : 'Permintaan ditolak oleh sistem keamanan.',
     reason: String(reason || 'blocked').slice(0, 80),
     source: DIRAC_GLOBAL_API_THREAT_GUARD_V143
   });
@@ -62133,6 +62159,10 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
 
 function diracCentralBlockedResponseV146(res, reason) {
   const ctx = diracCentralCurrentContextV149();
+  const activeBanCode = /^(?:MEMORY_BAN_ACTIVE|PERSISTENT_BAN_ACTIVE)$/.test(String(reason || '').toUpperCase());
+  if (activeBanCode) {
+    try { if (typeof setCors === 'function') setCors(ctx && ctx.req, res, { isDomainAction: true }); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
+  }
   diracCentralApplyHeadersV146(res);
   try { if (res && typeof res.setHeader === 'function') res.setHeader('Cache-Control', 'no-store'); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
   const publicReason = diracCentralIsProductionV146() ? 'blocked' : String(reason || 'blocked').slice(0, 80);
@@ -62145,6 +62175,11 @@ function diracCentralBlockedResponseV146(res, reason) {
     request_id: String(ctx && ctx.requestId || '').slice(0, 64),
     failure_id: diracCentralFailureIdV211(ctx)
   };
+  if (activeBanCode) {
+    payload.ban_active = true;
+    payload.ban_scope = 'persistent_security';
+    payload.message = 'Akses diblokir karena status ban keamanan masih aktif.';
+  }
   if (diracCentralDebugResponseAllowedV211(ctx)) {
     payload.debug = {
       patch: DIRAC_CENTRAL_FAIL_CLOSED_DEBUG_V211,
