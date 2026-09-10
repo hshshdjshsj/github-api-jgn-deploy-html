@@ -3828,6 +3828,8 @@ async function diracRegisterEmailFindAuthUserV331(req, input) {
   return { ok: true, exists: lookup.exists === true };
 }
 
+const DIRAC_REGISTER_FRESH_AUTH_USER_V366 = new WeakMap();
+
 async function diracRegisterEmailCreateAuthUserV331(req, input, userData) {
   if (!diracRegisterEmailHasAuthorityV331(req, input)) return { ok: false, status: 403, code: 'REGISTER_EMAIL_AUTHORITY_REQUIRED' };
   const createBody = {
@@ -3853,12 +3855,80 @@ async function diracRegisterEmailCreateAuthUserV331(req, input, userData) {
   const userId = String(user && (user.id || user.user_id || user.sub) || '').trim();
   const userEmail = normalizeAuthEmail(user && user.email || '');
   const confirmedAt = String(user && (user.email_confirmed_at || user.confirmed_at) || '').trim();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId)
+      && safeEqual(userEmail, input.email)) {
+    DIRAC_REGISTER_FRESH_AUTH_USER_V366.set(req, Object.freeze({
+      user_id: userId,
+      email: userEmail,
+      request_hash: diracRegisterEmailRequestHashV331(input)
+    }));
+  }
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId)
       || userEmail !== input.email
       || !confirmedAt) {
     return { ok: false, status: 502, code: 'REGISTER_VERIFIED_AUTH_IDENTITY_INVALID' };
   }
   return { ok: true, user };
+}
+
+async function diracRegisterEmailRollbackFreshAuthUserV366(req) {
+  const marker = req && DIRAC_REGISTER_FRESH_AUTH_USER_V366.get(req);
+  if (!marker) return { ok: true, tracked: false };
+  const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
+  const authority = req && DIRAC_REGISTER_EMAIL_AUTHORITY_V331.get(req);
+  if (!ctx
+      || ctx.req !== req
+      || String(ctx.action || '') !== 'domain_register'
+      || String(ctx.method || '').toUpperCase() !== 'POST'
+      || typeof diracCentralHandlerContextFullyPassedV211 !== 'function'
+      || diracCentralHandlerContextFullyPassedV211(ctx, req) !== true
+      || !authority
+      || !safeEqual(String(authority.requestHash || ''), String(marker.request_hash || ''))
+      || !customerSecurityLooksLikeUuid(marker.user_id)
+      || !isValidAuthEmail(marker.email)) {
+    return { ok: false, tracked: true, code: 'REGISTER_ROLLBACK_AUTHORITY_INVALID' };
+  }
+
+  const path = '/auth/v1/admin/users/' + encodeURIComponent(marker.user_id);
+  let lastStatus = 0;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const removed = await supabaseFetch(path, { method: 'DELETE', auth: 'service' });
+    lastStatus = Number(removed && removed.status || lastStatus || 0);
+    const readback = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+    lastStatus = Number(readback && readback.status || lastStatus || 0);
+    if (readback && Number(readback.status) === 404) {
+      DIRAC_REGISTER_FRESH_AUTH_USER_V366.delete(req);
+      return { ok: true, tracked: true, deleted: true };
+    }
+    if (readback && readback.ok === true && readback.data) {
+      const observed = normalizeSupabaseAdminUser(readback.data);
+      const observedId = String(observed && (observed.id || observed.user_id || observed.sub) || '').trim();
+      const observedEmail = normalizeAuthEmail(observed && observed.email || '');
+      if ((observedId && observedId !== marker.user_id) || (observedEmail && observedEmail !== marker.email)) {
+        return { ok: false, tracked: true, code: 'REGISTER_ROLLBACK_IDENTITY_MISMATCH', status: lastStatus || 503 };
+      }
+    }
+  }
+  return { ok: false, tracked: true, code: 'REGISTER_ROLLBACK_NOT_CONFIRMED', status: lastStatus || 503 };
+}
+
+function diracRegisterEmailCommitFreshAuthUserV366(req, user) {
+  const marker = req && DIRAC_REGISTER_FRESH_AUTH_USER_V366.get(req);
+  if (!marker) return false;
+  const normalized = normalizeSupabaseAdminUser(user);
+  const userId = String(normalized && (normalized.id || normalized.user_id || normalized.sub) || '').trim();
+  const email = normalizeAuthEmail(normalized && normalized.email || '');
+  if (!safeEqual(userId, marker.user_id) || !safeEqual(email, marker.email)) return false;
+  DIRAC_REGISTER_FRESH_AUTH_USER_V366.delete(req);
+  return true;
+}
+
+function diracRegisterEmailRollbackResponseV366(payload, rollback) {
+  if (!rollback || rollback.tracked !== true || rollback.ok !== true) return payload;
+  return Object.assign({}, payload && typeof payload === 'object' ? payload : {}, {
+    registration_rolled_back: true,
+    restart_verification: true
+  });
 }
 
 async function domainRegister(req, res, preloadedBody) {
@@ -8577,6 +8647,7 @@ async function customerSecurityBootstrapWrapRegisterResponse(req, res, runPrevio
   res.json = async function patchedCustomerSecurityRegisterJson(payload) {
     let finalPayload = payload;
     const httpStatus = Number(capturedStatus || res.statusCode || 200);
+    const responseActionV366 = customerSecurityRegisterBootstrapNormalizeAction(String(req && req.query && req.query.action || ''));
 
     if (httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true) {
       diracLoginFatalMarkV324(req, 'response.bootstrap', 'begin', { status: httpStatus }, res);
@@ -8588,6 +8659,19 @@ async function customerSecurityBootstrapWrapRegisterResponse(req, res, runPrevio
           status: 403,
           reason_code: reason
         }, res);
+        if (responseActionV366 === 'domain_register') {
+          const rollbackV366 = await diracRegisterEmailRollbackFreshAuthUserV366(req);
+          if (rollbackV366.tracked === true && rollbackV366.ok !== true) {
+            if (originalStatus) originalStatus(503); else res.statusCode = 503;
+            return await originalJson({
+              ok: false,
+              code: 'REGISTER_ROLLBACK_UNVERIFIED',
+              restart_verification: true,
+              message: 'Pendaftaran belum selesai dan akun sementara belum dapat dibersihkan secara terverifikasi. Silakan mulai ulang pendaftaran setelah beberapa saat.'
+            });
+          }
+          return await originalJson(diracRegisterEmailRollbackResponseV366(customerSecurityBootstrapBlockedPayload(reason), rollbackV366));
+        }
         return await originalJson(customerSecurityBootstrapBlockedPayload(reason));
       }
       let bootstrap;
@@ -8595,6 +8679,24 @@ async function customerSecurityBootstrapWrapRegisterResponse(req, res, runPrevio
         bootstrap = await customerSecurityBootstrapRegisteredUser(req, payload.user);
       } catch (errorV324) {
         diracLoginFatalMarkV324(req, 'response.bootstrap', 'throw', diracLoginFatalSafeErrorV324(errorV324, 'response_bootstrap'), res);
+        if (responseActionV366 === 'domain_register') {
+          customerSecurityBootstrapClearAuthPublicationV332(req, res);
+          const rollbackV366 = await diracRegisterEmailRollbackFreshAuthUserV366(req);
+          if (originalStatus) originalStatus(503); else res.statusCode = 503;
+          if (rollbackV366.tracked === true && rollbackV366.ok !== true) {
+            return await originalJson({
+              ok: false,
+              code: 'REGISTER_ROLLBACK_UNVERIFIED',
+              restart_verification: true,
+              message: 'Pendaftaran belum selesai dan akun sementara belum dapat dibersihkan secara terverifikasi. Silakan mulai ulang pendaftaran setelah beberapa saat.'
+            });
+          }
+          return await originalJson(diracRegisterEmailRollbackResponseV366({
+            ok: false,
+            code: 'REGISTER_CUSTOMER_BOOTSTRAP_FAILED',
+            message: 'Verifikasi email berhasil, tetapi finalisasi akun belum selesai. Silakan mulai ulang pendaftaran.'
+          }, rollbackV366));
+        }
         throw errorV324;
       }
       if (!customerSecurityBootstrapReady(bootstrap)) {
@@ -8605,6 +8707,19 @@ async function customerSecurityBootstrapWrapRegisterResponse(req, res, runPrevio
           status: 403,
           reason_code: reason
         }, res);
+        if (responseActionV366 === 'domain_register') {
+          const rollbackV366 = await diracRegisterEmailRollbackFreshAuthUserV366(req);
+          if (rollbackV366.tracked === true && rollbackV366.ok !== true) {
+            if (originalStatus) originalStatus(503); else res.statusCode = 503;
+            return await originalJson({
+              ok: false,
+              code: 'REGISTER_ROLLBACK_UNVERIFIED',
+              restart_verification: true,
+              message: 'Pendaftaran belum selesai dan akun sementara belum dapat dibersihkan secara terverifikasi. Silakan mulai ulang pendaftaran setelah beberapa saat.'
+            });
+          }
+          return await originalJson(diracRegisterEmailRollbackResponseV366(customerSecurityBootstrapBlockedPayload(reason), rollbackV366));
+        }
         return await originalJson(customerSecurityBootstrapBlockedPayload(reason));
       }
       try {
@@ -8636,11 +8751,32 @@ async function customerSecurityBootstrapWrapRegisterResponse(req, res, runPrevio
       } catch (bootstrapMarkerWriteErrorV335) {
         if (typeof diracCentralRecordSuppressedExceptionV221 === 'function') diracCentralRecordSuppressedExceptionV221(bootstrapMarkerWriteErrorV335);
       }
+      if (responseActionV366 === 'domain_register') {
+        diracRegisterEmailCommitFreshAuthUserV366(req, payload.user);
+      }
       finalPayload = customerSecurityAttachBootstrapSummary(payload, bootstrap);
       diracLoginFatalMarkV324(req, 'response.bootstrap', 'done', {
         ok: true,
         status: httpStatus
       }, res);
+    }
+
+    if (!(httpStatus >= 200 && httpStatus < 300 && payload && payload.ok === true)
+        && responseActionV366 === 'domain_register'
+        && String(payload && payload.code || '') !== 'REGISTER_ACCOUNT_BLOCKED'
+        && DIRAC_REGISTER_FRESH_AUTH_USER_V366.has(req)) {
+      const rollbackV366 = await diracRegisterEmailRollbackFreshAuthUserV366(req);
+      if (rollbackV366.tracked === true && rollbackV366.ok !== true) {
+        if (originalStatus) originalStatus(503); else res.statusCode = 503;
+        finalPayload = {
+          ok: false,
+          code: 'REGISTER_ROLLBACK_UNVERIFIED',
+          restart_verification: true,
+          message: 'Pendaftaran belum selesai dan akun sementara belum dapat dibersihkan secara terverifikasi. Silakan mulai ulang pendaftaran setelah beberapa saat.'
+        };
+      } else {
+        finalPayload = diracRegisterEmailRollbackResponseV366(finalPayload, rollbackV366);
+      }
     }
 
     const forwardedResponseV324 = await originalJson(finalPayload);
