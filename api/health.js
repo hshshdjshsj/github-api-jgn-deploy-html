@@ -51479,13 +51479,21 @@ diracSecurityAlertSendV320 = async function diracSecurityAlertSendCyberSmtpOnlyV
 // Paid-order mail role partition: customer and owner reuse the already verified customer mail cascade when a dedicated owner SMTP is not configured.
 const orderMailCustomerEnabledBeforeRolePartitionV352 = orderMailCustomerEnabled;
 orderMailCustomerEnabled = function orderMailCustomerEnabledRolePartitionV352() {
-  return Boolean(diracUserSecurityConfigV327());
+  if (diracUserSecurityConfigV327()) return true;
+  const dedicated = orderMailSmtpConfigBeforeRolePartitionV352('customer');
+  return Boolean(orderMailCustomerEnabledBeforeRolePartitionV352() && dedicated && dedicated.smtpConfigured);
 };
 
 const orderMailSmtpConfigBeforeRolePartitionV352 = orderMailSmtpConfig;
 orderMailSmtpConfig = function orderMailSmtpConfigRolePartitionV352(kind) {
   if (kind === 'customer') {
     const cfg = diracUserSecurityConfigV327();
+    if (!cfg) {
+      const dedicated = orderMailSmtpConfigBeforeRolePartitionV352('customer');
+      if (dedicated && dedicated.smtpConfigured) {
+        return { ...dedicated, kind: 'customer', providerConfigured: false, customerCascadeV352: null, patch: DIRAC_MAIL_ROLE_PARTITION_V352 };
+      }
+    }
     return {
       kind: 'customer', configured: Boolean(cfg), smtpConfigured: false, providerConfigured: Boolean(cfg),
       fromName: 'Dirac Group', fromEmail: cfg ? (cfg.brevoFromEmail || cfg.resendFromEmail || cfg.smtpUser) : '',
@@ -51525,7 +51533,10 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
   try {
     if (config && config.kind === 'customer') {
       const customerCfg = config.customerCascadeV352 || diracUserSecurityConfigV327();
-      if (!customerCfg) return { ok: false, error: 'customer_cascade_not_configured' };
+      if (!customerCfg) {
+        if (config.smtpConfigured) return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message);
+        return { ok: false, error: 'customer_cascade_not_configured' };
+      }
       const generic = Object.freeze({
         fromName: 'Dirac Group', recipients: Array.from(new Set((message.to || []).map(orderMailNormalizeEmail).filter(Boolean))),
         replyTo: customerCfg.replyTo, subject: String(message.subject || 'Dirac Group'), text: String(message.text || ''),
@@ -51535,7 +51546,10 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
     }
     if (config && config.kind === 'owner') {
       const ownerCfg = config.ownerCascadeV367 || diracUserSecurityConfigV327();
-      if (!ownerCfg) return { ok: false, error: 'owner_mail_transport_not_configured' };
+      if (!ownerCfg) {
+        if (config.smtpConfigured) return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message);
+        return { ok: false, error: 'owner_mail_transport_not_configured' };
+      }
       const recipients = Array.from(new Set((message.to || config.recipients || []).map(orderMailNormalizeEmail).filter(Boolean)));
       if (!recipients.length) return { ok: false, error: 'owner_email_missing' };
       const generic = Object.freeze({
