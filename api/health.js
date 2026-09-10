@@ -18847,6 +18847,13 @@ async function midtransHandleWebhook(req, res) {
     return res.status(eventInsert.status || 500).json({ ok: false, message: 'Gagal menyimpan event webhook Midtrans.' });
   }
   const effectiveDuplicateEventV351 = duplicateEvent || Boolean(eventInsert && eventInsert.duplicate);
+  const duplicateEventRowV368 = duplicateEvent ? existingEvent.event : (eventInsert && eventInsert.duplicate ? eventInsert.data : null);
+  const duplicateEventStatusV368 = effectiveDuplicateEventV351 ? String(duplicateEventRowV368 && duplicateEventRowV368.event_status || '').trim().toLowerCase() : '';
+  if (effectiveDuplicateEventV351 && !/^(received|processed)$/.test(duplicateEventStatusV368)) {
+    return res.status(409).json({ ok: false, message: 'Status idempotency event Midtrans tidak valid untuk diproses ulang.' });
+  }
+  const retryPendingMailEventV368 = effectiveDuplicateEventV351 && duplicateEventStatusV368 === 'received';
+  const processedDuplicateEventV368 = effectiveDuplicateEventV351 && duplicateEventStatusV368 === 'processed';
 
   const txPatch = await midtransPatchPaymentTransaction(tx, mappedStatus, body, success);
   if (!txPatch.ok) {
@@ -18864,14 +18871,20 @@ async function midtransHandleWebhook(req, res) {
     if (!orderPatch.ok) {
       return res.status(orderPatch.status || 500).json({ ok: false, message: 'Payment valid, tetapi gagal update status order.' });
     }
-    orderMailNotification = (effectiveDuplicateEventV351 || paymentAlreadyMatched || orderAlreadyPaid)
-      ? orderMailPaidWebhookSkipSummary('midtrans', effectiveDuplicateEventV351 ? 'duplicate_event_reconciled' : 'already_paid')
-      : await orderMailNotifyPaidOrderFromPaymentSafe({
+    const orderMailDeliveryRequiredV368 = retryPendingMailEventV368 || (!effectiveDuplicateEventV351 && !paymentAlreadyMatched && !orderAlreadyPaid);
+    orderMailNotification = orderMailDeliveryRequiredV368
+      ? await orderMailNotifyPaidOrderFromPaymentSafe({
         provider: 'midtrans',
         tx,
         webhookPayload: body,
         paidAt: capabilityContextV350.capability.evidence.confirmed_at
-      });
+      })
+      : orderMailPaidWebhookSkipSummary('midtrans', processedDuplicateEventV368 ? 'duplicate_event_reconciled' : 'already_paid');
+    if (orderMailDeliveryRequiredV368 && (!orderMailNotification || orderMailNotification.ok !== true
+        || !orderMailNotification.customer || orderMailNotification.customer.sent !== true
+        || !orderMailNotification.owner || orderMailNotification.owner.sent !== true)) {
+      return res.status(503).json({ ok: false, message: 'Payment valid dan status order tersimpan, tetapi email paid invoice belum terkirim lengkap ke customer dan owner.', order_mail_notification: orderMailNotification });
+    }
   } else if (mappedStatus === 'refunded') {
     orderPatch = await midtransPatchRelatedOrderRefundedV350(tx);
     if (!orderPatch.ok) {
@@ -28535,6 +28548,10 @@ async function orderMailNotifyPaidOrderFromPaymentSafe(input) {
     notify.paid_webhook_only = true;
     notify.payment_transaction_id = orderMailCleanText(tx.id || '', 120);
     notify.gateway_reference = orderMailCleanText(tx.gateway_reference || '', 140);
+    notify.ok = Boolean(notify.customer && notify.customer.sent === true && notify.owner && notify.owner.sent === true);
+    if (!notify.ok && !notify.error) notify.error = notify.customer && notify.customer.sent !== true
+      ? (notify.customer.error || notify.customer.reason || 'customer_paid_invoice_email_failed')
+      : (notify.owner && (notify.owner.error || notify.owner.reason) || 'owner_paid_invoice_email_failed');
     return notify;
   } catch (error) {
     const failed = orderMailPaidWebhookSkipSummary(provider, 'paid_invoice_email_failed');
@@ -51453,11 +51470,9 @@ diracSecurityAlertSendV320 = async function diracSecurityAlertSendCyberSmtpOnlyV
   return diracSecurityAlertSmtpSendBeforeCascadeV330(snapshot, config, loginDiagnosticTraceIdV324);
 };
 
-// Paid-order mail role partition: customer follows customer cascade; owner/admin is dedicated Google SMTP only.
+// Paid-order mail role partition: customer and owner reuse the already verified customer mail cascade when a dedicated owner SMTP is not configured.
 const orderMailCustomerEnabledBeforeRolePartitionV352 = orderMailCustomerEnabled;
 orderMailCustomerEnabled = function orderMailCustomerEnabledRolePartitionV352() {
-  const explicit = orderMailPickEnvV129(['ORDER_CUSTOMER_EMAIL_ENABLED']);
-  if (explicit) return orderMailEnvTrue(explicit, false);
   return Boolean(diracUserSecurityConfigV327());
 };
 
@@ -51477,15 +51492,26 @@ orderMailSmtpConfig = function orderMailSmtpConfigRolePartitionV352(kind) {
     const secure = String(process.env.ORDER_OWNER_SMTP_SECURE || 'true').trim().toLowerCase() === 'true';
     const user = orderMailNormalizeEmail(process.env.ORDER_OWNER_SMTP_USER || '');
     const pass = String(process.env.ORDER_OWNER_SMTP_PASS || process.env.ORDER_OWNER_SMTP_PASSWORD || '').replace(/\s+/g, '');
-    const fromEmail = orderMailNormalizeEmail(process.env.ORDER_OWNER_FROM_EMAIL || user);
     const fromName = orderMailCleanText(process.env.ORDER_OWNER_FROM_NAME || 'Dirac Group', 80);
-    const recipients = orderMailOwnerRecipientListV129();
-    const smtpConfigured = host === 'smtp.gmail.com' && port === 465 && secure === true && user && fromEmail === user
+    const dedicatedFromEmail = orderMailNormalizeEmail(process.env.ORDER_OWNER_FROM_EMAIL || user);
+    const cascade = diracUserSecurityConfigV327();
+    const configuredRecipients = orderMailOwnerRecipientListV129();
+    const fallbackOwner = orderMailNormalizeEmail('companydirac@gmail.com');
+    const recipients = configuredRecipients.length ? configuredRecipients : (fallbackOwner ? [fallbackOwner] : []);
+    const smtpConfigured = host === 'smtp.gmail.com' && port === 465 && secure === true && user && dedicatedFromEmail === user
       && /^[A-Za-z0-9]{16,128}$/.test(pass) && recipients.length > 0;
+    const cascadeConfigured = Boolean(!smtpConfigured && cascade && recipients.length);
+    const fromEmail = smtpConfigured ? dedicatedFromEmail : (cascade ? (cascade.brevoFromEmail || cascade.resendFromEmail || cascade.smtpUser) : '');
     return { kind: 'owner', host, port, secure, user, pass, fromName, fromEmail, recipients,
-      configured: Boolean(smtpConfigured), smtpConfigured: Boolean(smtpConfigured), providerConfigured: false, patch: DIRAC_MAIL_ROLE_PARTITION_V352 };
+      configured: Boolean(smtpConfigured || cascadeConfigured), smtpConfigured: Boolean(smtpConfigured), providerConfigured: Boolean(cascadeConfigured),
+      ownerCascadeV367: cascadeConfigured ? cascade : null, patch: DIRAC_MAIL_ROLE_PARTITION_V352 };
   }
   return orderMailSmtpConfigBeforeRolePartitionV352(kind);
+};
+
+orderMailOwnerEnabled = function orderMailOwnerEnabledRolePartitionV367() {
+  const config = orderMailSmtpConfig('owner');
+  return Boolean(config && config.configured && Array.isArray(config.recipients) && config.recipients.length);
 };
 
 const orderMailSendViaSmtpSafeBeforeRolePartitionV352 = orderMailSendViaSmtpSafe;
@@ -51502,8 +51528,15 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
       return await diracSecurityMailProviderCascadeV330(generic, customerCfg, () => diracCustomerMailSmtpCascadeV352(generic, customerCfg));
     }
     if (config && config.kind === 'owner') {
-      if (!config.smtpConfigured) return { ok: false, error: 'owner_google_smtp_not_configured' };
-      return await orderMailSendViaSmtp(config, message);
+      const ownerCfg = config.ownerCascadeV367 || diracUserSecurityConfigV327();
+      if (!ownerCfg) return { ok: false, error: 'owner_mail_transport_not_configured' };
+      const recipients = Array.from(new Set((message.to || config.recipients || []).map(orderMailNormalizeEmail).filter(Boolean)));
+      if (!recipients.length) return { ok: false, error: 'owner_email_missing' };
+      const generic = Object.freeze({
+        fromName: 'Dirac Group', recipients, replyTo: ownerCfg.replyTo, subject: String(message.subject || 'Dirac Group'), text: String(message.text || ''),
+        html: String(message.html || ''), reference: crypto.createHash('sha256').update('owner|' + String(message.subject || '') + '|' + recipients.join(',')).digest('hex').slice(0, 32)
+      });
+      return await diracSecurityMailProviderCascadeV330(generic, ownerCfg, () => diracCustomerMailSmtpCascadeV352(generic, ownerCfg));
     }
     return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message);
   } catch (error) {
