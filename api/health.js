@@ -51659,13 +51659,115 @@ diracRegisterEmailDeliverV331 = async function diracRegisterEmailDeliverCustomer
 // Provider API keys may remain in the deployment for rollback/history, but are not readiness
 // dependencies and are never selected by this role.
 diracSecurityAlertExplicitReadyV328 = diracSecurityAlertExplicitReadyBeforeCascadeV330;
+let DIRAC_SECURITY_ALERT_SMTP_ONLY_DIAGNOSTIC_LOGGED_V352 = false;
 diracSecurityAlertConfigV320 = function diracSecurityAlertConfigCyberSmtpOnlyV352() {
   const base = diracSecurityAlertConfigBeforeCascadeV330();
-  if (!base || !diracSecurityAlertExplicitReadyBeforeCascadeV330().valid) return null;
-  return base;
+  const ready = diracSecurityAlertExplicitReadyBeforeCascadeV330().valid === true;
+  const brevoApiKey = diracSecurityMailProviderKeyV330(process.env.DIRAC_SECURITY_ALERT_BREVO_API_KEY, 24, 2048);
+  const brevoFromEmail = diracSecurityMailProviderEmailV330(process.env.DIRAC_SECURITY_ALERT_BREVO_FROM_EMAIL);
+  const resendApiKey = diracSecurityMailProviderKeyV330(process.env.DIRAC_SECURITY_ALERT_RESEND_API_KEY, 20, 512);
+  const resendFromEmail = diracSecurityMailProviderEmailV330(process.env.DIRAC_SECURITY_ALERT_RESEND_FROM_EMAIL);
+  const providerSecrets = [String(base && base.appPassword || '')].concat(brevoApiKey ? [brevoApiKey] : [], resendApiKey ? [resendApiKey] : []);
+  const providerSecretsDistinct = diracSecurityMailProviderKeysDistinctV330(providerSecrets.filter(Boolean));
+  const hmacIndependent = diracSecurityMailSecretIndependentV328(process.env.DIRAC_SECURITY_ALERT_HMAC_SECRET, [
+    process.env.DIRAC_SECURITY_ROOT_SECRET,
+    String(base && base.appPassword || ''),
+    brevoApiKey,
+    resendApiKey,
+    process.env.DIRAC_USER_SECURITY_BREVO_API_KEY,
+    process.env.DIRAC_USER_SECURITY_RESEND_API_KEY,
+    ...diracUserSecuritySmtpSecretValuesV354()
+  ]);
+  const brevoFallbackReady = Boolean(brevoApiKey && brevoFromEmail && providerSecretsDistinct && hmacIndependent);
+  const resendFallbackReady = Boolean(/^re_[A-Za-z0-9_-]{16,252}$/.test(resendApiKey) && resendFromEmail && providerSecretsDistinct && hmacIndependent);
+  if (!DIRAC_SECURITY_ALERT_SMTP_ONLY_DIAGNOSTIC_LOGGED_V352) {
+    DIRAC_SECURITY_ALERT_SMTP_ONLY_DIAGNOSTIC_LOGGED_V352 = true;
+    try {
+      const diagnostic = diracSecurityAlertReadinessDiagnosticV332();
+      console.error('[dirac-security-alert-readiness-v352]', JSON.stringify({
+        patch: 'dirac-security-alert-smtp-only-diagnostic-v352',
+        ready: Boolean(base && ready),
+        config_available: Boolean(base),
+        failure_codes: Array.isArray(diagnostic && diagnostic.failure_codes)
+          ? diagnostic.failure_codes.filter((code) => !/^DIRAC_SECURITY_ALERT_(?:BREVO|RESEND|PROVIDER_)/.test(String(code))).slice(0, 32)
+          : [],
+        provider: 'gmail_smtp',
+        brevo_fallback_ready: brevoFallbackReady,
+        resend_fallback_ready: resendFallbackReady,
+        secret_values_logged: false
+      }));
+    } catch (_) { void 0; }
+  }
+  if (!base || !ready) return null;
+  return Object.freeze({
+    ...base,
+    brevoApiKey: brevoFallbackReady ? brevoApiKey : '',
+    brevoFromEmail: brevoFallbackReady ? brevoFromEmail : '',
+    resendApiKey: resendFallbackReady ? resendApiKey : '',
+    resendFromEmail: resendFallbackReady ? resendFromEmail : ''
+  });
 };
 diracSecurityAlertSendV320 = async function diracSecurityAlertSendCyberSmtpOnlyV352(snapshot, config, loginDiagnosticTraceIdV324) {
-  return diracSecurityAlertSmtpSendBeforeCascadeV330(snapshot, config, loginDiagnosticTraceIdV324);
+  const alertReferenceV352 = diracSecurityAlertCorrelationReferenceV333(snapshot && snapshot.failure_id, snapshot && snapshot.request_id);
+  const eventNameV352 = diracSecurityMailCleanV327(snapshot && snapshot.event || 'security_alert', 80);
+  const logDeliveryV352 = (input) => {
+    try {
+      console.error('[dirac-security-alert-delivery-v352]', JSON.stringify({
+        patch: 'dirac-security-alert-smtp-only-diagnostic-v352',
+        event: eventNameV352,
+        alert_reference: alertReferenceV352,
+        ...input,
+        secret_values_logged: false
+      }));
+    } catch (_) { void 0; }
+  };
+  try {
+    const delivered = await diracSecurityAlertSmtpSendBeforeCascadeV330(snapshot, config, loginDiagnosticTraceIdV324);
+    logDeliveryV352({ ok: delivered === true, provider: 'gmail_smtp', smtp_code: delivered === true ? 250 : 0, quota_limited: false, code: delivered === true ? 'SMTP_ACCEPTED' : 'SMTP_UNCONFIRMED' });
+    return delivered;
+  } catch (error) {
+    const smtpCodeV352 = Math.max(0, Number(error && error.smtpCode || 0));
+    const ambiguousV352 = Boolean(error && error.deliveryAmbiguous === true);
+    const quotaLimitedV352 = Boolean(error && error.senderQuotaLimited === true && !ambiguousV352);
+    const transportUnavailableV352 = Boolean(!smtpCodeV352 && !ambiguousV352);
+    const fallbackAllowedV352 = quotaLimitedV352 || transportUnavailableV352;
+    if (fallbackAllowedV352 && config && (config.brevoApiKey || config.resendApiKey)) {
+      const mimeV352 = diracSecurityAlertMessageV320(snapshot, config);
+      const contentV352 = diracSecurityMailParseCorporateMimeV330(mimeV352);
+      if (contentV352) {
+        const messageV352 = Object.freeze({
+          fromName: config.fromName,
+          recipients: config.recipients,
+          replyTo: '',
+          subject: contentV352.subject,
+          text: contentV352.text,
+          html: contentV352.html,
+          reference: crypto.createHash('sha256').update([String(snapshot && snapshot.failure_id || ''), String(snapshot && snapshot.request_id || ''), String(snapshot && snapshot.timestamp_utc || ''), contentV352.subject].join('|')).digest('hex').slice(0, 32)
+        });
+        if (config.brevoApiKey && config.brevoFromEmail) {
+          const brevoV352 = await diracSecurityMailBrevoV330(messageV352, config);
+          if (brevoV352 && brevoV352.ok === true) {
+            logDeliveryV352({ ok: true, provider: 'brevo', status: Number(brevoV352.status || 0), smtp_code: smtpCodeV352, quota_limited: quotaLimitedV352, fallback_reason: quotaLimitedV352 ? 'smtp_quota' : 'smtp_transport_unavailable', code: 'FALLBACK_ACCEPTED' });
+            return true;
+          }
+          if (!brevoV352 || brevoV352.limited !== true) {
+            logDeliveryV352({ ok: false, provider: 'brevo', status: Number(brevoV352 && brevoV352.status || 0), smtp_code: smtpCodeV352, quota_limited: quotaLimitedV352, fallback_reason: quotaLimitedV352 ? 'smtp_quota' : 'smtp_transport_unavailable', code: diracSecurityMailCleanV327(brevoV352 && brevoV352.code || 'BREVO_FALLBACK_FAILED', 100) });
+            throw error;
+          }
+        }
+        if (config.resendApiKey && config.resendFromEmail) {
+          const resendV352 = await diracSecurityMailResendV330(messageV352, config);
+          if (resendV352 && resendV352.ok === true) {
+            logDeliveryV352({ ok: true, provider: 'resend', status: Number(resendV352.status || 0), smtp_code: smtpCodeV352, quota_limited: quotaLimitedV352, fallback_reason: quotaLimitedV352 ? 'smtp_quota' : 'smtp_transport_unavailable', code: 'FALLBACK_ACCEPTED' });
+            return true;
+          }
+          logDeliveryV352({ ok: false, provider: 'resend', status: Number(resendV352 && resendV352.status || 0), smtp_code: smtpCodeV352, quota_limited: quotaLimitedV352, fallback_reason: quotaLimitedV352 ? 'smtp_quota' : 'smtp_transport_unavailable', code: diracSecurityMailCleanV327(resendV352 && resendV352.code || 'RESEND_FALLBACK_FAILED', 100) });
+        }
+      }
+    }
+    logDeliveryV352({ ok: false, provider: 'gmail_smtp', smtp_code: smtpCodeV352, quota_limited: quotaLimitedV352, code: diracSecurityMailCleanV327(error && error.code || 'SECURITY_ALERT_SMTP_DELIVERY_FAILED', 100), delivery_ambiguous: ambiguousV352, fallback_available: Boolean(config && (config.brevoApiKey || config.resendApiKey)) });
+    throw error;
+  }
 };
 
 // Paid-order mail role partition: customer and owner reuse the already verified customer mail cascade when a dedicated owner SMTP is not configured.
@@ -61306,6 +61408,7 @@ function diracSecurityAlertSmtpReaderV321(socket) {
   let buffer = '';
   let multilineCode = 0;
   let responseBytes = 0;
+  let responseText = '';
   let terminalError = null;
   let closed = false;
   const queued = [];
@@ -61359,13 +61462,16 @@ function diracSecurityAlertSmtpReaderV321(socket) {
         fail(Object.assign(new Error('SECURITY_ALERT_SMTP_MULTILINE_CODE_MISMATCH'), { code: 'SECURITY_ALERT_SMTP_MULTILINE_CODE_MISMATCH' }));
         return;
       }
+      responseText = (responseText + (responseText ? '\n' : '') + line).slice(-4096);
       if (separator === '-') {
         multilineCode = multilineCode || code;
         continue;
       }
+      const completedText = responseText;
       multilineCode = 0;
       responseBytes = 0;
-      dispatch(Object.freeze({ code }));
+      responseText = '';
+      dispatch(Object.freeze({ code, text: completedText }));
       if (terminalError) return;
     }
   };
@@ -61412,6 +61518,7 @@ function diracSecurityAlertSmtpReaderV321(socket) {
       socket.off('close', onClose);
       fail(Object.assign(new Error('SECURITY_ALERT_SMTP_READER_CLOSED'), { code: 'SECURITY_ALERT_SMTP_READER_CLOSED' }));
       buffer = '';
+      responseText = '';
       queued.length = 0;
     }
   });
@@ -61435,9 +61542,12 @@ async function diracSecurityAlertSmtpCommandV320(socket, reader, command, allowe
   }
   const allowed = Array.isArray(allowedCodes) ? allowedCodes : [allowedCodes];
   if (!allowed.includes(response.code)) {
+    const smtpTextV352 = String(response && response.text || '').slice(0, 4096);
+    const enhanced545V352 = /(?:^|[^0-9])5\.4\.5(?:[^0-9]|$)/.test(smtpTextV352);
     const error = Object.assign(new Error('SECURITY_ALERT_SMTP_UNEXPECTED_RESPONSE'), {
       code: 'SECURITY_ALERT_SMTP_UNEXPECTED_RESPONSE',
-      smtpCode: response.code
+      smtpCode: response.code,
+      senderQuotaLimited: diracRegisterEmailQuotaLineV331(response.code, smtpTextV352, enhanced545V352)
     });
     throw error;
   }
@@ -62185,14 +62295,22 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
   const browserAccessMirrorV353 = await diracCentralMirrorBrowserBanToCustomerAccessV353(ctx, action, reason, blockedUntilMs)
     .catch(() => Object.freeze({ required: true, ok: false }));
   if (browserAccessMirrorV353.required === true && browserAccessMirrorV353.ok !== true) {
+    let failedMirrorAlertDrainV352 = null;
     try {
-      if (typeof diracCentralEmitDebugV211 === 'function') diracCentralEmitDebugV211(ctx, 'persistent_ban_write_failed', {
-        persistent_ban_written: true,
-        customer_access_ban_written: false,
-        ban_type: record.type,
-        ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000)
-      });
+      if (typeof diracCentralEmitDebugV211 === 'function') {
+        diracCentralEmitDebugV211(ctx, 'persistent_ban_write_failed', {
+          persistent_ban_written: true,
+          customer_access_ban_written: false,
+          ban_type: record.type,
+          ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000)
+        });
+        failedMirrorAlertDrainV352 = DIRAC_SECURITY_ALERT_STATE_V320 && DIRAC_SECURITY_ALERT_STATE_V320.drainPromise;
+      }
     } catch (suppressedErrorV353) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV353); }
+    if (failedMirrorAlertDrainV352 && typeof failedMirrorAlertDrainV352.then === 'function') {
+      try { await failedMirrorAlertDrainV352; }
+      catch (failedMirrorAlertWaitErrorV352) { diracSecurityAlertLocalLogV321('persistent_ban_delivery_wait_failed', failedMirrorAlertWaitErrorV352); }
+    }
     return { ok: false };
   }
   DIRAC_CENTRAL_NEGATIVE_BAN_V146.delete(identityKey);
