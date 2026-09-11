@@ -4601,10 +4601,12 @@ async function requireDomainDashboardAccess(req, res) {
     clear_cookies: false
   });
   if (!mfa.ok) {
-    clearSessionCookies(res);
+    if (mfa.code === 'mfa_cookie_expired' || mfa.code === 'mfa_cookie_missing') appendSetCookie(res, makeClearTokenCookieSet(CUSTOMER_MFA_COOKIE));
+    else clearSessionCookies(res);
     res.status(403).json({
       ok: false,
       dashboard: false,
+      code: mfa.code || 'MFA_REQUIRED',
       message: mfa.message || 'Dashboard wajib verifikasi A2F backend sebelum dibuka.'
     });
     return null;
@@ -52760,7 +52762,7 @@ async function guardOwnershipV202(ctx) {
   if (ctx.preflightValidatedV221 === true) return diracCentralPreflightStageResultV221(ctx, 'idor_bola');
   if (diracV202CheckpointNotApplicable(ctx)) return diracV202StageResult(true, { decision: 'not_applicable_by_policy' });
   const result = await diracCentralIdorBolaGuardV146(ctx.req, ctx);
-  if (!result.ok) return diracV202StageResult(false, { reason: result.reason });
+  if (!result.ok) return diracV202StageResult(false, { reason: result.reason, directCode: result.directCode });
   const postcondition = diracCentralOwnershipPostconditionV221(ctx);
   if (!postcondition.ok) return diracV202StageResult(false, { reason: postcondition.reason });
   ctx.ownership = Object.freeze({ verified: true, action: ctx.action, patch: DIRAC_CENTRAL_HARDENING_V221 });
@@ -60376,6 +60378,24 @@ function diracCentralDatabaseAuthRouteAllowedV230(ctx, action, url, method, auth
   if (path === '/auth/v1/admin/users' || /^\/auth\/v1\/admin\/users\/[0-9a-f-]{36}$/i.test(path)) {
     if (authMode !== 'service' || !['GET', 'POST', 'PUT', 'DELETE'].includes(verb)) return false;
     if (Array.from(url.searchParams.keys()).some((key) => key !== 'email') || url.searchParams.getAll('email').length > 1) return false;
+    const signedStage26UserPathV365 = /^\/auth\/v1\/admin\/users\/([0-9a-f-]{36})$/i.exec(path);
+    if (signedStage26UserPathV365 && verb === 'GET' && url.search === '' && ctx && ctx.req) {
+      const signedCandidatesV365 = readCookieTokenCandidates(parseCookies(ctx.req), DOMAIN_SIGNED_SESSION_COOKIE).slice(0, 2);
+      const signedIdentityV365 = signedCandidatesV365.length === 1
+        ? verifyDomainSessionCookieValue(signedCandidatesV365[0])
+        : null;
+      const signedAuthUserIdV365 = String(signedIdentityV365 && signedIdentityV365.id || '');
+      if (customerSecurityLooksLikeUuid(signedAuthUserIdV365)
+          && safeEqual(signedAuthUserIdV365, signedStage26UserPathV365[1])) {
+        if (diracCentralCheckoutStage26BootstrapModeV216(ctx, ctx.req) === true) return true;
+        const verifiedHandlerOwnerV365 = diracCentralHandlerContextFullyPassedV211(ctx, ctx.req)
+          ? diracCentralOwnerFromVerifiedContextV215(ctx.req, signedAuthUserIdV365)
+          : null;
+        if (verifiedHandlerOwnerV365
+            && verifiedHandlerOwnerV365.ok === true
+            && safeEqual(String(verifiedHandlerOwnerV365.authUserId || ''), signedAuthUserIdV365)) return true;
+      }
+    }
     const marker = ctx && ctx.req && domainLoginBanGetLookupMarkerV321(ctx.req);
     if (marker && marker.stage === 'provider_user') {
       return verb === 'GET'
@@ -62559,8 +62579,9 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
 
 function diracCentralBlockedResponseV146(res, reason) {
   const ctx = diracCentralCurrentContextV149();
+  const authenticationRequiredCode = String(reason || '').toUpperCase() === 'SESSION_AUTHENTICATION_REQUIRED';
   const activeBanCode = /^(?:MEMORY_BAN_ACTIVE|PERSISTENT_BAN_ACTIVE)$/.test(String(reason || '').toUpperCase());
-  if (activeBanCode) {
+  if (activeBanCode || authenticationRequiredCode) {
     try { if (typeof setCors === 'function') setCors(ctx && ctx.req, res, { isDomainAction: true }); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
   }
   diracCentralApplyHeadersV146(res);
@@ -62580,6 +62601,11 @@ function diracCentralBlockedResponseV146(res, reason) {
     payload.ban_scope = 'persistent_security';
     payload.message = 'Akses diblokir karena status ban keamanan masih aktif.';
   }
+  if (authenticationRequiredCode) {
+    payload.code = 'SESSION_AUTHENTICATION_REQUIRED';
+    payload.message = 'Belum login atau sesi sudah habis.';
+    try { clearSessionCookies(res); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
+  }
   if (diracCentralDebugResponseAllowedV211(ctx)) {
     payload.debug = {
       patch: DIRAC_CENTRAL_FAIL_CLOSED_DEBUG_V211,
@@ -62592,7 +62618,7 @@ function diracCentralBlockedResponseV146(res, reason) {
       safe_error: ctx && ctx.centralErrorDebugV155 || undefined
     };
   }
-  return res.status(403).json(payload);
+  return res.status(authenticationRequiredCode ? 401 : 403).json(payload);
 }
 
 function diracCentralRateLimitedResponseV280(res, ctx, reason) {
