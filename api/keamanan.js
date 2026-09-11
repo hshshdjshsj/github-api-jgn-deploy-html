@@ -3131,8 +3131,8 @@ async function diracPasswordChangeSendSmtpCodeV365(req, owner, code, payload) {
     actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN'
   };
   const marker = String(htmlInput.statusValue);
-  const html = diracSecurityCorporateEmailHtmlV327(htmlInput).replace(marker, diracSecurityMailEscapeV327(code));
-  const text = diracSecurityMailTextV327(htmlInput).replace(marker, code);
+  const html = diracSecurityCorporateEmailHtmlV327(htmlInput).replace(marker, () => diracSecurityMailEscapeV327(code));
+  const text = diracSecurityMailTextV327(htmlInput).replace(marker, () => code);
   const record = { email: owner.email };
   const context = diracCentralCurrentContextV149();
   if (!context || !context.active || !context.__diracPasswordResetVerifiedOwnerV333
