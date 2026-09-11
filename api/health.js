@@ -37801,7 +37801,11 @@ function diracBolaIdorV128CentralOwnerBootstrapDecisionV213(path, options = {}, 
   const centralCtx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
   const binding = centralCtx && centralCtx.__diracCentralOwnerBootstrapBindingV213;
   const checkoutStage26V216 = diracCentralCheckoutStage26BootstrapModeV216(centralCtx, centralCtx && centralCtx.req);
-  if (!centralCtx || !binding || (centralCtx.__diracCentralOwnerScopeResolvingV146 !== true && !checkoutStage26V216)) {
+  const domainMePostGuardV372 = Boolean(centralCtx && centralCtx.action === 'domain_me' && centralCtx.method === 'GET'
+    && centralCtx.req && centralCtx.req.__diracCentralSecurityGuardPassedV146 === true
+    && typeof diracCentralHandlerContextFullyPassedV211 === 'function'
+    && diracCentralHandlerContextFullyPassedV211(centralCtx, centralCtx.req) === true);
+  if (!centralCtx || !binding || (centralCtx.__diracCentralOwnerScopeResolvingV146 !== true && !checkoutStage26V216 && !domainMePostGuardV372)) {
     return { relevant: false, ok: false };
   }
 
