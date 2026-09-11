@@ -1108,11 +1108,11 @@ const DOMAIN_SIGNED_SESSION_TYPE = 'dirac-domain-signed-session-v1';
 // SAFE V2: database-backed protected-page lock, fail-safe.
 // Login/hash/A2F/payment/webhook tidak diubah. Jika database session belum siap/schema berbeda,
 // dashboard tidak diblokir. Blokir hanya saat row database jelas revoked/expired/idle.
-const DOMAIN_PROTECTED_IDLE_TIMEOUT_MS_RAW = 15 * 60 * 1000;
+const DOMAIN_PROTECTED_IDLE_TIMEOUT_MS_RAW = 8 * 60 * 60 * 1000;
 const DOMAIN_PROTECTED_IDLE_TIMEOUT_MS = Number.isFinite(DOMAIN_PROTECTED_IDLE_TIMEOUT_MS_RAW)
   ? Math.max(15 * 1000, DOMAIN_PROTECTED_IDLE_TIMEOUT_MS_RAW)
-  : 15 * 60 * 1000;
-const DOMAIN_PROTECTED_SESSION_REVOKE_REASON = 'protected_idle_timeout_15m';
+  : 8 * 60 * 60 * 1000;
+const DOMAIN_PROTECTED_SESSION_REVOKE_REASON = 'protected_idle_timeout_8h';
 
 
 const HOSTINGER_API_BASE = 'https://developers.hostinger.com';
@@ -58460,7 +58460,12 @@ async function diracCentralIdorBolaGuardV146(req, ctx) {
     const boot = await diracCentralBootstrapCheckoutOwnerV146(req, ctx).catch(() => null);
     if (boot && boot.ok) owner = await diracCentralResolveOwnerV146(req);
   }
-  if (!owner || !owner.ok || !owner.customerIds || !owner.customerIds.length) return { ok: false, reason: 'idor_owner_unavailable' };
+  if (!owner || !owner.ok || !owner.customerIds || !owner.customerIds.length) {
+    if (String(owner && owner.reason || '') === 'owner_bootstrap_authenticated_user_invalid') {
+      return { ok: false, reason: 'authentication_required', directCode: 'SESSION_AUTHENTICATION_REQUIRED' };
+    }
+    return { ok: false, reason: 'idor_owner_unavailable' };
+  }
   if (ctx && diracCentralVerifiedOwnerActionV217(ctx.action) && owner.customerIds.length === 1) {
     ctx.__diracCentralVerifiedOwnerCustomerIdV217 = String(owner.customerIds[0] || '').trim();
     ctx.__diracCentralVerifiedOwnerAuthUserIdV217 = String(owner.authUserId || '').trim();
