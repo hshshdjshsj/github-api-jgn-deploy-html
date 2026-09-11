@@ -18797,8 +18797,25 @@ async function midtransHandleWebhook(req, res) {
   if (!midtransPaymentTransitionAllowedV350(tx.payment_status, mappedStatus)) {
     return res.status(409).json({ ok: false, message: 'Transisi status pembayaran ditolak oleh state machine.' });
   }
+  const paymentAlreadyMatchedEarlyV372 = midtransAlreadyHasPaymentStatus(tx, mappedStatus);
+  let orderMailItemsPrefetchEarlyV372 = success && !paymentAlreadyMatchedEarlyV372
+    ? (tx.order_id
+      ? diracUniversalPesananFetchRegularItems(tx.order_id, midtransMoney(tx.amount), tx.service_type || 'order', false)
+      : diracUniversalPesananFetchDomainItems(tx.domain_order_id, midtransMoney(tx.amount), '')
+    ).catch(() => ({ items: [], totalItem: 0 }))
+    : null;
+  const existingEventPromiseV372 = midtransFetchGatewayEvent(gatewayEventId, tx.customer_id).then((eventV372) => {
+    if (!orderMailItemsPrefetchEarlyV372 && success && eventV372 && eventV372.ok === true && eventV372.exists === true
+        && String(eventV372.event && eventV372.event.event_status || '').trim().toLowerCase() === 'received') {
+      orderMailItemsPrefetchEarlyV372 = (tx.order_id
+        ? diracUniversalPesananFetchRegularItems(tx.order_id, midtransMoney(tx.amount), tx.service_type || 'order', false)
+        : diracUniversalPesananFetchDomainItems(tx.domain_order_id, midtransMoney(tx.amount), '')
+      ).catch(() => ({ items: [], totalItem: 0 }));
+    }
+    return eventV372;
+  });
   const [existingEvent, ownerCheck] = await Promise.all([
-    midtransFetchGatewayEvent(gatewayEventId, tx.customer_id),
+    existingEventPromiseV372,
     midtransVerifyTransactionOwnerAndAmount(tx, grossAmount)
   ]);
   if (!existingEvent.ok) {
@@ -18859,14 +18876,14 @@ async function midtransHandleWebhook(req, res) {
   const retryPendingMailEventV368 = effectiveDuplicateEventV351 && duplicateEventStatusV368 === 'received';
   const processedDuplicateEventV368 = effectiveDuplicateEventV351 && duplicateEventStatusV368 === 'processed';
 
-  const paymentAlreadyMatched = midtransAlreadyHasPaymentStatus(tx, mappedStatus);
+  const paymentAlreadyMatched = paymentAlreadyMatchedEarlyV372;
   const orderAlreadyPaid = midtransOrderAlreadyPaid(ownerCheck.order);
   const orderMailDeliveryRequiredV368 = Boolean(success && (retryPendingMailEventV368 || (!effectiveDuplicateEventV351 && !paymentAlreadyMatched && !orderAlreadyPaid)));
   const orderMailItemsPrefetchV369 = orderMailDeliveryRequiredV368
-    ? (tx.order_id
+    ? (orderMailItemsPrefetchEarlyV372 || (tx.order_id
       ? diracUniversalPesananFetchRegularItems(tx.order_id, midtransMoney(tx.amount), tx.service_type || 'order', false)
       : diracUniversalPesananFetchDomainItems(tx.domain_order_id, midtransMoney(tx.amount), '')
-    ).catch(() => ({ items: [], totalItem: 0 }))
+    ).catch(() => ({ items: [], totalItem: 0 })))
     : null;
 
   const txPatch = await midtransPatchPaymentTransaction(tx, mappedStatus, body, success);
@@ -18884,13 +18901,16 @@ async function midtransHandleWebhook(req, res) {
       return res.status(orderPatch.status || 500).json({ ok: false, message: 'Payment valid, tetapi gagal update status order.' });
     }
     diracPaidMailTimingMarkV371(paidMailTimingV371, 'order_paid');
+    const paidOrderForMailV372 = orderPatch && Array.isArray(orderPatch.data) && orderPatch.data.length === 1
+      ? orderPatch.data[0]
+      : (orderAlreadyPaid ? ownerCheck.order : null);
     orderMailNotification = orderMailDeliveryRequiredV368
       ? await diracPaidMailTimingRunV371(req, paidMailTimingV371, {
         provider: 'midtrans',
         tx,
         webhookPayload: body,
         paidAt: capabilityContextV350.capability.evidence.confirmed_at,
-        paidOrder: orderPatch && Array.isArray(orderPatch.data) && orderPatch.data.length === 1 ? orderPatch.data[0] : null,
+        paidOrder: paidOrderForMailV372,
         paidItems: orderMailItemsPrefetchV369 ? await orderMailItemsPrefetchV369 : null
       })
       : orderMailPaidWebhookSkipSummary('midtrans', processedDuplicateEventV368 ? 'duplicate_event_reconciled' : 'already_paid');
@@ -19021,7 +19041,7 @@ async function midtransFetchPaymentTransaction(input) {
 
 async function midtransVerifyTransactionOwnerAndAmount(tx, amount) {
   if (tx.order_id) {
-    const select = 'id,customer_id,total,payment_status,order_status';
+    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at';
     const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select)
       + '&id=eq.' + encodeURIComponent(tx.order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
@@ -19038,7 +19058,7 @@ async function midtransVerifyTransactionOwnerAndAmount(tx, amount) {
   }
 
   if (tx.domain_order_id) {
-    const select = 'id,customer_id,total_price,payment_status,order_status,status';
+    const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,payment_status,order_status,status,created_at';
     const result = await supabaseFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(select)
       + '&id=eq.' + encodeURIComponent(tx.domain_order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
@@ -51682,12 +51702,12 @@ orderMailOwnerEnabled = function orderMailOwnerEnabledRolePartitionV367() {
 };
 
 const orderMailSendViaSmtpSafeBeforeRolePartitionV352 = orderMailSendViaSmtpSafe;
-orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV352(config, message) {
+orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV352(config, message, diagnosticV371 = null) {
   try {
     if (config && config.kind === 'customer') {
       const customerCfg = config.customerCascadeV352 || diracUserSecurityConfigV327();
       if (!customerCfg) {
-        if (config.smtpConfigured) return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message);
+        if (config.smtpConfigured) return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message, diagnosticV371);
         return { ok: false, error: 'customer_cascade_not_configured' };
       }
       const generic = Object.freeze({
@@ -51695,12 +51715,14 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
         replyTo: customerCfg.replyTo, subject: String(message.subject || 'Dirac Group'), text: String(message.text || ''),
         html: String(message.html || ''), reference: crypto.createHash('sha256').update(String(message.subject || '') + '|' + String((message.to || [])[0] || '')).digest('hex').slice(0, 32)
       });
-      return await diracSecurityMailProviderCascadeV330(generic, customerCfg, () => diracCustomerMailSmtpCascadeV352(generic, customerCfg));
+      const result = await diracSecurityMailProviderCascadeV330(generic, customerCfg, () => diracCustomerMailSmtpCascadeV352(generic, customerCfg));
+      if (result && result.ok === true) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, result.provider || 'customer_provider');
+      return result;
     }
     if (config && config.kind === 'owner') {
       const ownerCfg = config.ownerCascadeV367 || diracUserSecurityConfigV327();
       if (!ownerCfg) {
-        if (config.smtpConfigured) return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message);
+        if (config.smtpConfigured) return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message, diagnosticV371);
         return { ok: false, error: 'owner_mail_transport_not_configured' };
       }
       const recipients = Array.from(new Set((message.to || config.recipients || []).map(orderMailNormalizeEmail).filter(Boolean)));
@@ -51709,9 +51731,11 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
         fromName: 'Dirac Group', recipients, replyTo: ownerCfg.replyTo, subject: String(message.subject || 'Dirac Group'), text: String(message.text || ''),
         html: String(message.html || ''), reference: crypto.createHash('sha256').update('owner|' + String(message.subject || '') + '|' + recipients.join(',')).digest('hex').slice(0, 32)
       });
-      return await diracSecurityMailProviderCascadeV330(generic, ownerCfg, () => diracCustomerMailSmtpCascadeV352(generic, ownerCfg));
+      const result = await diracSecurityMailProviderCascadeV330(generic, ownerCfg, () => diracCustomerMailSmtpCascadeV352(generic, ownerCfg));
+      if (result && result.ok === true) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, result.provider || 'owner_provider');
+      return result;
     }
-    return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message);
+    return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message, diagnosticV371);
   } catch (error) {
     return { ok: false, error: orderMailSafeError(error) };
   }
