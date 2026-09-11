@@ -1041,7 +1041,7 @@ function securitySupabaseTargetV334(path) {
   if (path.startsWith('/rest/v1/dirac_s2s_security?security_key=eq.s2s-server-registry%3A') || path.startsWith('/rest/v1/dirac_s2s_security?security_key=eq.s2s-revocation%3A')) return 'security';
   if (path === '/rest/v1/rpc/dirac_passkey_record_assertion_v237' || path === '/rest/v1/rpc/dirac_passkey_create_pending_v237' || path === '/rest/v1/rpc/dirac_passkey_finalize_rotation_v237') return 'legacy';
   if (path.startsWith('/rest/v1/domain_passkeys')) return securityEnvTrueV334('DIRAC_ENABLE_MULTI_DB_ROUTER') || securityEnvTrueV334('DIRAC_MULTI_DB_ROUTER_ENABLED') ? 'domain' : 'legacy';
-  if (/^\/rest\/v1\/security_customer_(auth_links|password_hashes|sessions|settings)/.test(path)) return securityEnvTrueV334('DIRAC_ENABLE_MULTI_DB_ROUTER') || securityEnvTrueV334('DIRAC_MULTI_DB_ROUTER_ENABLED') ? 'customerSecurity' : 'legacy';
+  if (/^\/rest\/v1\/security_customer_(auth_links|password_hashes|sessions|settings|events)/.test(path)) return securityEnvTrueV334('DIRAC_ENABLE_MULTI_DB_ROUTER') || securityEnvTrueV334('DIRAC_MULTI_DB_ROUTER_ENABLED') ? 'customerSecurity' : 'legacy';
   if (path.startsWith('/auth/v1/')) return 'legacy';
   throw resetError('SECURITY_RESET_DB_PATH_NOT_ALLOWED', 403);
 }
@@ -1138,6 +1138,41 @@ function securityResetAssertDbOperationV361(path, method, options) {
       if (url.search !== '?scope=local' || !options.bearer || !/^[a-f0-9]{64}$/.test(String(context.__diracPasskeyResetEphemeralAccessDigestV363 || ''))
           || !safeEqual(digest, String(context.__diracPasskeyResetEphemeralAccessDigestV363))) throw resetError('SECURITY_PASSKEY_RESET_EPHEMERAL_LOGOUT_REJECTED', 403);
     }
+    return;
+  }
+  const trustTransitionV366 = context.__diracSecurityTrustCurrentDeviceV366;
+  if (url.pathname === '/rest/v1/security_customer_sessions' && method === 'PATCH' && trustTransitionV366 && trustTransitionV366.active === true) {
+    const owner = context.__diracPasswordResetVerifiedOwnerV333;
+    const sessionId = String(trustTransitionV366.sessionId || '');
+    const sessionTokenHash = String(trustTransitionV366.sessionTokenHash || '');
+    const securityEpoch = Number(trustTransitionV366.securityEpoch || 0);
+    if (!owner || !customerSecurityLooksLikeUuid(String(owner.customerId || '')) || !customerSecurityLooksLikeUuid(sessionId)
+        || !/^[a-f0-9]{64}$/.test(sessionTokenHash) || !Number.isSafeInteger(securityEpoch) || securityEpoch < 1
+        || url.searchParams.size !== 6
+        || url.searchParams.get('customer_id') !== 'eq.' + owner.customerId
+        || url.searchParams.get('id') !== 'eq.' + sessionId
+        || url.searchParams.get('session_token_hash') !== 'eq.' + sessionTokenHash
+        || url.searchParams.get('status') !== 'eq.active'
+        || url.searchParams.get('security_epoch') !== 'eq.' + String(securityEpoch)
+        || url.searchParams.get('revoked_at') !== 'is.null'
+        || !exactKeys(options.body, ['trusted_device', 'last_seen_at'])
+        || options.body.trusted_device !== true) throw resetError('SECURITY_TRUST_DEVICE_DB_CONTRACT_REJECTED', 403);
+    const lastSeenMs = Date.parse(String(options.body.last_seen_at || ''));
+    if (!Number.isFinite(lastSeenMs) || Math.abs(Date.now() - lastSeenMs) > 30000) throw resetError('SECURITY_TRUST_DEVICE_TIMESTAMP_INVALID', 403);
+    return;
+  }
+  if (url.pathname === '/rest/v1/security_customer_events' && method === 'POST' && trustTransitionV366 && trustTransitionV366.active === true) {
+    const owner = context.__diracPasswordResetVerifiedOwnerV333;
+    const rows = Array.isArray(options.body) ? options.body : [];
+    const row = rows.length === 1 ? rows[0] : null;
+    if (!owner || url.search || !row || !exactKeys(row, ['customer_id','event_type','status','risk_level','description','ip_address','user_agent','device_name','browser_name','operating_system','metadata'])
+        || row.customer_id !== owner.customerId || row.event_type !== 'trusted_device_enabled' || row.status !== 'success' || row.risk_level !== 'low'
+        || row.description !== 'Perangkat saat ini ditandai sebagai perangkat terpercaya.'
+        || typeof row.user_agent !== 'string' || row.user_agent.length > 512
+        || !(row.ip_address === null || (typeof row.ip_address === 'string' && row.ip_address.length <= 64))
+        || !row.metadata || !exactKeys(row.metadata, ['source','session_id'])
+        || row.metadata.source !== 'customer_security_trust_current_device_standalone_v366'
+        || row.metadata.session_id !== trustTransitionV366.sessionId) throw resetError('SECURITY_TRUST_DEVICE_AUDIT_CONTRACT_REJECTED', 403);
     return;
   }
   const readTables = ['domain_passkeys', 'security_customer_auth_links', 'security_customer_password_hashes', 'security_customer_sessions', 'security_customer_settings', 'dirac_persistent_bans', 'dirac_s2s_security'];
@@ -3693,6 +3728,156 @@ async function handleStandalonePasskeyResetPostV363(req,res,parsed){
   return res.status(200).json(result);
 }
 
+const DIRAC_SECURITY_TRUST_MFA_TYPE_V366 = 'dirac-customer-mfa-session-v1';
+const DIRAC_SECURITY_TRUST_ANCHOR_V366 = 'dirac-customer-mfa-signed-session-anchor-v228';
+
+function securityTrustCurrentDeviceBindingHashV366(kind, value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const key = diracCentralDeriveSecretV146('customer-mfa');
+  try { return crypto.createHmac('sha256', key.toString('base64url')).update('dirac-customer-mfa-binding-v2:' + String(kind || '') + ':' + text).digest('hex'); }
+  finally { key.fill(0); }
+}
+function securityTrustCurrentDeviceMfaSignatureV366(payloadBase64) {
+  const key = diracCentralDeriveSecretV146('customer-mfa');
+  try { return crypto.createHmac('sha256', key.toString('base64url')).update(String(payloadBase64 || '')).digest('base64url'); }
+  finally { key.fill(0); }
+}
+function securityTrustCurrentDeviceReadAnchorV366(req) {
+  const cookieName = String(process.env.DOMAIN_SIGNED_SESSION_COOKIE || 'dirac_domain_signed_session').trim();
+  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/.test(cookieName)) throw resetError('SECURITY_TRUST_DEVICE_SESSION_COOKIE_INVALID', 503);
+  const raw = securityResetCentralCookieValueV334(req, cookieName);
+  if (raw === null || !raw) throw resetError('SECURITY_TRUST_DEVICE_SIGNED_SESSION_REQUIRED', 401);
+  const parts = String(raw).trim().split('.');
+  if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]{43}$/.test(parts[1])) throw resetError('SECURITY_TRUST_DEVICE_SIGNED_SESSION_INVALID', 401);
+  const key = diracCentralDeriveSecretV146('domain-signed-session');
+  let expected = '';
+  try { expected = crypto.createHmac('sha256', key.toString('base64url')).update(parts[0]).digest('base64url'); }
+  finally { key.fill(0); }
+  if (!safeEqual(expected, parts[1])) throw resetError('SECURITY_TRUST_DEVICE_SIGNED_SESSION_INVALID', 401);
+  let payload;
+  try {
+    const decoded = Buffer.from(parts[0], 'base64url');
+    if (!decoded.length || decoded.length > 4096 || decoded.toString('base64url') !== parts[0]) throw new Error('payload');
+    payload = parseStrictJson(decoded, { maxBytes: 4096, maxDepth: 8, maxNodes: 256 });
+  } catch (_) { throw resetError('SECURITY_TRUST_DEVICE_SIGNED_SESSION_INVALID', 401); }
+  const now = Math.floor(Date.now() / 1000);
+  const userId = String(payload && (payload.uid || payload.id) || '').trim();
+  const email = normalizeAuthEmail(payload && payload.email || '');
+  const sessionId = String(payload && payload.sid || '').trim();
+  const issuedAt = Number(payload && payload.iat || 0), expiresAt = Number(payload && payload.exp || 0);
+  const anchorId = String(payload && payload.mfa_bid_v228 || '').trim();
+  const anchorIssuedAt = Number(payload && payload.mfa_iat_v228 || 0), anchorExpiresAt = Number(payload && payload.mfa_exp_v228 || 0), securityEpoch = Number(payload && payload.mfa_epoch_v235 || 0);
+  if (!payload || payload.typ !== 'dirac-domain-signed-session-v1' || !customerSecurityLooksLikeUuid(userId) || !isValidAuthEmail(email) || !customerSecurityLooksLikeUuid(sessionId)
+      || !Number.isSafeInteger(issuedAt) || issuedAt <= 0 || !Number.isSafeInteger(expiresAt) || issuedAt > now + 60 || expiresAt <= now || expiresAt - issuedAt <= 0 || expiresAt - issuedAt > 8 * 60 * 60
+      || !/^[A-Za-z0-9_-]{43}$/.test(anchorId) || !Number.isSafeInteger(anchorIssuedAt) || !Number.isSafeInteger(anchorExpiresAt) || !Number.isSafeInteger(securityEpoch) || securityEpoch < 1
+      || anchorIssuedAt > now + 60 || anchorExpiresAt <= now || anchorIssuedAt < issuedAt - 60 || anchorExpiresAt > expiresAt || anchorExpiresAt - anchorIssuedAt <= 0 || anchorExpiresAt - anchorIssuedAt > 60 * 60 + 60) {
+    throw resetError('SECURITY_TRUST_DEVICE_MFA_ANCHOR_INVALID', 401);
+  }
+  const binding = securityTrustCurrentDeviceBindingHashV366('signed_session_anchor_v228', JSON.stringify([DIRAC_SECURITY_TRUST_ANCHOR_V366, userId, email, anchorId, securityEpoch]));
+  if (!/^[a-f0-9]{64}$/.test(binding)) throw resetError('SECURITY_TRUST_DEVICE_MFA_ANCHOR_INVALID', 401);
+  return Object.freeze({ raw, userId, email, sessionId, securityEpoch, anchorId, anchorExpiresAt, binding });
+}
+function securityTrustCurrentDeviceVerifyMfaV366(req, resolved, anchor) {
+  const cookieName = String(process.env.DIRAC_CUSTOMER_MFA_COOKIE || 'dirac_customer_mfa_session').trim();
+  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/.test(cookieName)) throw resetError('SECURITY_TRUST_DEVICE_MFA_COOKIE_INVALID', 503);
+  const raw = securityResetCentralCookieValueV334(req, cookieName);
+  if (raw === null || !raw) throw resetError('SECURITY_TRUST_DEVICE_MFA_REQUIRED', 403);
+  const parts = String(raw).trim().split('.');
+  if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]{43}$/.test(parts[1]) || !safeEqual(parts[1], securityTrustCurrentDeviceMfaSignatureV366(parts[0]))) throw resetError('SECURITY_TRUST_DEVICE_MFA_INVALID', 403);
+  let payload;
+  try {
+    const decoded = Buffer.from(parts[0], 'base64url');
+    if (!decoded.length || decoded.length > 4096 || decoded.toString('base64url') !== parts[0]) throw new Error('payload');
+    payload = parseStrictJson(decoded, { maxBytes: 4096, maxDepth: 8, maxNodes: 256 });
+  } catch (_) { throw resetError('SECURITY_TRUST_DEVICE_MFA_INVALID', 403); }
+  const now = Date.now(), owner = resolved && resolved.owner || {};
+  const activeAtMs = Number(payload && payload.activeAtMs || 0), expiresAtMs = Number(payload && payload.expiresAtMs || 0), securityEpoch = Number(payload && payload.securityEpoch || 0);
+  const profileKey = diracCentralDeriveSecretV146('customer-mfa');
+  let emailHash = '';
+  try { emailHash = crypto.createHmac('sha256', profileKey.toString('base64url')).update('dirac-customer-mfa-profile-v1:' + normalizeAuthEmail(owner.email || '')).digest('hex'); }
+  finally { profileKey.fill(0); }
+  if (!payload || payload.type !== DIRAC_SECURITY_TRUST_MFA_TYPE_V366 || payload.sessionBindingVersion !== 5
+      || !Number.isSafeInteger(activeAtMs) || activeAtMs <= 0 || activeAtMs > now + 60000 || !Number.isSafeInteger(expiresAtMs) || expiresAtMs <= now || activeAtMs >= expiresAtMs
+      || !Number.isSafeInteger(securityEpoch) || securityEpoch < 1 || securityEpoch !== Number(resolved && resolved.securityEpoch || 0) || securityEpoch !== anchor.securityEpoch
+      || !/^[A-Za-z0-9_-]{32}$/.test(String(payload.jti || ''))
+      || !safeEqual(String(anchor.userId || ''), String(owner.authUserId || '')) || !safeEqual(String(anchor.email || ''), normalizeAuthEmail(owner.email || '')) || !safeEqual(String(anchor.sessionId || ''), String(resolved && resolved.sessionId || ''))
+      || !safeEqual(String(payload.emailHash || ''), emailHash)
+      || !safeEqual(String(payload.authUserIdHash || ''), securityTrustCurrentDeviceBindingHashV366('auth_user_id', owner.authUserId))
+      || !safeEqual(String(payload.customerIdHash || ''), securityTrustCurrentDeviceBindingHashV366('customer_id', owner.customerId))
+      || !safeEqual(String(payload.sessionHash || ''), anchor.binding)
+      || !safeEqual(String(payload.originHash || ''), securityTrustCurrentDeviceBindingHashV366('origin', requestOrigin(req)))
+      || !safeEqual(String(payload.uaHash || ''), securityTrustCurrentDeviceBindingHashV366('ua', String(requestUserAgent(req) || '').trim().slice(0, 512)))) throw resetError('SECURITY_TRUST_DEVICE_MFA_INVALID', 403);
+  return true;
+}
+function securityTrustCurrentDeviceSessionTokenHashV366(req) {
+  const access = securityResetCentralCookieValueV334(req, String(process.env.DOMAIN_SESSION_COOKIE || 'dirac_domain_session'));
+  const refresh = securityResetCentralCookieValueV334(req, String(process.env.DOMAIN_REFRESH_COOKIE || 'dirac_domain_refresh'));
+  const signed = securityResetCentralCookieValueV334(req, String(process.env.DOMAIN_SIGNED_SESSION_COOKIE || 'dirac_domain_signed_session'));
+  if (access === null || refresh === null || signed === null) throw resetError('SECURITY_TRUST_DEVICE_SESSION_COOKIE_AMBIGUOUS', 403);
+  const material = access || refresh || signed || '';
+  if (!material || material.length > 16384) throw resetError('SECURITY_TRUST_DEVICE_SESSION_MATERIAL_INVALID', 401);
+  return crypto.createHash('sha256').update(material).digest('hex');
+}
+function securityTrustCurrentDeviceNameV366(userAgent) {
+  const ua = String(userAgent || '');
+  if (/iPhone/i.test(ua)) return 'iPhone'; if (/iPad/i.test(ua)) return 'iPad'; if (/Android/i.test(ua)) return /Mobile/i.test(ua) ? 'Android Phone' : 'Android Tablet';
+  if (/Macintosh|Mac OS X/i.test(ua)) return 'Mac'; if (/Windows/i.test(ua)) return 'Windows PC'; if (/Linux/i.test(ua)) return 'Linux Device'; return 'Unknown Device';
+}
+function securityTrustCurrentDeviceBrowserV366(userAgent) {
+  const ua = String(userAgent || '');
+  if (/Edg\//i.test(ua)) return 'Microsoft Edge'; if (/OPR\//i.test(ua)) return 'Opera'; if (/CriOS\//i.test(ua)) return 'Chrome iOS'; if (/Chrome\//i.test(ua)) return 'Chrome';
+  if (/FxiOS\//i.test(ua)) return 'Firefox iOS'; if (/Firefox\//i.test(ua)) return 'Firefox'; if (/Safari\//i.test(ua)) return 'Safari'; return 'Unknown Browser';
+}
+function securityTrustCurrentDeviceOsV366(userAgent) {
+  const ua = String(userAgent || '');
+  if (/iPhone|iPad|iPod/i.test(ua)) return 'iOS'; if (/Android/i.test(ua)) return 'Android'; if (/Windows NT/i.test(ua)) return 'Windows'; if (/Mac OS X|Macintosh/i.test(ua)) return 'macOS'; if (/Linux/i.test(ua)) return 'Linux'; return 'Unknown OS';
+}
+async function handleStandaloneTrustCurrentDeviceV366(req, res, parsed) {
+  const origin = securityResetValidateBrowserV334(req, 'POST');
+  if (!safeEqual(origin, diracRoleOriginV250('security'))) throw resetError('SECURITY_TRUST_DEVICE_ORIGIN_INVALID', 403);
+  securityResetApplyHeadersV334(req, res, origin);
+  await securityResetCheckCentralBanV354(req);
+  const primary = securityResetHeaderV334(req, 'x-dirac-csrf-token').trim(), compat = securityResetHeaderV334(req, 'x-csrf-token').trim();
+  if (!primary || !compat || !safeEqual(primary, compat) || !securityResetVerifyCsrfV334(req, primary)) throw resetError('SECURITY_TRUST_DEVICE_CSRF_INVALID', 403);
+  const nonceA = securityResetHeaderV334(req, 'x-dirac-page-nonce').trim(), nonceB = securityResetHeaderV334(req, 'x-page-nonce').trim();
+  if (!nonceA || !nonceB || !safeEqual(nonceA, nonceB)) throw resetError('SECURITY_TRUST_DEVICE_PAGE_NONCE_INVALID', 403);
+  const nonce = securityResetVerifyPageNonceV334(req, nonceA, parsed.action);
+  if (!nonce) throw resetError('SECURITY_TRUST_DEVICE_PAGE_NONCE_INVALID', 403);
+  const body = await securityResetReadJsonV334(req);
+  if (!body || !exactKeys(body, [])) throw resetError('SECURITY_TRUST_DEVICE_BODY_INVALID', 400);
+  await securityResetRateLimitV334(req, parsed.action);
+  const centralPageNonce = nonce.__diracPageNonceSourceV334 === 'central';
+  const consumed = await diracCentralAtomicConsumeV230({ namespace: centralPageNonce ? 'page_nonce' : 'security_trust_device_page_nonce_v366', jti: String(nonce.jti), expiresAt: Number(nonce.exp), contextHash: centralPageNonce ? [nonce.act,nonce.sid,nonce.oh,nonce.mth].join('|') : [nonce.act,nonce.sid,nonce.oh,nonce.mth,nonce.rb].join('|') });
+  if (!consumed.ok) throw resetError('SECURITY_TRUST_DEVICE_PAGE_NONCE_REPLAY', 409);
+  const anchor = securityTrustCurrentDeviceReadAnchorV366(req);
+  const resolved = await diracSecurityPasskeyResetResolveOwnerV363(req);
+  securityTrustCurrentDeviceVerifyMfaV366(req, resolved, anchor);
+  const sessionTokenHash = securityTrustCurrentDeviceSessionTokenHashV366(req);
+  const context = diracCentralCurrentContextV149();
+  if (!context || context.req !== req || !context.active || !context.browserChecked || !context.banChecked) throw resetError('SECURITY_TRUST_DEVICE_CONTEXT_INVALID', 503);
+  context.__diracSecurityTrustCurrentDeviceV366 = Object.freeze({ active: true, sessionId: resolved.sessionId, sessionTokenHash, securityEpoch: resolved.securityEpoch });
+  const nowIso = new Date().toISOString();
+  const path = '/rest/v1/security_customer_sessions?customer_id=eq.' + encodeURIComponent(resolved.owner.customerId)
+    + '&id=eq.' + encodeURIComponent(resolved.sessionId)
+    + '&session_token_hash=eq.' + encodeURIComponent(sessionTokenHash)
+    + '&status=eq.active&security_epoch=eq.' + encodeURIComponent(String(resolved.securityEpoch))
+    + '&revoked_at=is.null';
+  const patched = await supabaseFetch(path, { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: { trusted_device: true, last_seen_at: nowIso } });
+  const rows = patched && patched.ok === true && Array.isArray(patched.data) ? patched.data : [];
+  const row = rows.length === 1 ? rows[0] : null;
+  if (!row || !safeEqual(String(row.id || ''), resolved.sessionId) || !safeEqual(String(row.customer_id || ''), resolved.owner.customerId)
+      || !safeEqual(String(row.session_token_hash || ''), sessionTokenHash) || String(row.status || '').toLowerCase() !== 'active'
+      || row.revoked_at || Number(row.security_epoch || 0) !== Number(resolved.securityEpoch) || row.trusted_device !== true) throw resetError('SECURITY_TRUST_DEVICE_PATCH_POSTCONDITION_FAILED', patched && patched.ok === true ? 403 : 503);
+  const ua = String(requestUserAgent(req) || '').trim().slice(0, 512), ipValue = trustedClientIp(req, process.env), ip = ipValue && ipValue !== 'unknown' ? ipValue.slice(0,64) : null;
+  await supabaseFetch('/rest/v1/security_customer_events', { method: 'POST', auth: 'service', prefer: 'return=minimal', body: [{
+    customer_id: resolved.owner.customerId, event_type: 'trusted_device_enabled', status: 'success', risk_level: 'low', description: 'Perangkat saat ini ditandai sebagai perangkat terpercaya.',
+    ip_address: ip, user_agent: ua, device_name: securityTrustCurrentDeviceNameV366(ua), browser_name: securityTrustCurrentDeviceBrowserV366(ua), operating_system: securityTrustCurrentDeviceOsV366(ua),
+    metadata: { source: 'customer_security_trust_current_device_standalone_v366', session_id: resolved.sessionId }
+  }] }).catch(() => null);
+  return res.status(200).json({ ok: true, trusted_device: true, message: 'Perangkat ini sudah ditandai terpercaya.', time: nowIso });
+}
+
 function parseExactRequest(req) {
   const rawUrl = String(req && req.url || '');
   if (!rawUrl || rawUrl.length > 1800 || /[\u0000-\u001f\u007f]/.test(rawUrl)) return { ok: false, code: 'SECURITY_ROUTE_URL_INVALID' };
@@ -3716,10 +3901,11 @@ function parseExactRequest(req) {
     const queryAction = req.query.action;
     if (Array.isArray(queryAction) || String(queryAction || '').trim() !== action) return { ok: false, code: 'SECURITY_ROUTE_ACTION_MISMATCH' };
   }
-  if ((RESET_ACTIONS.has(action) || DIRAC_SECURITY_PASSKEY_RESET_ACTIONS_V363.has(action)) && (params.size !== 1 || params.keys().next().value !== 'action')) return { ok: false, code: 'SECURITY_STANDALONE_QUERY_REJECTED' };
+  const trustCurrentDeviceStandalone = action === 'customer_security_trust_current_device';
+  if ((RESET_ACTIONS.has(action) || DIRAC_SECURITY_PASSKEY_RESET_ACTIONS_V363.has(action) || trustCurrentDeviceStandalone) && (params.size !== 1 || params.keys().next().value !== 'action')) return { ok: false, code: 'SECURITY_STANDALONE_QUERY_REJECTED' };
   const method = String(req && req.method || 'GET').toUpperCase();
   if (!ACTION_METHODS[action].has(method)) return { ok: false, code: 'SECURITY_ROUTE_METHOD_NOT_ALLOWED', allow: Array.from(ACTION_METHODS[action]).filter((v) => v !== 'OPTIONS') };
-  return { ok: true, action, method, canonicalUrl: CENTRAL_ROUTE_PATH + (rawQuery ? '?' + rawQuery : ''), reset: RESET_ACTIONS.has(action), passkeyReset: DIRAC_SECURITY_PASSKEY_RESET_ACTIONS_V363.has(action) };
+  return { ok: true, action, method, canonicalUrl: CENTRAL_ROUTE_PATH + (rawQuery ? '?' + rawQuery : ''), reset: RESET_ACTIONS.has(action), passkeyReset: DIRAC_SECURITY_PASSKEY_RESET_ACTIONS_V363.has(action), trustCurrentDeviceStandalone };
 }
 
 async function invokeCentral(req, res, parsed) {
@@ -3771,6 +3957,11 @@ async function keamananDispatchV361(req, res) {
   if (parsed.passkeyReset && parsed.method === 'POST') {
     try { return await handleStandalonePasskeyResetPostV363(req, res, parsed); }
     catch (error) { securityResetApplyHeadersV334(req, res, requestOrigin(req)); return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_PASSKEY_RESET_ENGINE_FAILED'), message:'Reset Passkey ditolak oleh sistem keamanan.' }); }
+  }
+  if (parsed.trustCurrentDeviceStandalone && parsed.method === 'OPTIONS') return handleResetPreflight(req, res);
+  if (parsed.trustCurrentDeviceStandalone && parsed.method === 'POST') {
+    try { return await handleStandaloneTrustCurrentDeviceV366(req, res, parsed); }
+    catch (error) { securityResetApplyHeadersV334(req, res, requestOrigin(req)); return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_TRUST_DEVICE_FAILED'), message:'Penandaan perangkat dipercaya ditolak oleh sistem keamanan.' }); }
   }
   return invokeCentral(req, res, parsed);
 }
