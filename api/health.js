@@ -51765,42 +51765,66 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
   const legacy = orderMailBuildNewOrderMessagesBeforeCorporateV352(data);
   const paid = String(data && data.order && (data.order.payment_status || data.order.order_status) || '').toLowerCase() === 'paid' || String(data && data.kind || '') === 'paid_invoice';
   const currency = String(data && data.order && data.order.currency || 'IDR').toUpperCase();
+  const customerName = orderMailCleanText(data && data.customer && data.customer.name || '', 120) || 'Pengguna Dirac Group';
+  const customerEmail = orderMailNormalizeEmail(data && data.customer && data.customer.email || '') || '-';
+  const customerPhone = orderMailCleanText(data && data.customer && data.customer.phone || '', 80) || '-';
+  const shippingAddress = orderMailCleanText(data && data.order && data.order.shipping_address || data && data.customer && data.customer.shipping_address || '', 1400) || '-';
+  const orderNote = orderMailCleanText(data && data.order && data.order.note || '', 700) || '-';
+  const paymentProvider = orderMailCleanText(data && data.payment && data.payment.provider || '', 60).toUpperCase() || '-';
+  const paymentTime = orderMailFormatDate(data && data.order && data.order.created_at || diracNowIso());
   const rowsBase = [
     ['KODE PESANAN', data && data.order && data.order.code || '-'],
     ['LAYANAN', data && data.order && data.order.service_type || '-'],
+    ['STATUS', paid ? 'LUNAS / PAID' : String(data && data.order && data.order.payment_status || data && data.order && data.order.order_status || 'ORDER').toUpperCase()],
+    ['WAKTU PEMBAYARAN', paymentTime],
+    ['GATEWAY PEMBAYARAN', paymentProvider],
+    ['REFERENSI PEMBAYARAN', data && data.payment && data.payment.invoice_id || '-'],
     ['SUBTOTAL', orderMailFormatCurrency(data && data.order && (data.order.subtotal || data.order.total) || 0, currency)],
     ['DISKON', orderMailFormatCurrency(data && data.order && data.order.discount || 0, currency)],
     ['ONGKIR', orderMailFormatCurrency(data && data.order && data.order.shipping_cost || 0, currency)],
-    ['TOTAL', orderMailFormatCurrency(data && data.order && data.order.total || 0, currency)],
-    ['STATUS', paid ? 'LUNAS / PAID' : String(data && data.order && data.order.payment_status || data && data.order && data.order.order_status || 'ORDER').toUpperCase()],
-    ['REFERENSI PEMBAYARAN', data && data.payment && data.payment.invoice_id || '-']
+    ['TOTAL', orderMailFormatCurrency(data && data.order && data.order.total || 0, currency)]
   ];
-  const items = (Array.isArray(data && data.items) ? data.items : []).slice(0, 20).map((item, index) => [
-    'ITEM ' + String(index + 1).padStart(2, '0'),
-    orderMailCleanText(item && item.title || 'Item', 120) + ' ×' + Math.max(1, Number(item && item.quantity || 1)) + ' — ' +
-      orderMailFormatCurrency(item && (item.subtotal || (Number(item.unit_price || 0) * Math.max(1, Number(item.quantity || 1)))) || 0, currency)
-  ]);
+  const fulfillmentRows = [
+    ['NAMA PENERIMA', customerName],
+    ['EMAIL CUSTOMER', customerEmail],
+    ['HP / WA', customerPhone]
+  ];
+  const shippingAddressRows = shippingAddress === '-' ? [['ALAMAT PENGIRIMAN', '-']] : [
+    ['ALAMAT PENGIRIMAN', shippingAddress.slice(0, 480)],
+    ...(shippingAddress.length > 480 ? [['ALAMAT PENGIRIMAN (LANJUTAN 1)', shippingAddress.slice(480, 960)]] : []),
+    ...(shippingAddress.length > 960 ? [['ALAMAT PENGIRIMAN (LANJUTAN 2)', shippingAddress.slice(960, 1400)]] : [])
+  ];
+  const orderNoteRows = orderNote === '-' ? [['CATATAN PESANAN', '-']] : [
+    ['CATATAN PESANAN', orderNote.slice(0, 480)],
+    ...(orderNote.length > 480 ? [['CATATAN PESANAN (LANJUTAN)', orderNote.slice(480, 700)]] : [])
+  ];
+  const items = (Array.isArray(data && data.items) ? data.items : []).slice(0, 20).map((item, index) => {
+    const quantity = Math.max(1, Number(item && item.quantity || 1));
+    const unitPrice = Number(item && item.unit_price || 0);
+    const subtotal = Number(item && (item.subtotal || (unitPrice * quantity)) || 0);
+    return [
+      'ITEM ' + String(index + 1).padStart(2, '0'),
+      orderMailCleanText(item && item.title || 'Item', 120) + ' ×' + quantity + ' — HARGA SATUAN ' +
+        orderMailFormatCurrency(unitPrice, currency) + ' — SUBTOTAL ' + orderMailFormatCurrency(subtotal, currency)
+    ];
+  });
   const customerInput = {
     preheader: paid ? 'Pembayaran pesanan Anda telah diterima dan diverifikasi.' : 'Pesanan Anda telah diterima Dirac Group.',
     brandLabel: 'SECURE PAYMENT', eyebrow: paid ? 'PAYMENT CONFIRMED' : 'ORDER CONFIRMATION',
     title: paid ? 'Pembayaran\nBerhasil' : 'Pesanan\nDiterima',
-    greeting: 'Yth. ' + orderMailCleanText(data && data.customer && data.customer.name || 'Pengguna Dirac Group', 120) + ',',
-    summary: paid ? 'Pembayaran Anda telah berhasil diterima dan diverifikasi. Berikut invoice serta rincian pesanan Anda.' : 'Pesanan Anda telah diterima. Berikut rincian yang tercatat pada sistem Dirac Group.',
+    greeting: 'Yth. ' + customerName + ',',
+    summary: paid ? 'Pembayaran Anda telah berhasil diterima dan diverifikasi. Email ini memuat data pembayaran, penerima, alamat pengiriman, catatan, dan rincian item yang tercatat pada backend.' : 'Pesanan Anda telah diterima. Email ini memuat data penerima, alamat pengiriman, catatan, dan rincian item yang tercatat pada backend.',
     statusLabel: 'STATUS PEMBAYARAN', statusValue: paid ? 'LUNAS / PAID' : 'MENUNGGU PEMBAYARAN',
-    statusNote: 'Informasi berasal dari backend pembayaran dan data pesanan resmi.', detailsLabel: 'RINCIAN INVOICE',
-    rows: rowsBase.concat(items), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'LIHAT PESANAN',
+    statusNote: paid ? 'Status paid ditetapkan setelah verifikasi webhook dan status pembayaran resmi.' : 'Informasi berasal dari backend pembayaran dan data pesanan resmi.', detailsLabel: 'RINCIAN INVOICE & PENGIRIMAN',
+    rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows, items), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'LIHAT PESANAN',
     warningTitle: 'KEAMANAN PEMBAYARAN', warning: 'Dirac Group tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau data kartu melalui balasan email, WhatsApp, Instagram, atau telepon.',
-    supportLead: 'Jika membutuhkan bantuan terkait pembayaran atau invoice, gunakan kanal resmi Dirac Group.'
+    supportLead: 'Jika membutuhkan bantuan terkait pembayaran, invoice, alamat pengiriman, atau pesanan, gunakan kanal resmi Dirac Group.'
   };
   const ownerInput = {
     ...customerInput, brandLabel: 'SECURE PAYMENT ADMIN', eyebrow: paid ? 'VERIFIED PAYMENT RECEIVED' : 'NEW ORDER NOTIFICATION',
     title: paid ? 'Pembayaran\nDiterima' : 'Order Baru\nDiterima', greeting: 'Yth. Admin / Owner Dirac Group,',
-    summary: paid ? 'Pembayaran customer telah tervalidasi oleh backend. Berikut invoice dan identitas customer yang tercatat.' : 'Order baru telah tercatat pada backend.',
-    rows: rowsBase.concat([
-      ['CUSTOMER', data && data.customer && data.customer.name || '-'],
-      ['EMAIL', data && data.customer && data.customer.email || '-'],
-      ['HP / WA', data && data.customer && data.customer.phone || '-']
-    ], items), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'BUKA PESANAN'
+    summary: paid ? 'Pembayaran customer telah tervalidasi oleh backend. Data customer, alamat pengiriman, catatan, nilai transaksi, referensi pembayaran, dan seluruh item yang diperlukan untuk fulfilment tercantum di bawah ini.' : 'Order baru telah tercatat pada backend. Data customer, alamat pengiriman, catatan, dan rincian item tercantum di bawah ini.',
+    rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows, items), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'BUKA PESANAN'
   };
   return { ...legacy, customerHtml: diracSecurityCorporateEmailHtmlV327(customerInput), ownerHtml: diracSecurityCorporateEmailHtmlV327(ownerInput) };
 };
