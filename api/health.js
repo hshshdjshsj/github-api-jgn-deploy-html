@@ -18798,24 +18798,8 @@ async function midtransHandleWebhook(req, res) {
     return res.status(409).json({ ok: false, message: 'Transisi status pembayaran ditolak oleh state machine.' });
   }
   const paymentAlreadyMatchedEarlyV372 = midtransAlreadyHasPaymentStatus(tx, mappedStatus);
-  let orderMailItemsPrefetchEarlyV372 = success && !paymentAlreadyMatchedEarlyV372
-    ? (tx.order_id
-      ? diracUniversalPesananFetchRegularItems(tx.order_id, midtransMoney(tx.amount), tx.service_type || 'order', false)
-      : diracUniversalPesananFetchDomainItems(tx.domain_order_id, midtransMoney(tx.amount), '')
-    ).catch(() => ({ items: [], totalItem: 0 }))
-    : null;
-  const existingEventPromiseV372 = midtransFetchGatewayEvent(gatewayEventId, tx.customer_id).then((eventV372) => {
-    if (!orderMailItemsPrefetchEarlyV372 && success && eventV372 && eventV372.ok === true && eventV372.exists === true
-        && String(eventV372.event && eventV372.event.event_status || '').trim().toLowerCase() === 'received') {
-      orderMailItemsPrefetchEarlyV372 = (tx.order_id
-        ? diracUniversalPesananFetchRegularItems(tx.order_id, midtransMoney(tx.amount), tx.service_type || 'order', false)
-        : diracUniversalPesananFetchDomainItems(tx.domain_order_id, midtransMoney(tx.amount), '')
-      ).catch(() => ({ items: [], totalItem: 0 }));
-    }
-    return eventV372;
-  });
   const [existingEvent, ownerCheck] = await Promise.all([
-    existingEventPromiseV372,
+    midtransFetchGatewayEvent(gatewayEventId, tx.customer_id),
     midtransVerifyTransactionOwnerAndAmount(tx, grossAmount)
   ]);
   if (!existingEvent.ok) {
@@ -18853,6 +18837,39 @@ async function midtransHandleWebhook(req, res) {
   }
   diracPaidMailTimingMarkV371(paidMailTimingV371, 'payment_verified');
 
+  // Paid-mail prefetch is allowed only after the strict Midtrans capability
+  // has been bound to the verified transaction + order state. This preserves
+  // the Central Guard contract while overlapping invoice reads with the
+  // mandatory event/payment/order mutations that follow.
+  const duplicateEventStatusBeforeInsertV373 = duplicateEvent
+    ? String(existingEvent.event && existingEvent.event.event_status || '').trim().toLowerCase()
+    : '';
+  const orderAlreadyPaidEarlyV373 = midtransOrderAlreadyPaid(ownerCheck.order);
+  const shouldPrefetchPaidMailAfterBindingV373 = Boolean(success && (
+    (duplicateEvent && duplicateEventStatusBeforeInsertV373 === 'received')
+    || (!duplicateEvent && !paymentAlreadyMatchedEarlyV372 && !orderAlreadyPaidEarlyV373)
+  ));
+  const orderMailItemsPrefetchAfterBindingV373 = shouldPrefetchPaidMailAfterBindingV373
+    ? (tx.order_id
+      ? diracUniversalPesananFetchRegularItems(tx.order_id, midtransMoney(tx.amount), tx.service_type || 'order', false)
+      : diracUniversalPesananFetchDomainItems(tx.domain_order_id, midtransMoney(tx.amount), '')
+    ).catch(() => ({ items: [], totalItem: 0 }))
+    : null;
+  const orderMailPaidOrderPrefetchAfterBindingV373 = shouldPrefetchPaidMailAfterBindingV373 && orderAlreadyPaidEarlyV373
+    ? (tx.order_id
+      ? supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent('id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at')
+        + '&id=eq.' + encodeURIComponent(tx.order_id)
+        + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
+        + '&limit=1', { method: 'GET', auth: 'service' })
+      : supabaseFetch('/rest/v1/domain_orders?select=' + encodeURIComponent('id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at')
+        + '&id=eq.' + encodeURIComponent(tx.domain_order_id)
+        + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
+        + '&limit=1', { method: 'GET', auth: 'service' })
+    ).then((resultV373) => resultV373 && resultV373.ok === true && Array.isArray(resultV373.data) && resultV373.data.length === 1
+      ? resultV373.data[0]
+      : null).catch(() => null)
+    : null;
+
   // Event starts as received. It becomes processed only after every required
   // application mutation for this notification has succeeded.
   const eventStatus = 'received';
@@ -18877,10 +18894,10 @@ async function midtransHandleWebhook(req, res) {
   const processedDuplicateEventV368 = effectiveDuplicateEventV351 && duplicateEventStatusV368 === 'processed';
 
   const paymentAlreadyMatched = paymentAlreadyMatchedEarlyV372;
-  const orderAlreadyPaid = midtransOrderAlreadyPaid(ownerCheck.order);
+  const orderAlreadyPaid = orderAlreadyPaidEarlyV373;
   const orderMailDeliveryRequiredV368 = Boolean(success && (retryPendingMailEventV368 || (!effectiveDuplicateEventV351 && !paymentAlreadyMatched && !orderAlreadyPaid)));
   const orderMailItemsPrefetchV369 = orderMailDeliveryRequiredV368
-    ? (orderMailItemsPrefetchEarlyV372 || (tx.order_id
+    ? (orderMailItemsPrefetchAfterBindingV373 || (tx.order_id
       ? diracUniversalPesananFetchRegularItems(tx.order_id, midtransMoney(tx.amount), tx.service_type || 'order', false)
       : diracUniversalPesananFetchDomainItems(tx.domain_order_id, midtransMoney(tx.amount), '')
     ).catch(() => ({ items: [], totalItem: 0 })))
@@ -18903,7 +18920,9 @@ async function midtransHandleWebhook(req, res) {
     diracPaidMailTimingMarkV371(paidMailTimingV371, 'order_paid');
     const paidOrderForMailV372 = orderPatch && Array.isArray(orderPatch.data) && orderPatch.data.length === 1
       ? orderPatch.data[0]
-      : (orderAlreadyPaid ? ownerCheck.order : null);
+      : (orderAlreadyPaid && orderMailPaidOrderPrefetchAfterBindingV373
+        ? await orderMailPaidOrderPrefetchAfterBindingV373
+        : null);
     orderMailNotification = orderMailDeliveryRequiredV368
       ? await diracPaidMailTimingRunV371(req, paidMailTimingV371, {
         provider: 'midtrans',
@@ -19041,7 +19060,7 @@ async function midtransFetchPaymentTransaction(input) {
 
 async function midtransVerifyTransactionOwnerAndAmount(tx, amount) {
   if (tx.order_id) {
-    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at';
+    const select = 'id,customer_id,total,payment_status,order_status';
     const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select)
       + '&id=eq.' + encodeURIComponent(tx.order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
@@ -19058,7 +19077,7 @@ async function midtransVerifyTransactionOwnerAndAmount(tx, amount) {
   }
 
   if (tx.domain_order_id) {
-    const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,payment_status,order_status,status,created_at';
+    const select = 'id,customer_id,total_price,payment_status,order_status,status';
     const result = await supabaseFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(select)
       + '&id=eq.' + encodeURIComponent(tx.domain_order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
