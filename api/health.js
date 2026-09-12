@@ -19861,113 +19861,6 @@ function diracPasskeyA2FStoredPublicKey(row) {
 
 const DIRAC_PASSKEY_DEVICE_BINDING_VERSION = 'dirac-passkey-device-binding-v1';
 const DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM = 'ECDSA-P256-SHA256';
-const DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V360 = 'dirac-passkey-server-device-binding-v2';
-const DIRAC_PASSKEY_SERVER_DEVICE_BINDING_ALGORITHM_V360 = 'HMAC-SHA256-HTTPONLY-DEVICE';
-const DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V360 = 'httponly-server-bound-v2';
-const DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_TYPE_V360 = 'dirac-passkey-server-device-cookie-v2';
-const DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_MAX_AGE_V360 = 365 * 24 * 60 * 60;
-
-function diracPasskeyServerDeviceCookieNameV360() {
-  return process.env.NODE_ENV === 'production' ? '__Host-dirac_pk_device_v2' : 'dirac_pk_device_v2';
-}
-
-function diracPasskeyServerDeviceSecretV360(purpose) {
-  return crypto.createHmac('sha512', getCustomerMfaSecret())
-    .update('DIRAC_PASSKEY_SERVER_DEVICE_BINDING_V2:' + String(purpose || ''))
-    .digest();
-}
-
-function diracPasskeyServerDeviceKeyIdV360(owner, deviceId) {
-  const authUserId = String(owner && owner.authUserId || '').trim();
-  const customerId = String(owner && owner.customerId || '').trim();
-  const did = String(deviceId || '').trim();
-  if (!customerSecurityLooksLikeUuid(authUserId) || !customerSecurityLooksLikeUuid(customerId)
-      || !/^[A-Za-z0-9_-]{43}$/.test(did)) return '';
-  return crypto.createHmac('sha256', diracPasskeyServerDeviceSecretV360('binding'))
-    .update(JSON.stringify([DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V360, authUserId, customerId, did]))
-    .digest('hex');
-}
-
-function diracPasskeyServerDeviceEncodeV360(owner, deviceId) {
-  const authUserId = String(owner && owner.authUserId || '').trim();
-  const customerId = String(owner && owner.customerId || '').trim();
-  const did = String(deviceId || '').trim();
-  if (!customerSecurityLooksLikeUuid(authUserId) || !customerSecurityLooksLikeUuid(customerId)
-      || !/^[A-Za-z0-9_-]{43}$/.test(did)) return null;
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    typ: DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_TYPE_V360,
-    uid: authUserId,
-    cid: customerId,
-    did,
-    iat: now,
-    exp: now + DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_MAX_AGE_V360
-  };
-  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const signature = crypto.createHmac('sha512', diracPasskeyServerDeviceSecretV360('cookie'))
-    .update(encoded)
-    .digest('base64url');
-  const value = encoded + '.' + signature;
-  return {
-    value,
-    payload,
-    deviceId: did,
-    keyId: diracPasskeyServerDeviceKeyIdV360(owner, did)
-  };
-}
-
-function diracPasskeyServerDeviceReadV360(req, owner) {
-  const cookies = typeof parseCookies === 'function' ? parseCookies(req) : {};
-  const raw = String(cookies && cookies[diracPasskeyServerDeviceCookieNameV360()] || '').trim();
-  if (!raw) return { ok: false, reason: 'server_device_cookie_missing' };
-  const parts = raw.split('.');
-  if (parts.length !== 2 || !parts[0] || !/^[A-Za-z0-9_-]{86}$/.test(parts[1])) {
-    return { ok: false, reason: 'server_device_cookie_shape_invalid', tampered: true };
-  }
-  const expected = crypto.createHmac('sha512', diracPasskeyServerDeviceSecretV360('cookie'))
-    .update(parts[0])
-    .digest('base64url');
-  if (!safeEqual(parts[1], expected)) return { ok: false, reason: 'server_device_cookie_signature_invalid', tampered: true };
-  let payload;
-  try { payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8')); }
-  catch (_) { return { ok: false, reason: 'server_device_cookie_payload_invalid', tampered: true }; }
-  const now = Math.floor(Date.now() / 1000);
-  const authUserId = String(owner && owner.authUserId || '').trim();
-  const customerId = String(owner && owner.customerId || '').trim();
-  const issuedAt = Number(payload && payload.iat || 0);
-  const expiresAt = Number(payload && payload.exp || 0);
-  const deviceId = String(payload && payload.did || '').trim();
-  if (!payload || payload.typ !== DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_TYPE_V360
-      || !customerSecurityLooksLikeUuid(String(payload.uid || ''))
-      || !customerSecurityLooksLikeUuid(String(payload.cid || ''))
-      || !/^[A-Za-z0-9_-]{43}$/.test(deviceId)
-      || !Number.isSafeInteger(issuedAt) || !Number.isSafeInteger(expiresAt)
-      || issuedAt > now + 60 || expiresAt - issuedAt !== DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_MAX_AGE_V360) {
-    return { ok: false, reason: 'server_device_cookie_contract_invalid', tampered: true };
-  }
-  if (expiresAt <= now) return { ok: false, reason: 'server_device_cookie_expired' };
-  if (!safeEqual(String(payload.uid), authUserId) || !safeEqual(String(payload.cid), customerId)) {
-    return { ok: false, reason: 'server_device_cookie_owner_mismatch' };
-  }
-  const keyId = diracPasskeyServerDeviceKeyIdV360(owner, deviceId);
-  if (!/^[a-f0-9]{64}$/.test(keyId)) return { ok: false, reason: 'server_device_cookie_binding_invalid', tampered: true };
-  return { ok: true, value: raw, payload, deviceId, keyId };
-}
-
-function diracPasskeyServerDeviceEnsureV360(req, res, owner) {
-  const current = diracPasskeyServerDeviceReadV360(req, owner);
-  if (current.tampered === true) return current;
-  const deviceId = current.ok === true ? current.deviceId : crypto.randomBytes(32).toString('base64url');
-  const issued = diracPasskeyServerDeviceEncodeV360(owner, deviceId);
-  if (!issued || !/^[a-f0-9]{64}$/.test(String(issued.keyId || ''))) {
-    return { ok: false, reason: 'server_device_cookie_issue_failed' };
-  }
-  appendSetCookie(res, makeCookie(diracPasskeyServerDeviceCookieNameV360(), issued.value, {
-    maxAge: DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_MAX_AGE_V360,
-    domain: ''
-  }));
-  return { ok: true, deviceId: issued.deviceId, keyId: issued.keyId, refreshed: current.ok === true };
-}
 
 function diracPasskeyA2FDeviceBindingKeyId(publicKeyJwk) {
   const jwk = publicKeyJwk && typeof publicKeyJwk === 'object' ? publicKeyJwk : {};
@@ -20057,25 +19950,11 @@ function diracPasskeyA2FVerifyDeviceBindingSignature(publicKeyJwk, signature, si
 function diracPasskeyA2FStoredDeviceBinding(row) {
   const json = row && row.credential_json && typeof row.credential_json === 'object' ? row.credential_json : {};
   const binding = json && json.device_binding && typeof json.device_binding === 'object' ? json.device_binding : null;
-  if (!binding || binding.required !== true || !/^[a-f0-9]{64}$/.test(String(binding.key_id || ''))) {
+  if (!binding || binding.required !== true
+      || binding.version !== DIRAC_PASSKEY_DEVICE_BINDING_VERSION
+      || binding.algorithm !== DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM
+      || !/^[a-f0-9]{64}$/.test(String(binding.key_id || ''))) {
     return { ok: false, reason: 'stored_device_binding_missing' };
-  }
-  if (binding.version === DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V360
-      && binding.algorithm === DIRAC_PASSKEY_SERVER_DEVICE_BINDING_ALGORITHM_V360
-      && binding.policy === DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V360) {
-    return {
-      ok: true,
-      keyId: String(binding.key_id),
-      binding,
-      version: DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V360,
-      algorithm: DIRAC_PASSKEY_SERVER_DEVICE_BINDING_ALGORITHM_V360,
-      policy: DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V360,
-      serverBound: true
-    };
-  }
-  if (binding.version !== DIRAC_PASSKEY_DEVICE_BINDING_VERSION
-      || binding.algorithm !== DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM) {
-    return { ok: false, reason: 'stored_device_binding_policy_invalid' };
   }
   const publicKeyJwk = binding.public_key_jwk && typeof binding.public_key_jwk === 'object'
     ? binding.public_key_jwk
@@ -20084,41 +19963,10 @@ function diracPasskeyA2FStoredDeviceBinding(row) {
   if (!computedKeyId || !safeEqual(computedKeyId, String(binding.key_id))) {
     return { ok: false, reason: 'stored_device_binding_key_invalid' };
   }
-  return {
-    ok: true,
-    keyId: computedKeyId,
-    publicKeyJwk,
-    binding,
-    version: DIRAC_PASSKEY_DEVICE_BINDING_VERSION,
-    algorithm: DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM,
-    policy: 'webcrypto-nonextractable-v1',
-    serverBound: false
-  };
+  return { ok: true, keyId: computedKeyId, publicKeyJwk, binding };
 }
 
-function diracPasskeyA2FValidateRegistrationDeviceBinding({ body, setupToken, payload, credentialId, req, owner }) {
-  const serverBinding = payload && payload.serverDeviceBindingV360 && typeof payload.serverDeviceBindingV360 === 'object'
-    ? payload.serverDeviceBindingV360
-    : null;
-  if (serverBinding && serverBinding.version === DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V360) {
-    if (diracPasskeyA2FSafeString(body && body.response, 64) !== 'dpk2s') {
-      return { ok: false, reason: 'server_device_binding_marker_invalid' };
-    }
-    const current = diracPasskeyServerDeviceReadV360(req, owner);
-    if (!current.ok) return { ok: false, reason: current.reason || 'server_device_binding_cookie_invalid' };
-    if (!/^[a-f0-9]{64}$/.test(String(serverBinding.keyId || ''))
-        || !safeEqual(String(serverBinding.keyId), current.keyId)) {
-      return { ok: false, reason: 'server_device_binding_challenge_mismatch' };
-    }
-    return {
-      ok: true,
-      keyId: current.keyId,
-      version: DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V360,
-      algorithm: DIRAC_PASSKEY_SERVER_DEVICE_BINDING_ALGORITHM_V360,
-      policy: DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V360,
-      serverBound: true
-    };
-  }
+function diracPasskeyA2FValidateRegistrationDeviceBinding({ body, setupToken, payload, credentialId }) {
   const envelope = diracPasskeyA2FDecodeDeviceBindingEnvelope(body, 'registration');
   if (!envelope.ok) return envelope;
   const signingInput = diracPasskeyA2FDeviceBindingSigningInput({
@@ -20130,44 +19978,12 @@ function diracPasskeyA2FValidateRegistrationDeviceBinding({ body, setupToken, pa
   if (!diracPasskeyA2FVerifyDeviceBindingSignature(envelope.publicKeyJwk, envelope.signature, signingInput)) {
     return { ok: false, reason: 'device_binding_registration_signature_invalid' };
   }
-  return {
-    ok: true,
-    keyId: envelope.keyId,
-    publicKeyJwk: envelope.publicKeyJwk,
-    version: DIRAC_PASSKEY_DEVICE_BINDING_VERSION,
-    algorithm: DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM,
-    policy: 'webcrypto-nonextractable-v1',
-    serverBound: false
-  };
+  return { ok: true, keyId: envelope.keyId, publicKeyJwk: envelope.publicKeyJwk };
 }
 
-function diracPasskeyA2FValidateAuthenticationDeviceBinding({ row, body, setupToken, payload, credentialId, req, owner }) {
+function diracPasskeyA2FValidateAuthenticationDeviceBinding({ row, body, setupToken, payload, credentialId }) {
   const stored = diracPasskeyA2FStoredDeviceBinding(row);
   if (!stored.ok) return stored;
-  if (stored.serverBound === true) {
-    if (diracPasskeyA2FSafeString(body && body.response, 64) !== 'dpk2s') {
-      return { ok: false, reason: 'server_device_binding_marker_invalid' };
-    }
-    const current = diracPasskeyServerDeviceReadV360(req, owner);
-    if (!current.ok) return { ok: false, reason: current.reason || 'server_device_binding_cookie_invalid' };
-    const challengeBinding = payload && payload.serverDeviceBindingV360 && typeof payload.serverDeviceBindingV360 === 'object'
-      ? String(payload.serverDeviceBindingV360.keyId || '')
-      : String(payload && payload.deviceBindingKeyId || '');
-    if (!/^[a-f0-9]{64}$/.test(challengeBinding)
-        || !safeEqual(challengeBinding, current.keyId)
-        || !safeEqual(stored.keyId, current.keyId)) {
-      return { ok: false, reason: 'server_device_binding_key_mismatch' };
-    }
-    return {
-      ok: true,
-      keyId: stored.keyId,
-      binding: stored.binding,
-      version: stored.version,
-      algorithm: stored.algorithm,
-      policy: stored.policy,
-      serverBound: true
-    };
-  }
   const envelope = diracPasskeyA2FDecodeDeviceBindingEnvelope(body, 'authentication');
   if (!envelope.ok) return envelope;
   if (!safeEqual(stored.keyId, envelope.keyId)) return { ok: false, reason: 'device_binding_key_mismatch' };
@@ -20180,16 +19996,7 @@ function diracPasskeyA2FValidateAuthenticationDeviceBinding({ row, body, setupTo
   if (!diracPasskeyA2FVerifyDeviceBindingSignature(stored.publicKeyJwk, envelope.signature, signingInput)) {
     return { ok: false, reason: 'device_binding_authentication_signature_invalid' };
   }
-  return {
-    ok: true,
-    keyId: stored.keyId,
-    publicKeyJwk: stored.publicKeyJwk,
-    binding: stored.binding,
-    version: stored.version,
-    algorithm: stored.algorithm,
-    policy: stored.policy,
-    serverBound: false
-  };
+  return { ok: true, keyId: stored.keyId, publicKeyJwk: stored.publicKeyJwk, binding: stored.binding };
 }
 
 function diracPasskeyA2FValidateAuthenticationResponse({ row, response, payload, clientData, req }) {
@@ -20844,7 +20651,7 @@ async function diracPasskeyA2FCreatePendingConfirmationV237({ owner, pendingRow,
       pending_created: true,
       registered_now: false,
       device_binding_required: true,
-      device_binding_policy: String(storedBinding.policy || 'webcrypto-nonextractable-v1'),
+      device_binding_policy: 'webcrypto-nonextractable-v1',
       setupToken,
       mfaSetupToken: setupToken,
       expires_in: Math.floor(confirmationRemainingMs / 1000),
@@ -20924,7 +20731,7 @@ async function diracPasskeyA2FSaveRegistration({ owner, credential, response, cl
       code: registration.reason || 'PASSKEY_ATTESTATION_INVALID'
     };
   }
-  const deviceBinding = diracPasskeyA2FValidateRegistrationDeviceBinding({ body, setupToken, payload, credentialId, req, owner });
+  const deviceBinding = diracPasskeyA2FValidateRegistrationDeviceBinding({ body, setupToken, payload, credentialId });
   if (!deviceBinding.ok) {
     return {
       ok: false,
@@ -20973,16 +20780,15 @@ async function diracPasskeyA2FSaveRegistration({ owner, credential, response, cl
     backup_eligible: registration.backupEligible === true,
     backup_state: registration.backupState === true,
     device_bound: registration.deviceBound === true,
-    sync_policy: deviceBinding.serverBound === true ? 'synced-passkey-server-device-binding-v2' : 'synced-passkey-device-binding-required-v1',
+    sync_policy: 'synced-passkey-device-binding-required-v1',
     verified_at: nowIso
   };
   credentialJson.device_binding = {
-    version: deviceBinding.version,
-    algorithm: deviceBinding.algorithm,
-    policy: deviceBinding.policy,
+    version: DIRAC_PASSKEY_DEVICE_BINDING_VERSION,
+    algorithm: DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM,
     required: true,
     key_id: deviceBinding.keyId,
-    ...(deviceBinding.publicKeyJwk ? { public_key_jwk: deviceBinding.publicKeyJwk } : {}),
+    public_key_jwk: deviceBinding.publicKeyJwk,
     registered_at: nowIso,
     last_verified_at: nowIso
   };
@@ -21204,9 +21010,7 @@ async function diracPasskeyA2FConfirmPendingRegistrationV237({ row, owner, respo
     body,
     setupToken,
     payload,
-    credentialId,
-    req,
-    owner
+    credentialId
   });
   if (!deviceBinding.ok || !safeEqual(deviceBinding.keyId, storedBinding.keyId)) {
     return {
@@ -21411,9 +21215,7 @@ async function diracPasskeyA2FUpdateUsage({ row, owner, response, credential, cl
     body,
     setupToken,
     payload,
-    credentialId: String(row.credential_id || ''),
-    req,
-    owner
+    credentialId: String(row.credential_id || '')
   });
   if (!deviceBinding.ok) {
     return {
@@ -21443,16 +21245,15 @@ async function diracPasskeyA2FUpdateUsage({ row, owner, response, credential, cl
       backup_eligible: assertion.backupEligible === true,
       backup_state: assertion.backupState === true,
       device_bound: assertion.deviceBound === true,
-      sync_policy: deviceBinding.serverBound === true ? 'synced-passkey-server-device-binding-v2' : 'synced-passkey-device-binding-required-v1'
+      sync_policy: 'synced-passkey-device-binding-required-v1'
     },
     device_binding: {
       ...(currentCredentialJson.device_binding && typeof currentCredentialJson.device_binding === 'object' ? currentCredentialJson.device_binding : {}),
-      version: deviceBinding.version,
-      algorithm: deviceBinding.algorithm,
-      policy: deviceBinding.policy,
+      version: DIRAC_PASSKEY_DEVICE_BINDING_VERSION,
+      algorithm: DIRAC_PASSKEY_DEVICE_BINDING_ALGORITHM,
       required: true,
       key_id: deviceBinding.keyId,
-      ...(deviceBinding.publicKeyJwk ? { public_key_jwk: deviceBinding.publicKeyJwk } : {}),
+      public_key_jwk: deviceBinding.publicKeyJwk,
     },
     last_authentication: diracPasskeyA2FMinimalCredentialJson({ credential, response, clientData, payload, owner, req, mode: 'authentication' })
   };
@@ -22691,33 +22492,6 @@ async function diracPasskeyA2FStart(req, res) {
     : hasActivePasskey
       ? DIRAC_PASSKEY_ROTATION_PURPOSE_REPLACE_V237
       : DIRAC_PASSKEY_ROTATION_PURPOSE_INITIAL_V237;
-  const activeBindingAtStartV360 = hasActivePasskey && activePasskeys.length === 1
-    ? diracPasskeyA2FStoredDeviceBinding(activePasskeys[0])
-    : null;
-  const deviceBindingPolicyV360 = mode === 'registration'
-    ? DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V360
-    : activeBindingAtStartV360 && activeBindingAtStartV360.ok === true
-      ? String(activeBindingAtStartV360.policy || 'webcrypto-nonextractable-v1')
-      : 'webcrypto-nonextractable-v1';
-  let serverDeviceBindingV360 = null;
-  if (deviceBindingPolicyV360 === DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V360) {
-    serverDeviceBindingV360 = diracPasskeyServerDeviceEnsureV360(req, res, owner);
-    if (!serverDeviceBindingV360 || serverDeviceBindingV360.ok !== true) {
-      if (serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true) {
-        await diracA2FHardBanCurrentRequest('passkey_server_device_cookie_tampered');
-      }
-      return res.status(serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true ? 403 : 503).json({
-        ok: false,
-        method: 'passkey',
-        code: serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true
-          ? 'PASSKEY_SERVER_DEVICE_COOKIE_INVALID'
-          : 'PASSKEY_SERVER_DEVICE_COOKIE_UNAVAILABLE',
-        message: serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true
-          ? 'Binding perangkat browser tidak valid. Proses dihentikan.'
-          : 'Binding perangkat server belum dapat diterbitkan. Coba lagi.'
-      });
-    }
-  }
   const jti = crypto.randomBytes(32).toString('base64url');
 
   const payload = {
@@ -22736,10 +22510,6 @@ async function diracPasskeyA2FStart(req, res) {
     securityEpochAtStart,
     activeCredentialCountAtStart: activeSetAtStart.count,
     activeCredentialSetHashAtStart: activeSetAtStart.hash,
-    serverDeviceBindingV360: serverDeviceBindingV360 && serverDeviceBindingV360.ok === true ? {
-      version: DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V360,
-      keyId: serverDeviceBindingV360.keyId
-    } : undefined,
     primaryAuthV301: recoveryAuthorityV281 ? undefined : {
       version: 301,
       patch: DIRAC_PASSKEY_AUTH_SESSION_V301,
@@ -22822,7 +22592,7 @@ async function diracPasskeyA2FStart(req, res) {
       passkeyMode: 'authentication',
       needsRegistration: false,
       device_binding_required: true,
-      device_binding_policy: deviceBindingPolicyV360,
+      device_binding_policy: 'webcrypto-nonextractable-v1',
       setupToken,
       mfaSetupToken: setupToken,
       expires_in: Math.floor(DIRAC_PASSKEY_A2F_TTL_MS / 1000),
@@ -22846,7 +22616,7 @@ async function diracPasskeyA2FStart(req, res) {
     passkeyMode: 'registration',
     needsRegistration: true,
     device_binding_required: true,
-    device_binding_policy: deviceBindingPolicyV360,
+    device_binding_policy: 'webcrypto-nonextractable-v1',
     setupToken,
     mfaSetupToken: setupToken,
     expires_in: Math.floor(DIRAC_PASSKEY_A2F_TTL_MS / 1000),
@@ -27793,7 +27563,7 @@ async function diracPasskeyA2FVerify(req, res) {
     synced_passkeys_allowed: true,
     device_bound: true,
     device_binding_verified: true,
-    device_binding_policy: String(finalDeviceBinding.policy || 'webcrypto-nonextractable-v1'),
+    device_binding_policy: 'webcrypto-nonextractable-v1',
     webauthn_backup_eligible: Boolean(finalActivePasskeys[0]
       && finalActivePasskeys[0].credential_json
       && finalActivePasskeys[0].credential_json.webauthn
