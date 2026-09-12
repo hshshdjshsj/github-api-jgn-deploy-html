@@ -18891,16 +18891,23 @@ async function midtransHandleWebhook(req, res) {
   }
 
   try {
-  const txResult = await midtransFetchPaymentTransaction({
-    transactionId: bindingTransactionId,
-    customerId: bindingCustomerId,
-    gatewayReference,
-    parentType: binding.parentType,
-    parentId: binding.parentId,
-    serviceType: binding.serviceType,
-    grossAmount,
-    currency
-  });
+  const boundOwnerLookupV375 = binding.parentType === 'd'
+    ? { domain_order_id: binding.parentId, customer_id: bindingCustomerId }
+    : { order_id: binding.parentId, customer_id: bindingCustomerId };
+  const [txResult, existingEvent, ownerCheck] = await Promise.all([
+    midtransFetchPaymentTransaction({
+      transactionId: bindingTransactionId,
+      customerId: bindingCustomerId,
+      gatewayReference,
+      parentType: binding.parentType,
+      parentId: binding.parentId,
+      serviceType: binding.serviceType,
+      grossAmount,
+      currency
+    }),
+    midtransFetchGatewayEvent(gatewayEventId, bindingCustomerId),
+    midtransVerifyTransactionOwnerAndAmount(boundOwnerLookupV375, grossAmount)
+  ]);
   if (!txResult.ok) {
     await diracCentralBanCurrentContextV146('midtrans_transaction_not_found').catch(() => null);
     return res.status(txResult.status || 404).json({ ok: false, message: txResult.message || 'Payment transaction tidak ditemukan.' });
@@ -18911,10 +18918,6 @@ async function midtransHandleWebhook(req, res) {
     return res.status(409).json({ ok: false, message: 'Transisi status pembayaran ditolak oleh state machine.' });
   }
   const paymentAlreadyMatchedEarlyV372 = midtransAlreadyHasPaymentStatus(tx, mappedStatus);
-  const [existingEvent, ownerCheck] = await Promise.all([
-    midtransFetchGatewayEvent(gatewayEventId, tx.customer_id),
-    midtransVerifyTransactionOwnerAndAmount(tx, grossAmount)
-  ]);
   if (!existingEvent.ok) {
     return res.status(existingEvent.status >= 500 ? 503 : (existingEvent.status || 409)).json({
       ok: false,
@@ -18962,25 +18965,8 @@ async function midtransHandleWebhook(req, res) {
     (duplicateEvent && duplicateEventStatusBeforeInsertV373 === 'received')
     || (!duplicateEvent && !paymentAlreadyMatchedEarlyV372 && !orderAlreadyPaidEarlyV373)
   ));
-  const orderMailItemsPrefetchAfterBindingV373 = shouldPrefetchPaidMailAfterBindingV373
-    ? (tx.order_id
-      ? diracUniversalPesananFetchRegularItems(tx.order_id, midtransMoney(tx.amount), tx.service_type || 'order', false)
-      : diracUniversalPesananFetchDomainItems(tx.domain_order_id, midtransMoney(tx.amount), '')
-    ).catch(() => ({ items: [], totalItem: 0 }))
-    : null;
   const orderMailPaidOrderPrefetchAfterBindingV373 = shouldPrefetchPaidMailAfterBindingV373 && orderAlreadyPaidEarlyV373
-    ? (tx.order_id
-      ? supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent('id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at')
-        + '&id=eq.' + encodeURIComponent(tx.order_id)
-        + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
-        + '&limit=1', { method: 'GET', auth: 'service' })
-      : supabaseFetch('/rest/v1/domain_orders?select=' + encodeURIComponent('id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at')
-        + '&id=eq.' + encodeURIComponent(tx.domain_order_id)
-        + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
-        + '&limit=1', { method: 'GET', auth: 'service' })
-    ).then((resultV373) => resultV373 && resultV373.ok === true && Array.isArray(resultV373.data) && resultV373.data.length === 1
-      ? resultV373.data[0]
-      : null).catch(() => null)
+    ? ownerCheck.order
     : null;
 
   // Event starts as received. It becomes processed only after every required
@@ -19010,10 +18996,7 @@ async function midtransHandleWebhook(req, res) {
   const orderAlreadyPaid = orderAlreadyPaidEarlyV373;
   const orderMailDeliveryRequiredV368 = Boolean(success && (retryPendingMailEventV368 || (!effectiveDuplicateEventV351 && !paymentAlreadyMatched && !orderAlreadyPaid)));
   const orderMailItemsPrefetchV369 = orderMailDeliveryRequiredV368
-    ? (orderMailItemsPrefetchAfterBindingV373 || (tx.order_id
-      ? diracUniversalPesananFetchRegularItems(tx.order_id, midtransMoney(tx.amount), tx.service_type || 'order', false)
-      : diracUniversalPesananFetchDomainItems(tx.domain_order_id, midtransMoney(tx.amount), '')
-    ).catch(() => ({ items: [], totalItem: 0 })))
+    ? { items: [], totalItem: 0 }
     : null;
 
   const txPatch = await midtransPatchPaymentTransaction(tx, mappedStatus, body, success);
@@ -19034,7 +19017,7 @@ async function midtransHandleWebhook(req, res) {
     const paidOrderForMailV372 = orderPatch && Array.isArray(orderPatch.data) && orderPatch.data.length === 1
       ? orderPatch.data[0]
       : (orderAlreadyPaid && orderMailPaidOrderPrefetchAfterBindingV373
-        ? await orderMailPaidOrderPrefetchAfterBindingV373
+        ? orderMailPaidOrderPrefetchAfterBindingV373
         : null);
     orderMailNotification = orderMailDeliveryRequiredV368
       ? await diracPaidMailTimingRunV371(req, paidMailTimingV371, {
@@ -19043,7 +19026,7 @@ async function midtransHandleWebhook(req, res) {
         webhookPayload: body,
         paidAt: capabilityContextV350.capability.evidence.confirmed_at,
         paidOrder: paidOrderForMailV372,
-        paidItems: orderMailItemsPrefetchV369 ? await orderMailItemsPrefetchV369 : null
+        paidItems: orderMailItemsPrefetchV369
       })
       : orderMailPaidWebhookSkipSummary('midtrans', processedDuplicateEventV368 ? 'duplicate_event_reconciled' : 'already_paid');
     if (orderMailDeliveryRequiredV368 && (!orderMailNotification || orderMailNotification.ok !== true
@@ -19173,7 +19156,7 @@ async function midtransFetchPaymentTransaction(input) {
 
 async function midtransVerifyTransactionOwnerAndAmount(tx, amount) {
   if (tx.order_id) {
-    const select = 'id,customer_id,total,payment_status,order_status';
+    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at';
     const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select)
       + '&id=eq.' + encodeURIComponent(tx.order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
@@ -19190,7 +19173,7 @@ async function midtransVerifyTransactionOwnerAndAmount(tx, amount) {
   }
 
   if (tx.domain_order_id) {
-    const select = 'id,customer_id,total_price,payment_status,order_status,status';
+    const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at';
     const result = await supabaseFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(select)
       + '&id=eq.' + encodeURIComponent(tx.domain_order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
@@ -58281,7 +58264,7 @@ function diracCentralSupportDeviceTransitionRequestV354(req) {
         || parsedRequest.pathname !== '/api/health'
         || parsedRequest.searchParams.size !== 1
         || parsedRequest.searchParams.getAll('action').length !== 1
-        || parsedRequest.searchParams.get('action') !== 'domain_me') return null;
+        || parsedRequest.searchParams.get('action') !== 'domain_dashboard_me') return null;
     const base = diracBaseDomainV250();
     const expectedOrigin = 'https://cs.' + base;
     const headers = req.headers || {};
