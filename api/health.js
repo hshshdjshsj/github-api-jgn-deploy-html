@@ -8916,7 +8916,10 @@ async function customerSecurityBootstrapRegisteredUser(req, responseUser) {
       return { ok: false, reason: 'invalid_auth_user_or_email' };
     }
 
-    const existingLinkResult = await customerSecurityFetchAuthLink(authUserId);
+    let existingLinkResult = await customerSecurityFetchAuthLink(authUserId);
+    if (!existingLinkResult.ok && Number(existingLinkResult.status) === 504) {
+      existingLinkResult = await customerSecurityFetchAuthLink(authUserId);
+    }
     if (!existingLinkResult.ok) return { ok: false, reason: 'auth_link_read_failed', status: existingLinkResult.status };
 
     const existingRows = Array.isArray(existingLinkResult.data) ? existingLinkResult.data.filter((row) => row && row.link_status === 'active' && !row.disabled_at && !row.revoked_at && row.customer_id) : [];
@@ -9665,7 +9668,10 @@ async function customerSecurityTouchCurrentSession(req, customerId, verifiedExis
 
       activeStage = 'read';
       const readStartedAtMs = Date.now();
-      const existing = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+      let existing = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+      if (!existing.ok && Number(existing.status) === 504) {
+        existing = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+      }
       if (!existing.ok) {
         const diagnostic = customerSecuritySessionStoreDiagnosticV218(req, 'read', existing, {
           elapsed_ms: Date.now() - readStartedAtMs,
