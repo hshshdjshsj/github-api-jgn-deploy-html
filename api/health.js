@@ -52186,7 +52186,13 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
         replyTo: customerCfg.replyTo, subject: String(message.subject || 'Dirac Group'), text: String(message.text || ''),
         html: String(message.html || ''), reference: crypto.createHash('sha256').update(String(message.subject || '') + '|' + String((message.to || [])[0] || '')).digest('hex').slice(0, 32)
       });
-      const result = await diracSecurityMailProviderCascadeV330(generic, customerCfg, () => diracCustomerMailSmtpCascadeV352(generic, customerCfg));
+      const smtpFirstV374 = await diracCustomerMailSmtpCascadeV352(generic, customerCfg);
+      if (smtpFirstV374 && smtpFirstV374.ok === true) {
+        diracPaidMailTimingProviderAcceptedV371(diagnosticV371, smtpFirstV374.provider || 'gmail_smtp');
+        return smtpFirstV374;
+      }
+      if (smtpFirstV374 && smtpFirstV374.deliveryAmbiguous === true) return smtpFirstV374;
+      const result = await diracSecurityMailProviderCascadeV330(generic, customerCfg, () => Promise.resolve(smtpFirstV374 || { ok: false, provider: 'gmail_smtp', code: 'SMTP_FIRST_RESULT_MISSING' }));
       if (result && result.ok === true) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, result.provider || 'customer_provider');
       return result;
     }
@@ -52202,7 +52208,15 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
         fromName: 'Dirac Group', recipients, replyTo: ownerCfg.replyTo, subject: String(message.subject || 'Dirac Group'), text: String(message.text || ''),
         html: String(message.html || ''), reference: crypto.createHash('sha256').update('owner|' + String(message.subject || '') + '|' + recipients.join(',')).digest('hex').slice(0, 32)
       });
-      const result = await diracSecurityMailProviderCascadeV330(generic, ownerCfg, () => diracCustomerMailSmtpCascadeV352(generic, ownerCfg));
+      const smtpFirstV374 = config.smtpConfigured
+        ? await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message, diagnosticV371)
+        : await diracCustomerMailSmtpCascadeV352(generic, ownerCfg);
+      if (smtpFirstV374 && smtpFirstV374.ok === true) {
+        diracPaidMailTimingProviderAcceptedV371(diagnosticV371, smtpFirstV374.provider || 'gmail_smtp');
+        return smtpFirstV374;
+      }
+      if (smtpFirstV374 && smtpFirstV374.deliveryAmbiguous === true) return smtpFirstV374;
+      const result = await diracSecurityMailProviderCascadeV330(generic, ownerCfg, () => Promise.resolve(smtpFirstV374 || { ok: false, provider: 'gmail_smtp', code: 'SMTP_FIRST_RESULT_MISSING' }));
       if (result && result.ok === true) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, result.provider || 'owner_provider');
       return result;
     }

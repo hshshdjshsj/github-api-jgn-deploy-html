@@ -444,7 +444,7 @@ function mainIdentityRoute(req) {
   const forwardedProto = String(req.headers && (req.headers['x-forwarded-proto'] || req.headers['x-vercel-forwarded-proto']) || '').split(',')[0].trim().toLowerCase();
   if (isProduction() && forwardedProto !== 'https') throw new PublicError(503, 'MAIN_IDENTITY_HTTPS_REQUIRED', 'API utama wajib menggunakan HTTPS.');
   const protocol = isProduction() || frontend.protocol === 'https:' ? 'https:' : 'http:';
-  const endpoint = new URL('/api/health?action=domain_me', protocol + '//' + expectedAuthority);
+  const endpoint = new URL('/api/health?action=domain_dashboard_me', protocol + '//' + expectedAuthority);
   return { endpoint: endpoint.toString(), cookieBases: mainCookieBases() };
 }
 
@@ -841,6 +841,7 @@ function clientKey(req, suffix) { return hmac(config().ipSecret, clientIp(req) +
 
 function verifyQueryShape(req, action) {
   const allowedByAction = {
+    chat_public_config: ['_t'],
     chat_bootstrap: ['after_sequence'],
     admin_queue: ['filter', 'limit'],
     admin_thread: ['conversation_id', 'after_sequence', 'limit']
@@ -854,6 +855,9 @@ function verifyQueryShape(req, action) {
       if (seen.has(name)) throw new PublicError(400, 'QUERY_FIELD_DUPLICATE', 'Parameter URL tidak boleh berulang.');
       seen.add(name);
     });
+    if (action === 'chat_public_config' && parsed.searchParams.has('_t') && !/^\d{10,16}$/.test(String(parsed.searchParams.get('_t') || ''))) {
+      throw new PublicError(400, 'QUERY_CACHE_BUSTER_INVALID', 'Cache-buster URL tidak valid.');
+    }
     const canonicalSearch = parsed.searchParams.size ? '?' + parsed.searchParams.toString() : '';
     if (parsed.search !== canonicalSearch) throw new PublicError(400, 'QUERY_NON_CANONICAL', 'Format parameter URL tidak kanonis.');
   } catch (_) {
@@ -2404,7 +2408,7 @@ function supportCentralAssertFixedEgress(urlValue) {
   if (target.origin === supabase.origin && (/^\/rest\/v1(?:\/|$)/.test(target.pathname) || /^\/auth\/v1(?:\/|$)/.test(target.pathname))) return true;
   if (target.origin === 'https://challenges.cloudflare.com' && target.pathname === '/turnstile/v0/siteverify' && ctx.action === 'chat_start') return true;
   const expectedAuthorities = supportCentralExpectedAuthoritiesV146();
-  if (expectedAuthorities.has(target.host.toLowerCase()) && target.pathname === '/api/health' && target.searchParams.size === 1 && target.searchParams.get('action') === 'domain_me') {
+  if (expectedAuthorities.has(target.host.toLowerCase()) && target.pathname === '/api/health' && target.searchParams.size === 1 && target.searchParams.get('action') === 'domain_dashboard_me') {
     if (['chat_public_config', 'chat_bootstrap', 'chat_start', 'chat_send', 'chat_close', 'customer_access_refresh'].includes(ctx.action)) return true;
   }
   throw new PublicError(500, 'CENTRAL_EGRESS_REJECTED', 'Target egress tidak termasuk allowlist support.');
