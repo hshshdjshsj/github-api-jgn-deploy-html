@@ -18965,8 +18965,8 @@ async function midtransHandleWebhook(req, res) {
     (duplicateEvent && duplicateEventStatusBeforeInsertV373 === 'received')
     || (!duplicateEvent && !paymentAlreadyMatchedEarlyV372 && !orderAlreadyPaidEarlyV373)
   ));
-  const orderMailPaidOrderPrefetchAfterBindingV373 = shouldPrefetchPaidMailAfterBindingV373 && orderAlreadyPaidEarlyV373
-    ? ownerCheck.order
+  const orderMailPaidOrderPrefetchAfterBindingV376 = shouldPrefetchPaidMailAfterBindingV373 && orderAlreadyPaidEarlyV373
+    ? midtransFetchPaidInvoiceOrderAfterBindingV376(tx).catch(() => null)
     : null;
 
   // Event starts as received. It becomes processed only after every required
@@ -19014,10 +19014,13 @@ async function midtransHandleWebhook(req, res) {
       return res.status(orderPatch.status || 500).json({ ok: false, message: 'Payment valid, tetapi gagal update status order.' });
     }
     diracPaidMailTimingMarkV371(paidMailTimingV371, 'order_paid');
+    const paidOrderPrefetchAfterBindingV376 = orderAlreadyPaid && orderMailPaidOrderPrefetchAfterBindingV376
+      ? await orderMailPaidOrderPrefetchAfterBindingV376
+      : null;
     const paidOrderForMailV372 = orderPatch && Array.isArray(orderPatch.data) && orderPatch.data.length === 1
       ? orderPatch.data[0]
-      : (orderAlreadyPaid && orderMailPaidOrderPrefetchAfterBindingV373
-        ? orderMailPaidOrderPrefetchAfterBindingV373
+      : (orderAlreadyPaid && paidOrderPrefetchAfterBindingV376
+        ? paidOrderPrefetchAfterBindingV376
         : null);
     orderMailNotification = orderMailDeliveryRequiredV368
       ? await diracPaidMailTimingRunV371(req, paidMailTimingV371, {
@@ -19156,7 +19159,7 @@ async function midtransFetchPaymentTransaction(input) {
 
 async function midtransVerifyTransactionOwnerAndAmount(tx, amount) {
   if (tx.order_id) {
-    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at';
+    const select = 'id,customer_id,total,payment_status,order_status';
     const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select)
       + '&id=eq.' + encodeURIComponent(tx.order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
@@ -19173,7 +19176,7 @@ async function midtransVerifyTransactionOwnerAndAmount(tx, amount) {
   }
 
   if (tx.domain_order_id) {
-    const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at';
+    const select = 'id,customer_id,total_price,payment_status,order_status,status';
     const result = await supabaseFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(select)
       + '&id=eq.' + encodeURIComponent(tx.domain_order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
@@ -19190,6 +19193,52 @@ async function midtransVerifyTransactionOwnerAndAmount(tx, amount) {
   }
 
   return { ok: false, status: 409, message: 'Payment transaction tidak punya order_id/domain_order_id.', reason: 'missing_order_reference' };
+}
+
+
+async function midtransFetchPaidInvoiceOrderAfterBindingV376(tx) {
+  const customerId = String(tx && tx.customer_id || '').trim();
+  if (!tx || !customerId) return null;
+
+  if (tx.order_id) {
+    const orderId = String(tx.order_id || '').trim();
+    if (!orderId) return null;
+    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at';
+    const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select)
+      + '&id=eq.' + encodeURIComponent(orderId)
+      + '&customer_id=eq.' + encodeURIComponent(customerId)
+      + '&limit=1', {
+      method: 'GET',
+      auth: 'service'
+    });
+    const row = result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
+    if (!row || String(row.id || '') !== orderId
+        || String(row.customer_id || '') !== customerId
+        || String(row.payment_status || '').trim().toLowerCase() !== 'paid'
+        || midtransMoney(row.total) !== midtransMoney(tx.amount)) return null;
+    return row;
+  }
+
+  if (tx.domain_order_id) {
+    const orderId = String(tx.domain_order_id || '').trim();
+    if (!orderId) return null;
+    const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at';
+    const result = await supabaseFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(select)
+      + '&id=eq.' + encodeURIComponent(orderId)
+      + '&customer_id=eq.' + encodeURIComponent(customerId)
+      + '&limit=1', {
+      method: 'GET',
+      auth: 'service'
+    });
+    const row = result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
+    if (!row || String(row.id || '') !== orderId
+        || String(row.customer_id || '') !== customerId
+        || String(row.payment_status || '').trim().toLowerCase() !== 'paid'
+        || midtransMoney(row.total_price) !== midtransMoney(tx.amount)) return null;
+    return row;
+  }
+
+  return null;
 }
 
 async function midtransFetchGatewayEvent(gatewayEventId, customerId) {
