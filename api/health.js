@@ -3943,18 +3943,66 @@ async function diracRegisterEmailCreateAuthUserV331(req, input, userData) {
     email_confirm: true
   };
   if (userData && Object.keys(userData).length) createBody.user_metadata = userData;
-  const result = await supabaseFetch('/auth/v1/admin/users', {
+  const createStartedAtV367 = Date.now();
+  let result = await supabaseFetch('/auth/v1/admin/users', {
     method: 'POST',
     auth: 'service',
     body: createBody
   });
   if (!result || result.ok !== true) {
-    return {
-      ok: false,
-      status: Number(result && result.status || 502),
-      duplicate: isSupabaseRegisterDuplicateEmailError(result && result.data),
-      code: 'REGISTER_VERIFIED_AUTH_CREATE_FAILED'
-    };
+    const ambiguousStatusV367 = Number(result && result.status || 0);
+    const ambiguousCreateV367 = ambiguousStatusV367 === 502
+      || ambiguousStatusV367 === 503
+      || ambiguousStatusV367 === 504;
+    if (ambiguousCreateV367) {
+      const firstReadbackV367 = await getSupabaseAuthUserByEmail(input.email);
+      const firstRecoveredV367 = normalizeSupabaseAdminUser(firstReadbackV367 && firstReadbackV367.user);
+      const firstRecoveredIdV367 = String(firstRecoveredV367 && (firstRecoveredV367.id || firstRecoveredV367.user_id || firstRecoveredV367.sub) || '').trim();
+      const firstRecoveredEmailV367 = normalizeAuthEmail(firstRecoveredV367 && firstRecoveredV367.email || '');
+      const firstRecoveredConfirmedV367 = String(firstRecoveredV367 && (firstRecoveredV367.email_confirmed_at || firstRecoveredV367.confirmed_at) || '').trim();
+      const firstRecoveredCreatedAtV367 = Date.parse(String(firstRecoveredV367 && (firstRecoveredV367.created_at || firstRecoveredV367.createdAt) || ''));
+      const firstRecoveredValidV367 = Boolean(firstReadbackV367 && firstReadbackV367.checked === true
+        && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(firstRecoveredIdV367)
+        && safeEqual(firstRecoveredEmailV367, input.email)
+        && firstRecoveredConfirmedV367
+        && Number.isFinite(firstRecoveredCreatedAtV367)
+        && firstRecoveredCreatedAtV367 >= createStartedAtV367 - 30000
+        && firstRecoveredCreatedAtV367 <= Date.now() + 30000);
+      if (firstRecoveredValidV367) return { ok: true, user: firstRecoveredV367, recovered: true };
+
+      const retryV367 = await supabaseFetch('/auth/v1/admin/users', {
+        method: 'POST',
+        auth: 'service',
+        body: createBody
+      });
+      if (retryV367 && retryV367.ok === true) {
+        result = retryV367;
+      } else {
+        const secondReadbackV367 = await getSupabaseAuthUserByEmail(input.email);
+        const secondRecoveredV367 = normalizeSupabaseAdminUser(secondReadbackV367 && secondReadbackV367.user);
+        const secondRecoveredIdV367 = String(secondRecoveredV367 && (secondRecoveredV367.id || secondRecoveredV367.user_id || secondRecoveredV367.sub) || '').trim();
+        const secondRecoveredEmailV367 = normalizeAuthEmail(secondRecoveredV367 && secondRecoveredV367.email || '');
+        const secondRecoveredConfirmedV367 = String(secondRecoveredV367 && (secondRecoveredV367.email_confirmed_at || secondRecoveredV367.confirmed_at) || '').trim();
+        const secondRecoveredCreatedAtV367 = Date.parse(String(secondRecoveredV367 && (secondRecoveredV367.created_at || secondRecoveredV367.createdAt) || ''));
+        const secondRecoveredValidV367 = Boolean(secondReadbackV367 && secondReadbackV367.checked === true
+          && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(secondRecoveredIdV367)
+          && safeEqual(secondRecoveredEmailV367, input.email)
+          && secondRecoveredConfirmedV367
+          && Number.isFinite(secondRecoveredCreatedAtV367)
+          && secondRecoveredCreatedAtV367 >= createStartedAtV367 - 30000
+          && secondRecoveredCreatedAtV367 <= Date.now() + 30000);
+        if (secondRecoveredValidV367) return { ok: true, user: secondRecoveredV367, recovered: true };
+        if (retryV367) result = retryV367;
+      }
+    }
+    if (!result || result.ok !== true) {
+      return {
+        ok: false,
+        status: Number(result && result.status || 502),
+        duplicate: isSupabaseRegisterDuplicateEmailError(result && result.data),
+        code: 'REGISTER_VERIFIED_AUTH_CREATE_FAILED'
+      };
+    }
   }
   const user = normalizeSupabaseAdminUser(result.data);
   const userId = String(user && (user.id || user.user_id || user.sub) || '').trim();
