@@ -2152,6 +2152,8 @@ async function guardDomainLoginInput(req, res, input) {
     record.count = nextCount;
     record.lastSeenMs = now;
     record.emailFingerprint = loginSecurityHash(rawEmail);
+    const claimedIdentityEmailV363 = normalizeAuthEmail(rawEmail);
+    record.identityEmail = isValidAuthEmail(claimedIdentityEmailV363) ? claimedIdentityEmailV363 : '';
     record.threatField = threat.field;
     record.threatKind = threat.kind;
     record.cooldownUntilMs = nextCount >= 4 ? 0 : now + LOGIN_SECURITY_RETRY_AFTER_SECONDS * 1000;
@@ -2453,14 +2455,17 @@ function createEmptyLoginSecurityRecord(now = Date.now()) {
 
 function normalizeLoginSecurityRecord(record, now = Date.now()) {
   const row = record && typeof record === 'object' ? record : {};
+  const rawBlockedUntilMsV363 = Number(row.blockedUntilMs || row.blocked_until_ms || 0);
+  const identityEmailV363 = normalizeAuthEmail(row.identityEmail || row.identity_email || '');
   return {
     count: Number(row.count || row.attempt_count || 0),
     firstSeenMs: Number(row.firstSeenMs || row.first_seen_ms || now),
     lastSeenMs: Number(row.lastSeenMs || row.last_seen_ms || 0),
     cooldownUntilMs: Number(row.cooldownUntilMs || row.cooldown_until_ms || 0),
-    blockedUntilMs: Number(row.blockedUntilMs || row.blocked_until_ms || 0),
+    blockedUntilMs: rawBlockedUntilMsV363 > 0 ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 : 0,
     incidentCode: String(row.incidentCode || row.incident_code || ''),
     emailFingerprint: String(row.emailFingerprint || row.email_fingerprint || ''),
+    identityEmail: isValidAuthEmail(identityEmailV363) ? identityEmailV363 : '',
     threatField: String(row.threatField || row.threat_field || ''),
     threatKind: String(row.threatKind || row.threat_kind || '')
   };
@@ -2478,9 +2483,14 @@ async function readPersistentSecurityJson(securityKey) {
     if (!result.ok || !Array.isArray(result.data) || !result.data.length) return null;
 
     const row = result.data[0] || {};
+    const recordJson = row.record_json && typeof row.record_json === 'object' && !Array.isArray(row.record_json)
+      ? row.record_json : null;
+    const permanentBanV363 = diracPersistentSecurityRecordIsPermanentV335(recordJson, key);
     const expiresAtMs = Date.parse(row.expires_at || '');
-    if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return null;
-    return row.record_json && typeof row.record_json === 'object' ? row.record_json : null;
+    if (!permanentBanV363 && Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return null;
+    return permanentBanV363 && recordJson
+      ? { ...recordJson, blocked_until_ms: DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335, blockedUntilMs: DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 }
+      : recordJson;
   } catch (_) {
     return null;
   }
@@ -2494,11 +2504,20 @@ async function writePersistentSecurityJson(securityKey, record, blockedUntilMs =
   try {
     const now = Date.now();
     const safeRecord = record && typeof record === 'object' ? record : {};
-    const expiresAt = new Date(now + Math.max(60, Number(ttlSeconds || 60)) * 1000).toISOString();
+    const decoratedRecordV363 = diracPersistentSecurityDecorateBanRecordV363(safeRecord, key);
+    const permanentBanV363 = diracPersistentSecurityRecordIsPermanentV335(decoratedRecordV363, key);
+    const effectiveBlockedUntilMsV363 = permanentBanV363
+      ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
+      : Number(blockedUntilMs || 0);
+    const expiresAt = permanentBanV363
+      ? new Date(DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335).toISOString()
+      : new Date(now + Math.max(60, Number(ttlSeconds || 60)) * 1000).toISOString();
     const payload = [{
       security_key: key,
-      record_json: safeRecord,
-      blocked_until_ms: Number(blockedUntilMs || 0),
+      record_json: permanentBanV363
+        ? { ...decoratedRecordV363, blocked_until_ms: effectiveBlockedUntilMsV363, blockedUntilMs: effectiveBlockedUntilMsV363 }
+        : decoratedRecordV363,
+      blocked_until_ms: effectiveBlockedUntilMsV363,
       updated_at: new Date(now).toISOString(),
       expires_at: expiresAt
     }];
@@ -2531,19 +2550,78 @@ function diracPersistentBlockedUntilCandidateV331(value) {
 
 const DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 = 253370764800000;
 
-function diracPersistentSecurityRecordIsPermanentV335(record) {
+function diracPersistentSecurityRecordIsBanV363(record, securityKey) {
   const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
   const type = String(source.type || '').trim();
   const eventType = String(source.event_type || '').trim();
-  return type === 'global_hard_ban_v107'
+  const key = String(securityKey || '').trim();
+  const blockedUntilMs = Number(source.blocked_until_ms || source.blockedUntilMs || 0);
+  const loginBan = /^domain-login-(?:account|ip|device):[a-f0-9]{64}$/i.test(key)
+    && (source.permanent === true || (Number.isSafeInteger(blockedUntilMs) && blockedUntilMs > 0));
+  const accessBan = String(source.schema || '') === 'dirac.customer_access_block'
+    && String(source.state || '') === 'active';
+  return loginBan || accessBan
+    || type === 'central_guard_transient_lockout_v335'
+    || type === 'global_hard_ban_v107'
     || type === 'xss_one_strike_permanent_block_v3'
     || type === 'global_api_threat_ban_v143'
     || type === 'recovery_one_strike_persistent_ban_v201'
     || type === 'central_guard_global_ban_v146'
     || type === 'central_guard_transient_persistent_ban_v284'
+    || type === 'central_external_ban_v354'
     || type === 'dirac_s2s_key_revocation_v206'
     || eventType === 'bola_idor_global_hard_ban'
     || eventType === 'sqlmap_or_sqli_block';
+}
+
+function diracPersistentSecurityBanIdentityV363(record) {
+  const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
+  const direct = normalizeAuthEmail(source.identity_email || source.identityEmail || source.email
+    || source.auth_email || source.user_email || source.customer_email || source.owner_email || '');
+  if (isValidAuthEmail(direct)) {
+    return Object.freeze({ email: direct, verified: source.identity_email_verified === true, source: 'record' });
+  }
+  const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
+  const authentication = ctx && ctx.authentication && typeof ctx.authentication === 'object' ? ctx.authentication : null;
+  const authenticatedEmail = normalizeAuthEmail(authentication && authentication.verified === true ? authentication.email : '');
+  if (isValidAuthEmail(authenticatedEmail)) {
+    return Object.freeze({ email: authenticatedEmail, verified: true, source: 'central_verified_auth' });
+  }
+  const req = ctx && ctx.req && typeof ctx.req === 'object' ? ctx.req : null;
+  const cached = req && req.__diracAuthenticatedBanDecisionV320 && typeof req.__diracAuthenticatedBanDecisionV320 === 'object'
+    ? req.__diracAuthenticatedBanDecisionV320 : null;
+  const cachedEmail = normalizeAuthEmail(cached && cached.email || '');
+  if (isValidAuthEmail(cachedEmail)) {
+    return Object.freeze({ email: cachedEmail, verified: true, source: 'verified_ban_decision' });
+  }
+  const deviceUser = req && typeof diracCentralReadVerifiedDeviceAuthV224 === 'function'
+    ? diracCentralReadVerifiedDeviceAuthV224(req) : null;
+  const deviceEmail = normalizeAuthEmail(deviceUser && deviceUser.email || '');
+  if (isValidAuthEmail(deviceEmail)) {
+    return Object.freeze({ email: deviceEmail, verified: true, source: 'verified_device_auth' });
+  }
+  const body = req && req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : null;
+  const claimedEmail = normalizeAuthEmail(body && (body.email || body.identifier || body.customer_email || body.owner_email) || '');
+  if (isValidAuthEmail(claimedEmail)) {
+    return Object.freeze({ email: claimedEmail, verified: false, source: 'request_claimed_email' });
+  }
+  return Object.freeze({ email: null, verified: false, source: 'unavailable_unauthenticated' });
+}
+
+function diracPersistentSecurityDecorateBanRecordV363(record, securityKey) {
+  const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
+  if (!diracPersistentSecurityRecordIsBanV363(source, securityKey)) return source;
+  const identity = diracPersistentSecurityBanIdentityV363(source);
+  return {
+    ...source,
+    identity_email: identity.email,
+    identity_email_verified: identity.verified === true,
+    identity_email_source: identity.source
+  };
+}
+
+function diracPersistentSecurityRecordIsPermanentV335(record, securityKey) {
+  return diracPersistentSecurityRecordIsBanV363(record, securityKey);
 }
 
 async function readPersistentSecurityJsonStrictV194(securityKey) {
@@ -2585,7 +2663,7 @@ async function readPersistentSecurityJsonStrictV194(securityKey) {
         || (rawExpiresAt && !Number.isFinite(expiresAtMs))) {
       return { ok: false, found: false, record: null };
     }
-    const blockedUntilMs = diracPersistentSecurityRecordIsPermanentV335(recordJson)
+    const blockedUntilMs = diracPersistentSecurityRecordIsPermanentV335(recordJson, key)
       ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
       : parsedBlockedUntilMs;
     const record = recordJson && typeof recordJson === 'object'
@@ -2646,7 +2724,7 @@ async function readPersistentSecurityJsonManyStrictV194(securityKeys) {
         return { ok: false, records: [] };
       }
       seen.add(rowKey);
-      const blockedUntilMs = diracPersistentSecurityRecordIsPermanentV335(recordJson)
+      const blockedUntilMs = diracPersistentSecurityRecordIsPermanentV335(recordJson, rowKey)
         ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
         : parsedBlockedUntilMs;
       if (blockedUntilMs <= now && Number.isFinite(expiresAtMs) && expiresAtMs <= now) {
@@ -2758,6 +2836,7 @@ async function readPersistentLoginSecurityRecordStrictV320(identity) {
       return { ok: false, found: false, record: null, reason: 'login_security_store_ban_time_invalid' };
     }
     record.blockedUntilMs = Math.max(...blockedCandidates.map(candidate => candidate.value));
+    if (record.blockedUntilMs > 0) record.blockedUntilMs = DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
     record.blocked_until_ms = record.blockedUntilMs;
     record.cooldownUntilMs = Math.max(...cooldownCandidates.map(candidate => candidate.value));
     // Cleanup retention cannot cancel a still-active restriction.
@@ -2778,11 +2857,23 @@ async function writePersistentLoginSecurityRecord(identity, record) {
     const now = Date.now();
     const current = await readPersistentLoginSecurityRecordStrictV320(identity);
     if (!current || current.ok !== true) return false;
-    const expiresAt = new Date(now + LOGIN_SECURITY_PERSIST_TTL_SECONDS * 1000).toISOString();
+    const normalizedRecordV363 = normalizeLoginSecurityRecord(record, now);
+    const persistentBanV363 = Number(normalizedRecordV363.blockedUntilMs || 0) > 0;
+    const effectiveBlockedUntilMsV363 = persistentBanV363 ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 : 0;
+    const identityEmailV363 = normalizeAuthEmail(normalizedRecordV363.identityEmail || '');
+    const persistentRecordV363 = persistentBanV363 ? {
+      ...normalizedRecordV363,
+      identity_email: isValidAuthEmail(identityEmailV363) ? identityEmailV363 : null,
+      identity_email_verified: false,
+      identity_email_source: isValidAuthEmail(identityEmailV363) ? 'login_identifier' : 'unavailable_unauthenticated'
+    } : normalizedRecordV363;
+    const expiresAt = persistentBanV363
+      ? new Date(DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335).toISOString()
+      : new Date(now + LOGIN_SECURITY_PERSIST_TTL_SECONDS * 1000).toISOString();
     const payload = {
       security_key: identity.key,
-      record_json: normalizeLoginSecurityRecord(record, now),
-      blocked_until_ms: Number(record && record.blockedUntilMs || 0),
+      record_json: { ...persistentRecordV363, blockedUntilMs: effectiveBlockedUntilMsV363, blocked_until_ms: effectiveBlockedUntilMsV363 },
+      blocked_until_ms: effectiveBlockedUntilMsV363,
       updated_at: new Date(now).toISOString(),
       expires_at: expiresAt
     };
@@ -2825,6 +2916,7 @@ function getDomainLoginRateIdentity(req, email) {
     legacyKey: 'domain-login-rate:' + legacyDigest,
     scope: 'account',
     ip,
+    email: normalizedEmail,
     emailHash
   };
 }
@@ -2844,6 +2936,7 @@ function getDomainLoginRateIdentitiesV353(req, email) {
       legacyKey: '',
       scope: 'ip',
       ip: account.ip,
+      email: account.email,
       emailHash: account.emailHash
     }),
     Object.freeze({
@@ -2851,6 +2944,7 @@ function getDomainLoginRateIdentitiesV353(req, email) {
       legacyKey: '',
       scope: 'device',
       ip: account.ip,
+      email: account.email,
       emailHash: account.emailHash
     })
   ]);
@@ -2867,14 +2961,18 @@ function normalizeDomainLoginRateRecord(record, now = Date.now()) {
       || (row.permanent !== undefined && typeof row.permanent !== 'boolean')) {
     throw Object.assign(new Error('LOGIN_SECURITY_STATE_INVALID'), { code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' });
   }
-  const permanent = row.permanent === true || count >= 7;
+  const identityEmailV363 = normalizeAuthEmail(row.identity_email || row.identityEmail || '');
+  const permanent = row.permanent === true || count >= 7 || blockedUntilMs > 0;
   return {
     count: Math.min(7, count),
     windowStartMs: Number(row.windowStartMs || row.window_start_ms || now),
     resetAtMs: Number(row.resetAtMs || row.reset_at_ms || (now + DOMAIN_LOGIN_RATE_WINDOW_MS)),
-    blockedUntilMs: permanent ? 253402300799999 : blockedUntilMs,
+    blockedUntilMs: permanent ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 : blockedUntilMs,
     lastFailedAtMs,
-    permanent
+    permanent,
+    identity_email: isValidAuthEmail(identityEmailV363) ? identityEmailV363 : null,
+    identity_email_verified: false,
+    identity_email_source: isValidAuthEmail(identityEmailV363) ? 'login_identifier' : 'unavailable_unauthenticated'
   };
 }
 
@@ -2974,6 +3072,10 @@ async function writeDomainLoginRateRecord(identity, record) {
   const previousMs = version == null ? 0 : Date.parse(version);
   const now = Math.max(Date.now(), previousMs + 1);
   const normalized = normalizeDomainLoginRateRecord(record, now);
+  const identityEmailV363 = normalizeAuthEmail(identity && identity.email || '');
+  normalized.identity_email = isValidAuthEmail(identityEmailV363) ? identityEmailV363 : null;
+  normalized.identity_email_verified = false;
+  normalized.identity_email_source = isValidAuthEmail(identityEmailV363) ? 'login_identifier' : 'unavailable_unauthenticated';
   const payload = {
     security_key: key,
     record_json: normalized,
@@ -3078,10 +3180,8 @@ async function registerDomainLoginFailureForIdentityV353(identity) {
     }
     record.count = Math.min(7, record.count + 1);
     record.lastFailedAtMs = now;
-    record.permanent = record.count >= 7;
-    record.blockedUntilMs = record.permanent ? 253402300799999
-      : record.count >= 6 ? now + 86400000
-        : record.count >= 5 ? now + 3600000 : 0;
+    record.permanent = record.count >= 5;
+    record.blockedUntilMs = record.permanent ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 : 0;
     if (!await writeDomainLoginRateRecord(identity, record)) continue;
     return { ...domainLoginRateDecisionV336(identity, record, now), matched_scope: identity.scope || 'account' };
   }
@@ -3106,7 +3206,7 @@ async function registerDomainLoginFailure(req, email) {
 
     if (blocked.length) {
       const untilMs = blocked.some((decision) => decision.permanent)
-        ? 253402300799999
+        ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
         : Math.max(...blocked.map((decision) => Date.now() + Math.max(1, Number(decision.retryAfterSeconds || 0)) * 1000));
       const accessIdentity = customerSecurityAccessBlockIdentity(req);
       const mirrored = await customerSecurityCreatePersistentAccessBlockV325(
@@ -3134,7 +3234,7 @@ async function registerDomainLoginFailure(req, email) {
         value: Object.freeze({
           email: normalizeAuthEmail(email),
           attemptCount: Number(selected.count || 0),
-          blockedUntilMs: selected.permanent ? 253402300799999 : Date.now() + Math.max(0, Number(selected.retryAfterSeconds || 0)) * 1000,
+          blockedUntilMs: selected.permanent ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 : Date.now() + Math.max(0, Number(selected.retryAfterSeconds || 0)) * 1000,
           permanent: selected.permanent === true,
           matchedScope: String(selected.matched_scope || '')
         })
@@ -11058,10 +11158,7 @@ function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, opt
       const first = rows[0];
       const fingerprint = customerSecurityPersistentAccessBlockRecordFingerprintV325(first.record);
       const returnedKeys = rows.map((row) => row.security_key).sort();
-      const expectedExpiresAtMs = Math.max(
-        first.created_at_ms + LOGIN_SECURITY_PERSIST_TTL_SECONDS * 1000,
-        first.blocked_until_ms + 60_000
-      );
+      const expectedExpiresAtMs = DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
       const identity = customerSecurityAccessBlockIdentity(ctx.req);
       const recoveryProxyBound = ctx.__diracCustomerAccessBlockRecoveryProxyV325 === true
         && ctx.__diracS2SSevenSignaturesVerifiedV206 === true
@@ -11086,8 +11183,7 @@ function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, opt
         && first.action === String(ctx.action || '').trim().toLowerCase()
         && first.updated_at_ms === first.created_at_ms
         && first.created_at_ms >= now - 30_000 && first.created_at_ms <= now
-        && first.blocked_until_ms - first.created_at_ms >= 240_000
-        && first.blocked_until_ms - first.created_at_ms <= CUSTOMER_SECURITY_ACCESS_BLOCK_SECONDS * 1000;
+        && first.blocked_until_ms === DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
     }
 
     if (operation === 'revoke') {
@@ -11149,18 +11245,14 @@ function customerSecurityPersistentAccessBlockRecoveryProxyDecisionV325(parsedPa
     const fingerprint = customerSecurityPersistentAccessBlockRecordFingerprintV325(first.record);
     const keys = rows.map((row) => row.security_key).sort();
     const now = Date.now();
-    const expectedExpiresAtMs = Math.max(
-      first.created_at_ms + LOGIN_SECURITY_PERSIST_TTL_SECONDS * 1000,
-      first.blocked_until_ms + 60_000
-    );
+    const expectedExpiresAtMs = DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
     const ok = customerSecurityLooksLikeUuid(first.customer_id)
       && first.action === 'customer_security_recovery_codes_generate'
       && first.reason === 'recovery_account_password_invalid'
       && first.record.metadata.origin === null
       && first.updated_at_ms === first.created_at_ms
       && first.created_at_ms >= now - 30_000 && first.created_at_ms <= now
-      && first.blocked_until_ms - first.created_at_ms >= 240_000
-      && first.blocked_until_ms - first.created_at_ms <= CUSTOMER_SECURITY_ACCESS_BLOCK_SECONDS * 1000
+      && first.blocked_until_ms === DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
       && keys.length === first.storage_keys.length
       && keys.every((key, index) => key === first.storage_keys[index])
       && rows.every((row) => row.block_id === first.block_id
@@ -11248,7 +11340,10 @@ function customerSecurityPersistentAccessBlockRecordFingerprintV325(record) {
     metadata: {
       origin: metadata.origin,
       source: metadata.source,
-      user_agent_hash: metadata.user_agent_hash
+      user_agent_hash: metadata.user_agent_hash,
+      identity_email: metadata.identity_email,
+      identity_email_verified: metadata.identity_email_verified,
+      identity_email_source: metadata.identity_email_source
     },
     reason: source.reason,
     revocation: revocation ? {
@@ -11314,11 +11409,18 @@ function customerSecurityValidatePersistentAccessBlockRowV325(row, options = {})
     return null;
   }
   const metadata = record.metadata;
+  const metadataKeysV363 = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+    ? Object.keys(metadata).sort().join(',') : '';
+  const metadataLegacyV363 = metadataKeysV363 === 'origin,source,user_agent_hash';
+  const metadataEmailV363 = metadataKeysV363 === 'identity_email,identity_email_source,identity_email_verified,origin,source,user_agent_hash';
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
-      || Object.keys(metadata).sort().join(',') !== 'origin,source,user_agent_hash'
+      || (!metadataLegacyV363 && !metadataEmailV363)
       || metadata.source !== 'customer_security_gate'
       || typeof metadata.user_agent_hash !== 'string'
       || !/^[a-f0-9]{64}$/.test(String(metadata.user_agent_hash || ''))
+      || (metadataEmailV363 && metadata.identity_email !== null && !isValidAuthEmail(String(metadata.identity_email || '')))
+      || (metadataEmailV363 && typeof metadata.identity_email_verified !== 'boolean')
+      || (metadataEmailV363 && !/^[a-z_]{3,64}$/.test(String(metadata.identity_email_source || '')))
       || (metadata.origin !== null
         && (typeof metadata.origin !== 'string' || metadata.origin.length > 320 || /[\u0000-\u001f\u007f]/.test(metadata.origin)))) {
     return null;
@@ -11476,7 +11578,9 @@ function customerSecurityPersistentAccessBlockAdminRowV325(row) {
     fail_count: row.fail_count,
     blocked_until: new Date(row.blocked_until_ms).toISOString(),
     created_at: new Date(row.created_at_ms).toISOString(),
-    updated_at: new Date(row.updated_at_ms).toISOString()
+    updated_at: new Date(row.updated_at_ms).toISOString(),
+    identity_email: row.record && row.record.metadata ? row.record.metadata.identity_email || null : null,
+    identity_email_verified: Boolean(row.record && row.record.metadata && row.record.metadata.identity_email_verified === true)
   };
 }
 
@@ -11486,12 +11590,14 @@ async function customerSecurityCreatePersistentAccessBlockV325(identity, action,
   const deviceHash = String(identity && identity.device_hash || '').trim().toLowerCase();
   const safeAction = String(action || 'customer_security').trim().toLowerCase().slice(0, 120);
   const safeReason = customerSecuritySanitizeReason(reason || 'security_gate_failed');
-  const safeBlockedUntilMs = Number(blockedUntilMs);
+  const requestedBlockedUntilMsV363 = Number(blockedUntilMs);
+  const safeBlockedUntilMs = DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
   if (!/^[a-f0-9]{64}$/.test(ipHash) || !/^[a-f0-9]{64}$/.test(deviceHash)
       || !/^[a-z0-9_:-]{1,120}$/i.test(safeAction)
-      || !Number.isSafeInteger(safeBlockedUntilMs) || safeBlockedUntilMs <= Date.now()) return false;
+      || !Number.isSafeInteger(requestedBlockedUntilMsV363) || requestedBlockedUntilMsV363 <= Date.now()) return false;
   const blockId = crypto.randomUUID().toLowerCase();
   const nowMs = Date.now();
+  const banIdentityV363 = diracPersistentSecurityBanIdentityV363(null);
   const storageKeys = customerSecurityPersistentAccessBlockStorageKeysV325(
     blockId,
     canonicalCustomerId,
@@ -11517,14 +11623,14 @@ async function customerSecurityCreatePersistentAccessBlockV325(identity, action,
     metadata: {
       source: 'customer_security_gate',
       origin: identity && identity.origin ? String(identity.origin).slice(0, 320) : null,
-      user_agent_hash: customerSecuritySha256('ua:' + String(identity && identity.ua || ''))
+      user_agent_hash: customerSecuritySha256('ua:' + String(identity && identity.ua || '')),
+      identity_email: banIdentityV363.email,
+      identity_email_verified: banIdentityV363.verified === true,
+      identity_email_source: banIdentityV363.source
     },
     revocation: null
   };
-  const expiresAtMs = Math.max(
-    nowMs + LOGIN_SECURITY_PERSIST_TTL_SECONDS * 1000,
-    safeBlockedUntilMs + 60 * 1000
-  );
+  const expiresAtMs = DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
   const body = storageKeys.map((securityKey) => ({
     security_key: securityKey,
     record_json: record,
@@ -33040,11 +33146,12 @@ async function diracV107WriteRows(rows) {
     const record = row && row.record_json && typeof row.record_json === 'object' && !Array.isArray(row.record_json)
       ? row.record_json
       : null;
-    if (!diracPersistentSecurityRecordIsPermanentV335(record)) return row;
+    const decoratedRecordV363 = diracPersistentSecurityDecorateBanRecordV363(record, row && row.security_key);
+    if (!diracPersistentSecurityRecordIsPermanentV335(decoratedRecordV363, row && row.security_key)) return { ...row, record_json: decoratedRecordV363 };
     return {
       ...row,
       record_json: {
-        ...record,
+        ...decoratedRecordV363,
         blockedUntilMs: DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335,
         blocked_until_ms: DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
       },
@@ -50832,7 +50939,8 @@ writePersistentSecurityJsonRequiredV194 = async function writePersistentSecurity
       alert_email_reference: diracSecurityAlertCorrelationReferenceV333(failureId, requestId)
     };
   }
-  const permanentRecordV335 = diracPersistentSecurityRecordIsPermanentV335(nextRecord);
+  nextRecord = diracPersistentSecurityDecorateBanRecordV363(nextRecord, securityKey);
+  const permanentRecordV335 = diracPersistentSecurityRecordIsPermanentV335(nextRecord, securityKey);
   const effectiveBlockedUntilMsV335 = permanentRecordV335
     ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
     : blockedUntilMs;
@@ -62516,6 +62624,18 @@ async function diracCentralMirrorBrowserBanToCustomerAccessV353(ctx, action, rea
 async function diracCentralWriteTransientFailureBanV284(ctx, action, method, reason) {
   const identityKey = String(ctx && ctx.identity && ctx.identity.key || '').trim();
   const persistentKeys = diracCentralTransientPersistentBanKeysV287(ctx && ctx.identity);
+  const verifiedAuthUserIdV358 = String(ctx && ctx.identity && ctx.identity.verifiedAuthUserId || '').trim().toLowerCase();
+  const accountBoundHtmlBanV358 = String(action || '') === 'security_report'
+    && String(method || '').toUpperCase() === 'POST'
+    && String(reason || '') === 'html_security_report'
+    && ctx && ctx.classification === 'browser' && ctx.authentication === 'browser'
+    && ctx.passport === DIRAC_V202_ALL_CHECKPOINTS
+    && customerSecurityLooksLikeUuid(verifiedAuthUserIdV358);
+  if (accountBoundHtmlBanV358) {
+    const accountBanKeysV358 = diracCentralBanAccountKeysV357(verifiedAuthUserIdV358);
+    if (accountBanKeysV358[0] && accountBanKeysV358[0].key) persistentKeys.push(accountBanKeysV358[0].key);
+    if (accountBanKeysV358[1] && accountBanKeysV358[1].key) persistentKeys.push(accountBanKeysV358[1].key);
+  }
   if (!identityKey || !persistentKeys.length || typeof writePersistentSecurityJsonRequiredV194 !== 'function') return { ok: false };
   const now = Date.now();
   const blockedUntilMs = now + DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284;
@@ -62533,6 +62653,7 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
     blocked_until_ms: blockedUntilMs,
     created_at: new Date(now).toISOString()
   };
+  if (accountBoundHtmlBanV358) record.account_bound_v358 = true;
   const writeResults = await Promise.all(persistentKeys.map((persistentKey) =>
     writePersistentSecurityJsonRequiredV194(
       persistentKey,
@@ -62767,9 +62888,9 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
       .slice(0, 12);
     if (!unique.length) return Object.freeze({ ok: false, reason: 'central_ban_identity_unavailable' });
     const now = Date.now();
-    const blockedUntilMs = now + ttlSeconds * 1000;
-    const expiresAt = new Date(blockedUntilMs).toISOString();
-    const record = Object.freeze({
+    const blockedUntilMs = DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
+    const expiresAt = new Date(DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335).toISOString();
+    const record = Object.freeze(diracPersistentSecurityDecorateBanRecordV363({
       type: 'central_external_ban_v354',
       patch: DIRAC_CENTRAL_BAN_AUTHORITY_V354,
       action: 'external_security_violation',
@@ -62779,7 +62900,7 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
       risk: 'high',
       blocked_until_ms: blockedUntilMs,
       created_at: new Date(now).toISOString()
-    });
+    }, unique[0] && unique[0].key));
     const rows = unique.map((item) => ({
       security_key: item.key,
       record_json: { ...record, key_type: String(item.type || 'identity').slice(0, 40) },
