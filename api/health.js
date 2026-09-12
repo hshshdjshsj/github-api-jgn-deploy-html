@@ -5041,7 +5041,7 @@ async function checkDomainProtectedDatabaseSessionLockSafe(req, user, mfa) {
       clearCookies: true,
       customerId,
       sessionId: row.id,
-      message: 'Sesi dikunci karena tidak aktif selama 15 menit. Silakan login ulang.'
+      message: 'Sesi dikunci karena tidak aktif selama 8 jam. Silakan login ulang.'
     };
   }
 
@@ -14952,8 +14952,8 @@ function customerSecurityIssueSignedSessionAnchorV228(req, res, user, requestedM
     : now + sessionMaxAge;
   const requestedMaxAgeRaw = Math.floor(Number(requestedMaxAgeSeconds));
   const requestedMaxAge = Number.isSafeInteger(requestedMaxAgeRaw)
-    ? Math.max(15 * 60, Math.min(60 * 60, requestedMaxAgeRaw))
-    : 30 * 60;
+    ? Math.max(60, Math.min(sessionMaxAge, requestedMaxAgeRaw))
+    : sessionMaxAge;
   const anchorExpiresAt = Math.min(signedExpiresAt, now + requestedMaxAge);
   const signedMaxAge = signedExpiresAt - now;
   const anchorMaxAge = anchorExpiresAt - now;
@@ -15103,10 +15103,9 @@ function customerSecurityExpectedDashboardMfaSessionBindingV225(req, payload) {
 function customerSecurityCreateDashboardMfaToken(req, user, method = 'recovery_code', res = null, context = {}) {
   const email = normalizeAuthEmail(user && user.email);
   const now = Date.now();
-  const configuredMaxAgeSeconds = Number(process.env.DIRAC_DASHBOARD_MFA_MAX_AGE_SECONDS || 30 * 60);
-  const requestedMaxAgeSeconds = Number.isFinite(configuredMaxAgeSeconds)
-    ? Math.max(15 * 60, Math.min(60 * 60, configuredMaxAgeSeconds))
-    : 30 * 60;
+  const requestedMaxAgeSeconds = typeof diracV110SessionMaxAgeSeconds === 'function'
+    ? Math.max(60, Math.min(8 * 60 * 60, Math.floor(Number(diracV110SessionMaxAgeSeconds()) || 0)))
+    : 8 * 60 * 60;
   const userId = String(user && user.id || '').trim();
   const customerId = String(
     context && context.customerId
@@ -23211,7 +23210,7 @@ function diracPasskeyRotateDashboardOriginChainV311(req, res, chain) {
     }
 
     const mfaMaxAgeSeconds = Math.min(
-      60 * 60,
+      8 * 60 * 60,
       Math.floor((Number(sourceMfaPayload.expiresAtMs || 0) - Date.now()) / 1000)
     );
     if (!Number.isSafeInteger(mfaMaxAgeSeconds) || mfaMaxAgeSeconds < 1) {
@@ -65512,7 +65511,7 @@ function diracSessionHandoffBuildLocalCookiesV250(req, user, customerId, securit
     : 8 * 60 * 60;
   const signedMaxAge = Math.min(requestedSignedMaxAge, sourceSigned.expiresAt - nowSeconds);
   if (!Number.isSafeInteger(signedMaxAge) || signedMaxAge < 60) return null;
-  const mfaMaxAge = Math.min(sourceSigned.anchorExpiresAt - nowSeconds, signedMaxAge, Math.max(15 * 60, Math.min(60 * 60, Math.floor(Number(process.env.DIRAC_DASHBOARD_MFA_MAX_AGE_SECONDS || 30 * 60)))));
+  const mfaMaxAge = Math.min(sourceSigned.anchorExpiresAt - nowSeconds, signedMaxAge);
   if (!Number.isSafeInteger(mfaMaxAge) || mfaMaxAge < 1) return null;
   const anchorId = crypto.randomBytes(32).toString('base64url');
   const payload = {
@@ -65873,7 +65872,7 @@ function diracAppOriginHandoffRotateProofsV313(req, res, access, source, target,
     }
 
     const mfaMaxAgeSeconds = Math.min(
-      60 * 60,
+      8 * 60 * 60,
       Math.floor((Number(sourceMfaPayload.expiresAtMs || 0) - Date.now()) / 1000)
     );
     if (!Number.isSafeInteger(mfaMaxAgeSeconds) || mfaMaxAgeSeconds < 1) {
