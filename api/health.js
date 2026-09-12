@@ -65973,7 +65973,7 @@ function diracSessionHandoffBuildLocalCookiesV250(req, user, customerId, securit
 
 const DIRAC_APP_ORIGIN_HANDOFF_V313 = 'dirac-app-origin-handoff-v310';
 const DIRAC_APP_ORIGIN_HANDOFF_RESPONSE_PROOF_V316 = 'dirac-app-origin-handoff-response-proof-v316';
-const DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313 = Object.freeze(new Set(['panel', 'parfum', 'pesanan', 'security', 'website', 'topup', 'domain']));
+const DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313 = Object.freeze(new Set(['panel', 'parfum', 'pesanan', 'security', 'website', 'topup', 'domain', 'cs']));
 const DIRAC_APP_ORIGIN_HANDOFF_ACCESS_PROOF_V318 = 'dirac-app-origin-handoff-access-proof-v318';
 const DIRAC_APP_ORIGIN_HANDOFF_ACCESS_PROOFS_V318 = new WeakMap();
 
@@ -65988,7 +65988,8 @@ function diracAppOriginHandoffTargetV313(targetRole) {
       security: 'https://security.' + base + '/keamanan.html',
       website: 'https://' + base + '/website.html',
       topup: 'https://' + base + '/topup.html',
-      domain: 'https://' + base + '/domain.html'
+      domain: 'https://' + base + '/domain.html',
+      cs: 'https://cs.' + base + '/chat.html'
     };
     const expectedPath = {
       panel: '/dashboard.html',
@@ -65997,7 +65998,8 @@ function diracAppOriginHandoffTargetV313(targetRole) {
       security: '/keamanan.html',
       website: '/website.html',
       topup: '/topup.html',
-      domain: '/domain.html'
+      domain: '/domain.html',
+      cs: '/chat.html'
     }[role];
     if (!DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313.has(role) || !routes[role] || !expectedPath) return null;
     const url = new URL(routes[role]);
