@@ -54967,7 +54967,7 @@ function diracCentralReadVerifiedDeviceBindingV227(req) {
   return /^[a-f0-9]{64}$/.test(binding) ? binding : '';
 }
 
-function diracCentralVerifyDeviceEnvelopeV224(req, token) {
+function diracCentralVerifyDeviceEnvelopeV224(req, token, expectedDeviceFingerprintV365) {
   const parts = String(token || '').split('.');
   if (parts.length !== 2 || !parts[0] || !parts[1]) return { ok: false, reason: 'device_credential_shape_invalid' };
   const expected = crypto.createHmac('sha512', diracCentralDeriveSecretV146('central-device-v221')).update(parts[0]).digest('base64url');
@@ -54988,7 +54988,11 @@ function diracCentralVerifyDeviceEnvelopeV224(req, token) {
       || (payload.sbv !== undefined && Number(payload.sbv) !== 2)) {
     return { ok: false, reason: 'device_credential_expired' };
   }
-  const device = diracCentralDeviceFingerprintV221(req);
+  const expectedDeviceV365 = String(expectedDeviceFingerprintV365 || '').trim();
+  if (expectedDeviceV365 && !/^[a-f0-9]{64}$/.test(expectedDeviceV365)) {
+    return { ok: false, reason: 'device_credential_expected_fingerprint_invalid' };
+  }
+  const device = expectedDeviceV365 || diracCentralDeviceFingerprintV221(req);
   if (!payload.device || !(typeof safeEqual === 'function' ? safeEqual(String(payload.device), device) : String(payload.device) === device)) {
     return { ok: false, reason: 'device_credential_fingerprint_mismatch' };
   }
@@ -55078,6 +55082,17 @@ async function diracCentralDeviceCredentialGuardV221(req, res, ctx) {
   }
 
   if (verified.reason === 'device_credential_fingerprint_mismatch') {
+    const appOriginTrailingV365 = diracAppOriginHandoffTrailingSourceProofV365(req, ctx, token);
+    if (appOriginTrailingV365 && appOriginTrailingV365.ok === true
+        && appOriginTrailingV365.patch === DIRAC_APP_ORIGIN_HANDOFF_TRAILING_SOURCE_V365
+        && appOriginTrailingV365.payload
+        && safeEqual(String(appOriginTrailingV365.payload.session || ''), session)) {
+      return {
+        ok: true,
+        transition: true,
+        decision: DIRAC_APP_ORIGIN_HANDOFF_TRAILING_SOURCE_V365
+      };
+    }
     const transition = diracCentralSupportDeviceTransitionProofV354(req, token);
     if (transition && transition.ok === true && transition.patch === DIRAC_CENTRAL_SUPPORT_DEVICE_TRANSITION_V354
         && transition.payload && safeEqual(String(transition.payload.session || ''), session)) {
@@ -58430,8 +58445,10 @@ function diracCentralDeviceConsistencySignedReconcileV325(req, sessionKey, curre
         || expiresAt - issuedAt > 24 * 60 * 60 * 1000 + 60 * 1000) return false;
 
     const observed = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(key);
-    if (!observed || Number(observed.until || 0) !== until
-        || !safeEqual(String(observed.hash || ''), previousHash)) return false;
+    if (!observed || Number(observed.until || 0) !== until) return false;
+    const observedHash = String(observed.hash || '');
+    if (safeEqual(observedHash, nextHash)) return true;
+    if (!safeEqual(observedHash, previousHash)) return false;
 
     DIRAC_CENTRAL_DEVICE_BINDINGS_V146.set(key, { hash: nextHash, until });
     const committed = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(key);
@@ -58479,6 +58496,11 @@ function diracCentralDeviceConsistencyGuardV146(req, ctx) {
     return { ok: true };
   }
   if (previous.hash !== current) {
+    const appOriginTrailingV365 = diracAppOriginHandoffTrailingSourceProofV365(req, ctx);
+    if (appOriginTrailingV365 && appOriginTrailingV365.ok === true
+        && appOriginTrailingV365.patch === DIRAC_APP_ORIGIN_HANDOFF_TRAILING_SOURCE_V365) {
+      return { ok: true };
+    }
     if (diracCentralDeviceConsistencySignedReconcileV325(req, sessionKey, current, previous)) {
       return { ok: true };
     }
@@ -62677,7 +62699,12 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
     && ctx && ctx.classification === 'browser' && ctx.authentication === 'browser'
     && ctx.passport === DIRAC_V202_ALL_CHECKPOINTS
     && customerSecurityLooksLikeUuid(verifiedAuthUserIdV358);
-  if (accountBoundHtmlBanV358) {
+  const accountBoundDashboardDeviceBanV364 = String(action || '') === 'domain_dashboard_me'
+    && String(method || '').toUpperCase() === 'GET'
+    && String(reason || '') === 'device_consistency_changed'
+    && ctx && ctx.classification === 'browser' && ctx.authentication === 'browser'
+    && customerSecurityLooksLikeUuid(verifiedAuthUserIdV358);
+  if (accountBoundHtmlBanV358 || accountBoundDashboardDeviceBanV364) {
     const accountBanKeysV358 = diracCentralBanAccountKeysV357(verifiedAuthUserIdV358);
     if (accountBanKeysV358[0] && accountBanKeysV358[0].key) persistentKeys.push(accountBanKeysV358[0].key);
     if (accountBanKeysV358[1] && accountBanKeysV358[1].key) persistentKeys.push(accountBanKeysV358[1].key);
@@ -65663,6 +65690,8 @@ function diracAppOriginHandoffExactSourceV320(req) {
 }
 
 const DIRAC_APP_ORIGIN_HANDOFF_DEVICE_CONSISTENCY_V317 = 'dirac-app-origin-handoff-device-consistency-v317';
+const DIRAC_APP_ORIGIN_HANDOFF_TRAILING_SOURCE_V365 = 'dirac-app-origin-handoff-trailing-source-v365';
+const DIRAC_APP_ORIGIN_HANDOFF_TRAILING_SOURCE_GRACE_MS_V365 = 5000;
 
 function diracAppOriginHandoffDeviceConsistencyHashV317(req) {
   try {
@@ -65725,9 +65754,18 @@ function diracAppOriginHandoffCommitDeviceConsistencyV317(transition) {
     if (!current || Number(current.until || 0) !== until
         || !safeEqual(String(current.hash || ''), sourceHash)) return false;
 
+    const handoffIssuedAtV365 = Date.now();
+    const handoffUntilV365 = Math.min(
+      until,
+      handoffIssuedAtV365 + DIRAC_APP_ORIGIN_HANDOFF_TRAILING_SOURCE_GRACE_MS_V365
+    );
     DIRAC_CENTRAL_DEVICE_BINDINGS_V146.set(sessionKey, {
       hash: destinationHash,
-      until
+      until,
+      handoffSourceHashV365: sourceHash,
+      handoffDestinationHashV365: destinationHash,
+      handoffIssuedAtV365,
+      handoffUntilV365
     });
     const committed = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sessionKey);
     if (!committed || Number(committed.until || 0) !== until
@@ -65738,6 +65776,84 @@ function diracAppOriginHandoffCommitDeviceConsistencyV317(transition) {
     return true;
   } catch (_) {
     return false;
+  }
+}
+
+function diracAppOriginHandoffTrailingSourceProofV365(req, ctx, tokenOverrideV365) {
+  try {
+    const priorDeviceMaskV365 = CHECKPOINT.DEVICE_BINDING - 1n;
+    if (!req || String(req.method || '').toUpperCase() !== 'GET'
+        || !ctx || String(ctx.action || '') !== 'domain_dashboard_me'
+        || String(ctx.classification || '') !== 'browser'
+        || String(ctx.authentication || '') !== 'browser'
+        || (BigInt(ctx.passport || 0n) & priorDeviceMaskV365) !== priorDeviceMaskV365) return null;
+
+    const sessionKeyV365 = String(diracCentralRequestSessionHashV146(req) || '');
+    const stateV365 = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sessionKeyV365);
+    const nowV365 = Date.now();
+    const sourceHashV365 = diracAppOriginHandoffDeviceConsistencyHashV317(req);
+    const expectedSourceHashV365 = String(stateV365 && stateV365.handoffSourceHashV365 || '');
+    const expectedDestinationHashV365 = String(stateV365 && stateV365.handoffDestinationHashV365 || '');
+    const issuedAtV365 = Number(stateV365 && stateV365.handoffIssuedAtV365 || 0);
+    const expiresAtV365 = Number(stateV365 && stateV365.handoffUntilV365 || 0);
+    if (!/^[a-f0-9]{64}$/.test(sessionKeyV365)
+        || !stateV365 || Number(stateV365.until || 0) <= nowV365
+        || !/^[a-f0-9]{64}$/.test(sourceHashV365)
+        || !/^[a-f0-9]{64}$/.test(expectedSourceHashV365)
+        || !/^[a-f0-9]{64}$/.test(expectedDestinationHashV365)
+        || safeEqual(expectedSourceHashV365, expectedDestinationHashV365)
+        || !safeEqual(sourceHashV365, expectedSourceHashV365)
+        || !safeEqual(String(stateV365.hash || ''), expectedDestinationHashV365)
+        || !Number.isSafeInteger(issuedAtV365) || !Number.isSafeInteger(expiresAtV365)
+        || issuedAtV365 <= 0 || issuedAtV365 > nowV365
+        || expiresAtV365 <= nowV365
+        || expiresAtV365 - issuedAtV365 <= 0
+        || expiresAtV365 - issuedAtV365 > DIRAC_APP_ORIGIN_HANDOFF_TRAILING_SOURCE_GRACE_MS_V365) return null;
+
+    const verifiedAuthUserIdV365 = String(ctx.identity && ctx.identity.verifiedAuthUserId || '').trim().toLowerCase();
+    const boundSessionV365 = diracCentralVerifyDeviceSessionCookieV223(req);
+    const bindingV365 = String(boundSessionV365 && boundSessionV365.binding || '');
+    const boundUserIdV365 = String(boundSessionV365 && boundSessionV365.identity && boundSessionV365.identity.userId || '').trim().toLowerCase();
+    if (!customerSecurityLooksLikeUuid(verifiedAuthUserIdV365)
+        || !customerSecurityLooksLikeUuid(boundUserIdV365)
+        || !safeEqual(verifiedAuthUserIdV365, boundUserIdV365)
+        || !/^[a-f0-9]{64}$/.test(bindingV365)) return null;
+
+    let tokenV365 = String(tokenOverrideV365 || '').trim();
+    if (!tokenV365) {
+      const cookiesV365 = typeof parseCookies === 'function' ? parseCookies(req) : {};
+      const candidatesV365 = typeof readCookieTokenCandidates === 'function'
+        ? readCookieTokenCandidates(cookiesV365, diracCentralDeviceCookieNameV221()).slice(0, 2)
+        : [];
+      if (candidatesV365.length !== 1) return null;
+      tokenV365 = String(candidatesV365[0] || '').trim();
+    }
+    if (!tokenV365) return null;
+
+    const envelopeV365 = diracCentralVerifyDeviceEnvelopeV224(
+      req,
+      tokenV365,
+      expectedDestinationHashV365
+    );
+    const payloadV365 = envelopeV365 && envelopeV365.payload;
+    const tokenIssuedAtV365 = Number(payloadV365 && payloadV365.iat || 0);
+    if (!envelopeV365 || envelopeV365.ok !== true || !payloadV365
+        || Number(payloadV365.sbv || 0) !== 2
+        || !safeEqual(String(payloadV365.session || ''), bindingV365)
+        || !Number.isSafeInteger(tokenIssuedAtV365)
+        || tokenIssuedAtV365 < issuedAtV365 - DIRAC_APP_ORIGIN_HANDOFF_TRAILING_SOURCE_GRACE_MS_V365
+        || tokenIssuedAtV365 > issuedAtV365 + 1000) return null;
+
+    return Object.freeze({
+      ok: true,
+      patch: DIRAC_APP_ORIGIN_HANDOFF_TRAILING_SOURCE_V365,
+      sessionKey: sessionKeyV365,
+      sourceHash: sourceHashV365,
+      destinationHash: expectedDestinationHashV365,
+      payload: payloadV365
+    });
+  } catch (_) {
+    return null;
   }
 }
 
