@@ -1216,6 +1216,7 @@ async function handleDomainAction(action, req, res) {
 
     return res.status(404).json({ ok: false, message: 'Action domain tidak ditemukan.' });
   } catch (error) {
+    if (action === 'domain_dashboard_me') diracDashboardMfaOriginDiagnosticPhaseV366(req, res, 'domain_router_catch', error);
     console.error('[domain-router]', customerSecuritySafeLogError(error));
     return res.status(500).json({
       ok: false,
@@ -4701,14 +4702,24 @@ async function requireDomainDashboardAccess(req, res) {
     clear_cookies: false
   });
   if (!mfa.ok) {
-    if (mfa.code === 'mfa_cookie_expired' || mfa.code === 'mfa_cookie_missing') appendSetCookie(res, makeClearTokenCookieSet(CUSTOMER_MFA_COOKIE));
-    else clearSessionCookies(res);
-    res.status(403).json({
-      ok: false,
-      dashboard: false,
-      code: mfa.code || 'MFA_REQUIRED',
-      message: mfa.message || 'Dashboard wajib verifikasi A2F backend sebelum dibuka.'
-    });
+    const originDiagnosticV366 = mfa.code === 'mfa_cookie_origin_mismatch'
+      ? diracDashboardMfaOriginDiagnosticBeginV366(req, res, user, mfa)
+      : null;
+    try {
+      if (mfa.code === 'mfa_cookie_expired' || mfa.code === 'mfa_cookie_missing') appendSetCookie(res, makeClearTokenCookieSet(CUSTOMER_MFA_COOKIE));
+      else clearSessionCookies(res);
+      if (originDiagnosticV366) diracDashboardMfaOriginDiagnosticPhaseV366(req, res, 'after_cookie_clear');
+      res.status(403).json({
+        ok: false,
+        dashboard: false,
+        code: mfa.code || 'MFA_REQUIRED',
+        message: mfa.message || 'Dashboard wajib verifikasi A2F backend sebelum dibuka.'
+      });
+      if (originDiagnosticV366) diracDashboardMfaOriginDiagnosticPhaseV366(req, res, 'after_403_json');
+    } catch (errorV366) {
+      if (originDiagnosticV366) diracDashboardMfaOriginDiagnosticPhaseV366(req, res, 'mfa_rejection_throw', errorV366);
+      throw errorV366;
+    }
     return null;
   }
 
@@ -5201,7 +5212,10 @@ async function domainDashboardMe(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ ok: false, message: 'Gunakan GET.' });
 
   const access = await requireDomainDashboardAccess(req, res);
-  if (!access) return;
+  if (!access) {
+    diracDashboardMfaOriginDiagnosticPhaseV366(req, res, 'dashboard_access_null_return');
+    return;
+  }
 
   const { user, mfa, protectedLock } = access;
   const checkoutSource = diracAppOriginHandoffTargetV313('parfum');
@@ -6068,6 +6082,332 @@ function verifyCustomerDashboardMfaCookie(req, user) {
     sessionHash: String(payload.sessionHash || ''),
     source: proof.source
   };
+}
+
+const DIRAC_DASHBOARD_MFA_ORIGIN_DIAGNOSTIC_V366 = 'dirac-dashboard-mfa-origin-diagnostic-v366';
+
+function diracDashboardMfaOriginMatchV366(payload, origin) {
+  try {
+    const cleanOriginV366 = normalizeDashboardMfaOrigin(origin);
+    const expectedHashV366 = cleanOriginV366 ? customerMfaBindingHash('origin', cleanOriginV366) : '';
+    return Boolean(payload && payload.originHash && expectedHashV366
+      && safeEqual(String(payload.originHash), String(expectedHashV366)));
+  } catch (_) {
+    return false;
+  }
+}
+
+function diracDashboardMfaResponseSnapshotV366(res) {
+  try {
+    const setCookieV366 = res && typeof res.getHeader === 'function' ? res.getHeader('Set-Cookie') : null;
+    const setCookieCountV366 = Array.isArray(setCookieV366) ? setCookieV366.length : (setCookieV366 ? 1 : 0);
+    const setCookieSerializedV366 = JSON.stringify(setCookieV366 || '');
+    const responseHeadersV366 = res && typeof res.getHeaders === 'function' ? res.getHeaders() : {};
+    const responseHeadersSerializedV366 = JSON.stringify(responseHeadersV366 || {});
+    const headerNamesV366 = res && typeof res.getHeaderNames === 'function' ? res.getHeaderNames() : [];
+    return Object.freeze({
+      status_code: Number(res && res.statusCode || 0),
+      headers_sent: Boolean(res && res.headersSent),
+      writable_ended: Boolean(res && res.writableEnded),
+      destroyed: Boolean(res && res.destroyed),
+      header_name_count: Array.isArray(headerNamesV366) ? headerNamesV366.length : 0,
+      set_cookie_count: setCookieCountV366,
+      set_cookie_serialized_bytes: Buffer.byteLength(setCookieSerializedV366, 'utf8'),
+      response_headers_serialized_bytes: Buffer.byteLength(responseHeadersSerializedV366, 'utf8'),
+      has_access_cookie_header: setCookieSerializedV366.includes(String(ACCESS_COOKIE) + '='),
+      has_refresh_cookie_header: setCookieSerializedV366.includes(String(REFRESH_COOKIE) + '='),
+      has_mfa_cookie_header: setCookieSerializedV366.includes(String(CUSTOMER_MFA_COOKIE) + '='),
+      has_signed_session_cookie_header: setCookieSerializedV366.includes(String(DOMAIN_SIGNED_SESSION_COOKIE) + '='),
+      has_device_session_cookie_header: setCookieSerializedV366.includes(String(diracCentralDeviceSessionCookieNameV223()) + '='),
+      has_device_credential_cookie_header: setCookieSerializedV366.includes(String(diracCentralDeviceCookieNameV221()) + '=')
+    });
+  } catch (errorV366) {
+    return Object.freeze({
+      status_code: Number(res && res.statusCode || 0),
+      headers_sent: Boolean(res && res.headersSent),
+      writable_ended: Boolean(res && res.writableEnded),
+      destroyed: Boolean(res && res.destroyed),
+      snapshot_error: String(errorV366 && (errorV366.code || errorV366.name) || 'RESPONSE_SNAPSHOT_FAILED').slice(0, 96)
+    });
+  }
+}
+
+function diracDashboardMfaOriginDiagnosticPhaseV366(req, res, phase, errorV366) {
+  try {
+    const stateV366 = req && req.__diracDashboardMfaOriginDiagnosticV366;
+    if (!stateV366 || stateV366.patch !== DIRAC_DASHBOARD_MFA_ORIGIN_DIAGNOSTIC_V366) return null;
+    const safeErrorV366 = errorV366 ? customerSecuritySafeLogError(errorV366) : null;
+    const recordV366 = Object.freeze({
+      patch: DIRAC_DASHBOARD_MFA_ORIGIN_DIAGNOSTIC_V366,
+      event: 'response_phase',
+      phase: String(phase || 'unknown').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 96),
+      central_request_id: stateV366.central_request_id,
+      request_token_digest: stateV366.request_token_digest,
+      request_origin: stateV366.request_origin,
+      verifier_code: stateV366.verifier_code,
+      response: diracDashboardMfaResponseSnapshotV366(res),
+      error: safeErrorV366
+    });
+    console.error('[dirac-dashboard-mfa-origin-diagnostic-v366]', JSON.stringify(recordV366));
+    return recordV366;
+  } catch (_) {
+    return null;
+  }
+}
+
+function diracDashboardMfaOriginDiagnosticBeginV366(req, res, user, mfa) {
+  try {
+    if (!req || String(req.method || '').toUpperCase() !== 'GET'
+        || String(req && req.query && req.query.action || '') !== 'domain_dashboard_me'
+        || !mfa || mfa.ok === true || String(mfa.code || '') !== 'mfa_cookie_origin_mismatch') return null;
+    const existingV366 = req.__diracDashboardMfaOriginDiagnosticV366;
+    if (existingV366 && existingV366.patch === DIRAC_DASHBOARD_MFA_ORIGIN_DIAGNOSTIC_V366) return existingV366;
+
+    const nowV366 = Date.now();
+    const headersV366 = req.headers && typeof req.headers === 'object' ? req.headers : {};
+    const rawCookieHeaderV366 = String(headersV366.cookie || '');
+    const requestOriginV366 = requestOrigin(req);
+    const refererOriginV366 = normalizeDashboardMfaOrigin(headersV366.referer || headersV366.referrer || '');
+    const userAgentV366 = requestUserAgent(req);
+    const proofV366 = getCustomerDashboardMfaToken(req);
+    const payloadV366 = decodeCustomerDashboardMfaToken(proofV366 && proofV366.token);
+    const cookiesV366 = parseCookies(req);
+    const mfaCandidatesV366 = readCookieTokenCandidates(cookiesV366, CUSTOMER_MFA_COOKIE).slice(0, 8);
+    const signedCandidatesV366 = readCookieTokenCandidates(cookiesV366, DOMAIN_SIGNED_SESSION_COOKIE).slice(0, 8);
+    const deviceSessionCandidatesV366 = readCookieTokenCandidates(cookiesV366, diracCentralDeviceSessionCookieNameV223()).slice(0, 8);
+    const deviceCredentialCandidatesV366 = readCookieTokenCandidates(cookiesV366, diracCentralDeviceCookieNameV221()).slice(0, 8);
+    const userIdV366 = String(user && user.id || '').trim();
+    const emailV366 = normalizeAuthEmail(user && user.email || '');
+    const customerIdV366 = String(user && (user.customer_id || user.customerId || user.customer || '') || '').trim();
+    const securityEpochV366 = Number(payloadV366 && payloadV366.securityEpoch || 0);
+    const sessionBindingVersionV366 = Number(payloadV366 && payloadV366.sessionBindingVersion || 0);
+    const payloadTypeValidV366 = Boolean(payloadV366 && payloadV366.type === CUSTOMER_MFA_SESSION_TYPE);
+    const expiryValidV366 = Boolean(payloadV366 && Number(payloadV366.expiresAtMs || 0) > nowV366);
+    const emailMatchV366 = Boolean(payloadV366 && emailV366 && payloadV366.emailHash
+      && safeEqual(String(payloadV366.emailHash), customerMfaProfileId(emailV366)));
+    const authUserMatchV366 = Boolean(payloadV366 && userIdV366 && payloadV366.authUserIdHash
+      && safeEqual(String(payloadV366.authUserIdHash), customerMfaBindingHash('auth_user_id', userIdV366)));
+    const customerMatchV366 = Boolean(payloadV366 && (!payloadV366.customerIdHash || !customerIdV366
+      || safeEqual(String(payloadV366.customerIdHash), customerMfaBindingHash('customer_id', customerIdV366))));
+    const epochValidV366 = Number.isSafeInteger(securityEpochV366) && securityEpochV366 >= 1;
+    const sessionMatchV366 = Boolean(payloadV366 && payloadV366.sessionHash && sessionBindingVersionV366 === 5
+      && customerSecuritySignedSessionAnchorMatchesV228(req, user, payloadV366.sessionHash, securityEpochV366));
+    const requestOriginMatchV366 = diracDashboardMfaOriginMatchV366(payloadV366, requestOriginV366);
+    const expectedUaHashV366 = payloadV366 && payloadV366.uaHash ? customerMfaBindingHash('ua', userAgentV366) : '';
+    const uaMatchV366 = Boolean(payloadV366 && (!payloadV366.uaHash
+      || (expectedUaHashV366 && safeEqual(String(payloadV366.uaHash), expectedUaHashV366))));
+
+    const baseDomainV366 = diracBaseDomainV250();
+    const baseOriginV366 = 'https://' + baseDomainV366;
+    const csOriginV366 = 'https://cs.' + baseDomainV366;
+    const apiOriginV366 = 'https://api.' + baseDomainV366;
+    const panelOriginV366 = 'https://panel.' + baseDomainV366;
+    const orderOriginV366 = 'https://order.' + baseDomainV366;
+    const authOriginV366 = 'https://auth.' + baseDomainV366;
+    const dashboardOriginV366 = 'https://dashboard.' + baseDomainV366;
+    const securityOriginV366 = 'https://security.' + baseDomainV366;
+    const wwwOriginV366 = 'https://www.' + baseDomainV366;
+
+    let ctxV366 = null;
+    try { ctxV366 = diracCentralCurrentContextV149(); } catch (_) { ctxV366 = null; }
+    const centralRequestIdV366 = String(ctxV366 && ctxV366.requestId || req.__diracCentralRequestIdV211 || '').slice(0, 64);
+    const sessionKeyV366 = String(diracCentralRequestSessionHashV146(req) || '');
+    const bindingStateV366 = /^[a-f0-9]{64}$/.test(sessionKeyV366) ? DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sessionKeyV366) : null;
+    const requestDeviceHashV366 = diracAppOriginHandoffDeviceConsistencyHashV317(req);
+    const stateCurrentHashV366 = String(bindingStateV366 && bindingStateV366.hash || '');
+    const stateSourceHashV366 = String(bindingStateV366 && bindingStateV366.handoffSourceHashV365 || '');
+    const stateDestinationHashV366 = String(bindingStateV366 && bindingStateV366.handoffDestinationHashV365 || '');
+    const stateIssuedAtV366 = Number(bindingStateV366 && bindingStateV366.handoffIssuedAtV365 || 0);
+    const stateUntilV366 = Number(bindingStateV366 && bindingStateV366.until || 0);
+    const stateHandoffUntilV366 = Number(bindingStateV366 && bindingStateV366.handoffUntilV365 || 0);
+    const verifiedDeviceSessionV366 = diracCentralVerifyDeviceSessionCookieV223(req);
+    const verifiedDeviceCredentialV366 = deviceCredentialCandidatesV366.length === 1
+      ? diracCentralVerifyDeviceTokenV221(req, deviceCredentialCandidatesV366[0])
+      : null;
+    const tokenV366 = String(proofV366 && proofV366.token || '');
+    const tokenDigestV366 = tokenV366
+      ? crypto.createHash('sha256').update(tokenV366).digest('hex').slice(0, 16)
+      : '';
+    const originHashDigestV366 = payloadV366 && payloadV366.originHash
+      ? crypto.createHash('sha256').update(String(payloadV366.originHash)).digest('hex').slice(0, 16)
+      : '';
+
+    const stateV366 = Object.freeze({
+      patch: DIRAC_DASHBOARD_MFA_ORIGIN_DIAGNOSTIC_V366,
+      central_request_id: centralRequestIdV366,
+      request_token_digest: tokenDigestV366,
+      request_origin: requestOriginV366,
+      verifier_code: String(mfa.code || '')
+    });
+    try {
+      Object.defineProperty(req, '__diracDashboardMfaOriginDiagnosticV366', {
+        value: stateV366,
+        enumerable: false,
+        writable: false,
+        configurable: false
+      });
+    } catch (_) { return null; }
+
+    if (res && typeof res.once === 'function') {
+      res.once('finish', () => diracDashboardMfaOriginDiagnosticPhaseV366(req, res, 'response_finish'));
+      res.once('close', () => diracDashboardMfaOriginDiagnosticPhaseV366(req, res, 'response_close'));
+    }
+
+    const diagnosticV366 = Object.freeze({
+      patch: DIRAC_DASHBOARD_MFA_ORIGIN_DIAGNOSTIC_V366,
+      event: 'mfa_origin_mismatch_snapshot',
+      central_request_id: centralRequestIdV366,
+      platform_vercel_id: String(headersV366['x-vercel-id'] || '').slice(0, 160),
+      request: Object.freeze({
+        action: 'domain_dashboard_me',
+        method: 'GET',
+        origin: requestOriginV366,
+        referer_origin: refererOriginV366,
+        host: String(headersV366.host || '').slice(0, 160),
+        forwarded_host: String(headersV366['x-forwarded-host'] || '').slice(0, 160),
+        forwarded_proto: String(headersV366['x-forwarded-proto'] || '').slice(0, 24),
+        sec_fetch_site: String(headersV366['sec-fetch-site'] || '').slice(0, 32),
+        sec_fetch_mode: String(headersV366['sec-fetch-mode'] || '').slice(0, 32),
+        sec_fetch_dest: String(headersV366['sec-fetch-dest'] || '').slice(0, 32),
+        user_agent_present: Boolean(userAgentV366),
+        user_agent_digest: userAgentV366 ? crypto.createHash('sha256').update(userAgentV366).digest('hex').slice(0, 16) : '',
+        cookie_header_bytes: Buffer.byteLength(rawCookieHeaderV366, 'utf8'),
+        cookie_pair_count: rawCookieHeaderV366 ? rawCookieHeaderV366.split(';').length : 0
+      }),
+      guard: Object.freeze({
+        central_context_present: Boolean(ctxV366),
+        context_request_match: Boolean(ctxV366 && ctxV366.req === req),
+        fully_passed: Boolean(ctxV366 && ctxV366.centralGuardFullyPassedV211 === true),
+        request_passed_flag: Boolean(req.__diracCentralSecurityGuardPassedV146 === true),
+        classification: String(ctxV366 && ctxV366.classification || '').slice(0, 32),
+        authentication: typeof (ctxV366 && ctxV366.authentication) === 'string'
+          ? String(ctxV366.authentication).slice(0, 32)
+          : (ctxV366 && ctxV366.authentication ? 'object' : ''),
+        passport_hex: ctxV366 ? BigInt(ctxV366.passport || 0n).toString(16) : '',
+        required_passport_hex: ctxV366 ? BigInt(ctxV366.requiredPassport || 0n).toString(16) : ''
+      }),
+      identity: Object.freeze({
+        user_id_uuid_valid: customerSecurityLooksLikeUuid(userIdV366),
+        user_id_digest: userIdV366 ? crypto.createHash('sha256').update(userIdV366).digest('hex').slice(0, 16) : '',
+        email_valid: isValidAuthEmail(emailV366),
+        email_digest: emailV366 ? crypto.createHash('sha256').update(emailV366).digest('hex').slice(0, 16) : '',
+        customer_id_present: Boolean(customerIdV366),
+        customer_id_uuid_valid: Boolean(customerIdV366 && customerSecurityLooksLikeUuid(customerIdV366)),
+        customer_id_digest: customerIdV366 ? crypto.createHash('sha256').update(customerIdV366).digest('hex').slice(0, 16) : ''
+      }),
+      cookies: Object.freeze({
+        mfa_candidate_count: mfaCandidatesV366.length,
+        signed_session_candidate_count: signedCandidatesV366.length,
+        device_session_candidate_count: deviceSessionCandidatesV366.length,
+        device_credential_candidate_count: deviceCredentialCandidatesV366.length,
+        proof_source: String(proofV366 && proofV366.source || '').slice(0, 64),
+        mfa_token_present: Boolean(tokenV366),
+        mfa_token_bytes: Buffer.byteLength(tokenV366, 'utf8'),
+        mfa_token_digest: tokenDigestV366
+      }),
+      mfa: Object.freeze({
+        verifier_ok: Boolean(mfa && mfa.ok === true),
+        verifier_code: String(mfa && mfa.code || '').slice(0, 96),
+        signed_payload_valid: payloadTypeValidV366,
+        payload_type: String(payloadV366 && payloadV366.type || '').slice(0, 96),
+        method: String(payloadV366 && payloadV366.method || '').slice(0, 64),
+        session_binding_version: sessionBindingVersionV366,
+        security_epoch: securityEpochV366,
+        active_at_ms: Number(payloadV366 && payloadV366.activeAtMs || 0),
+        expires_at_ms: Number(payloadV366 && payloadV366.expiresAtMs || 0),
+        expires_in_ms: Number(payloadV366 && payloadV366.expiresAtMs || 0) - nowV366,
+        origin_hash_present: Boolean(payloadV366 && payloadV366.originHash),
+        origin_hash_shape_valid: Boolean(payloadV366 && /^[a-f0-9]{64}$/.test(String(payloadV366.originHash || ''))),
+        origin_hash_digest: originHashDigestV366,
+        ua_hash_present: Boolean(payloadV366 && payloadV366.uaHash),
+        session_hash_present: Boolean(payloadV366 && payloadV366.sessionHash),
+        jti_digest: payloadV366 && payloadV366.jti
+          ? crypto.createHash('sha256').update(String(payloadV366.jti)).digest('hex').slice(0, 16)
+          : ''
+      }),
+      mfa_subchecks: Object.freeze({
+        type_valid: payloadTypeValidV366,
+        expiry_valid: expiryValidV366,
+        email_match: emailMatchV366,
+        auth_user_match: authUserMatchV366,
+        customer_match_or_not_applicable: customerMatchV366,
+        security_epoch_valid: epochValidV366,
+        signed_session_binding_match: sessionMatchV366,
+        request_origin_match: requestOriginMatchV366,
+        user_agent_match: uaMatchV366,
+        all_non_origin_checks_valid: Boolean(payloadTypeValidV366 && expiryValidV366 && emailMatchV366
+          && authUserMatchV366 && customerMatchV366 && epochValidV366 && sessionMatchV366 && uaMatchV366),
+        isolated_origin_failure: Boolean(payloadTypeValidV366 && expiryValidV366 && emailMatchV366
+          && authUserMatchV366 && customerMatchV366 && epochValidV366 && sessionMatchV366 && uaMatchV366
+          && !requestOriginMatchV366)
+      }),
+      origin_binding_matches: Object.freeze({
+        request_origin: requestOriginMatchV366,
+        base_origin: diracDashboardMfaOriginMatchV366(payloadV366, baseOriginV366),
+        www_origin: diracDashboardMfaOriginMatchV366(payloadV366, wwwOriginV366),
+        auth_origin: diracDashboardMfaOriginMatchV366(payloadV366, authOriginV366),
+        dashboard_origin: diracDashboardMfaOriginMatchV366(payloadV366, dashboardOriginV366),
+        panel_origin: diracDashboardMfaOriginMatchV366(payloadV366, panelOriginV366),
+        security_origin: diracDashboardMfaOriginMatchV366(payloadV366, securityOriginV366),
+        order_origin: diracDashboardMfaOriginMatchV366(payloadV366, orderOriginV366),
+        cs_origin: diracDashboardMfaOriginMatchV366(payloadV366, csOriginV366),
+        api_origin: diracDashboardMfaOriginMatchV366(payloadV366, apiOriginV366),
+        request_is_cs_origin: requestOriginV366.toLowerCase() === csOriginV366
+      }),
+      device: Object.freeze({
+        device_session_valid: Boolean(verifiedDeviceSessionV366 && verifiedDeviceSessionV366.binding),
+        device_session_binding_digest: verifiedDeviceSessionV366 && verifiedDeviceSessionV366.binding
+          ? crypto.createHash('sha256').update(String(verifiedDeviceSessionV366.binding)).digest('hex').slice(0, 16)
+          : '',
+        device_credential_valid: Boolean(verifiedDeviceCredentialV366 && verifiedDeviceCredentialV366.ok === true),
+        device_credential_reason: String(verifiedDeviceCredentialV366 && verifiedDeviceCredentialV366.reason || '').slice(0, 96),
+        request_device_hash_digest: requestDeviceHashV366
+          ? crypto.createHash('sha256').update(requestDeviceHashV366).digest('hex').slice(0, 16)
+          : ''
+      }),
+      handoff: Object.freeze({
+        binding_state_present: Boolean(bindingStateV366),
+        binding_state_active: Boolean(bindingStateV366 && stateUntilV366 > nowV366),
+        trailing_handoff_state_present: Boolean(bindingStateV366 && stateIssuedAtV366 > 0 && stateHandoffUntilV366 > 0),
+        trailing_handoff_grace_active: Boolean(bindingStateV366 && stateHandoffUntilV366 > nowV366),
+        handoff_age_ms: stateIssuedAtV366 > 0 ? nowV366 - stateIssuedAtV366 : -1,
+        handoff_grace_remaining_ms: stateHandoffUntilV366 > 0 ? stateHandoffUntilV366 - nowV366 : -1,
+        request_matches_current_device_hash: Boolean(requestDeviceHashV366 && stateCurrentHashV366
+          && safeEqual(requestDeviceHashV366, stateCurrentHashV366)),
+        request_matches_source_device_hash: Boolean(requestDeviceHashV366 && stateSourceHashV366
+          && safeEqual(requestDeviceHashV366, stateSourceHashV366)),
+        request_matches_destination_device_hash: Boolean(requestDeviceHashV366 && stateDestinationHashV366
+          && safeEqual(requestDeviceHashV366, stateDestinationHashV366)),
+        current_hash_digest: stateCurrentHashV366
+          ? crypto.createHash('sha256').update(stateCurrentHashV366).digest('hex').slice(0, 16)
+          : '',
+        source_hash_digest: stateSourceHashV366
+          ? crypto.createHash('sha256').update(stateSourceHashV366).digest('hex').slice(0, 16)
+          : '',
+        destination_hash_digest: stateDestinationHashV366
+          ? crypto.createHash('sha256').update(stateDestinationHashV366).digest('hex').slice(0, 16)
+          : ''
+      }),
+      rejection_response_pressure: Object.freeze({
+        full_clear_base_cookie_family_count: 4,
+        configured_chunk_slots_per_family: Number(DOMAIN_COOKIE_MAX_CHUNKS),
+        nominal_full_clear_cookie_count_before_device_wrapper: 4 * (1 + Number(DOMAIN_COOKIE_MAX_CHUNKS)),
+        nominal_full_clear_cookie_count_with_device_wrapper: 4 * (1 + Number(DOMAIN_COOKIE_MAX_CHUNKS)) + 2
+      }),
+      response_before_clear: diracDashboardMfaResponseSnapshotV366(res)
+    });
+    console.error('[dirac-dashboard-mfa-origin-diagnostic-v366]', JSON.stringify(diagnosticV366));
+    return stateV366;
+  } catch (errorV366) {
+    try {
+      console.error('[dirac-dashboard-mfa-origin-diagnostic-v366]', JSON.stringify({
+        patch: DIRAC_DASHBOARD_MFA_ORIGIN_DIAGNOSTIC_V366,
+        event: 'diagnostic_capture_failed',
+        error: customerSecuritySafeLogError(errorV366)
+      }));
+    } catch (_) { void 0; }
+    return null;
+  }
 }
 
 function getDomainProviderOrder() {
