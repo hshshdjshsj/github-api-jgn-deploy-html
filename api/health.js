@@ -58507,11 +58507,18 @@ async function diracCentralAtomicRateLimitV230({ key, limit, windowSeconds, bloc
   const window = Math.max(1, Math.min(86400, Number(windowSeconds || 60)));
   const block = Math.max(0, Math.min(86400, Number(blockSeconds || 0)));
   if (!cleanKey || cleanKey.length > 500) return { ok: false, reason: 'atomic_rate_key_invalid' };
-  const result = await supabaseFetch('/rest/v1/rpc/dirac_central_atomic_rate_limit_v230', {
+  let result = await supabaseFetch('/rest/v1/rpc/dirac_central_atomic_rate_limit_v230', {
     method: 'POST',
     auth: 'service',
     body: { p_security_key: cleanKey, p_limit: max, p_window_seconds: window, p_block_seconds: block }
   }).catch(() => null);
+  if (result && Number(result.status) >= 500 && Number(result.status) <= 599) {
+    result = await supabaseFetch('/rest/v1/rpc/dirac_central_atomic_rate_limit_v230', {
+      method: 'POST',
+      auth: 'service',
+      body: { p_security_key: cleanKey, p_limit: max, p_window_seconds: window, p_block_seconds: block }
+    }).catch(() => null);
+  }
   const row = result && result.ok === true && Array.isArray(result.data) ? result.data[0] : null;
   if (!row || typeof row.allowed !== 'boolean' || !Number.isFinite(Number(row.current_count))) {
     return { ok: false, reason: 'distributed_rate_limit_atomic_storage_unavailable' };
