@@ -14857,7 +14857,7 @@ function customerSecurityDecodeSignedSessionAnchorV228(value) {
       || anchorIssuedAt < decoded.issuedAt - 60
       || anchorExpiresAt > decoded.expiresAt
       || anchorExpiresAt - anchorIssuedAt <= 0
-      || anchorExpiresAt - anchorIssuedAt > 60 * 60 + 60) return null;
+      || anchorExpiresAt - anchorIssuedAt > 8 * 60 * 60 + 60) return null;
 
   const binding = customerMfaBindingHash(
     'signed_session_anchor_v228',
@@ -54323,7 +54323,7 @@ function diracCentralMfaEnvelopeV221(req, ctx) {
   const now = Date.now();
   if (!Number.isSafeInteger(Number(payload.activeAtMs)) || !Number.isSafeInteger(Number(payload.expiresAtMs))
       || Number(payload.activeAtMs) > now + 60 * 1000 || Number(payload.expiresAtMs) <= now
-      || Number(payload.expiresAtMs) - Number(payload.activeAtMs) > 60 * 60 * 1000) {
+      || Number(payload.expiresAtMs) - Number(payload.activeAtMs) > 8 * 60 * 60 * 1000) {
     return { ok: false, expected: false, reason: 'mfa_envelope_time_invalid' };
   }
   if (!/^[A-Za-z0-9_-]{16,160}$/.test(String(payload.jti || ''))) return { ok: false, expected: false, reason: 'mfa_envelope_jti_invalid' };
