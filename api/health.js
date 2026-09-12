@@ -67573,7 +67573,7 @@ async function diracCentralBackendComplianceGateV230() {
             body: { p_table_name: 'dirac_s2s_security', p_security_key: 's2s-central-v230-record-gate:' + probe, p_record_json: { type: 'v230_record_gate' }, p_expires_at: new Date(Date.now() + 120000).toISOString() }
           }),
           supabaseFetch('/rest/v1/rpc/dirac_central_atomic_rate_limit_v230', {
-            method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
+            method: 'POST', auth: 'service', timeoutMs: 5000, signal: gateSignalV231,
             body: { p_security_key: 's2s-central-v230-rate-gate:' + probe, p_limit: 2, p_window_seconds: 60, p_block_seconds: 60 }
           }),
           supabaseFetch('/rest/v1/rpc/dirac_central_security_log_v230', {
