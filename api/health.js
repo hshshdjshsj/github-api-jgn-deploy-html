@@ -55387,12 +55387,159 @@ function diracCentralVerifyDeviceEnvelopeV224(req, token, expectedDeviceFingerpr
   return { ok: true, payload };
 }
 
-async function diracCentralStrictBootstrapDeviceSessionV224(req, res, ctx) {
+const DIRAC_CENTRAL_IDLE_RESUME_REAUTH_V377 = 'dirac-central-idle-resume-reauth-v377';
+const DIRAC_CENTRAL_IDLE_RESUME_SIGNED_CONTINUITY_V378 = 'dirac-central-idle-resume-signed-continuity-v378';
+
+function diracCentralIdleResumeCredentialProofV377(req, ctx, tokenOverrideV377) {
+  try {
+    const priorDeviceMaskV377 = CHECKPOINT.DEVICE_BINDING - 1n;
+    if (!req || String(req.method || '').toUpperCase() !== 'GET'
+        || !ctx || String(ctx.action || '') !== 'domain_dashboard_me'
+        || String(ctx.classification || '') !== 'browser'
+        || String(ctx.authentication || '') !== 'browser'
+        || (BigInt(ctx.passport || 0n) & priorDeviceMaskV377) !== priorDeviceMaskV377) return null;
+
+    const queryV377 = req.query && typeof req.query === 'object' ? req.query : {};
+    const queryKeysV377 = Object.keys(queryV377);
+    if (!queryKeysV377.length
+        || !queryKeysV377.every((key) => key === 'action' || key === '_t' || key === '_ts' || key === '_')) return null;
+    const actionValueV377 = Array.isArray(queryV377.action) ? queryV377.action : [queryV377.action];
+    if (actionValueV377.length !== 1 || String(actionValueV377[0] || '') !== 'domain_dashboard_me') return null;
+    const cacheValuesV377 = ['_t', '_ts', '_']
+      .filter((key) => Object.prototype.hasOwnProperty.call(queryV377, key))
+      .map((key) => String(queryV377[key] || '').trim());
+    if (cacheValuesV377.some((value) => !/^\d{10,17}$/.test(value))) return null;
+
+    const headersV377 = req.headers || {};
+    const sourceOriginV377 = diracCentralNormalizeOriginV146(
+      headersV377.origin || headersV377.referer || headersV377.referrer || ''
+    );
+    if (!sourceOriginV377 || !DIRAC_CENTRAL_ALLOWED_ORIGINS_V146.has(sourceOriginV377)) return null;
+    const fetchSiteV377 = String(headersV377['sec-fetch-site'] || '').trim().toLowerCase();
+    const fetchModeV377 = String(headersV377['sec-fetch-mode'] || '').trim().toLowerCase();
+    const fetchDestV377 = String(headersV377['sec-fetch-dest'] || '').trim().toLowerCase();
+    if (fetchSiteV377 && !['same-origin', 'same-site'].includes(fetchSiteV377)) return null;
+    if (fetchModeV377 && !['cors', 'same-origin'].includes(fetchModeV377)) return null;
+    if (fetchDestV377 && fetchDestV377 !== 'empty') return null;
+
+    const boundSessionV377 = diracCentralVerifyDeviceSessionCookieV223(req);
+    const bindingV377 = String(boundSessionV377 && boundSessionV377.binding || '');
+    const boundUserIdV377 = String(boundSessionV377 && boundSessionV377.identity && boundSessionV377.identity.userId || '').trim().toLowerCase();
+    const verifiedUserIdV377 = String(ctx.identity && ctx.identity.verifiedAuthUserId || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(bindingV377)
+        || !customerSecurityLooksLikeUuid(boundUserIdV377)
+        || !customerSecurityLooksLikeUuid(verifiedUserIdV377)
+        || !safeEqual(boundUserIdV377, verifiedUserIdV377)) return null;
+
+    let tokenV377 = String(tokenOverrideV377 || '').trim();
+    if (!tokenV377) {
+      const cookiesV377 = typeof parseCookies === 'function' ? parseCookies(req) : {};
+      const candidatesV377 = typeof readCookieTokenCandidates === 'function'
+        ? readCookieTokenCandidates(cookiesV377, diracCentralDeviceCookieNameV221()).slice(0, 2)
+        : [cookiesV377 && cookiesV377[diracCentralDeviceCookieNameV221()]].filter(Boolean);
+      if (candidatesV377.length !== 1) return null;
+      tokenV377 = String(candidatesV377[0] || '').trim();
+    }
+    if (!tokenV377) return null;
+
+    const strictV377 = diracCentralVerifyDeviceTokenV221(req, tokenV377);
+    if (!strictV377 || strictV377.ok === true || strictV377.reason !== 'device_credential_fingerprint_mismatch') return null;
+
+    const tokenPartsV377 = tokenV377.split('.');
+    if (tokenPartsV377.length !== 2 || !tokenPartsV377[0] || !tokenPartsV377[1]) return null;
+    let offeredPayloadV377;
+    try { offeredPayloadV377 = JSON.parse(Buffer.from(tokenPartsV377[0], 'base64url').toString('utf8')); }
+    catch (_) { return null; }
+    const offeredDeviceV377 = String(offeredPayloadV377 && offeredPayloadV377.device || '').trim();
+    if (!/^[a-f0-9]{64}$/.test(offeredDeviceV377)) return null;
+    const envelopeV377 = diracCentralVerifyDeviceEnvelopeV224(req, tokenV377, offeredDeviceV377);
+    const payloadV377 = envelopeV377 && envelopeV377.payload;
+    if (!envelopeV377 || envelopeV377.ok !== true
+        || !payloadV377 || Number(payloadV377.sbv || 0) !== 2
+        || !safeEqual(String(payloadV377.session || ''), bindingV377)) return null;
+
+    return Object.freeze({
+      ok: true,
+      patch: DIRAC_CENTRAL_IDLE_RESUME_REAUTH_V377,
+      source_origin: sourceOriginV377,
+      session_binding: bindingV377,
+      payload: payloadV377
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+async function diracCentralIdleResumeSignedContinuityV378(req, ctx, idleResumeV377, authenticationV378) {
+  try {
+    if (!req || !ctx || !idleResumeV377 || idleResumeV377.ok !== true
+        || idleResumeV377.patch !== DIRAC_CENTRAL_IDLE_RESUME_REAUTH_V377
+        || String(req.method || '').toUpperCase() !== 'GET'
+        || String(ctx.action || '') !== 'domain_dashboard_me'
+        || String(ctx.classification || '') !== 'browser'
+        || String(ctx.authentication || '') !== 'browser') return null;
+
+    const authentication = authenticationV378 && authenticationV378.ok === true
+      ? authenticationV378
+      : null;
+    if (!authentication || authentication.source !== 'verified_signed_session'
+        || !authentication.user || !authentication.identity) return null;
+
+    const bindingV378 = String(idleResumeV377.session_binding || '').trim();
+    const identityV378 = diracCentralDeviceAuthIdentityV224(authentication.user);
+    const verifiedUserIdV378 = String(ctx.identity && ctx.identity.verifiedAuthUserId || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(bindingV378)
+        || !identityV378
+        || !customerSecurityLooksLikeUuid(String(identityV378.userId || ''))
+        || !customerSecurityLooksLikeUuid(verifiedUserIdV378)
+        || !safeEqual(String(identityV378.userId || '').toLowerCase(), verifiedUserIdV378)) return null;
+
+    const signedStateV378 = diracCentralDeviceSignedSessionStateV224(authentication.cookies, authentication.identity);
+    if (!signedStateV378 || signedStateV378.hasMatching !== true || signedStateV378.hasMismatch === true) return null;
+
+    const mfaV378 = verifyCustomerDashboardMfaCookie(req, authentication.user);
+    if (!mfaV378 || mfaV378.ok !== true) return null;
+
+    const protectedV378 = await checkDomainProtectedDatabaseSessionLockSafe(
+      req,
+      authentication.user,
+      mfaV378
+    ).catch(() => null);
+    const idleMsV378 = Number(protectedV378 && protectedV378.idleMs);
+    if (!protectedV378 || protectedV378.ok !== true
+        || !customerSecurityLooksLikeUuid(String(protectedV378.customerId || ''))
+        || !customerSecurityLooksLikeUuid(String(protectedV378.sessionId || ''))
+        || !Number.isFinite(idleMsV378) || idleMsV378 < 0
+        || idleMsV378 >= DOMAIN_PROTECTED_IDLE_TIMEOUT_MS) return null;
+
+    return Object.freeze({
+      ok: true,
+      patch: DIRAC_CENTRAL_IDLE_RESUME_SIGNED_CONTINUITY_V378,
+      session_binding: bindingV378,
+      customer_id: String(protectedV378.customerId),
+      session_id: String(protectedV378.sessionId),
+      idle_ms: idleMsV378,
+      authentication_source: authentication.source
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+async function diracCentralStrictBootstrapDeviceSessionV224(req, res, ctx, optionsV377) {
   if (!DIRAC_CENTRAL_DEVICE_BOOTSTRAP_ACTIONS_V224.has(String(ctx && ctx.action || ''))) {
     return { ok: false, reason: 'device_credential_session_missing' };
   }
   const authentication = await diracCentralAuthenticateDeviceBootstrapV224(req);
   if (!authentication.ok) return authentication;
+  if (optionsV377 && optionsV377.requireLiveAuth === true
+      && !['verified_access_token', 'verified_refresh_token'].includes(String(authentication.source || ''))) {
+    return {
+      ok: false,
+      reason: 'device_resume_live_reauthentication_required',
+      authentication
+    };
+  }
 
   const signedState = diracCentralDeviceSignedSessionStateV224(authentication.cookies, authentication.identity);
   if (signedState.hasMismatch) return { ok: false, reason: 'device_bootstrap_signed_session_mismatch' };
@@ -55496,6 +55643,55 @@ async function diracCentralDeviceCredentialGuardV221(req, res, ctx) {
         };
       } catch (_) {
         return { ok: false, reason: 'support_device_credential_rotation_failed' };
+      }
+    }
+
+    const idleResumeV377 = diracCentralIdleResumeCredentialProofV377(req, ctx, token);
+    if (idleResumeV377 && idleResumeV377.ok === true
+        && idleResumeV377.patch === DIRAC_CENTRAL_IDLE_RESUME_REAUTH_V377
+        && idleResumeV377.payload
+        && safeEqual(String(idleResumeV377.payload.session || ''), session)) {
+      const resumedV377 = await diracCentralStrictBootstrapDeviceSessionV224(req, res, ctx, { requireLiveAuth: true });
+      let resumeBindingV378 = '';
+      let resumeDecisionV378 = DIRAC_CENTRAL_IDLE_RESUME_REAUTH_V377;
+      let resumeReauthenticatedV378 = false;
+      if (resumedV377 && resumedV377.ok === true
+          && /^[a-f0-9]{64}$/.test(String(resumedV377.binding || ''))) {
+        resumeBindingV378 = String(resumedV377.binding);
+        resumeReauthenticatedV378 = true;
+      } else if (resumedV377
+          && resumedV377.reason === 'device_resume_live_reauthentication_required'
+          && resumedV377.authentication
+          && resumedV377.authentication.source === 'verified_signed_session') {
+        const signedContinuityV378 = await diracCentralIdleResumeSignedContinuityV378(
+          req,
+          ctx,
+          idleResumeV377,
+          resumedV377.authentication
+        );
+        if (!signedContinuityV378 || signedContinuityV378.ok !== true
+            || signedContinuityV378.patch !== DIRAC_CENTRAL_IDLE_RESUME_SIGNED_CONTINUITY_V378
+            || !safeEqual(String(signedContinuityV378.session_binding || ''), session)) return verified;
+        resumeBindingV378 = session;
+        resumeDecisionV378 = DIRAC_CENTRAL_IDLE_RESUME_SIGNED_CONTINUITY_V378;
+      } else {
+        return verified;
+      }
+      try {
+        const rotatedV377 = diracCentralDeviceTokenV221(req, resumeBindingV378);
+        if (!diracStageAuthPublicationV321(req, { cookies: [makeCookie(name, rotatedV377, { maxAge: 24 * 60 * 60, domain: '' })] })) {
+          return { ok: false, reason: 'device_resume_credential_publication_stage_failed' };
+        }
+        return {
+          ok: true,
+          rotated: true,
+          bootstrapped: resumeReauthenticatedV378,
+          reauthenticated: resumeReauthenticatedV378,
+          signed_continuity: !resumeReauthenticatedV378,
+          decision: resumeDecisionV378
+        };
+      } catch (_) {
+        return { ok: false, reason: 'device_resume_credential_rotation_failed' };
       }
     }
   }
@@ -58891,6 +59087,11 @@ function diracCentralDeviceConsistencyGuardV146(req, ctx) {
     }
     if (diracCentralDeviceConsistencySignedReconcileV325(req, sessionKey, current, previous)) {
       return { ok: true };
+    }
+    const idleResumeV377 = diracCentralIdleResumeCredentialProofV377(req, ctx);
+    if (idleResumeV377 && idleResumeV377.ok === true
+        && idleResumeV377.patch === DIRAC_CENTRAL_IDLE_RESUME_REAUTH_V377) {
+      return { ok: true, decision: DIRAC_CENTRAL_IDLE_RESUME_REAUTH_V377 + '_reauth_pending' };
     }
     return { ok: false, reason: 'device_consistency_changed' };
   }
