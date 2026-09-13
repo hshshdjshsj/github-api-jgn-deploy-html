@@ -57758,6 +57758,11 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
     }, res);
     return dispatchResultV324;
   } catch (error) {
+    const dashboardHandlerFullyGuardedV379 = Boolean(
+      ctx && req && ctx.action === 'domain_dashboard_me'
+      && req.__diracCentralSecurityGuardPassedV146 === true
+      && diracCentralHandlerContextFullyPassedV211(ctx, req) === true
+    );
     diracLoginFatalMarkV324(req, 'central_guard.catch', 'throw', diracLoginFatalSafeErrorV324(error, 'central_guard'), res);
     if (ctx && !ctx.failedStageV211) ctx.failedStageV211 = String(error && error.diracStage || ctx.currentStageV211 || 'central_guard');
     if (ctx && !ctx.failureReasonV211) ctx.failureReasonV211 = String(error && error.code || error && error.message || 'central_guard_error').slice(0, 120);
@@ -57766,6 +57771,24 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
     diracCentralEmitDebugV211(ctx, 'central_exception', safeDebug);
     try { console.error('[dirac-central-security-v202]', safeDebug); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
     if (ctx) ctx.centralErrorDebugV155 = safeDebug;
+    if (dashboardHandlerFullyGuardedV379) {
+      diracCentralApplyHeadersV146(res);
+      try {
+        if (res && typeof res.setHeader === 'function') {
+          res.setHeader('Cache-Control', 'no-store');
+          res.setHeader('Retry-After', '2');
+        }
+      } catch (suppressedErrorV379) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV379); }
+      return res.status(503).json({
+        ok: false,
+        dashboard: false,
+        code: 'DASHBOARD_SESSION_DEPENDENCY_UNAVAILABLE',
+        message: 'Sesi belum dapat diverifikasi sementara. Silakan coba lagi.',
+        source: DIRAC_CENTRAL_SECURITY_GUARD_V146,
+        request_id: String(ctx && ctx.requestId || '').slice(0, 64),
+        failure_id: diracCentralFailureIdV211(ctx)
+      });
+    }
     if (ctx && req && req.__diracCentralSecurityGuardPassedV146 && ctx.action === 'domain_dashboard_me') {
       return await diracCentralBanAndBlockV146(req, res, ctx, ctx.action, method, 'domain_dashboard_handler_error');
     }
