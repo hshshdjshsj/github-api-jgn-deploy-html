@@ -179,7 +179,7 @@ const MAX_MESSAGE_BYTES = 8 * 1024;
 const MAX_CONVERSATION_MESSAGES = 1000;
 const CUSTOMER_COOKIE = '__Host-dirac_support_guest';
 const CUSTOMER_IDENTITY_MARKER = 'dirac_support_main_session_v1';
-const CUSTOMER_AUTH_EMAIL_DOMAIN = 'support-auth.diracgroup\u002estore';
+const CUSTOMER_AUTH_EMAIL_LOCAL = 'support-auth';
 const MAIN_COOKIE_MAX_CHUNKS = 12;
 const ADMIN_COOKIE = '__Host-dirac_support_admin';
 const MFA_COOKIE = '__Host-dirac_support_mfa';
@@ -323,6 +323,21 @@ function allowedOrigins() {
   return new Set(values.map((value) => {
     try { return new URL(value).origin; } catch (_) { return ''; }
   }).filter(Boolean));
+}
+
+function supportBaseDomain() {
+  const configured = env('DIRAC_BASE_DOMAIN').toLowerCase().replace(/^\.+|\.+$/g, '');
+  if (!configured) {
+    if (!isProduction()) return 'localhost';
+    throw new PublicError(500, 'SUPPORT_BASE_DOMAIN_CONFIG_REQUIRED', 'Konfigurasi base domain support belum tersedia.');
+  }
+  if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(configured)) {
+    throw new PublicError(500, 'SUPPORT_BASE_DOMAIN_CONFIG_INVALID', 'Konfigurasi base domain support tidak valid.');
+  }
+  return configured;
+}
+function supportCustomerAuthEmailDomain() {
+  return CUSTOMER_AUTH_EMAIL_LOCAL + '.' + supportBaseDomain();
 }
 
 function requestOrigin(req) { return String(req.headers && req.headers.origin || '').trim(); }
@@ -1015,7 +1030,7 @@ function supportCustomerMaterial(identity) {
   const userId = id(identity && identity.id, 'Main user ID'); const cfg = config();
   const passwordDigest = crypto.createHmac('sha512', cfg.cookieSecret).update('support-customer-password:v1|' + userId, 'utf8').digest('base64url');
   const versionDigest = crypto.createHmac('sha512', cfg.cookieSecret).update('support-customer-version:v1|' + userId, 'utf8').digest('hex').slice(0, 20);
-  const authEmail = 'customer.' + userId.replace(/-/g, '') + '@' + CUSTOMER_AUTH_EMAIL_DOMAIN;
+  const authEmail = 'customer.' + userId.replace(/-/g, '') + '@' + supportCustomerAuthEmailDomain();
   const passwordVersion = 'v1.' + versionDigest;
   return {
     userId,

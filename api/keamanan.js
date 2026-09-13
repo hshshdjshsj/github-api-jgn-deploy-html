@@ -609,7 +609,7 @@ function diracRoleOriginV250(role) {
   if (role === 'auth') return 'https://auth.' + base;
   if (role === 'security') return 'https://security.' + base;
   if (role === 'www') return 'https://www.' + base;
-  return 'https://' + base;
+  throw resetError('DIRAC_ROLE_ORIGIN_INVALID', 503);
 }
 function diracPasskeyA2FRpId(req) {
   const base = diracBaseDomainV250();
@@ -890,7 +890,7 @@ function securityResetApplyHeadersV334(req, res, origin) {
   try {
     if (!res || typeof res.setHeader !== 'function') throw new Error('RESET_RESPONSE_HEADERS_UNAVAILABLE');
     const base = diracBaseDomainV250();
-    if (['https://' + base, 'https://auth.' + base, 'https://security.' + base].includes(allowed)) res.setHeader('Access-Control-Allow-Origin', allowed);
+    if (['https://shop.' + base, 'https://auth.' + base, 'https://security.' + base].includes(allowed)) res.setHeader('Access-Control-Allow-Origin', allowed);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Expose-Headers', 'X-Dirac-CSRF-Token, X-CSRF-Token, X-Dirac-Page-Nonce, X-Page-Nonce');
     res.setHeader('Vary', 'Origin');
@@ -908,7 +908,7 @@ function securityResetApplyHeadersV334(req, res, origin) {
 function securityResetValidateBrowserV334(req, method) {
   const base = diracBaseDomainV250();
   const origin = requestOrigin(req);
-  const allowedOrigins = new Set(['https://' + base, 'https://auth.' + base, 'https://security.' + base]);
+  const allowedOrigins = new Set(['https://shop.' + base, 'https://auth.' + base, 'https://security.' + base]);
   if (!allowedOrigins.has(origin)) throw resetError('SECURITY_RESET_ORIGIN_INVALID', 403);
   const host = securityResetHeaderV334(req, 'host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
   const xhost = securityResetHeaderV334(req, 'x-forwarded-host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
@@ -3609,7 +3609,7 @@ function handleResetPreflight(req, res) {
   const baseDomain = resetPreflightBaseDomain();
   if (!baseDomain) return reject(res, 503, 'SECURITY_RESET_PREFLIGHT_DOMAIN_INVALID');
   const origin = resetPreflightHeader(req, 'origin').trim().toLowerCase();
-  const allowedOrigins = new Set(['https://' + baseDomain, 'https://auth.' + baseDomain, 'https://security.' + baseDomain]);
+  const allowedOrigins = new Set(['https://shop.' + baseDomain, 'https://auth.' + baseDomain, 'https://security.' + baseDomain]);
   if (!allowedOrigins.has(origin)) return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_ORIGIN_INVALID');
   const expectedHost = 'api.' + baseDomain;
   const forwardedHost = resetPreflightHeader(req, 'x-forwarded-host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
