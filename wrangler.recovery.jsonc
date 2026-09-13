@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "dirac-recovery",
+  "main": "./cloudflare-worker.mjs",
+  "compatibility_date": "2026-09-13",
+  "containers": [
+    {
+      "class_name": "DiracRecoveryContainer",
+      "image": "./Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 2,
+      "ssh": {
+        "enabled": false
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DIRAC_RECOVERY",
+        "class_name": "DiracRecoveryContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "DiracRecoveryContainer"
+      ]
+    }
+  ]
+}
