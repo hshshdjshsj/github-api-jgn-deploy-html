@@ -2510,7 +2510,11 @@ async function securityResetGmailMailV352(account, record, subject, text, html, 
     && /^[a-f0-9]{64}$/.test(String(context.__diracPasswordChangeSmtpRecipientHashV365 || ''))
     && isValidAuthEmail(record && record.email)
     && safeEqual(diracSecurityPasskeyResetSha256V363(normalizeAuthEmail(record.email)), String(context.__diracPasswordChangeSmtpRecipientHashV365)));
-  if (!context || !context.active || !context.banChecked || !context.browserChecked || (!context.__diracPasswordResetGrantConsumedV361 && !passwordChangeSmtp)
+  const passkeyResetEmail = Boolean(context && context.__diracPasskeyResetEmailDispatchV364 === true
+    && /^[a-f0-9]{64}$/.test(String(context.__diracPasskeyResetEmailRecipientHashV364 || ''))
+    && isValidAuthEmail(record && record.email)
+    && safeEqual(diracSecurityPasskeyResetSha256V363(normalizeAuthEmail(record.email)), String(context.__diracPasskeyResetEmailRecipientHashV364)));
+  if (!context || !context.active || !context.banChecked || !context.browserChecked || (!context.__diracPasswordResetGrantConsumedV361 && !passwordChangeSmtp && !passkeyResetEmail)
       || !account || account.host !== 'smtp.gmail.com' || account.port !== 465 || !isValidAuthEmail(account.user) || !isValidAuthEmail(record.email)) throw resetError('SECURITY_RESET_SMTP_CONTEXT_REQUIRED', 503);
   const boundary = 'dirac-password-reset-' + crypto.randomBytes(18).toString('hex');
   const mime = [
@@ -3052,8 +3056,9 @@ async function diracSecurityPasskeyResetSendEmailCodeV364(req, owner, code, payl
   context.__diracPasskeyResetEmailRecipientHashV364 = diracSecurityPasskeyResetSha256V363(owner.email);
   let result;
   try {
-    result = await securityResetHttpMailV352('brevo', config, record, subject, text, html, reference);
-    if (!result || result.ok !== true) result = await securityResetHttpMailV352('resend', config, record, subject, text, html, reference);
+    result = await securityResetGmailMailV352(config.primary, record, subject, text, html, 1);
+    if (result && result.ok !== true && result.limited === true) result = await securityResetHttpMailV352('brevo', config, record, subject, text, html, reference);
+    if (result && result.ok !== true && result.limited === true) result = await securityResetHttpMailV352('resend', config, record, subject, text, html, reference);
   } finally {
     context.__diracPasskeyResetEmailDispatchV364 = false;
     context.__diracPasskeyResetEmailRecipientHashV364 = '';

@@ -702,7 +702,7 @@ if (!DIRAC_LOGIN_FATAL_STATE_V324.monitorInstalled) {
    One health.js for every Dirac role. Domain/provider identity is ENV-driven.
    ============================================================ */
 const DIRAC_UNIVERSAL_APP_ROLES_V250 = Object.freeze(new Set([
-  'www', 'auth', 'dashboard', 'security', 'parfum', 'pesanan', 'recovery'
+  'www', 'auth', 'dashboard', 'panel', 'security', 'parfum', 'pesanan', 'recovery'
 ]));
 
 function diracBaseDomainV250() {
@@ -3120,7 +3120,7 @@ function domainLoginRateDecisionV336(identity, record, now = Date.now()) {
     code: permanent ? 'LOGIN_ACCOUNT_LOCKED' : 'LOGIN_RATE_LIMITED',
     retryAfterSeconds: permanent ? 0 : Math.max(0, Math.ceil((record.blockedUntilMs - now) / 1000)),
     message: permanent
-      ? 'Akun terkunci. Silakan hubungi admin melalui WhatsApp 087892523968 atau email support@diracgroup.store.'
+      ? 'Akun terkunci. Silakan hubungi admin melalui WhatsApp 087892523968 atau email ' + diracSupportEmailV250() + '.'
       : record.count >= 6
         ? 'Password salah 6 kali. Akun dibatasi selama 24 jam sejak percobaan terakhir. Satu kesalahan berikutnya setelah pembatasan berakhir akan mengunci akun; silakan hubungi admin jika membutuhkan bantuan.'
         : 'Password salah 5 kali. Akun dibatasi selama 1 jam sejak percobaan terakhir. Silakan coba kembali setelah pembatasan berakhir.'
@@ -50635,7 +50635,7 @@ async function diracUserSecurityResolveLoginFailureV336(req, payload, action, ht
     title: marker.permanent ? 'Akun Anda\nTerkunci' : 'Maaf, Akses Akun\nDijeda Sementara',
     greeting: 'Yth. Pengguna Dirac Group,',
     summary: marker.permanent
-      ? 'Kami memahami situasi ini tidak nyaman. Percobaan password ke-7 belum berhasil dan akun Anda kini terkunci. Silakan hubungi admin di WhatsApp 087892523968 atau support@diracgroup.store untuk peninjauan akses.'
+      ? 'Kami memahami situasi ini tidak nyaman. Percobaan password ke-7 belum berhasil dan akun Anda kini terkunci. Silakan hubungi admin di WhatsApp 087892523968 atau ' + diracSupportEmailV250() + ' untuk peninjauan akses.'
       : 'Kami memahami gagal masuk berulang kali bisa membuat khawatir. Percobaan password ke-' + count + ' belum berhasil. Demi menjaga akun Anda, akses masuk dijeda selama ' + duration + '.',
     statusLabel: 'STATUS AKUN',
     statusValue: marker.permanent ? 'TERKUNCI — HUBUNGI ADMIN' : 'DIJEDA ' + duration.toUpperCase(),
@@ -50653,7 +50653,7 @@ async function diracUserSecurityResolveLoginFailureV336(req, payload, action, ht
     actionText: 'BUKA PUSAT KEAMANAN',
     warningTitle: 'JIKA INI BUKAN ANDA',
     warning: 'Segera hubungi bantuan resmi dan tinjau keamanan akun. Jangan bagikan password, OTP, token, atau Passkey kepada siapa pun. Tim support tidak akan meminta data rahasia tersebut.',
-    supportLead: 'Kami siap membantu melalui WhatsApp 087892523968 atau support@diracgroup.store.'
+    supportLead: 'Kami siap membantu melalui WhatsApp 087892523968 atau ' + diracSupportEmailV250() + '.'
   };
   return Object.freeze({ kind: 'login_password_blocked', email: marker.email, reference,
     subject: 'DiracGroup Security - ' + String(htmlInput.title).replace(/\n/g, ' ') + ' [' + reference + ']',
@@ -50803,7 +50803,7 @@ async function diracUserSecurityResolveAccessBlockV341(req, payload, action, htt
     actionText: 'BUKA PUSAT KEAMANAN',
     warningTitle: 'JIKA INI BUKAN ANDA',
     warning: 'Jangan membagikan password, OTP, token, cookie, atau Passkey. Tinjau keamanan akun melalui kanal resmi dan hubungi support apabila aktivitas ini tidak Anda kenali.',
-    supportLead: 'Butuh bantuan? Hubungi WhatsApp 087892523968 atau support@diracgroup.store.'
+    supportLead: 'Butuh bantuan? Hubungi WhatsApp 087892523968 atau ' + diracSupportEmailV250() + '.'
   };
   return Object.freeze({
     kind: 'account_security_blocked',
@@ -66220,8 +66220,30 @@ function diracAppOriginHandoffTrailingSourceProofV365(req, ctx, tokenOverrideV36
     }
     if (!tokenV365) return null;
 
+    // A cross-origin document navigation keeps the source page in Referer for the
+    // initial GET. The handoff already proved the trusted destination origin and
+    // minted the credential for that origin, so verify the envelope against a
+    // canonical destination request while retaining the source-hash, session,
+    // identity, expiry, and five-second grace checks above.
+    const destinationOriginV365 = typeof diracRoleOriginV250 === 'function'
+      ? String(diracRoleOriginV250('panel') || '').trim().toLowerCase()
+      : '';
+    const destinationRequestV365 = destinationOriginV365
+      && /^https:\/\/[^/]+$/.test(destinationOriginV365)
+      ? diracPasskeyRoundtripCanonicalRequestV243(req, {}, [])
+      : null;
+    if (destinationRequestV365 && destinationRequestV365.headers) {
+      destinationRequestV365.headers.origin = destinationOriginV365;
+      destinationRequestV365.headers.referer = destinationOriginV365 + '/dashboard.html';
+      destinationRequestV365.headers.referrer = destinationOriginV365 + '/dashboard.html';
+    }
+    const destinationFingerprintV365 = destinationRequestV365
+      ? diracCentralDeviceFingerprintV221(destinationRequestV365)
+      : '';
+    if (!destinationRequestV365
+        || !safeEqual(destinationFingerprintV365, expectedDestinationHashV365)) return null;
     const envelopeV365 = diracCentralVerifyDeviceEnvelopeV224(
-      req,
+      destinationRequestV365,
       tokenV365,
       expectedDestinationHashV365
     );
@@ -67799,7 +67821,7 @@ function diracPasswordResetMailEventV338(record, client) {
     ],
     actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN',
     warningTitle: 'PERINGATAN KEAMANAN',
-    warning: 'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi WhatsApp 087892523968 atau email support@diracgroup.store. Jangan kirim password, OTP, token, atau data rahasia melalui chat maupun email.',
+    warning: 'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi WhatsApp 087892523968 atau email ' + diracSupportEmailV250() + '. Jangan kirim password, OTP, token, atau data rahasia melalui chat maupun email.',
     supportLead: 'Butuh bantuan memeriksa perubahan akun? Hubungi tim support melalui kanal resmi berikut.'
   };
   return Object.freeze({ kind: 'password_changed', email: record.email, reference,
