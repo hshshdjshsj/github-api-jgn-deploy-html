@@ -1,20 +1,11 @@
 {
-  "name": "dirac-cloudflare-runtime",
+  "name": "dirac-customer-security",
   "version": "1.0.0",
   "private": true,
   "engines": {
-    "node": ">=24.8.0 <25"
-  },
-  "scripts": {
-    "deploy": "wrangler deploy",
-    "deploy:recovery": "wrangler deploy -c wrangler.recovery.jsonc",
-    "check": "node --check cloudflare-server.js && node --check cloudflare-worker.mjs"
+    "node": "24.x"
   },
   "dependencies": {
     "argon2": "0.45.1"
-  },
-  "devDependencies": {
-    "@cloudflare/containers": "0.3.7",
-    "wrangler": "4.131.1"
   }
 }
