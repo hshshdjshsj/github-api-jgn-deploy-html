@@ -729,12 +729,7 @@ function diracS2SServerIdV250() {
 function diracRoleHostnameV250(role) {
   const clean = String(role || '').trim().toLowerCase();
   if (!DIRAC_UNIVERSAL_APP_ROLES_V250.has(clean)) throw new Error('DIRAC_TARGET_ROLE_INVALID');
-  const physical = clean === 'recovery' ? 'secure'
-    : (clean === 'dashboard' || clean === 'panel') ? 'panel'
-    : clean === 'parfum' ? 'shop'
-    : clean === 'pesanan' ? 'order'
-    : clean;
-  return physical + '.' + diracBaseDomainV250();
+  return (clean === 'recovery' ? 'secure' : clean) + '.' + diracBaseDomainV250();
 }
 
 function diracRoleOriginV250(role) {
@@ -742,7 +737,7 @@ function diracRoleOriginV250(role) {
 }
 
 function diracBaseOriginV250() {
-  return diracRoleOriginV250('parfum');
+  return 'https://' + diracBaseDomainV250();
 }
 
 function diracLocalOriginV250() {
@@ -762,11 +757,7 @@ function diracRoleFromHostnameV250(hostname) {
   const suffix = '.' + diracBaseDomainV250();
   if (!host.endsWith(suffix)) return '';
   const label = host.slice(0, -suffix.length);
-  const role = label === 'secure' ? 'recovery'
-    : label === 'panel' ? 'dashboard'
-    : label === 'shop' ? 'parfum'
-    : label === 'order' ? 'pesanan'
-    : label;
+  const role = label === 'secure' ? 'recovery' : label;
   return DIRAC_UNIVERSAL_APP_ROLES_V250.has(role) ? role : '';
 }
 
@@ -781,7 +772,7 @@ function diracUniversalBrowserOriginsV250() {
     } catch (_) {}
   };
   for (const role of DIRAC_UNIVERSAL_APP_ROLES_V250) add(diracRoleOriginV250(role));
-  for (const item of ('api,panel,shop,cs,order,pt,www,' + String(process.env.DIRAC_OFFICIAL_SUBDOMAINS || '')).split(',')) {
+  for (const item of ('api,panel,website,cs,order,' + String(process.env.DIRAC_OFFICIAL_SUBDOMAINS || '')).split(',')) {
     const subdomain = String(item || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
     if (!subdomain) continue;
     if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(subdomain)) {
@@ -6255,13 +6246,13 @@ function diracDashboardMfaOriginDiagnosticBeginV366(req, res, user, mfa) {
       || (expectedUaHashV366 && safeEqual(String(payloadV366.uaHash), expectedUaHashV366))));
 
     const baseDomainV366 = diracBaseDomainV250();
-    const baseOriginV366 = 'https://shop.' + baseDomainV366;
+    const baseOriginV366 = 'https://' + baseDomainV366;
     const csOriginV366 = 'https://cs.' + baseDomainV366;
     const apiOriginV366 = 'https://api.' + baseDomainV366;
     const panelOriginV366 = 'https://panel.' + baseDomainV366;
     const orderOriginV366 = 'https://order.' + baseDomainV366;
     const authOriginV366 = 'https://auth.' + baseDomainV366;
-    const dashboardOriginV366 = 'https://panel.' + baseDomainV366;
+    const dashboardOriginV366 = 'https://dashboard.' + baseDomainV366;
     const securityOriginV366 = 'https://security.' + baseDomainV366;
     const wwwOriginV366 = 'https://www.' + baseDomainV366;
 
@@ -66264,12 +66255,12 @@ function diracAppOriginHandoffTargetV313(targetRole) {
     const base = diracBaseDomainV250();
     const routes = {
       panel: 'https://panel.' + base + '/dashboard.html',
-      parfum: 'https://shop.' + base + '/parfum.html',
+      parfum: 'https://' + base + '/parfum.html',
       pesanan: 'https://order.' + base + '/pesanan.html',
       security: 'https://security.' + base + '/keamanan.html',
-      website: 'https://shop.' + base + '/website.html',
-      topup: 'https://pt.' + base + '/topup.html',
-      domain: 'https://pt.' + base + '/domain.html',
+      website: 'https://' + base + '/website.html',
+      topup: 'https://' + base + '/topup.html',
+      domain: 'https://' + base + '/domain.html',
       cs: 'https://cs.' + base + '/chat.html'
     };
     const expectedPath = {
