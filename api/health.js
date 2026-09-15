@@ -18621,10 +18621,7 @@ function midtransTrustedPaymentUrlV352(value) {
 }
 
 function midtransNotificationUrl() {
-  const explicit = String(process.env.MIDTRANS_NOTIFICATION_URL || process.env.PAYMENT_CALLBACK_URL || process.env.DOMAIN_PAYMENT_CALLBACK_URL || '').trim();
-  if (explicit) return explicit;
-  const site = String(process.env.DOMAIN_SITE_URL || process.env.SITE_URL || diracRoleOriginV250('pesanan')).trim().replace(/\/$/, '');
-  return site ? `${site}/api/health?action=midtrans_webhook` : '';
+  return diracRoleApiUrlV250('api', 'midtrans_webhook');
 }
 
 function midtransBasicAuthHeader() {
@@ -19048,7 +19045,7 @@ async function midtransCreateSnapPayment(input) {
     return { ok: false, status: 503, message: 'Binding Midtrans tidak dapat dibuat.', error: 'midtrans_binding_unavailable' };
   }
 
-  const returnUrl = String(process.env.PAYMENT_RETURN_URL || process.env.DOMAIN_PAYMENT_RETURN_URL || process.env.DOMAIN_SITE_URL || (diracRoleOriginV250('pesanan') + '/pesanan.html')).trim();
+  const returnUrl = diracRoleOriginV250('order') + '/pesanan.html';
   const payload = {
     transaction_details: {
       order_id: gatewayReference,
@@ -19079,7 +19076,8 @@ async function midtransCreateSnapPayment(input) {
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
-        Authorization: midtransBasicAuthHeader()
+        Authorization: midtransBasicAuthHeader(),
+        'X-Override-Notification': midtransNotificationUrl()
       },
       body: JSON.stringify(payload)
     });
