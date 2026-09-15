@@ -229,21 +229,38 @@ function timingEqual(a, b) {
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
+function supportDerivedCustomerSecretV362(label) {
+  const root = env('DIRAC_SECURITY_ROOT_SECRET');
+  if (Buffer.byteLength(root, 'utf8') < 3000) return '';
+  return crypto.createHmac('sha512', root)
+    .update('dirac-support-customer-v362\n' + supportBaseDomain() + '\n' + String(label || ''), 'utf8')
+    .digest('base64url');
+}
+
 function config() {
-  const supabaseUrl = env('DIRAC_SUPPORT_SUPABASE_URL').replace(/\/+$/, '');
-  const publishableKey = env('DIRAC_SUPPORT_SUPABASE_PUBLISHABLE_KEY') || env('DIRAC_SUPPORT_SUPABASE_ANON_KEY');
-  const secretKey = env('DIRAC_SUPPORT_SUPABASE_SECRET_KEY') || env('DIRAC_SUPPORT_SUPABASE_SERVICE_ROLE_KEY');
-  const cookieSecret = env('DIRAC_SUPPORT_COOKIE_SECRET');
-  const csrfSecret = env('DIRAC_SUPPORT_CSRF_SECRET');
-  const ipSecret = env('DIRAC_SUPPORT_IP_HMAC_SECRET');
+  const currentContext = supportCentralCurrentContextV146();
+  const customerConfigOnly = Boolean(currentContext && CUSTOMER_CONFIG_ACTIONS_V357.has(String(currentContext.action || '')));
+  const supportSupabaseUrl = env('DIRAC_SUPPORT_SUPABASE_URL').replace(/\/+$/, '');
+  const useMainCustomerDatabase = Boolean(customerConfigOnly && !supportSupabaseUrl);
+  const supabaseUrl = supportSupabaseUrl || (useMainCustomerDatabase ? env('DOMAIN_SUPABASE_URL').replace(/\/+$/, '') : '');
+  const publishableKey = env('DIRAC_SUPPORT_SUPABASE_PUBLISHABLE_KEY') || env('DIRAC_SUPPORT_SUPABASE_ANON_KEY') || (useMainCustomerDatabase ? env('DOMAIN_SUPABASE_ANON_KEY') : '');
+  const secretKey = env('DIRAC_SUPPORT_SUPABASE_SECRET_KEY') || env('DIRAC_SUPPORT_SUPABASE_SERVICE_ROLE_KEY') || (useMainCustomerDatabase ? env('DOMAIN_SUPABASE_SERVICE_ROLE_KEY') : '');
+  const cookieSecret = env('DIRAC_SUPPORT_COOKIE_SECRET') || (customerConfigOnly ? supportDerivedCustomerSecretV362('cookie') : '');
+  const csrfSecret = env('DIRAC_SUPPORT_CSRF_SECRET') || (customerConfigOnly ? supportDerivedCustomerSecretV362('csrf') : '');
+  const ipSecret = env('DIRAC_SUPPORT_IP_HMAC_SECRET') || (customerConfigOnly ? supportDerivedCustomerSecretV362('ip') : '');
   const mfaEnrollmentSecret = env('DIRAC_SUPPORT_MFA_ENROLLMENT_SECRET');
   const primaryAdminUserId = env('DIRAC_SUPPORT_PRIMARY_ADMIN_USER_ID').toLowerCase();
   const primaryAdminEmail = env('DIRAC_SUPPORT_PRIMARY_ADMIN_EMAIL').toLowerCase();
   const adminBindingSecret = env('DIRAC_SUPPORT_ADMIN_BINDING_SECRET');
   const turnstileSiteKey = env('DIRAC_SUPPORT_TURNSTILE_SITE_KEY'); const turnstileSecretKey = env('DIRAC_SUPPORT_TURNSTILE_SECRET_KEY');
-  const turnstileRequired = envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', isProduction());
-  const currentContext = supportCentralCurrentContextV146();
-  const customerConfigOnly = Boolean(currentContext && CUSTOMER_CONFIG_ACTIONS_V357.has(String(currentContext.action || '')));
+  const turnstilePairConfigured = Boolean(turnstileSiteKey && turnstileSecretKey);
+  const turnstilePartialConfig = Boolean(turnstileSiteKey) !== Boolean(turnstileSecretKey);
+  const turnstileExplicit = env('DIRAC_SUPPORT_REQUIRE_TURNSTILE');
+  if (turnstilePartialConfig) throw new PublicError(503, 'TURNSTILE_CONFIG_MISSING', 'Verifikasi anti-bot support belum dikonfigurasi lengkap.');
+  if (customerConfigOnly && turnstileExplicit && envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', false) && !turnstilePairConfigured) throw new PublicError(503, 'TURNSTILE_CONFIG_MISSING', 'Verifikasi anti-bot support diwajibkan tetapi kuncinya belum lengkap.');
+  const turnstileRequired = customerConfigOnly
+    ? (turnstilePairConfigured ? envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', true) : false)
+    : envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', isProduction());
   if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(supabaseUrl)) throw new PublicError(503, 'SUPPORT_CONFIG_INVALID', 'Konfigurasi database support belum valid.');
   const publishableRole = decodeJwt(publishableKey).role; const secretRole = decodeJwt(secretKey).role;
   const publishableValid = /^sb_publishable_[A-Za-z0-9_-]{10,}$/.test(publishableKey) || publishableRole === 'anon';
@@ -319,7 +336,8 @@ function requirePinnedPrimaryAdmin(staff) {
 
 function allowedOrigins() {
   const values = env('DIRAC_SUPPORT_ALLOWED_ORIGINS').split(',').map((value) => value.trim()).filter(Boolean);
-  if (!isProduction()) values.push('http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173', 'http://127.0.0.1:5173');
+  if (isProduction()) values.push('https://cs.' + supportBaseDomain());
+  else values.push('http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173', 'http://127.0.0.1:5173');
   return new Set(values.map((value) => {
     try { return new URL(value).origin; } catch (_) { return ''; }
   }).filter(Boolean));
@@ -654,10 +672,12 @@ async function resolveMainIdentity(req, res, required) {
     if (identityDiagnosticV360) identityDiagnosticV360.decision = 'upstream_non_2xx_mapped_to_502';
     throw new PublicError(502, 'MAIN_IDENTITY_UNAVAILABLE', 'Sesi akun Dirac belum dapat diverifikasi.');
   }
-  const user = result.data && result.data.ok === true && result.data.user && typeof result.data.user === 'object' ? result.data.user : null;
+  const mainAssuranceOk = Boolean(result.data && result.data.ok === true && result.data.dashboard === true && result.data.mfa && result.data.mfa.active === true);
+  const user = mainAssuranceOk && result.data.user && typeof result.data.user === 'object' ? result.data.user : null;
   const userId = String(user && user.id || '').trim().toLowerCase();
   const userEmail = String(user && user.email || '').trim().toLowerCase();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(userId)
+  if (!mainAssuranceOk
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(userId)
       || userEmail.length > 254
       || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail)) {
     if (identityDiagnosticV360) identityDiagnosticV360.decision = 'upstream_2xx_identity_invalid';
@@ -1362,7 +1382,7 @@ async function actionStatusBootstrap(req, res) {
 }
 
 async function actionChatPublicConfig(req, res) {
-  const cfg = config(); const identity = await resolveMainIdentity(req, res, false); const session = readSession(req, CUSTOMER_COOKIE);
+  const cfg = config(); const identity = await resolveMainIdentity(req, res, !cfg.turnstileRequired); const session = readSession(req, CUSTOMER_COOKIE);
   const hasSession = Boolean(identity && customerSessionMatches(session, identity));
   if (session && !hasSession) clearCookie(res, CUSTOMER_COOKIE, 'Strict');
   return json(res, 200, {
@@ -2372,9 +2392,15 @@ function supportCentralRecordOutcomeV146(ctx, error) {
 }
 
 function supportCentralOutputSecretsV146() {
+  const derived = [];
+  try {
+    derived.push(supportDerivedCustomerSecretV362('cookie'), supportDerivedCustomerSecretV362('csrf'), supportDerivedCustomerSecretV362('ip'));
+  } catch (_) {}
   return [
     env('DIRAC_SUPPORT_SUPABASE_SECRET_KEY'),
     env('DIRAC_SUPPORT_SUPABASE_SERVICE_ROLE_KEY'),
+    env('DOMAIN_SUPABASE_SERVICE_ROLE_KEY'),
+    env('DIRAC_SECURITY_ROOT_SECRET'),
     env('DIRAC_SUPPORT_COOKIE_SECRET'),
     env('DIRAC_SUPPORT_CSRF_SECRET'),
     env('DIRAC_SUPPORT_IP_HMAC_SECRET'),
@@ -2382,7 +2408,7 @@ function supportCentralOutputSecretsV146() {
     env('DIRAC_SUPPORT_ADMIN_BINDING_SECRET'),
     env('DIRAC_SUPPORT_TURNSTILE_SECRET_KEY'),
     env('CRON_SECRET')
-  ].filter((value) => Buffer.byteLength(value, 'utf8') >= 16);
+  ].concat(derived).filter((value) => Buffer.byteLength(value, 'utf8') >= 16);
 }
 
 function supportCentralSerializeOutput(payload, status) {

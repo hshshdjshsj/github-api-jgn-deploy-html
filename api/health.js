@@ -67435,7 +67435,7 @@ function diracCentralSupportBrokerRouteV355(input, options) {
 
   let supportDatabase = null;
   try {
-    const configured = String(process.env.DIRAC_SUPPORT_SUPABASE_URL || '').trim().replace(/\/+$/, '');
+    const configured = String(process.env.DIRAC_SUPPORT_SUPABASE_URL || process.env.DOMAIN_SUPABASE_URL || '').trim().replace(/\/+$/, '');
     if (/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(configured)) supportDatabase = new URL(configured);
   } catch (_) { supportDatabase = null; }
 
