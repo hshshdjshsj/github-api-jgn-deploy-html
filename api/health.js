@@ -59209,7 +59209,7 @@ async function diracCentralSupportRateLimitV365(input) {
       || !Number.isSafeInteger(blockSeconds) || blockSeconds < 0 || blockSeconds > 86400) {
     return { ok: false, reason: 'support_rate_input_invalid' };
   }
-  return diracCentralAtomicRateLimitV230({ key, limit, windowSeconds, blockSeconds });
+  return diracCentralRunInternalComplianceContextV230(() => diracCentralAtomicRateLimitV230({ key, limit, windowSeconds, blockSeconds }));
 }
 
 async function diracCentralAtomicRateSlotV228(ctx, action, windowMs, max) {
