@@ -4742,7 +4742,13 @@ async function requireDomainDashboardAccess(req, res) {
   const user = await requireDomainUser(req, res);
   if (!user) return null;
 
-  const mfa = verifyCustomerDashboardMfaCookie(req, user);
+  let mfa = verifyCustomerDashboardMfaCookie(req, user);
+  if (!mfa.ok && mfa.code === 'mfa_cookie_origin_mismatch') {
+    const supportOriginRotationV380 = diracCustomerMfaSupportOriginRotationV380(req, res, user, mfa);
+    if (supportOriginRotationV380 && supportOriginRotationV380.ok === true && supportOriginRotationV380.mfa) {
+      mfa = supportOriginRotationV380.mfa;
+    }
+  }
   customerSecuritySessionDecisionDebugV219(req, mfa && mfa.ok ? 'mfa.accepted' : 'mfa.rejected', {
     decision: mfa && mfa.ok ? 'continue_to_protected_session' : 'respond_403',
     mfa_code: mfa && mfa.code || (mfa && mfa.ok ? 'mfa_ok' : 'mfa_unknown_failure'),
@@ -6130,6 +6136,101 @@ function verifyCustomerDashboardMfaCookie(req, user) {
     sessionHash: String(payload.sessionHash || ''),
     source: proof.source
   };
+}
+
+const DIRAC_CUSTOMER_MFA_SUPPORT_ORIGIN_ROTATION_V380 = 'dirac-customer-mfa-support-origin-rotation-v380';
+
+function diracCustomerMfaSupportOriginRotationV380(req, res, user, mfaFailure) {
+  try {
+    const target = mfaFailure && mfaFailure.ok === false && mfaFailure.code === 'mfa_cookie_origin_mismatch'
+      ? diracCentralSupportDeviceTransitionRequestV354(req)
+      : null;
+    const ctx = diracCentralCurrentContextV149();
+    if (!target || !ctx || ctx.req !== req || ctx.action !== 'domain_dashboard_me'
+        || !diracCentralHandlerContextFullyPassedV211(ctx, req)
+        || !res || typeof res.getHeader !== 'function' || typeof res.setHeader !== 'function') return null;
+
+    const deviceCredentialName = diracCentralDeviceCookieNameV221();
+    const deviceCredentials = readCookieTokenCandidates(parseCookies(req), deviceCredentialName).slice(0, 2);
+    const transition = deviceCredentials.length === 1
+      ? diracCentralSupportDeviceTransitionProofV354(req, deviceCredentials[0])
+      : null;
+    const sourceOrigin = normalizeDashboardMfaOrigin(transition && transition.source_origin || '').toLowerCase();
+    const deviceSession = diracCentralVerifyDeviceSessionCookieV223(req);
+    const userId = String(user && user.id || '').trim();
+    const email = normalizeAuthEmail(user && user.email || '');
+    if (!transition || transition.ok !== true
+        || transition.patch !== DIRAC_CENTRAL_SUPPORT_DEVICE_TRANSITION_V354
+        || !sourceOrigin || safeEqual(sourceOrigin, String(target.origin || '').toLowerCase())
+        || !transition.payload || !deviceSession || !deviceSession.identity
+        || String(deviceSession.identity.userId || '').trim() !== userId
+        || normalizeAuthEmail(deviceSession.identity.email || '') !== email
+        || !/^[a-f0-9]{64}$/.test(String(deviceSession.binding || ''))
+        || !safeEqual(String(transition.payload.session || ''), String(deviceSession.binding || ''))) return null;
+
+    const sourceReq = Object.assign({}, req, { headers: Object.assign({}, req && req.headers || {}, {
+      origin: sourceOrigin,
+      referer: sourceOrigin + '/',
+      referrer: sourceOrigin + '/'
+    }) });
+    const sourceMfa = verifyCustomerDashboardMfaCookie(sourceReq, user);
+    const sourceMfaPayload = decodeCustomerDashboardMfaToken(getCustomerDashboardMfaToken(req).token);
+    if (!sourceMfa || sourceMfa.ok !== true || sourceMfa.method !== 'passkey' || sourceMfa.source !== 'http_only_cookie'
+        || !sourceMfaPayload || sourceMfaPayload.type !== CUSTOMER_MFA_SESSION_TYPE || sourceMfaPayload.method !== 'passkey'
+        || Number(sourceMfaPayload.securityEpoch || 0) !== Number(sourceMfa.securityEpoch || 0)
+        || Number(sourceMfaPayload.expiresAtMs || 0) !== Number(sourceMfa.expiresAtMs || 0)
+        || !safeEqual(String(sourceMfaPayload.sessionHash || ''), String(sourceMfa.sessionHash || ''))) return null;
+
+    const destinationMfaPayload = Object.assign({}, sourceMfaPayload, {
+      jti: crypto.randomBytes(24).toString('base64url'),
+      originHash: customerMfaBindingHash('origin', target.origin)
+    });
+    const destinationMfaBase64 = Buffer.from(JSON.stringify(destinationMfaPayload)).toString('base64url');
+    const destinationMfaToken = destinationMfaBase64 + '.' + signDashboardMfa(destinationMfaBase64, getCustomerMfaSecret());
+    const destinationReq = diracPasskeyRoundtripCanonicalRequestV243(req, {
+      [CUSTOMER_MFA_COOKIE]: destinationMfaToken
+    }, [CUSTOMER_MFA_COOKIE]);
+    if (!destinationReq || !destinationReq.headers) return null;
+    destinationReq.headers = Object.assign({}, destinationReq.headers, {
+      origin: target.origin,
+      referer: String(req && req.headers && (req.headers.referer || req.headers.referrer) || '').trim(),
+      referrer: String(req && req.headers && (req.headers.referer || req.headers.referrer) || '').trim()
+    });
+    const destinationMfa = verifyCustomerDashboardMfaCookie(destinationReq, user);
+    const sourceRejectionReq = diracPasskeyRoundtripCanonicalRequestV243(sourceReq, {
+      [CUSTOMER_MFA_COOKIE]: destinationMfaToken
+    }, [CUSTOMER_MFA_COOKIE]);
+    const sourceRejectedMfa = sourceRejectionReq ? verifyCustomerDashboardMfaCookie(sourceRejectionReq, user) : null;
+    if (!destinationMfa || destinationMfa.ok !== true || destinationMfa.method !== 'passkey'
+        || destinationMfa.source !== 'http_only_cookie'
+        || Number(destinationMfa.securityEpoch || 0) !== Number(sourceMfa.securityEpoch || 0)
+        || Number(destinationMfa.expiresAtMs || 0) !== Number(sourceMfa.expiresAtMs || 0)
+        || !safeEqual(String(destinationMfa.sessionHash || ''), String(sourceMfa.sessionHash || ''))
+        || !sourceRejectedMfa || sourceRejectedMfa.ok !== false || sourceRejectedMfa.code !== 'mfa_cookie_origin_mismatch') return null;
+
+    const mfaMaxAgeSeconds = Math.min(8 * 60 * 60, Math.floor((Number(sourceMfa.expiresAtMs || 0) - Date.now()) / 1000));
+    if (!Number.isSafeInteger(mfaMaxAgeSeconds) || mfaMaxAgeSeconds < 1) return null;
+    const destinationMfaCookie = makeCookie(CUSTOMER_MFA_COOKIE, destinationMfaToken, { maxAge: mfaMaxAgeSeconds, domain: '' });
+    if (/;\s*Domain=/i.test(destinationMfaCookie) || !/;\s*Path=\/(?:;|$)/i.test(destinationMfaCookie)
+        || !/;\s*HttpOnly(?:;|$)/i.test(destinationMfaCookie) || !/;\s*Secure(?:;|$)/i.test(destinationMfaCookie)
+        || (process.env.NODE_ENV === 'production' && !/;\s*SameSite=Strict(?:;|$)/i.test(destinationMfaCookie))) return null;
+
+    const previousSetCookie = res.getHeader('Set-Cookie');
+    if (!replaceResponseCookieByNameV229(res, CUSTOMER_MFA_COOKIE, destinationMfaCookie)) return null;
+    const publishedSetCookie = res.getHeader('Set-Cookie');
+    const publishedExactlyOnce = Array.isArray(publishedSetCookie)
+      ? publishedSetCookie.indexOf(destinationMfaCookie) !== -1
+        && publishedSetCookie.indexOf(destinationMfaCookie) === publishedSetCookie.lastIndexOf(destinationMfaCookie)
+      : String(publishedSetCookie || '') === destinationMfaCookie;
+    if (!publishedExactlyOnce) {
+      if (previousSetCookie === undefined && typeof res.removeHeader === 'function') res.removeHeader('Set-Cookie');
+      else res.setHeader('Set-Cookie', previousSetCookie === undefined ? [] : previousSetCookie);
+      return null;
+    }
+    return Object.freeze({ ok: true, patch: DIRAC_CUSTOMER_MFA_SUPPORT_ORIGIN_ROTATION_V380, mfa: destinationMfa });
+  } catch (_) {
+    return null;
+  }
 }
 
 const DIRAC_DASHBOARD_MFA_ORIGIN_DIAGNOSTIC_V366 = 'dirac-dashboard-mfa-origin-diagnostic-v366';
