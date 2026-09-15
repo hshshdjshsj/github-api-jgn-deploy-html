@@ -59198,6 +59198,20 @@ async function diracCentralAtomicRateLimitV230({ key, limit, windowSeconds, bloc
   };
 }
 
+async function diracCentralSupportRateLimitV365(input) {
+  const value = input && typeof input === 'object' && !Array.isArray(input) ? input : null;
+  if (!value || Object.keys(value).sort().join(',') !== 'blockSeconds,key,limit,windowSeconds') return { ok: false, reason: 'support_rate_input_invalid' };
+  const key = String(value.key || '').trim();
+  const limit = Number(value.limit); const windowSeconds = Number(value.windowSeconds); const blockSeconds = Number(value.blockSeconds);
+  if (!/^support-rate-v364:[a-f0-9]{64}$/.test(key)
+      || !Number.isSafeInteger(limit) || limit < 1 || limit > 10000
+      || !Number.isSafeInteger(windowSeconds) || windowSeconds < 1 || windowSeconds > 86400
+      || !Number.isSafeInteger(blockSeconds) || blockSeconds < 0 || blockSeconds > 86400) {
+    return { ok: false, reason: 'support_rate_input_invalid' };
+  }
+  return diracCentralAtomicRateLimitV230({ key, limit, windowSeconds, blockSeconds });
+}
+
 async function diracCentralAtomicRateSlotV228(ctx, action, windowMs, max) {
   return diracCentralAtomicRateLimitV230({
     key: 's2s-central-rate-v230:' + diracCentralHashV146([ctx.identity.key, action].join('|')),
@@ -67665,6 +67679,7 @@ const DIRAC_CENTRAL_GUARD_REFERENCE_LIST_V230 = Object.freeze([
   diracCentralA2FRequestSignatureGuardV148,
   diracCentralAtomicConsumeV230,
   diracCentralAtomicRateLimitV230,
+  diracCentralSupportRateLimitV365,
   diracCentralEgressRouteAllowedV228,
   diracCentralInspectEgressV146,
   diracCentralPinnedHttpsFetchV230,
@@ -68718,6 +68733,10 @@ Object.defineProperty(module.exports, '__diracCentralBanAuthorityV354', {
 });
 Object.defineProperty(module.exports, '__diracCentralCreateSupportEgressBrokerV355', {
   value: diracCentralCreateSupportEgressBrokerV355,
+  enumerable: false, writable: false, configurable: false
+});
+Object.defineProperty(module.exports, '__diracCentralSupportRateLimitV365', {
+  value: Object.freeze({ version: 'dirac-central-support-rate-authority-v365', take: diracCentralSupportRateLimitV365 }),
   enumerable: false, writable: false, configurable: false
 });
 Object.defineProperty(module.exports, '__diracCentralSupportDeviceTransitionV354', { value: true, enumerable: false, writable: false, configurable: false });

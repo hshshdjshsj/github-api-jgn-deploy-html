@@ -1317,11 +1317,19 @@ async function takeRateLimit(scope, key, limit, windowSeconds, blockSeconds) {
 
 async function supportCentralAtomicRateLimitV364(scope, key, limit, windowSeconds, blockSeconds) {
   const securityKey = 'support-rate-v364:' + hash(String(scope || '') + '|' + String(key || ''));
-  const data = await rpc('dirac_central_atomic_rate_limit_v230', { p_security_key: securityKey, p_limit: limit, p_window_seconds: windowSeconds, p_block_seconds: blockSeconds });
-  const value = Array.isArray(data) ? data[0] : data;
-  if (!value || value.allowed !== true) {
-    const retry = Math.max(1, Number(value && (value.retry_after || value.retry_after_seconds) || blockSeconds || windowSeconds));
-    const error = new PublicError(429, 'RATE_LIMITED', 'Terlalu banyak permintaan. Coba kembali sebentar lagi.'); error.retryAfter = retry; throw error;
+  const handlerPromise = DIRAC_SUPPORT_HEALTH_HANDLER_PROMISE_V354;
+  const handler = handlerPromise && await handlerPromise.catch(() => null);
+  const authority = handler && handler.__diracCentralSupportRateLimitV365;
+  if (!authority || authority.version !== 'dirac-central-support-rate-authority-v365' || typeof authority.take !== 'function') {
+    throw new PublicError(503, 'CENTRAL_RATE_GUARD_UNAVAILABLE', 'Rate guard support tidak tersedia.');
+  }
+  const value = await authority.take({ key: securityKey, limit, windowSeconds, blockSeconds }).catch(() => null);
+  if (!value || value.ok !== true) {
+    if (value && value.reason === 'distributed_rate_limit') {
+      const retry = Math.max(1, Math.ceil((Math.max(Number(value.blockedUntil || 0), Number(value.resetAt || 0)) - Date.now()) / 1000) || Number(blockSeconds || windowSeconds || 1));
+      const error = new PublicError(429, 'RATE_LIMITED', 'Terlalu banyak permintaan. Coba kembali sebentar lagi.'); error.retryAfter = retry; throw error;
+    }
+    throw new PublicError(503, 'CENTRAL_RATE_GUARD_UNAVAILABLE', 'Rate guard support tidak tersedia.');
   }
   return value;
 }
