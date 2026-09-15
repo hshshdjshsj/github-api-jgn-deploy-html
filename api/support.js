@@ -956,6 +956,7 @@ function supportAssertDatabaseOperationV361(path, settings) {
   if (url.pathname + url.search !== path || url.hash || /%(?:2f|5c|2e)/i.test(url.pathname)) throw new PublicError(503, 'SUPPORT_DB_PATH_REJECTED', 'Target database tidak valid.');
   const method = String(settings.method || 'GET');
   const rpcActions = {
+    dirac_central_atomic_rate_limit_v230: DIRAC_SUPPORT_CENTRAL_EXPECTED_ACTIONS_V146,
     support_take_rate_limit: DIRAC_SUPPORT_CENTRAL_EXPECTED_ACTIONS_V146,
     support_auth_audit: ['admin_login', 'admin_mfa_verify', 'admin_logout'],
     support_status_snapshot: ['status_bootstrap', 'admin_login', 'admin_mfa_verify', 'admin_bootstrap', 'admin_status_snapshot'],
@@ -973,6 +974,15 @@ function supportAssertDatabaseOperationV361(path, settings) {
     const body = settings.body || {};
     if (body.p_admin_user_id !== undefined && (!ctx.verifiedAdminId || body.p_admin_user_id !== ctx.verifiedAdminId)) throw new PublicError(403, 'SUPPORT_DB_ADMIN_REQUIRED', 'Identitas admin belum diverifikasi.');
     if (body.p_customer_user_id !== undefined && (!ctx.verifiedCustomerId || body.p_customer_user_id !== ctx.verifiedCustomerId)) throw new PublicError(403, 'SUPPORT_DB_OWNER_REQUIRED', 'Pemilik belum diverifikasi.');
+    if (name === 'dirac_central_atomic_rate_limit_v230') {
+      if (Object.keys(body).sort().join(',') !== 'p_block_seconds,p_limit,p_security_key,p_window_seconds'
+          || !/^support-rate-v364:[a-f0-9]{64}$/.test(String(body.p_security_key || ''))
+          || !Number.isSafeInteger(Number(body.p_limit)) || Number(body.p_limit) < 1 || Number(body.p_limit) > 10000
+          || !Number.isSafeInteger(Number(body.p_window_seconds)) || Number(body.p_window_seconds) < 1 || Number(body.p_window_seconds) > 86400
+          || !Number.isSafeInteger(Number(body.p_block_seconds)) || Number(body.p_block_seconds) < 0 || Number(body.p_block_seconds) > 86400) {
+        throw new PublicError(503, 'SUPPORT_DB_RATE_LIMIT_REJECTED', 'Operasi rate-limit database tidak valid.');
+      }
+    }
     if (name === 'support_status_snapshot' && body.p_admin === true && !ctx.verifiedAdminId) throw new PublicError(403, 'SUPPORT_DB_ADMIN_REQUIRED', 'Identitas admin belum diverifikasi.');
     if (name === 'support_chat_send') {
       const expectedId = body.p_sender_kind === 'customer' ? ctx.verifiedCustomerId : body.p_sender_kind === 'admin' ? ctx.verifiedAdminId : '';
@@ -1301,6 +1311,17 @@ async function takeRateLimit(scope, key, limit, windowSeconds, blockSeconds) {
   if (!value || value.allowed !== true) {
     const retry = Math.max(1, Number(value && (value.retry_after || value.retry_after_seconds) || blockSeconds || windowSeconds));
     const error = new PublicError(429, 'RATE_LIMITED', 'Terlalu banyak permintaan. Coba kembali beberapa saat lagi.'); error.retryAfter = retry; throw error;
+  }
+  return value;
+}
+
+async function supportCentralAtomicRateLimitV364(scope, key, limit, windowSeconds, blockSeconds) {
+  const securityKey = 'support-rate-v364:' + hash(String(scope || '') + '|' + String(key || ''));
+  const data = await rpc('dirac_central_atomic_rate_limit_v230', { p_security_key: securityKey, p_limit: limit, p_window_seconds: windowSeconds, p_block_seconds: blockSeconds });
+  const value = Array.isArray(data) ? data[0] : data;
+  if (!value || value.allowed !== true) {
+    const retry = Math.max(1, Number(value && (value.retry_after || value.retry_after_seconds) || blockSeconds || windowSeconds));
+    const error = new PublicError(429, 'RATE_LIMITED', 'Terlalu banyak permintaan. Coba kembali sebentar lagi.'); error.retryAfter = retry; throw error;
   }
   return value;
 }
@@ -2367,7 +2388,7 @@ function supportCentralMfaPrecheckV146(ctx) {
 async function supportCentralDistributedRateV354(ctx) {
   const policyLimit = ctx.policy.principal === 'cron' ? 30 : ctx.policy.principal === 'public' ? 180 : 360;
   const key = hmac(config().ipSecret, 'central-guard-rate-v354|' + ctx.fingerprint + '|' + ctx.action, 'hex');
-  return takeRateLimit('central_guard_rate_v354', key, policyLimit, 60, 60);
+  return supportCentralAtomicRateLimitV364('central_guard_rate_v354', key, policyLimit, 60, 60);
 }
 
 function supportCentralCircuitCheckV146(ctx) {
@@ -2481,7 +2502,7 @@ function supportCentralAuthorizeHealthEgressV355(input, options) {
       return false;
     }
     return target.origin === supportDatabaseOrigin
-      && target.pathname === '/rest/v1/rpc/support_take_rate_limit'
+      && target.pathname === '/rest/v1/rpc/dirac_central_atomic_rate_limit_v230'
       && target.search === '';
   }
   if (ctx.fullyPassed !== true || !['handler', 'audit'].includes(ctx.phase)) return false;
