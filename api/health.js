@@ -6280,6 +6280,43 @@ function diracDashboardMfaOriginDiagnosticBeginV366(req, res, user, mfa) {
       ? crypto.createHash('sha256').update(String(payloadV366.originHash)).digest('hex').slice(0, 16)
       : '';
 
+    const requestRoleV367 = requestOriginV366.toLowerCase() === panelOriginV366 ? 'panel'
+      : requestOriginV366.toLowerCase() === csOriginV366 ? 'cs'
+        : requestOriginV366.toLowerCase() === securityOriginV366 ? 'security'
+          : requestOriginV366.toLowerCase() === orderOriginV366 ? 'order'
+            : requestOriginV366.toLowerCase() === authOriginV366 ? 'auth'
+              : requestOriginV366.toLowerCase() === apiOriginV366 ? 'api'
+                : requestOriginV366.toLowerCase() === wwwOriginV366 ? 'www'
+                  : requestOriginV366.toLowerCase() === baseOriginV366 ? 'base' : 'unknown';
+    const mfaBoundRoleV367 = diracDashboardMfaOriginMatchV366(payloadV366, panelOriginV366) ? 'panel'
+      : diracDashboardMfaOriginMatchV366(payloadV366, csOriginV366) ? 'cs'
+        : diracDashboardMfaOriginMatchV366(payloadV366, securityOriginV366) ? 'security'
+          : diracDashboardMfaOriginMatchV366(payloadV366, orderOriginV366) ? 'order'
+            : diracDashboardMfaOriginMatchV366(payloadV366, authOriginV366) ? 'auth'
+              : diracDashboardMfaOriginMatchV366(payloadV366, apiOriginV366) ? 'api'
+                : diracDashboardMfaOriginMatchV366(payloadV366, wwwOriginV366) ? 'www'
+                  : diracDashboardMfaOriginMatchV366(payloadV366, baseOriginV366) ? 'base' : 'unknown';
+    const serverCsTargetV367 = typeof diracAppOriginHandoffTargetV313 === 'function'
+      ? diracAppOriginHandoffTargetV313('cs')
+      : null;
+    const rawCookieHeaderV367 = String(req && req.headers && req.headers.cookie || '');
+    const presentSessionChunkMatchesV367 = rawCookieHeaderV367.match(new RegExp(
+      '(?:^|;\\s*)(?:' + String(ACCESS_COOKIE) + '|' + String(REFRESH_COOKIE) + '|'
+      + String(CUSTOMER_MFA_COOKIE) + '|' + String(DOMAIN_SIGNED_SESSION_COOKIE) + ')__\\d+=',
+      'g'
+    )) || [];
+    const compactRequestClearCookieCountV367 = 4 + presentSessionChunkMatchesV367.length;
+    const fullClearPreviewV367 = [
+      ...makeClearTokenCookieSet(ACCESS_COOKIE),
+      ...makeClearTokenCookieSet(REFRESH_COOKIE),
+      ...makeClearTokenCookieSet(CUSTOMER_MFA_COOKIE),
+      ...makeClearTokenCookieSet(DOMAIN_SIGNED_SESSION_COOKIE),
+      makeCookie(diracCentralDeviceSessionCookieNameV223(), '', { maxAge: 0, domain: '' }),
+      makeCookie(diracCentralDeviceCookieNameV221(), '', { maxAge: 0, domain: '' })
+    ];
+    const fullClearBytesV367 = Buffer.byteLength(JSON.stringify(fullClearPreviewV367), 'utf8');
+    const responseBeforeClearV367 = diracDashboardMfaResponseSnapshotV366(res);
+
     const stateV366 = Object.freeze({
       patch: DIRAC_DASHBOARD_MFA_ORIGIN_DIAGNOSTIC_V366,
       central_request_id: centralRequestIdV366,
@@ -6435,6 +6472,38 @@ function diracDashboardMfaOriginDiagnosticBeginV366(req, res, user, mfa) {
         destination_hash_digest: stateDestinationHashV366
           ? crypto.createHash('sha256').update(stateDestinationHashV366).digest('hex').slice(0, 16)
           : ''
+      }),
+      chain_diagnostic_v367: Object.freeze({
+        patch: 'dirac-cs-main-identity-chain-diagnostic-v367',
+        request_role: requestRoleV367,
+        mfa_bound_role: mfaBoundRoleV367,
+        cross_role_request: requestRoleV367 !== 'unknown' && mfaBoundRoleV367 !== 'unknown' && requestRoleV367 !== mfaBoundRoleV367,
+        panel_to_cs_transition_detected: requestRoleV367 === 'cs' && mfaBoundRoleV367 === 'panel',
+        isolated_origin_binding_failure: Boolean(payloadTypeValidV366 && expiryValidV366 && emailMatchV366
+          && authUserMatchV366 && customerMatchV366 && epochValidV366 && sessionMatchV366 && uaMatchV366
+          && !requestOriginMatchV366),
+        server_cs_handoff_target_valid: Boolean(serverCsTargetV367 && serverCsTargetV367.role === 'cs'),
+        server_cs_handoff_target_matches_request_origin: Boolean(serverCsTargetV367
+          && String(serverCsTargetV367.origin || '').toLowerCase() === requestOriginV366.toLowerCase()),
+        recent_handoff_state_present: Boolean(bindingStateV366 && stateIssuedAtV366 > 0 && stateHandoffUntilV366 > 0),
+        recent_handoff_grace_active: Boolean(bindingStateV366 && stateHandoffUntilV366 > nowV366),
+        device_session_valid: Boolean(verifiedDeviceSessionV366 && verifiedDeviceSessionV366.binding),
+        device_credential_fingerprint_mismatch: String(verifiedDeviceCredentialV366 && verifiedDeviceCredentialV366.reason || '') === 'device_credential_fingerprint_mismatch',
+        evidence_consistent_with_missing_origin_rotation: Boolean(
+          requestRoleV367 === 'cs'
+          && mfaBoundRoleV367 === 'panel'
+          && payloadTypeValidV366 && expiryValidV366 && emailMatchV366 && authUserMatchV366
+          && customerMatchV366 && epochValidV366 && sessionMatchV366 && uaMatchV366
+          && !requestOriginMatchV366
+          && !(bindingStateV366 && stateIssuedAtV366 > 0 && stateHandoffUntilV366 > nowV366)
+        ),
+        request_session_chunk_cookie_count: presentSessionChunkMatchesV367.length,
+        compact_request_clear_cookie_count: compactRequestClearCookieCountV367,
+        full_clear_cookie_count_exact: fullClearPreviewV367.length,
+        full_clear_serialized_bytes_exact: fullClearBytesV367,
+        clear_cookie_count_amplification: fullClearPreviewV367.length - compactRequestClearCookieCountV367,
+        response_before_clear_header_bytes: Number(responseBeforeClearV367 && responseBeforeClearV367.response_headers_serialized_bytes || 0),
+        projected_full_clear_header_bytes_floor: Number(responseBeforeClearV367 && responseBeforeClearV367.response_headers_serialized_bytes || 0) + fullClearBytesV367
       }),
       rejection_response_pressure: Object.freeze({
         full_clear_base_cookie_family_count: 4,

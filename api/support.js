@@ -594,7 +594,14 @@ function mainIdentityDiagnosticV360(req, route, cookieHeader, headers) {
       expectedBaseCount: route.cookieBases.length,
       expectedBases: route.cookieBases.slice(0, 32)
     },
-    outbound: { headerNames, cookiePresent: headerNames.includes('cookie'), authorizationPresent: headerNames.includes('authorization') },
+    outbound: {
+      headerNames,
+      cookiePresent: headerNames.includes('cookie'),
+      authorizationPresent: headerNames.includes('authorization'),
+      forwardedOrigin: String(headers && headers.Origin || '').slice(0, 300),
+      forwardedReferer: String(headers && headers.Referer || '').slice(0, 300),
+      originForwardedUnchanged: String(headers && headers.Origin || '') === requestOrigin(req)
+    },
     egress: { authorized: null },
     response: null,
     decision: ''
@@ -1411,9 +1418,40 @@ async function actionStatusBootstrap(req, res) {
 }
 
 async function actionChatPublicConfig(req, res) {
-  const cfg = config(); const identity = await resolveMainIdentity(req, res, !cfg.turnstileRequired); const session = readSession(req, CUSTOMER_COOKIE);
+  const cfg = config();
+  req.__diracSupportEffectiveConfigDiagnosticV367 = Object.freeze({
+    patch: 'dirac-support-effective-config-diagnostic-v367',
+    action: 'chat_public_config',
+    databaseSource: env('DIRAC_SUPPORT_SUPABASE_URL') ? 'support_explicit' : 'domain_fallback',
+    publishableKeySource: (env('DIRAC_SUPPORT_SUPABASE_PUBLISHABLE_KEY') || env('DIRAC_SUPPORT_SUPABASE_ANON_KEY')) ? 'support_explicit' : 'domain_fallback',
+    secretKeySource: (env('DIRAC_SUPPORT_SUPABASE_SECRET_KEY') || env('DIRAC_SUPPORT_SUPABASE_SERVICE_ROLE_KEY')) ? 'support_explicit' : 'domain_fallback',
+    cookieSecretSource: env('DIRAC_SUPPORT_COOKIE_SECRET') ? 'support_explicit' : 'root_derived',
+    csrfSecretSource: env('DIRAC_SUPPORT_CSRF_SECRET') ? 'support_explicit' : 'root_derived',
+    ipSecretSource: env('DIRAC_SUPPORT_IP_HMAC_SECRET') ? 'support_explicit' : 'root_derived',
+    supabaseUrlShapeOk: /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(String(cfg.supabaseUrl || '')),
+    publishableKeyClassOk: /^sb_publishable_[A-Za-z0-9_-]{10,}$/.test(String(cfg.publishableKey || '')) || decodeJwt(cfg.publishableKey).role === 'anon',
+    secretKeyClassOk: /^sb_secret_[A-Za-z0-9_-]{10,}$/.test(String(cfg.secretKey || '')) || decodeJwt(cfg.secretKey).role === 'service_role',
+    customerSecretsStrong: [cfg.cookieSecret, cfg.csrfSecret, cfg.ipSecret].every((value) => Buffer.byteLength(String(value || ''), 'utf8') >= 32),
+    customerSecretsDistinct: new Set([cfg.cookieSecret, cfg.csrfSecret, cfg.ipSecret]).size === 3,
+    turnstileRequired: Boolean(cfg.turnstileRequired),
+    turnstilePairPresent: Boolean(cfg.turnstileSiteKey && cfg.turnstileSecretKey),
+    mainIdentityRequired: !cfg.turnstileRequired,
+    requestOriginAllowed: originAllowed(req)
+  });
+  const identity = await resolveMainIdentity(req, res, !cfg.turnstileRequired); const session = readSession(req, CUSTOMER_COOKIE);
   const hasSession = Boolean(identity && customerSessionMatches(session, identity));
   if (session && !hasSession) clearCookie(res, CUSTOMER_COOKIE, 'Strict');
+  try {
+    console.error('[dirac-support-chat-public-config-diagnostic-v367]', JSON.stringify({
+      patch: 'dirac-support-chat-public-config-diagnostic-v367',
+      event: 'chat_public_config_success',
+      requestId: String(req && req.diracRequestId || '').slice(0, 100),
+      effectiveConfig: req.__diracSupportEffectiveConfigDiagnosticV367,
+      mainIdentity: req.__diracSupportMainIdentityDiagnosticV360 || null,
+      authenticated: Boolean(identity),
+      hasSession
+    }));
+  } catch (_) {}
   return json(res, 200, {
     ok: true,
     code: 'CHAT_CONFIG_OK',
@@ -2833,6 +2871,7 @@ async function handler(req, res) {
             passportHex: ctx.passport.toString(16),
             request: { method: ctx.method, originPresent: Boolean(requestOrigin(req)), originAllowed: originAllowed(req) },
             mainIdentity: req.__diracSupportMainIdentityDiagnosticV360 || null,
+            effectiveConfig: req.__diracSupportEffectiveConfigDiagnosticV367 || null,
             customerConfig: {
               supabaseUrlShapeOk: /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(env('DIRAC_SUPPORT_SUPABASE_URL').replace(/\/+$/, '')),
               publishableKeyClassOk: /^sb_publishable_[A-Za-z0-9_-]{10,}$/.test(diagnosticPublishableKeyV358) || decodeJwt(diagnosticPublishableKeyV358).role === 'anon',
