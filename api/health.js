@@ -18621,7 +18621,9 @@ function midtransTrustedPaymentUrlV352(value) {
 }
 
 function midtransNotificationUrl() {
-  return diracRoleApiUrlV250('api', 'midtrans_webhook');
+  const url = new URL('/api/health', 'https://api.' + diracBaseDomainV250());
+  url.searchParams.set('action', 'midtrans_webhook');
+  return url.toString();
 }
 
 function midtransBasicAuthHeader() {
@@ -19045,7 +19047,7 @@ async function midtransCreateSnapPayment(input) {
     return { ok: false, status: 503, message: 'Binding Midtrans tidak dapat dibuat.', error: 'midtrans_binding_unavailable' };
   }
 
-  const returnUrl = diracRoleOriginV250('order') + '/pesanan.html';
+  const returnUrl = new URL('/pesanan.html', 'https://order.' + diracBaseDomainV250()).toString();
   const payload = {
     transaction_details: {
       order_id: gatewayReference,
