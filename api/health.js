@@ -772,7 +772,7 @@ function diracUniversalBrowserOriginsV250() {
     } catch (_) {}
   };
   for (const role of DIRAC_UNIVERSAL_APP_ROLES_V250) add(diracRoleOriginV250(role));
-  for (const item of ('api,panel,website,cs,order,' + String(process.env.DIRAC_OFFICIAL_SUBDOMAINS || '')).split(',')) {
+  for (const item of ('api,panel,website,cs,order,pt,' + String(process.env.DIRAC_OFFICIAL_SUBDOMAINS || '')).split(',')) {
     const subdomain = String(item || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
     if (!subdomain) continue;
     if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(subdomain)) {
@@ -11545,6 +11545,7 @@ const CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_RECORD_KEYS_V325 = Object.freeze
   'storage_keys', 'updated_at_ms', 'version'
 ].sort());
 const CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_FETCH_MARKERS_V325 = new WeakMap();
+const DIRAC_CENTRAL_CUSTOMER_ACCESS_BLOCK_MIRROR_CAPABILITIES_V353 = new WeakMap();
 
 function customerSecurityPersistentAccessBlockFilterMayMatchV325(value) {
   const prefix = CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_PREFIX_V325 + ':';
@@ -11636,12 +11637,46 @@ function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, opt
       && ctx.currentStageV211 === 'security report'
       && ctx.currentStageIndexV211 === SECURITY_PIPELINE.findIndex((stage) => stage && stage.name === 'security report')
       && diracCentralGuardPhaseValidV211(ctx));
+    const mirrorCapabilityV353 = ctx && typeof ctx === 'object'
+      ? DIRAC_CENTRAL_CUSTOMER_ACCESS_BLOCK_MIRROR_CAPABILITIES_V353.get(ctx)
+      : null;
+    let centralFailureMirrorGuardPassedV353 = false;
+    if (marker && mirrorCapabilityV353
+        && ['create', 'create_verify'].includes(String(marker.operation || ''))) {
+      try {
+        const stageIndexV353 = Number(ctx && ctx.currentStageIndexV211);
+        const priorPassportV353 = stageIndexV353 === 15
+          ? (1n << BigInt(stageIndexV353)) - 1n
+          : -1n;
+        centralFailureMirrorGuardPassedV353 = Boolean(
+          stageIndexV353 === 15
+          && BigInt(ctx && ctx.passport || 0n) === priorPassportV353
+          && ctx.req === mirrorCapabilityV353.req
+          && ctx.res
+          && ctx.executionPhaseV211 === 'guard'
+          && ctx.currentStageV211 === 'device binding'
+          && ctx.failedStageV211 === 'device binding'
+          && ctx.failureReasonV211 === 'device_consistency_changed'
+          && ctx.action === 'customer_session_handoff_issue'
+          && ctx.method === 'POST'
+          && ctx.classification === 'browser'
+          && ctx.authentication === 'browser'
+          && mirrorCapabilityV353.requestId === String(ctx.requestId || '')
+          && mirrorCapabilityV353.action === ctx.action
+          && mirrorCapabilityV353.reason === ctx.failureReasonV211
+          && mirrorCapabilityV353.stage === ctx.failedStageV211
+          && mirrorCapabilityV353.stageIndex === stageIndexV353
+        );
+      } catch (_) {
+        centralFailureMirrorGuardPassedV353 = false;
+      }
+    }
     if (!marker || marker.ctx !== ctx || marker.path !== String(path || '')
         || marker.action !== String(ctx && ctx.action || '')
         || marker.request_id !== String(ctx && ctx.requestId || '')
         || !marker.digest
         || !safeEqual(marker.digest, customerSecurityPersistentAccessBlockCapabilityDigestV325(path, options))
-        || !ctx || !ctx.req || (!handlerGuardPassed && !recoveryGuardPassed)
+        || !ctx || !ctx.req || (!handlerGuardPassed && !recoveryGuardPassed && !centralFailureMirrorGuardPassedV353)
         || !options || options.auth !== 'service'
         || String(options.method || 'GET').toUpperCase() !== String(method || '').toUpperCase()) return false;
 
@@ -63475,13 +63510,29 @@ async function diracCentralMirrorBrowserBanToCustomerAccessV353(ctx, action, rea
     Date.now(),
     (value) => Number(value || 0)
   );
-  const persisted = await customerSecurityCreatePersistentAccessBlockV325(
-    identity,
-    String(action || 'central_guard').slice(0, 80),
-    'central_guard_' + String(reason || 'security_block').slice(0, 80),
-    null,
-    effectiveUntil
-  ).catch(() => false);
+  const mirrorCapabilityV353 = Object.freeze({
+    req,
+    requestId: String(ctx && ctx.requestId || ''),
+    action: String(action || ''),
+    reason: String(reason || ''),
+    stage: String(ctx && ctx.failedStageV211 || ''),
+    stageIndex: Number(ctx && ctx.currentStageIndexV211)
+  });
+  DIRAC_CENTRAL_CUSTOMER_ACCESS_BLOCK_MIRROR_CAPABILITIES_V353.set(ctx, mirrorCapabilityV353);
+  let persisted = false;
+  try {
+    persisted = await customerSecurityCreatePersistentAccessBlockV325(
+      identity,
+      String(action || 'central_guard').slice(0, 80),
+      'central_guard_' + String(reason || 'security_block').slice(0, 80),
+      null,
+      effectiveUntil
+    ).catch(() => false);
+  } finally {
+    if (DIRAC_CENTRAL_CUSTOMER_ACCESS_BLOCK_MIRROR_CAPABILITIES_V353.get(ctx) === mirrorCapabilityV353) {
+      DIRAC_CENTRAL_CUSTOMER_ACCESS_BLOCK_MIRROR_CAPABILITIES_V353.delete(ctx);
+    }
+  }
   return Object.freeze({ required: true, ok: persisted === true, blockedUntilMs: effectiveUntil });
 }
 
@@ -66443,8 +66494,8 @@ function diracAppOriginHandoffTargetV313(targetRole) {
       pesanan: 'https://order.' + base + '/pesanan.html',
       security: 'https://security.' + base + '/keamanan.html',
       website: 'https://' + base + '/website.html',
-      topup: 'https://' + base + '/topup.html',
-      domain: 'https://' + base + '/domain.html',
+      topup: 'https://pt.' + base + '/topup.html',
+      domain: 'https://pt.' + base + '/domain.html',
       cs: 'https://cs.' + base + '/chat.html'
     };
     const expectedPath = {
@@ -66480,6 +66531,14 @@ function diracAppOriginHandoffExactSourceV320(req) {
     for (const role of DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313) {
       const source = diracAppOriginHandoffTargetV313(role);
       if (source && source.origin === origin && new URL(source.redirectUrl).pathname === referer.pathname) return source;
+    }
+    const ptOrigin = ('https://pt.' + diracBaseDomainV250()).toLowerCase();
+    const ptSourcePaths = new Set([
+      '/cekresi.html', '/detail-domain.html', '/detail-parfum.html', '/detail-project.html', '/detail-tiket.html',
+      '/invoice.html', '/notifikasi.html', '/profil.html', '/tiket-bantuan.html'
+    ]);
+    if (origin === ptOrigin && ptSourcePaths.has(referer.pathname)) {
+      return Object.freeze({ role: 'pt', origin: ptOrigin, redirectUrl: referer.href });
     }
     return null;
   } catch (_) {
