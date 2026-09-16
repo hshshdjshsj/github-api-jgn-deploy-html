@@ -541,7 +541,7 @@ function mainIdentityHeaders(req, cookieHeader) {
     Accept: 'application/json',
     Cookie: cookieHeader,
     Origin: requestOrigin(req),
-    Referer: requestOrigin(req) + '/livechat.html'
+    Referer: requestOrigin(req) + '/chat.html'
   };
   const forwarded = [
     ['user-agent', 'User-Agent', 512],

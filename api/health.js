@@ -56772,7 +56772,16 @@ const DIRAC_CENTRAL_ALLOWED_REFERER_PATHS_V146 = new Set([
   '/parfum.html',
   '/topup.html',
   '/keamanan.html',
-  '/livechat.html',
+  '/chat.html',
+  '/cekresi.html',
+  '/detail-domain.html',
+  '/detail-parfum.html',
+  '/detail-project.html',
+  '/detail-tiket.html',
+  '/invoice.html',
+  '/notifikasi.html',
+  '/profil.html',
+  '/tiket-bantuan.html',
   '/domain.html',
   '/website.html',
   '/lost-passkey.html'
@@ -59147,7 +59156,7 @@ function diracCentralSupportDeviceTransitionRequestV354(req) {
     const origin = diracCentralNormalizeOriginV146(headers.origin || '');
     if (!origin || !safeEqual(origin, expectedOrigin)) return null;
     const referer = new URL(String(headers.referer || headers.referrer || '').trim());
-    const allowedPaths = new Set(['/', '/chat', '/chat/', '/chat.html', '/livechat.html']);
+    const allowedPaths = new Set(['/', '/chat', '/chat/', '/chat.html']);
     if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
         || !safeEqual(referer.origin.toLowerCase(), expectedOrigin)
         || referer.search || referer.hash || !allowedPaths.has(referer.pathname)) return null;
