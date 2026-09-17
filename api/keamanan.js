@@ -743,6 +743,53 @@ function securityResetDiagnosticRpcInputV368(pathname, value) {
     pending_expiry_delta_ms: Number.isFinite(expiryMs) ? Math.max(-86400000, Math.min(86400000, expiryMs - Date.now())) : null
   };
 }
+function securityResetPasskeyV237TopologyDiagnosticV369(req, resolved, payload) {
+  try {
+    const sessionPath = '/rest/v1/security_customer_sessions';
+    const settingsPath = '/rest/v1/security_customer_settings';
+    const passkeyPath = '/rest/v1/domain_passkeys';
+    const rpcPath = '/rest/v1/rpc/dirac_passkey_create_pending_v237';
+    const sessionTarget = securitySupabaseTargetV334(sessionPath);
+    const settingsTarget = securitySupabaseTargetV334(settingsPath);
+    const passkeyTarget = securitySupabaseTargetV334(passkeyPath);
+    const rpcTarget = securitySupabaseTargetV334(rpcPath);
+    const legacyCredentials = securitySupabaseCredentialsV334('legacy');
+    const sameLegacyOrigin = (target) => {
+      try { return safeEqual(String(securitySupabaseCredentialsV334(target).url || ''), String(legacyCredentials.url || '')); }
+      catch (_) { return null; }
+    };
+    const owner = resolved && resolved.owner && typeof resolved.owner === 'object' ? resolved.owner : null;
+    diracResetDiagnosticV335(req, 'passkey_reset.v237_topology', 'diagnostic', {
+      diagnostic_patch: 'dirac-passkey-v237-topology-diagnostic-v369',
+      multi_db_router_enabled: securityEnvTrueV334('DIRAC_ENABLE_MULTI_DB_ROUTER') || securityEnvTrueV334('DIRAC_MULTI_DB_ROUTER_ENABLED'),
+      multi_db_strict_enabled: securityEnvTrueV334('DIRAC_MULTI_DB_STRICT'),
+      session_target: sessionTarget,
+      settings_target: settingsTarget,
+      passkey_target: passkeyTarget,
+      rpc_target: rpcTarget,
+      session_rpc_target_split: sessionTarget !== rpcTarget,
+      settings_rpc_target_split: settingsTarget !== rpcTarget,
+      passkey_rpc_target_split: passkeyTarget !== rpcTarget,
+      session_same_legacy_origin: sameLegacyOrigin(sessionTarget),
+      settings_same_legacy_origin: sameLegacyOrigin(settingsTarget),
+      passkey_same_legacy_origin: sameLegacyOrigin(passkeyTarget),
+      resolver_owner_verified: Boolean(owner && customerSecurityLooksLikeUuid(String(owner.authUserId || '')) && customerSecurityLooksLikeUuid(String(owner.customerId || '')) && isValidAuthEmail(owner.email)),
+      resolver_session_verified: Boolean(resolved && customerSecurityLooksLikeUuid(String(resolved.sessionId || '')) && Number.isSafeInteger(Number(resolved.securityEpoch)) && Number(resolved.securityEpoch) > 0),
+      token_session_matches_resolver: Boolean(payload && resolved && safeEqual(String(payload.sessionId || ''), String(resolved.sessionId || ''))),
+      token_epoch_matches_resolver: Boolean(payload && resolved && Number(payload.securityEpoch) === Number(resolved.securityEpoch)),
+      rpc_current_session_uuid: Boolean(payload && customerSecurityLooksLikeUuid(String(payload.sessionId || ''))),
+      rpc_rotation_purpose: 'replace',
+      secrets_logged: false
+    });
+  } catch (error) {
+    diracResetDiagnosticV335(req, 'passkey_reset.v237_topology', 'diagnostic', {
+      diagnostic_patch: 'dirac-passkey-v237-topology-diagnostic-v369',
+      diagnostic_failed: true,
+      secrets_logged: false
+    }, error);
+  }
+}
+
 function securityResetCookieMapV334(req) {
   const out = Object.create(null);
   const raw = securityResetHeaderV334(req, 'cookie');
@@ -3519,6 +3566,7 @@ async function diracSecurityPasskeyResetRegisterV363(req,body,resolved,tokenData
   const rotationId=crypto.randomUUID(),pendingExpiresAtMs=Date.now()+DIRAC_SECURITY_PASSKEY_RESET_PENDING_TTL_MS_V363;
   const ctx=diracCentralCurrentContextV149();if(ctx){ctx.__diracPasskeyResetAuthorizedV363=true;ctx.__diracPasskeyResetAuthorizationMethodV364=p.authorizationMethod;ctx.__diracPasskeyResetEmailVerificationHashV364=p.emailVerificationHash;ctx.__diracPasskeyResetAuthorizingCredentialHashV363=p.authorizingCredentialIdHash;ctx.__diracPasskeyResetAuthSessionIdV363=p.sessionId;}
   try{
+    await securityResetPasskeyV237TopologyDiagnosticV369(req,resolved,p);
     await diracSecurityPasskeyResetConsumeTokenV363(tokenData.token,p);
     const created=await supabaseFetch('/rest/v1/rpc/dirac_passkey_create_pending_v237',{method:'POST',auth:'service',prefer:'return=representation',body:{p_customer_id:resolved.owner.customerId,p_auth_user_id:resolved.owner.authUserId,p_email:resolved.owner.email,p_credential_id:credentialId,p_credential_json:credentialJson,p_transports:diracSecurityPasskeyResetTransportsV363(credential,response),p_sign_count:signCount,p_backup_eligible:registration.backupEligible===true,p_backup_state:registration.backupState===true,p_rotation_id:rotationId,p_rotation_purpose:'replace',p_expected_security_epoch:p.securityEpoch,p_authorizing_credential_id_hash:null,p_current_auth_session_id:p.sessionId,p_recovery_request_id:null,p_recovery_session_id:null,p_recovery_session_hash:null,p_public_key_sha256:publicKeySha256,p_pending_expires_at:new Date(pendingExpiresAtMs).toISOString()}});
     const createdData=diracSecurityPasskeyResetRpcDataV363(created);if(!created||created.ok!==true||!createdData||createdData.ok!==true||!customerSecurityLooksLikeUuid(String(createdData.passkey_id||''))||!safeEqual(String(createdData.rotation_id||''),rotationId)||String(createdData.rotation_state||'')!=='pending')throw resetError('SECURITY_PASSKEY_RESET_PENDING_CREATE_FAILED',503);
