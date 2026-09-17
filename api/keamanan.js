@@ -777,7 +777,9 @@ function securityResetPasskeyV237TopologyDiagnosticV369(req, resolved, payload) 
       resolver_session_verified: Boolean(resolved && customerSecurityLooksLikeUuid(String(resolved.sessionId || '')) && Number.isSafeInteger(Number(resolved.securityEpoch)) && Number(resolved.securityEpoch) > 0),
       token_session_matches_resolver: Boolean(payload && resolved && safeEqual(String(payload.sessionId || ''), String(resolved.sessionId || ''))),
       token_epoch_matches_resolver: Boolean(payload && resolved && Number(payload.securityEpoch) === Number(resolved.securityEpoch)),
-      rpc_current_session_uuid: Boolean(payload && customerSecurityLooksLikeUuid(String(payload.sessionId || ''))),
+      rpc_current_session_uuid: Boolean(payload && customerSecurityLooksLikeUuid(String(payload.rpcAuthSessionId || ''))),
+      rpc_current_session_matches_resolver: Boolean(payload && resolved && safeEqual(String(payload.rpcAuthSessionId || ''), String(resolved.sessionId || ''))),
+      rpc_current_session_source: 'token.rpcAuthSessionId',
       rpc_rotation_purpose: 'replace',
       secrets_logged: false
     });
@@ -785,6 +787,139 @@ function securityResetPasskeyV237TopologyDiagnosticV369(req, resolved, payload) 
     diracResetDiagnosticV335(req, 'passkey_reset.v237_topology', 'diagnostic', {
       diagnostic_patch: 'dirac-passkey-v237-topology-diagnostic-v369',
       diagnostic_failed: true,
+      secrets_logged: false
+    }, error);
+  }
+}
+
+function securityResetPasskeyV237SessionStateV370(result, expectedSessionId, expectedCustomerId, expectedSecurityEpoch) {
+  const rows = result && result.ok === true && Array.isArray(result.data) ? result.data : [];
+  const row = rows.length === 1 && rows[0] && typeof rows[0] === 'object' && !Array.isArray(rows[0]) ? rows[0] : null;
+  const expiresAtMs = row ? Date.parse(String(row.expires_at || '')) : NaN;
+  const lastSeenAtMs = row ? Date.parse(String(row.last_seen_at || '')) : NaN;
+  return {
+    fetch_ok: Boolean(result && result.ok === true),
+    http_status: Number(result && result.status || 0),
+    row_count: rows.length,
+    exact_single_row: Boolean(row),
+    id_match: Boolean(row && safeEqual(String(row.id || ''), String(expectedSessionId || ''))),
+    owner_match: Boolean(row && safeEqual(String(row.customer_id || ''), String(expectedCustomerId || ''))),
+    status: row ? String(row.status || '').slice(0, 32) : '',
+    security_epoch: row && Number.isSafeInteger(Number(row.security_epoch)) ? Number(row.security_epoch) : null,
+    expected_epoch_match: Boolean(row && Number(row.security_epoch) === Number(expectedSecurityEpoch)),
+    trusted_device: row ? row.trusted_device === true : null,
+    revoked: row ? Boolean(row.revoked_at) : null,
+    expiry_valid: row ? Number.isFinite(expiresAtMs) : null,
+    expired_now: row && Number.isFinite(expiresAtMs) ? expiresAtMs <= Date.now() : null,
+    last_seen_valid: row ? Number.isFinite(lastSeenAtMs) : null,
+    last_seen_age_ms: row && Number.isFinite(lastSeenAtMs) ? Math.max(0, Math.min(86400000, Date.now() - lastSeenAtMs)) : null
+  };
+}
+async function securityResetPasskeyV237DbContractDiagnosticV370(req, resolved, payload, activeRow, createdResult) {
+  try {
+    const provider = createdResult && createdResult.data && typeof createdResult.data === 'object' && !Array.isArray(createdResult.data)
+      ? createdResult.data
+      : null;
+    const providerCode = String(provider && provider.code || '');
+    const providerMessage = String(provider && provider.message || '');
+    if (providerCode !== 'P0001' || providerMessage !== 'DIRAC_V237_CURRENT_AUTH_SESSION_NOT_FOUND') return;
+    const owner = resolved && resolved.owner && typeof resolved.owner === 'object' ? resolved.owner : null;
+    const customerId = String(owner && owner.customerId || '');
+    const rpcAuthSessionId = String(payload && payload.rpcAuthSessionId || '').trim();
+    const resolverSessionId = String(resolved && resolved.sessionId || '').trim();
+    const expectedSecurityEpoch = Number(payload && payload.securityEpoch || 0);
+    if (!customerSecurityLooksLikeUuid(customerId) || !customerSecurityLooksLikeUuid(rpcAuthSessionId)
+        || !customerSecurityLooksLikeUuid(resolverSessionId) || !Number.isSafeInteger(expectedSecurityEpoch) || expectedSecurityEpoch < 1) {
+      diracResetDiagnosticV335(req, 'passkey_reset.v237_db_contract', 'diagnostic', {
+        diagnostic_patch: 'dirac-passkey-v237-db-contract-diagnostic-v370',
+        provider_code: providerCode,
+        provider_message: providerMessage,
+        diagnostic_context_valid: false,
+        mutation_performed: false,
+        retry_performed: false,
+        guard_bypass: false,
+        secrets_logged: false
+      });
+      return;
+    }
+    const select = encodeURIComponent('id,customer_id,status,security_epoch,trusted_device,revoked_at,expires_at,last_seen_at');
+    const rpcPath = '/rest/v1/security_customer_sessions?select=' + select
+      + '&customer_id=eq.' + encodeURIComponent(customerId)
+      + '&id=eq.' + encodeURIComponent(rpcAuthSessionId)
+      + '&limit=2';
+    const resolverPath = '/rest/v1/security_customer_sessions?select=' + select
+      + '&customer_id=eq.' + encodeURIComponent(customerId)
+      + '&id=eq.' + encodeURIComponent(resolverSessionId)
+      + '&limit=2';
+    const activeEpochPath = '/rest/v1/security_customer_sessions?select=' + select
+      + '&customer_id=eq.' + encodeURIComponent(customerId)
+      + '&status=eq.active&revoked_at=is.null'
+      + '&security_epoch=eq.' + encodeURIComponent(String(expectedSecurityEpoch))
+      + '&order=last_seen_at.desc&limit=5';
+    const rpcLookup = await supabaseFetch(rpcPath, { method: 'GET', auth: 'service' });
+    const resolverLookup = safeEqual(rpcAuthSessionId, resolverSessionId)
+      ? rpcLookup
+      : await supabaseFetch(resolverPath, { method: 'GET', auth: 'service' });
+    const activeEpochLookup = await supabaseFetch(activeEpochPath, { method: 'GET', auth: 'service' });
+    const rpcState = securityResetPasskeyV237SessionStateV370(rpcLookup, rpcAuthSessionId, customerId, expectedSecurityEpoch);
+    const resolverState = securityResetPasskeyV237SessionStateV370(resolverLookup, resolverSessionId, customerId, expectedSecurityEpoch);
+    const activeEpochRows = activeEpochLookup && activeEpochLookup.ok === true && Array.isArray(activeEpochLookup.data) ? activeEpochLookup.data : [];
+    const activePasskeyCurrentAuthSessionId = String(activeRow && activeRow.current_auth_session_id || '').trim();
+    const activePasskeyRecoverySessionId = String(activeRow && activeRow.recovery_session_id || '').trim();
+    const rpcAnchorEqualsResolver = safeEqual(rpcAuthSessionId, resolverSessionId);
+    const rpcAnchorVisibleValid = rpcState.exact_single_row && rpcState.id_match && rpcState.owner_match
+      && String(rpcState.status || '').toLowerCase() === 'active' && rpcState.expected_epoch_match
+      && rpcState.revoked === false && rpcState.expired_now === false;
+    const resolverVisibleValid = resolverState.exact_single_row && resolverState.id_match && resolverState.owner_match
+      && String(resolverState.status || '').toLowerCase() === 'active' && resolverState.expected_epoch_match
+      && resolverState.revoked === false && resolverState.expired_now === false;
+    const diagnosis = rpcState.row_count === 0 && resolverVisibleValid
+      ? 'RPC_ANCHOR_NOT_IN_CUSTOMER_SESSIONS_RESOLVER_SESSION_VALID'
+      : rpcAnchorVisibleValid
+        ? 'RPC_REJECTED_VISIBLE_VALID_CUSTOMER_SESSION_DB_FUNCTION_CONTRACT'
+        : rpcState.row_count === 1
+          ? 'RPC_ANCHOR_EXISTS_BUT_VISIBLE_SESSION_STATE_INVALID'
+          : 'RPC_ANCHOR_NOT_FOUND_IN_CUSTOMER_SESSIONS';
+    diracResetDiagnosticV335(req, 'passkey_reset.v237_db_contract', 'diagnostic', {
+      diagnostic_patch: 'dirac-passkey-v237-db-contract-diagnostic-v370',
+      provider_code: providerCode,
+      provider_message: providerMessage,
+      provider_http_status: Number(createdResult && createdResult.status || 0),
+      diagnosis,
+      rpc_anchor_source: 'active_passkey.current_auth_session_id',
+      resolver_anchor_source: 'signed_session.sid_verified_in_security_customer_sessions',
+      rpc_anchor_equals_resolver: rpcAnchorEqualsResolver,
+      rpc_anchor_equals_active_passkey_anchor: Boolean(activePasskeyCurrentAuthSessionId && safeEqual(rpcAuthSessionId, activePasskeyCurrentAuthSessionId)),
+      active_passkey_anchor_equals_recovery_session: Boolean(activePasskeyCurrentAuthSessionId && activePasskeyRecoverySessionId && safeEqual(activePasskeyCurrentAuthSessionId, activePasskeyRecoverySessionId)),
+      active_passkey_recovery_context_present: Boolean(activeRow && (activeRow.recovery_request_id || activeRow.recovery_session_id || activeRow.recovery_session_hash)),
+      active_passkey_rotation_state: String(activeRow && activeRow.rotation_state || '').slice(0, 32),
+      active_passkey_rotation_purpose: String(activeRow && activeRow.rotation_purpose || '').slice(0, 32),
+      active_passkey_is_active: activeRow ? activeRow.is_active === true : null,
+      active_passkey_credential_epoch: activeRow && Number.isSafeInteger(Number(activeRow.credential_epoch)) ? Number(activeRow.credential_epoch) : null,
+      active_passkey_expected_security_epoch: activeRow && Number.isSafeInteger(Number(activeRow.expected_security_epoch)) ? Number(activeRow.expected_security_epoch) : null,
+      expected_security_epoch: expectedSecurityEpoch,
+      session_target: securitySupabaseTargetV334('/rest/v1/security_customer_sessions'),
+      rpc_target: securitySupabaseTargetV334('/rest/v1/rpc/dirac_passkey_create_pending_v237'),
+      rpc_session_lookup: rpcState,
+      resolver_session_lookup: resolverState,
+      active_same_epoch_lookup_ok: Boolean(activeEpochLookup && activeEpochLookup.ok === true),
+      active_same_epoch_http_status: Number(activeEpochLookup && activeEpochLookup.status || 0),
+      active_same_epoch_row_count_limited_5: activeEpochRows.length,
+      db_function_definition_audit_required: true,
+      db_objects_to_audit: 'public.dirac_passkey_create_pending_v237|public.security_customer_sessions|public.domain_passkeys',
+      code_patch_can_safely_force_200: false,
+      mutation_performed: false,
+      retry_performed: false,
+      guard_bypass: false,
+      secrets_logged: false
+    });
+  } catch (error) {
+    diracResetDiagnosticV335(req, 'passkey_reset.v237_db_contract', 'diagnostic', {
+      diagnostic_patch: 'dirac-passkey-v237-db-contract-diagnostic-v370',
+      diagnostic_failed: true,
+      mutation_performed: false,
+      retry_performed: false,
+      guard_bypass: false,
       secrets_logged: false
     }, error);
   }
@@ -3570,7 +3705,7 @@ async function diracSecurityPasskeyResetRegisterV363(req,body,resolved,tokenData
     await securityResetPasskeyV237TopologyDiagnosticV369(req,resolved,p);
     await diracSecurityPasskeyResetConsumeTokenV363(tokenData.token,p);
     const created=await supabaseFetch('/rest/v1/rpc/dirac_passkey_create_pending_v237',{method:'POST',auth:'service',prefer:'return=representation',body:{p_customer_id:resolved.owner.customerId,p_auth_user_id:resolved.owner.authUserId,p_email:resolved.owner.email,p_credential_id:credentialId,p_credential_json:credentialJson,p_transports:diracSecurityPasskeyResetTransportsV363(credential,response),p_sign_count:signCount,p_backup_eligible:registration.backupEligible===true,p_backup_state:registration.backupState===true,p_rotation_id:rotationId,p_rotation_purpose:'replace',p_expected_security_epoch:p.securityEpoch,p_authorizing_credential_id_hash:null,p_current_auth_session_id:p.rpcAuthSessionId,p_recovery_request_id:null,p_recovery_session_id:null,p_recovery_session_hash:null,p_public_key_sha256:publicKeySha256,p_pending_expires_at:new Date(pendingExpiresAtMs).toISOString()}});
-    const createdData=diracSecurityPasskeyResetRpcDataV363(created);if(!created||created.ok!==true||!createdData||createdData.ok!==true||!customerSecurityLooksLikeUuid(String(createdData.passkey_id||''))||!safeEqual(String(createdData.rotation_id||''),rotationId)||String(createdData.rotation_state||'')!=='pending')throw resetError('SECURITY_PASSKEY_RESET_PENDING_CREATE_FAILED',503);
+    const createdData=diracSecurityPasskeyResetRpcDataV363(created);if(!created||created.ok!==true||!createdData||createdData.ok!==true||!customerSecurityLooksLikeUuid(String(createdData.passkey_id||''))||!safeEqual(String(createdData.rotation_id||''),rotationId)||String(createdData.rotation_state||'')!=='pending'){await securityResetPasskeyV237DbContractDiagnosticV370(req,resolved,p,active[0],created);throw resetError('SECURITY_PASSKEY_RESET_PENDING_CREATE_FAILED',503);}
     const pendingRows=await diracSecurityPasskeyResetFetchRowV363(resolved.owner,{id:String(createdData.passkey_id),credentialId,rotationId},false),pending=pendingRows.length===1?pendingRows[0]:null;
     if(!pending||pending.is_active!==false||String(pending.rotation_state||'')!=='pending'||String(pending.rotation_purpose||'')!=='replace'||Number(pending.expected_security_epoch||0)!==p.securityEpoch||String(pending.authorizing_credential_id_hash||'')||!safeEqual(String(pending.current_auth_session_id||''),p.rpcAuthSessionId)||pending.recovery_request_id||pending.recovery_session_id||pending.recovery_session_hash||pending.confirmed_at||pending.activated_at||pending.revoked_at||!diracSecurityPasskeyResetValidateOwnerRowV363(pending,resolved.owner))throw resetError('SECURITY_PASSKEY_RESET_PENDING_POSTCONDITION_FAILED',503);
     const actualExpiry=Date.parse(String(pending.pending_expires_at||''));if(!Number.isFinite(actualExpiry)||actualExpiry<=Date.now()+15000)throw resetError('SECURITY_PASSKEY_RESET_PENDING_EXPIRY_INVALID',503);
