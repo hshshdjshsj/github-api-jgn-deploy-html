@@ -66544,7 +66544,7 @@ function diracAppOriginHandoffExactSourceV320(req) {
     const ptOrigin = ('https://pt.' + diracBaseDomainV250()).toLowerCase();
     const ptSourcePaths = new Set([
       '/cekresi.html', '/detail-domain.html', '/detail-parfum.html', '/detail-project.html', '/detail-tiket.html',
-      '/domain.html', '/invoice.html', '/notifikasi.html', '/profil.html', '/tiket-bantuan.html', '/topup.html'
+      '/invoice.html', '/notifikasi.html', '/profil.html', '/tiket-bantuan.html'
     ]);
     if (origin === ptOrigin && ptSourcePaths.has(referer.pathname)) {
       return Object.freeze({ role: 'pt', origin: ptOrigin, redirectUrl: referer.href });
@@ -66584,22 +66584,20 @@ function diracAppOriginHandoffPrepareDeviceConsistencyV317(sourceReq, destinatio
     const destinationSessionKey = String(diracCentralRequestSessionHashV146(destinationReq) || '');
     const sourceHash = diracAppOriginHandoffDeviceConsistencyHashV317(sourceReq);
     const destinationHash = diracAppOriginHandoffDeviceConsistencyHashV317(destinationReq);
-    const destinationOrigin = String(requestOrigin(destinationReq) || '').trim().toLowerCase();
-    const destinationRefererRaw = String(destinationReq && destinationReq.headers && (destinationReq.headers.referer || destinationReq.headers.referrer) || '').trim();
-    let destinationRefererUrl = null;
-    try { destinationRefererUrl = new URL(destinationRefererRaw); } catch (_) { destinationRefererUrl = null; }
-    const destinationReferer = destinationRefererUrl ? destinationRefererUrl.href : '';
+    const destinationHeaders = destinationReq && destinationReq.headers || {};
+    const destinationOrigin = diracCentralNormalizeOriginV146(destinationHeaders.origin || '');
+    const destinationRefererUrl = new URL(String(destinationHeaders.referer || destinationHeaders.referrer || '').trim());
+    const destinationReferer = destinationRefererUrl.href;
     const current = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sourceSessionKey);
     const until = Number(current && current.until || 0);
     if (!/^[a-f0-9]{64}$/.test(sourceSessionKey)
         || !safeEqual(sourceSessionKey, destinationSessionKey)
         || !sourceHash || !destinationHash || safeEqual(sourceHash, destinationHash)
-        || !diracUniversalBrowserOriginsV250().has(destinationOrigin)
-        || !destinationRefererUrl || destinationRefererUrl.protocol !== 'https:'
+        || !destinationOrigin || destinationRefererUrl.protocol !== 'https:'
         || destinationRefererUrl.port || destinationRefererUrl.username || destinationRefererUrl.password
         || destinationRefererUrl.origin.toLowerCase() !== destinationOrigin
         || destinationRefererUrl.search || destinationRefererUrl.hash
-        || !/^\/(?:dashboard|parfum|pesanan|keamanan|website|topup|domain|chat)\.html$/.test(destinationRefererUrl.pathname)
+        || !diracUniversalBrowserOriginsV250().has(destinationOrigin)
         || !current || until <= Date.now()
         || !safeEqual(String(current.hash || ''), sourceHash)) return null;
     return Object.freeze({
@@ -66623,20 +66621,19 @@ function diracAppOriginHandoffCommitDeviceConsistencyV317(transition) {
     const destinationHash = String(transition && transition.destinationHash || '');
     const destinationOrigin = String(transition && transition.destinationOrigin || '').trim().toLowerCase();
     const destinationReferer = String(transition && transition.destinationReferer || '').trim();
-    let destinationRefererUrl = null;
-    try { destinationRefererUrl = new URL(destinationReferer); } catch (_) { destinationRefererUrl = null; }
+    const destinationRefererUrl = new URL(destinationReferer);
     const until = Number(transition && transition.until || 0);
     if (!transition || transition.patch !== DIRAC_APP_ORIGIN_HANDOFF_DEVICE_CONSISTENCY_V317
         || !/^[a-f0-9]{64}$/.test(sessionKey)
         || !/^[a-f0-9]{64}$/.test(sourceHash)
         || !/^[a-f0-9]{64}$/.test(destinationHash)
         || safeEqual(sourceHash, destinationHash)
-        || !diracUniversalBrowserOriginsV250().has(destinationOrigin)
-        || !destinationRefererUrl || destinationRefererUrl.protocol !== 'https:'
+        || !destinationOrigin || diracCentralNormalizeOriginV146(destinationOrigin) !== destinationOrigin
+        || destinationRefererUrl.protocol !== 'https:'
         || destinationRefererUrl.port || destinationRefererUrl.username || destinationRefererUrl.password
         || destinationRefererUrl.origin.toLowerCase() !== destinationOrigin
         || destinationRefererUrl.search || destinationRefererUrl.hash
-        || !/^\/(?:dashboard|parfum|pesanan|keamanan|website|topup|domain|chat)\.html$/.test(destinationRefererUrl.pathname)
+        || !diracUniversalBrowserOriginsV250().has(destinationOrigin)
         || !Number.isSafeInteger(until) || until <= Date.now()) return false;
 
     const current = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sessionKey);
@@ -66654,7 +66651,7 @@ function diracAppOriginHandoffCommitDeviceConsistencyV317(transition) {
       handoffSourceHashV365: sourceHash,
       handoffDestinationHashV365: destinationHash,
       handoffDestinationOriginV365: destinationOrigin,
-      handoffDestinationRefererV365: destinationReferer,
+      handoffDestinationRefererV365: destinationRefererUrl.href,
       handoffIssuedAtV365,
       handoffUntilV365
     });
@@ -66685,10 +66682,9 @@ function diracAppOriginHandoffTrailingSourceProofV365(req, ctx, tokenOverrideV36
     const sourceHashV365 = diracAppOriginHandoffDeviceConsistencyHashV317(req);
     const expectedSourceHashV365 = String(stateV365 && stateV365.handoffSourceHashV365 || '');
     const expectedDestinationHashV365 = String(stateV365 && stateV365.handoffDestinationHashV365 || '');
-    const destinationOriginV365 = String(stateV365 && stateV365.handoffDestinationOriginV365 || '').trim().toLowerCase();
-    const destinationRefererV365 = String(stateV365 && stateV365.handoffDestinationRefererV365 || '').trim();
-    let destinationRefererUrlV365 = null;
-    try { destinationRefererUrlV365 = new URL(destinationRefererV365); } catch (_) { destinationRefererUrlV365 = null; }
+    const expectedDestinationOriginV365 = String(stateV365 && stateV365.handoffDestinationOriginV365 || '').trim().toLowerCase();
+    const expectedDestinationRefererV365 = String(stateV365 && stateV365.handoffDestinationRefererV365 || '').trim();
+    const expectedDestinationRefererUrlV365 = new URL(expectedDestinationRefererV365);
     const issuedAtV365 = Number(stateV365 && stateV365.handoffIssuedAtV365 || 0);
     const expiresAtV365 = Number(stateV365 && stateV365.handoffUntilV365 || 0);
     if (!/^[a-f0-9]{64}$/.test(sessionKeyV365)
@@ -66699,12 +66695,13 @@ function diracAppOriginHandoffTrailingSourceProofV365(req, ctx, tokenOverrideV36
         || safeEqual(expectedSourceHashV365, expectedDestinationHashV365)
         || !safeEqual(sourceHashV365, expectedSourceHashV365)
         || !safeEqual(String(stateV365.hash || ''), expectedDestinationHashV365)
-        || !diracUniversalBrowserOriginsV250().has(destinationOriginV365)
-        || !destinationRefererUrlV365 || destinationRefererUrlV365.protocol !== 'https:'
-        || destinationRefererUrlV365.port || destinationRefererUrlV365.username || destinationRefererUrlV365.password
-        || destinationRefererUrlV365.origin.toLowerCase() !== destinationOriginV365
-        || destinationRefererUrlV365.search || destinationRefererUrlV365.hash
-        || !/^\/(?:dashboard|parfum|pesanan|keamanan|website|topup|domain|chat)\.html$/.test(destinationRefererUrlV365.pathname)
+        || !expectedDestinationOriginV365
+        || diracCentralNormalizeOriginV146(expectedDestinationOriginV365) !== expectedDestinationOriginV365
+        || expectedDestinationRefererUrlV365.protocol !== 'https:'
+        || expectedDestinationRefererUrlV365.port || expectedDestinationRefererUrlV365.username || expectedDestinationRefererUrlV365.password
+        || expectedDestinationRefererUrlV365.origin.toLowerCase() !== expectedDestinationOriginV365
+        || expectedDestinationRefererUrlV365.search || expectedDestinationRefererUrlV365.hash
+        || !diracUniversalBrowserOriginsV250().has(expectedDestinationOriginV365)
         || !Number.isSafeInteger(issuedAtV365) || !Number.isSafeInteger(expiresAtV365)
         || issuedAtV365 <= 0 || issuedAtV365 > nowV365
         || expiresAtV365 <= nowV365
@@ -66732,17 +66729,15 @@ function diracAppOriginHandoffTrailingSourceProofV365(req, ctx, tokenOverrideV36
     if (!tokenV365) return null;
 
     // A cross-origin document navigation keeps the source page in Referer for the
-    // initial GET. The handoff already proved the trusted destination origin and
-    // minted the credential for that origin, so verify the envelope against a
-    // canonical destination request while retaining the source-hash, session,
-    // identity, expiry, and five-second grace checks above.
-    const destinationRequestV365 = /^https:\/\/[^/]+$/.test(destinationOriginV365)
-      ? diracPasskeyRoundtripCanonicalRequestV243(req, {}, [])
-      : null;
+    // initial GET. The handoff already proved and committed the exact trusted
+    // destination request, so verify the envelope against that same destination
+    // while retaining the source-hash, session, identity, expiry, and five-second
+    // grace checks above.
+    const destinationRequestV365 = diracPasskeyRoundtripCanonicalRequestV243(req, {}, []);
     if (destinationRequestV365 && destinationRequestV365.headers) {
-      destinationRequestV365.headers.origin = destinationOriginV365;
-      destinationRequestV365.headers.referer = destinationRefererV365;
-      destinationRequestV365.headers.referrer = destinationRefererV365;
+      destinationRequestV365.headers.origin = expectedDestinationOriginV365;
+      destinationRequestV365.headers.referer = expectedDestinationRefererUrlV365.href;
+      destinationRequestV365.headers.referrer = expectedDestinationRefererUrlV365.href;
     }
     const destinationFingerprintV365 = destinationRequestV365
       ? diracCentralDeviceFingerprintV221(destinationRequestV365)
