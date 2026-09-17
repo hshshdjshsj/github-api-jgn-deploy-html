@@ -703,6 +703,46 @@ function diracResetDiagnosticV335(req, stage, outcome, details, error) {
     if (outcome === 'error' || outcome === 'rejected') console.error(line); else console.info(line);
   } catch (_) {}
 }
+function securityResetDiagnosticProviderTextV368(value, maxLen = 800) {
+  const raw = String(value == null ? '' : value);
+  if (!raw) return '';
+  return raw
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, '[redacted-uuid]')
+    .replace(/\b[a-f0-9]{32,}\b/gi, '[redacted-hash]')
+    .replace(/[A-Za-z0-9_-]{48,}/g, '[redacted-token]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .slice(0, Math.max(1, Math.min(1200, Number(maxLen || 800))));
+}
+function securityResetDiagnosticRpcInputV368(pathname, value) {
+  if (String(pathname || '') !== '/rest/v1/rpc/dirac_passkey_create_pending_v237' || !value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const expiryMs = Date.parse(String(value.p_pending_expires_at || ''));
+  return {
+    key_count: Object.keys(value).length,
+    keys: Object.keys(value).filter((key) => /^[A-Za-z0-9_]{1,80}$/.test(key)).sort().slice(0, 32),
+    customer_id_uuid: customerSecurityLooksLikeUuid(String(value.p_customer_id || '')),
+    auth_user_id_uuid: customerSecurityLooksLikeUuid(String(value.p_auth_user_id || '')),
+    email_valid: isValidAuthEmail(value.p_email),
+    credential_id_length: String(value.p_credential_id || '').length,
+    credential_json_object: Boolean(value.p_credential_json && typeof value.p_credential_json === 'object' && !Array.isArray(value.p_credential_json)),
+    transports_array: Array.isArray(value.p_transports),
+    transports_count: Array.isArray(value.p_transports) ? value.p_transports.length : -1,
+    sign_count_integer: Number.isSafeInteger(Number(value.p_sign_count)),
+    backup_eligible_boolean: typeof value.p_backup_eligible === 'boolean',
+    backup_state_boolean: typeof value.p_backup_state === 'boolean',
+    rotation_id_uuid: customerSecurityLooksLikeUuid(String(value.p_rotation_id || '')),
+    rotation_purpose: String(value.p_rotation_purpose || '').slice(0, 32),
+    expected_security_epoch_integer: Number.isSafeInteger(Number(value.p_expected_security_epoch)),
+    authorizing_hash_state: value.p_authorizing_credential_id_hash === null ? 'null' : (/^[a-f0-9]{64}$/.test(String(value.p_authorizing_credential_id_hash || '')) ? 'sha256' : 'other'),
+    current_auth_session_id_uuid: customerSecurityLooksLikeUuid(String(value.p_current_auth_session_id || '')),
+    recovery_request_id_null: value.p_recovery_request_id === null,
+    recovery_session_id_null: value.p_recovery_session_id === null,
+    recovery_session_hash_null: value.p_recovery_session_hash === null,
+    public_key_sha256_valid: /^[a-f0-9]{64}$/.test(String(value.p_public_key_sha256 || '')),
+    pending_expiry_valid: Number.isFinite(expiryMs),
+    pending_expiry_delta_ms: Number.isFinite(expiryMs) ? Math.max(-86400000, Math.min(86400000, expiryMs - Date.now())) : null
+  };
+}
 function securityResetCookieMapV334(req) {
   const out = Object.create(null);
   const raw = securityResetHeaderV334(req, 'cookie');
@@ -1301,7 +1341,7 @@ async function supabaseFetch(path, options = {}) {
   catch (cause) { const error = resetError('SECURITY_RESET_DB_NETWORK_FAILED', 503); diracResetDiagnosticV335(null, 'external.call', 'error', { call_id: callId, method, target, pathname: route.pathname, query_keys: route.query_keys, cause_name: String(cause && cause.name || ''), cause_code: String(cause && cause.code || '') }, error); throw error; }
   finally { clearTimeout(timer); }
   const text = data === null ? '' : JSON.stringify(data);
-  diracResetDiagnosticV335(null, 'external.call', response.ok ? 'success' : 'error', { call_id: callId, method, target, pathname: route.pathname, query_keys: route.query_keys, http_status: Number(response.status || 0), response_ok: response.ok === true, response_bytes: Buffer.byteLength(text || ''), response_type: Array.isArray(data) ? 'array' : (data === null ? 'null' : typeof data), row_count: Array.isArray(data) ? data.length : -1 });
+  diracResetDiagnosticV335(null, 'external.call', response.ok ? 'success' : 'error', { call_id: callId, method, target, pathname: route.pathname, query_keys: route.query_keys, http_status: Number(response.status || 0), response_ok: response.ok === true, response_bytes: Buffer.byteLength(text || ''), response_type: Array.isArray(data) ? 'array' : (data === null ? 'null' : typeof data), row_count: Array.isArray(data) ? data.length : -1, provider_error: response.ok !== true && data && typeof data === 'object' && !Array.isArray(data) ? { provider_code: securityResetDiagnosticProviderTextV368(data.code, 96), provider_message: securityResetDiagnosticProviderTextV368(data.message, 600), provider_details: securityResetDiagnosticProviderTextV368(data.details, 800), provider_hint: securityResetDiagnosticProviderTextV368(data.hint, 600), provider_keys: Object.keys(data).filter((key) => /^[A-Za-z0-9_.-]{1,80}$/.test(key)).sort().slice(0, 24) } : null, rpc_input_contract: response.ok !== true ? securityResetDiagnosticRpcInputV368(route.pathname, options.body) : null });
   return { ok:response.ok, status:response.status, data };
 }
 async function diracCentralAtomicConsumeV230({ namespace, jti, expiresAt, contextHash }) {
