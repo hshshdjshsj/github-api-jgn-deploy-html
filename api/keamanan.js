@@ -1390,14 +1390,17 @@ function securityResetAssertDbOperationV361(path, method, options) {
     const owner = context.__diracPasswordResetVerifiedOwnerV333;
     const rows = Array.isArray(options.body) ? options.body : [];
     const row = rows.length === 1 ? rows[0] : null;
-    if (!owner || url.search || !row || !exactKeys(row, ['customer_id','event_type','status','risk_level','description','ip_address','user_agent','device_name','browser_name','operating_system','metadata'])
-        || row.customer_id !== owner.customerId || row.event_type !== 'trusted_device_enabled' || row.status !== 'success' || row.risk_level !== 'low'
+    if (!owner || url.search || !row || !exactKeys(row, ['customer_id','event_type','event_title','status','risk_level','description','ip_address','user_agent','device_name','related_session_id','metadata'])
+        || row.customer_id !== owner.customerId || row.event_type !== 'trusted_device_enabled' || row.event_title !== 'Perangkat terpercaya diaktifkan.' || row.status !== 'success' || row.risk_level !== 'low'
         || row.description !== 'Perangkat saat ini ditandai sebagai perangkat terpercaya.'
         || typeof row.user_agent !== 'string' || row.user_agent.length > 512
         || !(row.ip_address === null || (typeof row.ip_address === 'string' && row.ip_address.length <= 64))
-        || !row.metadata || !exactKeys(row.metadata, ['source','session_id'])
+        || row.related_session_id !== trustTransitionV366.sessionId
+        || !row.metadata || !exactKeys(row.metadata, ['source','session_id','browser_name','operating_system'])
         || row.metadata.source !== 'customer_security_trust_current_device_standalone_v366'
-        || row.metadata.session_id !== trustTransitionV366.sessionId) throw resetError('SECURITY_TRUST_DEVICE_AUDIT_CONTRACT_REJECTED', 403);
+        || row.metadata.session_id !== trustTransitionV366.sessionId
+        || row.metadata.browser_name !== securityTrustCurrentDeviceBrowserV366(row.user_agent)
+        || row.metadata.operating_system !== securityTrustCurrentDeviceOsV366(row.user_agent)) throw resetError('SECURITY_TRUST_DEVICE_AUDIT_CONTRACT_REJECTED', 403);
     return;
   }
   const readTables = ['domain_passkeys', 'security_customer_auth_links', 'security_customer_password_hashes', 'security_customer_sessions', 'security_customer_settings', 'dirac_persistent_bans', 'dirac_s2s_security'];
@@ -3681,7 +3684,7 @@ async function diracSecurityPasskeyResetEmailAuthorizeV364(req,body,resolved,tok
   if(!Number.isSafeInteger(codeLength)||codeLength<DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MIN_LENGTH_V364||codeLength>DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MAX_LENGTH_V364||code.length!==codeLength||!/^[0-9]+$/.test(code))throw resetError('SECURITY_PASSKEY_RESET_EMAIL_CODE_INVALID',403);
   const expected=diracSecurityPasskeyResetEmailCodeMacV364(p,code);if(!safeEqual(expected,String(p.codeMac||'')))throw resetError('SECURITY_PASSKEY_RESET_EMAIL_CODE_INVALID',403);
   const active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner)||!safeEqual(String(active[0].id||''),p.authorizingPasskeyId)||!safeEqual(diracSecurityPasskeyResetSha256V363(active[0].credential_id),p.authorizingCredentialIdHash)||!safeEqual(diracSecurityPasskeyResetActiveSetHashV363(active),p.activeCredentialSetHash))throw resetError('SECURITY_PASSKEY_RESET_ACTIVE_SET_CHANGED',409);
-  const rpcAuthSessionId=String(active[0].current_auth_session_id||'').trim();if(!customerSecurityLooksLikeUuid(rpcAuthSessionId))throw resetError('SECURITY_PASSKEY_RESET_AUTH_SESSION_ANCHOR_INVALID',409);
+  const rpcAuthSessionId=String(resolved.sessionId||'').trim();if(!customerSecurityLooksLikeUuid(rpcAuthSessionId))throw resetError('SECURITY_PASSKEY_RESET_AUTH_SESSION_ANCHOR_INVALID',409);
   await diracSecurityPasskeyResetConsumeEmailTokenV364(tokenData.token,p);
   const emailVerificationHash=diracSecurityPasskeyResetSha256V363([p.jti,p.codeMac,p.sessionId,String(p.securityEpoch)].join('|'));
   const issued=diracSecurityPasskeyResetTokenV363(req,'register',{authUserId:resolved.owner.authUserId,customerId:resolved.owner.customerId,email:resolved.owner.email,sessionId:resolved.sessionId,rpcAuthSessionId,securityEpoch:resolved.securityEpoch,authorizingPasskeyId:p.authorizingPasskeyId,authorizingCredentialIdHash:p.authorizingCredentialIdHash,activeCredentialSetHash:p.activeCredentialSetHash,authorizationMethod:'password_email',emailVerificationHash,serverDeviceBindingKeyId:p.serverDeviceBindingKeyId});
@@ -3690,7 +3693,7 @@ async function diracSecurityPasskeyResetEmailAuthorizeV364(req,body,resolved,tok
 }
 
 async function diracSecurityPasskeyResetRegisterV363(req,body,resolved,tokenData) {
-  const p=tokenData.payload,active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner)||!safeEqual(String(active[0].id||''),p.authorizingPasskeyId)||!safeEqual(diracSecurityPasskeyResetSha256V363(active[0].credential_id),p.authorizingCredentialIdHash)||!safeEqual(diracSecurityPasskeyResetActiveSetHashV363(active),p.activeCredentialSetHash)||!safeEqual(String(active[0].current_auth_session_id||''),p.rpcAuthSessionId))throw resetError('SECURITY_PASSKEY_RESET_ACTIVE_SET_CHANGED',409);
+  const p=tokenData.payload,active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner)||!safeEqual(String(active[0].id||''),p.authorizingPasskeyId)||!safeEqual(diracSecurityPasskeyResetSha256V363(active[0].credential_id),p.authorizingCredentialIdHash)||!safeEqual(diracSecurityPasskeyResetActiveSetHashV363(active),p.activeCredentialSetHash)||!safeEqual(String(p.rpcAuthSessionId||''),String(resolved.sessionId||'')))throw resetError('SECURITY_PASSKEY_RESET_ACTIVE_SET_CHANGED',409);
   const credential=body.credential&&typeof body.credential==='object'&&!Array.isArray(body.credential)?body.credential:null,response=credential&&credential.response&&typeof credential.response==='object'&&!Array.isArray(credential.response)?credential.response:null,credentialId=diracPasskeyA2FCredentialId(credential);
   if(!credential||!response||!/^[A-Za-z0-9_-]{16,4096}$/.test(credentialId)||safeEqual(diracSecurityPasskeyResetSha256V363(credentialId),p.authorizingCredentialIdHash))throw resetError('SECURITY_PASSKEY_RESET_NEW_CREDENTIAL_INVALID',400);
   const existing=await diracSecurityPasskeyResetFetchRowV363(resolved.owner,{credentialId},false);if(existing.length)throw resetError('SECURITY_PASSKEY_RESET_CREDENTIAL_REUSE_FORBIDDEN',409);
@@ -4155,9 +4158,9 @@ async function handleStandaloneTrustCurrentDeviceV366(req, res, parsed) {
       || row.revoked_at || Number(row.security_epoch || 0) !== Number(resolved.securityEpoch) || row.trusted_device !== true) throw resetError('SECURITY_TRUST_DEVICE_PATCH_POSTCONDITION_FAILED', patched && patched.ok === true ? 403 : 503);
   const ua = String(requestUserAgent(req) || '').trim().slice(0, 512), ipValue = trustedClientIp(req, process.env), ip = ipValue && ipValue !== 'unknown' ? ipValue.slice(0,64) : null;
   await supabaseFetch('/rest/v1/security_customer_events', { method: 'POST', auth: 'service', prefer: 'return=minimal', body: [{
-    customer_id: resolved.owner.customerId, event_type: 'trusted_device_enabled', status: 'success', risk_level: 'low', description: 'Perangkat saat ini ditandai sebagai perangkat terpercaya.',
-    ip_address: ip, user_agent: ua, device_name: securityTrustCurrentDeviceNameV366(ua), browser_name: securityTrustCurrentDeviceBrowserV366(ua), operating_system: securityTrustCurrentDeviceOsV366(ua),
-    metadata: { source: 'customer_security_trust_current_device_standalone_v366', session_id: resolved.sessionId }
+    customer_id: resolved.owner.customerId, event_type: 'trusted_device_enabled', event_title: 'Perangkat terpercaya diaktifkan.', status: 'success', risk_level: 'low', description: 'Perangkat saat ini ditandai sebagai perangkat terpercaya.',
+    ip_address: ip, user_agent: ua, device_name: securityTrustCurrentDeviceNameV366(ua), related_session_id: resolved.sessionId,
+    metadata: { source: 'customer_security_trust_current_device_standalone_v366', session_id: resolved.sessionId, browser_name: securityTrustCurrentDeviceBrowserV366(ua), operating_system: securityTrustCurrentDeviceOsV366(ua) }
   }] }).catch(() => null);
   return res.status(200).json({ ok: true, trusted_device: true, message: 'Perangkat ini sudah ditandai terpercaya.', time: nowIso });
 }
