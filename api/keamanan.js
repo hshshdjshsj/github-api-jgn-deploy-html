@@ -886,7 +886,7 @@ async function securityResetPasskeyV237DbContractDiagnosticV370(req, resolved, p
       provider_message: providerMessage,
       provider_http_status: Number(createdResult && createdResult.status || 0),
       diagnosis,
-      rpc_anchor_source: 'active_passkey.current_auth_session_id',
+      rpc_anchor_source: 'token.rpcAuthSessionId',
       resolver_anchor_source: 'signed_session.sid_verified_in_security_customer_sessions',
       rpc_anchor_equals_resolver: rpcAnchorEqualsResolver,
       rpc_anchor_equals_active_passkey_anchor: Boolean(activePasskeyCurrentAuthSessionId && safeEqual(rpcAuthSessionId, activePasskeyCurrentAuthSessionId)),
@@ -1333,7 +1333,8 @@ function securityResetAssertDbOperationV361(path, method, options) {
           || !/^[a-f0-9]{64}$/.test(String(context.__diracPasskeyResetEmailVerificationHashV364 || ''))
           || options.body.p_auth_user_id !== owner.authUserId || options.body.p_customer_id !== owner.customerId
           || options.body.p_rotation_purpose !== 'replace'
-          || (name === 'dirac_passkey_create_pending_v237' ? (options.body.p_authorizing_credential_id_hash !== null || !/^[a-f0-9]{64}$/.test(String(context.__diracPasskeyResetAuthorizingCredentialHashV363 || ''))) : options.body.p_authorizing_credential_id_hash !== context.__diracPasskeyResetAuthorizingCredentialHashV363)
+          || !/^[a-f0-9]{64}$/.test(String(context.__diracPasskeyResetAuthorizingCredentialHashV363 || ''))
+          || options.body.p_authorizing_credential_id_hash !== context.__diracPasskeyResetAuthorizingCredentialHashV363
           || options.body.p_current_auth_session_id !== context.__diracPasskeyResetAuthSessionIdV363
           || options.body.p_recovery_request_id !== null || options.body.p_recovery_session_id !== null || options.body.p_recovery_session_hash !== null) {
         throw resetError('SECURITY_PASSKEY_RESET_DB_AUTHORIZATION_REQUIRED', 403);
@@ -3184,6 +3185,19 @@ async function diracSecurityPasskeyResetVerifyPasswordV363(owner, password) {
   }
 }
 
+function diracSecurityPasskeyResetAuthSessionIdV371(accessToken, owner) {
+  const token=String(accessToken||'').trim(),parts=token.split('.');
+  if(!owner||parts.length!==3||!parts[0]||!parts[1]||!parts[2]||token.length>20*1024||!/^[A-Za-z0-9_-]+$/.test(parts[0])||!/^[A-Za-z0-9_-]+$/.test(parts[1])||!/^[A-Za-z0-9_-]+$/.test(parts[2]))throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_PROVIDER_CONTRACT_INVALID',503);
+  let raw=Buffer.alloc(0);
+  try{
+    raw=Buffer.from(parts[1],'base64url');if(!raw.length||raw.length>8192||raw.toString('base64url')!==parts[1])throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_PROVIDER_CONTRACT_INVALID',503);
+    const payload=parseStrictJson(raw,{maxBytes:8192,maxDepth:12,maxNodes:512}),now=Math.floor(Date.now()/1000),sessionId=String(payload&&payload.session_id||'');
+    if(!payload||typeof payload!=='object'||Array.isArray(payload)||!customerSecurityLooksLikeUuid(sessionId)||!safeEqual(String(payload.sub||''),owner.authUserId)||String(payload.aud||'')!=='authenticated'||String(payload.role||'')!=='authenticated'||!Number.isSafeInteger(Number(payload.iat))||Number(payload.iat)>now+30||!Number.isSafeInteger(Number(payload.exp))||Number(payload.exp)<=now+30||(payload.email!==undefined&&!safeEqual(normalizeAuthEmail(payload.email||''),owner.email)))throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_PROVIDER_CONTRACT_INVALID',503);
+    return sessionId;
+  }catch(error){if(error&&error.code)throw error;throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_PROVIDER_CONTRACT_INVALID',503);}
+  finally{if(raw.length)raw.fill(0);}
+}
+
 async function diracSecurityPasskeyReplacementVerifyPasswordV367(owner, password) {
   const value = String(password === undefined || password === null ? '' : password).normalize('NFC');
   if (!value || value.length > 128 || Buffer.byteLength(value, 'utf8') > 512 || /[\u0000\r\n]/.test(value)) throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_INVALID', 422);
@@ -3200,17 +3214,20 @@ async function diracSecurityPasskeyReplacementVerifyPasswordV367(owner, password
     const user = verified.data && verified.data.user && typeof verified.data.user === 'object' ? verified.data.user : null;
     const accessToken = String(verified.data && verified.data.access_token || '');
     if (!user || !accessToken) throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_PROVIDER_CONTRACT_INVALID', 503);
-    if (!safeEqual(String(user.id || ''), owner.authUserId) || !safeEqual(normalizeAuthEmail(user.email || ''), owner.email)) {
-      throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_IDENTITY_MISMATCH', 403);
-    }
-    ctx.__diracPasskeyResetEphemeralAccessDigestV363 = diracSecurityPasskeyResetSha256V363(accessToken);
-    const logout = await supabaseFetch('/auth/v1/logout?scope=local', { method: 'POST', auth: 'anon', bearer: accessToken });
-    if (!logout || logout.ok !== true) throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_SESSION_CLEANUP_FAILED', 503);
-    return true;
+    if (!safeEqual(String(user.id || ''), owner.authUserId) || !safeEqual(normalizeAuthEmail(user.email || ''), owner.email)) throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_IDENTITY_MISMATCH', 403);
+    return Object.freeze({rpcAuthSessionId:diracSecurityPasskeyResetAuthSessionIdV371(accessToken,owner),accessToken});
   } finally {
     ctx.__diracPasskeyResetPasswordCheckV363 = false;
     ctx.__diracPasskeyResetEphemeralAccessDigestV363 = '';
   }
+}
+
+async function diracSecurityPasskeyResetCleanupAuthSessionV371(accessToken) {
+  const token=String(accessToken||'').trim();if(!token)return false;
+  const ctx=diracCentralCurrentContextV149();if(!ctx||!ctx.active||!ctx.__diracPasswordResetVerifiedOwnerV333)return false;
+  ctx.__diracPasskeyResetPasswordCheckV363=true;ctx.__diracPasskeyResetEphemeralAccessDigestV363=diracSecurityPasskeyResetSha256V363(token);
+  try{const logout=await supabaseFetch('/auth/v1/logout?scope=local',{method:'POST',auth:'anon',bearer:token});return Boolean(logout&&logout.ok===true);}
+  finally{ctx.__diracPasskeyResetPasswordCheckV363=false;ctx.__diracPasskeyResetEphemeralAccessDigestV363='';}
 }
 
 function diracSecurityPasskeyResetEmailCodeV364() {
@@ -3250,7 +3267,7 @@ function diracSecurityPasskeyResetEmailTokenV364(req, context, code) {
     origin: requestOrigin(req),
     uaHash: diracSecurityPasskeyResetSha256V363(requestUserAgent(req)),
     authUserId: String(context.authUserId || ''), customerId: String(context.customerId || ''), emailHash: diracSecurityPasskeyResetSha256V363(normalizeAuthEmail(context.email || '')),
-    sessionId: String(context.sessionId || ''), securityEpoch: Number(context.securityEpoch || 0),
+    sessionId: String(context.sessionId || ''), rpcAuthSessionId: String(context.rpcAuthSessionId || ''), securityEpoch: Number(context.securityEpoch || 0),
     authorizingPasskeyId: String(context.authorizingPasskeyId || ''), authorizingCredentialIdHash: String(context.authorizingCredentialIdHash || ''), activeCredentialSetHash: String(context.activeCredentialSetHash || ''),
     serverDeviceBindingKeyId: String(context.serverDeviceBindingKeyId || ''),
     codeLength: String(code || '').length, codeSalt: randomToken(18), issuedAtMs: now, expiresAtMs: now + DIRAC_SECURITY_PASSKEY_RESET_EMAIL_TTL_MS_V364
@@ -3266,7 +3283,7 @@ async function diracSecurityPasskeyResetReadEmailTokenV364(req, token, resolved)
   const now = Date.now();
   if (!p || p.typ !== DIRAC_SECURITY_PASSKEY_RESET_EMAIL_V364 || p.phase !== 'email'
       || !/^[A-Za-z0-9_-]{32}$/.test(String(p.jti || '')) || !/^[A-Za-z0-9_-]{43}$/.test(String(p.challenge || '')) || !/^[A-Za-z0-9_-]{24}$/.test(String(p.codeSalt || '')) || !/^[a-f0-9]{64}$/.test(String(p.codeMac || ''))
-      || !customerSecurityLooksLikeUuid(String(p.authUserId || '')) || !customerSecurityLooksLikeUuid(String(p.customerId || '')) || !customerSecurityLooksLikeUuid(String(p.sessionId || ''))
+      || !customerSecurityLooksLikeUuid(String(p.authUserId || '')) || !customerSecurityLooksLikeUuid(String(p.customerId || '')) || !customerSecurityLooksLikeUuid(String(p.sessionId || '')) || !customerSecurityLooksLikeUuid(String(p.rpcAuthSessionId || ''))
       || !customerSecurityLooksLikeUuid(String(p.authorizingPasskeyId || '')) || !/^[a-f0-9]{64}$/.test(String(p.authorizingCredentialIdHash || '')) || !/^[a-f0-9]{64}$/.test(String(p.activeCredentialSetHash || ''))
       || !/^[a-f0-9]{64}$/.test(String(p.serverDeviceBindingKeyId || ''))
       || !Number.isSafeInteger(Number(p.securityEpoch)) || Number(p.securityEpoch) < 1
@@ -3505,12 +3522,13 @@ async function diracSecurityPasskeyResetReadTokenV363(req, token, expectedPhase,
       || !safeEqual(String(p.sessionId), resolved.sessionId) || Number(p.securityEpoch) !== resolved.securityEpoch) {
     throw resetError('SECURITY_PASSKEY_RESET_TOKEN_INVALID', 403);
   }
-  if ((expectedPhase === 'register' || expectedPhase === 'confirm')
+  if ((expectedPhase === 'authorize' || expectedPhase === 'register' || expectedPhase === 'confirm')
       && (p.authorizationMethod !== 'password_email' || !/^[a-f0-9]{64}$/.test(String(p.emailVerificationHash || '')))) {
     throw resetError('SECURITY_PASSKEY_RESET_EMAIL_AUTHORIZATION_REQUIRED', 403);
   }
   const currentDevice = diracSecurityPasskeyResetServerDeviceAuthorityV367().read(req, resolved.owner);
   if (!currentDevice || currentDevice.ok !== true || !safeEqual(String(currentDevice.keyId || ''), String(p.serverDeviceBindingKeyId || ''))) throw resetError('SECURITY_PASSKEY_RESET_DEVICE_BINDING_CHANGED', 403);
+  if ((expectedPhase === 'authorize' || expectedPhase === 'register') && !customerSecurityLooksLikeUuid(String(p.rotationId || ''))) throw resetError('SECURITY_PASSKEY_RESET_ROTATION_TOKEN_INVALID', 403);
   if (expectedPhase === 'confirm') {
     if (!customerSecurityLooksLikeUuid(String(p.pendingPasskeyId || '')) || !customerSecurityLooksLikeUuid(String(p.rotationId || ''))
         || !/^[a-f0-9]{64}$/.test(String(p.publicKeySha256 || '')) || !/^[a-f0-9]{64}$/.test(String(p.deviceBindingKeyId || ''))
@@ -3659,22 +3677,24 @@ async function diracSecurityPasskeyResetRecordAssertionV363({req,row,owner,paylo
   const updated={...currentJson,webauthn:{...(currentJson.webauthn&&typeof currentJson.webauthn==='object'?currentJson.webauthn:{}),sign_count:next,backup_state:assertion.backupState===true,last_verified_at:nowIso},last_authentication:diracSecurityPasskeyResetMinimalCredentialJsonV363({credential,response,clientData,payload,owner,mode:confirmPending?'confirm_pending':'authentication'})};
   await diracSecurityPasskeyResetConsumeTokenV363(setupToken,payload);
   const recorded=await supabaseFetch('/rest/v1/rpc/dirac_passkey_record_assertion_v237',{method:'POST',auth:'service',prefer:'return=representation',body:{p_customer_id:owner.customerId,p_passkey_id:String(row.id),p_expected_sign_count:previous,p_new_sign_count:next,p_backup_state:assertion.backupState===true,p_credential_json:updated,p_confirm_pending:confirmPending===true,p_auth_user_id:owner.authUserId,p_assertion_purpose:String(purpose),p_rotation_id:rotationId||null,p_expected_security_epoch:Number(payload.securityEpoch),p_current_auth_session_id:String(payload.rpcAuthSessionId)}});
-  if(!recorded||recorded.ok!==true)throw resetError('SECURITY_PASSKEY_RESET_ASSERTION_COMMIT_FAILED',503);
-  return{nextSignCount:next,deviceBindingKeyId:device.keyId,clientData,assertion};
+  const recordedData=diracSecurityPasskeyResetRpcDataV363(recorded);if(!recorded||recorded.ok!==true||!recordedData||recordedData.ok!==true||!safeEqual(String(recordedData.passkey_id||''),String(row.id)))throw resetError('SECURITY_PASSKEY_RESET_ASSERTION_COMMIT_FAILED',503);
+  return{nextSignCount:next,deviceBindingKeyId:device.keyId,clientData,assertion,rpcData:recordedData};
 }
 
 async function diracSecurityPasskeyResetStartV363(req,res,body) {
   if(!exactKeys(body,['action','password']))throw resetError('SECURITY_PASSKEY_RESET_START_BODY_INVALID',400);
-  const resolved=await diracSecurityPasskeyResetResolveOwnerV363(req);await diracSecurityPasskeyReplacementVerifyPasswordV367(resolved.owner,body.password);
-  const serverDevice=diracSecurityPasskeyResetServerDeviceAuthorityV367().ensure(req,res,resolved.owner);
-  if(!serverDevice||serverDevice.ok!==true||!/^[a-f0-9]{64}$/.test(String(serverDevice.keyId||'')))throw resetError(serverDevice&&serverDevice.tampered===true?'SECURITY_PASSKEY_RESET_DEVICE_COOKIE_TAMPERED':'SECURITY_PASSKEY_RESET_DEVICE_BINDING_UNAVAILABLE',serverDevice&&serverDevice.tampered===true?403:503);
-  const active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner))throw resetError(active.length===0?'SECURITY_PASSKEY_RESET_ACTIVE_PASSKEY_REQUIRED':'SECURITY_PASSKEY_RESET_ACTIVE_PASSKEY_AMBIGUOUS',409);
-  const row=active[0],credentialHash=diracSecurityPasskeyResetSha256V363(String(row.credential_id)),activeSetHash=diracSecurityPasskeyResetActiveSetHashV363(active);
-  await diracSecurityPasskeyResetEmailRateV364(req,'send',resolved.owner.customerId,3,600,600);
-  const code=diracSecurityPasskeyResetEmailCodeV364();
-  const issued=diracSecurityPasskeyResetEmailTokenV364(req,{authUserId:resolved.owner.authUserId,customerId:resolved.owner.customerId,email:resolved.owner.email,sessionId:resolved.sessionId,securityEpoch:resolved.securityEpoch,authorizingPasskeyId:String(row.id),authorizingCredentialIdHash:credentialHash,activeCredentialSetHash:activeSetHash,serverDeviceBindingKeyId:serverDevice.keyId},code);
-  await diracSecurityPasskeyResetSendEmailCodeV364(req,resolved.owner,code,issued.payload);
-  return{ok:true,method:'password_email',passkeyMode:'email_verification',reset_passkey:true,email_verification_required:true,email_sent:true,code_length:code.length,setupToken:issued.token,mfaSetupToken:issued.token,expires_in:Math.floor((issued.payload.expiresAtMs-Date.now())/1000),message:'Kode verifikasi '+String(code.length)+' digit telah dikirim ke email akun.'};
+  const resolved=await diracSecurityPasskeyResetResolveOwnerV363(req),passwordAuth=await diracSecurityPasskeyReplacementVerifyPasswordV367(resolved.owner,body.password);let retainAuthSession=false;
+  try{
+    const serverDevice=diracSecurityPasskeyResetServerDeviceAuthorityV367().ensure(req,res,resolved.owner);
+    if(!serverDevice||serverDevice.ok!==true||!/^[a-f0-9]{64}$/.test(String(serverDevice.keyId||'')))throw resetError(serverDevice&&serverDevice.tampered===true?'SECURITY_PASSKEY_RESET_DEVICE_COOKIE_TAMPERED':'SECURITY_PASSKEY_RESET_DEVICE_BINDING_UNAVAILABLE',serverDevice&&serverDevice.tampered===true?403:503);
+    const active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner))throw resetError(active.length===0?'SECURITY_PASSKEY_RESET_ACTIVE_PASSKEY_REQUIRED':'SECURITY_PASSKEY_RESET_ACTIVE_PASSKEY_AMBIGUOUS',409);
+    const row=active[0],credentialHash=diracSecurityPasskeyResetSha256V363(String(row.credential_id)),activeSetHash=diracSecurityPasskeyResetActiveSetHashV363(active);
+    await diracSecurityPasskeyResetEmailRateV364(req,'send',resolved.owner.customerId,3,600,600);
+    const code=diracSecurityPasskeyResetEmailCodeV364();
+    const issued=diracSecurityPasskeyResetEmailTokenV364(req,{authUserId:resolved.owner.authUserId,customerId:resolved.owner.customerId,email:resolved.owner.email,sessionId:resolved.sessionId,rpcAuthSessionId:passwordAuth.rpcAuthSessionId,securityEpoch:resolved.securityEpoch,authorizingPasskeyId:String(row.id),authorizingCredentialIdHash:credentialHash,activeCredentialSetHash:activeSetHash,serverDeviceBindingKeyId:serverDevice.keyId},code);
+    await diracSecurityPasskeyResetSendEmailCodeV364(req,resolved.owner,code,issued.payload);retainAuthSession=true;
+    return{ok:true,method:'password_email',passkeyMode:'email_verification',reset_passkey:true,email_verification_required:true,email_sent:true,code_length:code.length,setupToken:issued.token,mfaSetupToken:issued.token,expires_in:Math.floor((issued.payload.expiresAtMs-Date.now())/1000),message:'Kode verifikasi '+String(code.length)+' digit telah dikirim ke email akun.'};
+  }finally{if(!retainAuthSession)await diracSecurityPasskeyResetCleanupAuthSessionV371(passwordAuth.accessToken).catch(()=>false);}
 }
 
 async function diracSecurityPasskeyResetEmailAuthorizeV364(req,body,resolved,tokenData) {
@@ -3683,17 +3703,25 @@ async function diracSecurityPasskeyResetEmailAuthorizeV364(req,body,resolved,tok
   const codeLength=Number(p.codeLength);
   if(!Number.isSafeInteger(codeLength)||codeLength<DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MIN_LENGTH_V364||codeLength>DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MAX_LENGTH_V364||code.length!==codeLength||!/^[0-9]+$/.test(code))throw resetError('SECURITY_PASSKEY_RESET_EMAIL_CODE_INVALID',403);
   const expected=diracSecurityPasskeyResetEmailCodeMacV364(p,code);if(!safeEqual(expected,String(p.codeMac||'')))throw resetError('SECURITY_PASSKEY_RESET_EMAIL_CODE_INVALID',403);
-  const active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner)||!safeEqual(String(active[0].id||''),p.authorizingPasskeyId)||!safeEqual(diracSecurityPasskeyResetSha256V363(active[0].credential_id),p.authorizingCredentialIdHash)||!safeEqual(diracSecurityPasskeyResetActiveSetHashV363(active),p.activeCredentialSetHash))throw resetError('SECURITY_PASSKEY_RESET_ACTIVE_SET_CHANGED',409);
-  const rpcAuthSessionId=String(resolved.sessionId||'').trim();if(!customerSecurityLooksLikeUuid(rpcAuthSessionId))throw resetError('SECURITY_PASSKEY_RESET_AUTH_SESSION_ANCHOR_INVALID',409);
+  const active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner)||!safeEqual(String(active[0].id||''),p.authorizingPasskeyId)||!safeEqual(diracSecurityPasskeyResetSha256V363(active[0].credential_id),p.authorizingCredentialIdHash)||!safeEqual(diracSecurityPasskeyResetActiveSetHashV363(active),p.activeCredentialSetHash)||!customerSecurityLooksLikeUuid(String(p.rpcAuthSessionId||'')))throw resetError('SECURITY_PASSKEY_RESET_ACTIVE_SET_CHANGED',409);
   await diracSecurityPasskeyResetConsumeEmailTokenV364(tokenData.token,p);
-  const emailVerificationHash=diracSecurityPasskeyResetSha256V363([p.jti,p.codeMac,p.sessionId,String(p.securityEpoch)].join('|'));
-  const issued=diracSecurityPasskeyResetTokenV363(req,'register',{authUserId:resolved.owner.authUserId,customerId:resolved.owner.customerId,email:resolved.owner.email,sessionId:resolved.sessionId,rpcAuthSessionId,securityEpoch:resolved.securityEpoch,authorizingPasskeyId:p.authorizingPasskeyId,authorizingCredentialIdHash:p.authorizingCredentialIdHash,activeCredentialSetHash:p.activeCredentialSetHash,authorizationMethod:'password_email',emailVerificationHash,serverDeviceBindingKeyId:p.serverDeviceBindingKeyId});
+  const emailVerificationHash=diracSecurityPasskeyResetSha256V363([p.jti,p.codeMac,p.sessionId,String(p.securityEpoch)].join('|')),rotationId=crypto.randomUUID();
+  const issued=diracSecurityPasskeyResetTokenV363(req,'authorize',{authUserId:resolved.owner.authUserId,customerId:resolved.owner.customerId,email:resolved.owner.email,sessionId:resolved.sessionId,rpcAuthSessionId:p.rpcAuthSessionId,securityEpoch:resolved.securityEpoch,authorizingPasskeyId:p.authorizingPasskeyId,authorizingCredentialIdHash:p.authorizingCredentialIdHash,activeCredentialSetHash:p.activeCredentialSetHash,authorizationMethod:'password_email',emailVerificationHash,serverDeviceBindingKeyId:p.serverDeviceBindingKeyId,rotationId});
+  return{ok:true,method:'passkey',passkeyMode:'authorize_old',reset_passkey:true,authorized:true,authorization_method:'password_email',email_verified:true,old_passkey_authorization_required:true,device_binding_required:true,device_binding_policy:DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V367,setupToken:issued.token,mfaSetupToken:issued.token,expires_in:Math.floor((issued.payload.expiresAtMs-Date.now())/1000),publicKey:{challenge:issued.payload.challenge,rpId:issued.payload.rpId,timeout:Math.min(60000,issued.payload.expiresAtMs-Date.now()),userVerification:'required',allowCredentials:[{type:'public-key',id:String(active[0].credential_id),transports:Array.isArray(active[0].transports)?active[0].transports:[]}]},message:'Kode email terverifikasi. Konfirmasikan Passkey lama untuk mengotorisasi penggantian.'};
+}
+
+async function diracSecurityPasskeyResetAuthorizeOldV371(req,body,resolved,tokenData) {
+  const p=tokenData.payload,active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!customerSecurityLooksLikeUuid(String(p.rotationId||''))||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner)||!safeEqual(String(active[0].id||''),p.authorizingPasskeyId)||!safeEqual(diracSecurityPasskeyResetSha256V363(active[0].credential_id),p.authorizingCredentialIdHash)||!safeEqual(diracSecurityPasskeyResetActiveSetHashV363(active),p.activeCredentialSetHash))throw resetError('SECURITY_PASSKEY_RESET_ACTIVE_SET_CHANGED',409);
+  const recorded=await diracSecurityPasskeyResetRecordAssertionV363({req,row:active[0],owner:resolved.owner,payload:p,credential:body.credential,body,setupToken:tokenData.token,purpose:'replace_authorize_old',confirmPending:false,rotationId:p.rotationId}),authorizedHash=String(recorded&&recorded.rpcData&&recorded.rpcData.authorizing_credential_id_hash||'');
+  if(!/^[a-f0-9]{64}$/.test(authorizedHash)||!safeEqual(authorizedHash,p.authorizingCredentialIdHash))throw resetError('SECURITY_PASSKEY_RESET_OLD_PASSKEY_AUTHORIZATION_FAILED',503);
+  const refreshed=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(refreshed.length!==1||!diracSecurityPasskeyResetValidateOwnerRowV363(refreshed[0],resolved.owner)||!safeEqual(String(refreshed[0].id||''),p.authorizingPasskeyId)||Number(refreshed[0].sign_count||0)!==recorded.nextSignCount||!safeEqual(diracSecurityPasskeyResetActiveSetHashV363(refreshed),p.activeCredentialSetHash))throw resetError('SECURITY_PASSKEY_RESET_OLD_PASSKEY_POSTCONDITION_FAILED',503);
+  const issued=diracSecurityPasskeyResetTokenV363(req,'register',{authUserId:resolved.owner.authUserId,customerId:resolved.owner.customerId,email:resolved.owner.email,sessionId:resolved.sessionId,rpcAuthSessionId:p.rpcAuthSessionId,securityEpoch:resolved.securityEpoch,authorizingPasskeyId:p.authorizingPasskeyId,authorizingCredentialIdHash:authorizedHash,activeCredentialSetHash:p.activeCredentialSetHash,authorizationMethod:p.authorizationMethod,emailVerificationHash:p.emailVerificationHash,serverDeviceBindingKeyId:p.serverDeviceBindingKeyId,rotationId:p.rotationId});
   const userHandle=crypto.createHash('sha256').update('dirac-passkey-user:'+resolved.owner.customerId).digest('base64url');
-  return{ok:true,method:'passkey',passkeyMode:'registration',reset_passkey:true,authorized:true,authorization_method:'password_email',email_verified:true,needsRegistration:true,device_binding_required:true,device_binding_policy:DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V367,setupToken:issued.token,mfaSetupToken:issued.token,expires_in:Math.floor((issued.payload.expiresAtMs-Date.now())/1000),publicKey:{challenge:issued.payload.challenge,rp:{name:String(process.env.WEBAUTHN_RP_NAME||process.env.DIRAC_WEBAUTHN_RP_NAME||'Dirac Secure').trim()||'Dirac Secure',id:issued.payload.rpId},user:{id:userHandle,name:resolved.owner.email,displayName:resolved.owner.email},pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],timeout:60000,attestation:'none',authenticatorSelection:{authenticatorAttachment:'platform',residentKey:'preferred',requireResidentKey:false,userVerification:'required'},extensions:{credProps:true},excludeCredentials:[]},message:'Kode email terverifikasi. Buat Passkey pengganti baru.'};
+  return{ok:true,method:'passkey',passkeyMode:'registration',reset_passkey:true,authorized:true,authorization_method:'password_email',email_verified:true,old_passkey_verified:true,needsRegistration:true,device_binding_required:true,device_binding_policy:DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V367,setupToken:issued.token,mfaSetupToken:issued.token,expires_in:Math.floor((issued.payload.expiresAtMs-Date.now())/1000),publicKey:{challenge:issued.payload.challenge,rp:{name:String(process.env.WEBAUTHN_RP_NAME||process.env.DIRAC_WEBAUTHN_RP_NAME||'Dirac Secure').trim()||'Dirac Secure',id:issued.payload.rpId},user:{id:userHandle,name:resolved.owner.email,displayName:resolved.owner.email},pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],timeout:60000,attestation:'none',authenticatorSelection:{authenticatorAttachment:'platform',residentKey:'preferred',requireResidentKey:false,userVerification:'required'},extensions:{credProps:true},excludeCredentials:[]},message:'Passkey lama terverifikasi. Buat Passkey pengganti baru.'};
 }
 
 async function diracSecurityPasskeyResetRegisterV363(req,body,resolved,tokenData) {
-  const p=tokenData.payload,active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner)||!safeEqual(String(active[0].id||''),p.authorizingPasskeyId)||!safeEqual(diracSecurityPasskeyResetSha256V363(active[0].credential_id),p.authorizingCredentialIdHash)||!safeEqual(diracSecurityPasskeyResetActiveSetHashV363(active),p.activeCredentialSetHash)||!safeEqual(String(p.rpcAuthSessionId||''),String(resolved.sessionId||'')))throw resetError('SECURITY_PASSKEY_RESET_ACTIVE_SET_CHANGED',409);
+  const p=tokenData.payload,active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!customerSecurityLooksLikeUuid(String(p.rotationId||''))||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner)||!safeEqual(String(active[0].id||''),p.authorizingPasskeyId)||!safeEqual(diracSecurityPasskeyResetSha256V363(active[0].credential_id),p.authorizingCredentialIdHash)||!safeEqual(diracSecurityPasskeyResetActiveSetHashV363(active),p.activeCredentialSetHash))throw resetError('SECURITY_PASSKEY_RESET_ACTIVE_SET_CHANGED',409);
   const credential=body.credential&&typeof body.credential==='object'&&!Array.isArray(body.credential)?body.credential:null,response=credential&&credential.response&&typeof credential.response==='object'&&!Array.isArray(credential.response)?credential.response:null,credentialId=diracPasskeyA2FCredentialId(credential);
   if(!credential||!response||!/^[A-Za-z0-9_-]{16,4096}$/.test(credentialId)||safeEqual(diracSecurityPasskeyResetSha256V363(credentialId),p.authorizingCredentialIdHash))throw resetError('SECURITY_PASSKEY_RESET_NEW_CREDENTIAL_INVALID',400);
   const existing=await diracSecurityPasskeyResetFetchRowV363(resolved.owner,{credentialId},false);if(existing.length)throw resetError('SECURITY_PASSKEY_RESET_CREDENTIAL_REUSE_FORBIDDEN',409);
@@ -3701,16 +3729,16 @@ async function diracSecurityPasskeyResetRegisterV363(req,body,resolved,tokenData
   const device=diracSecurityPasskeyResetRegistrationDeviceBindingV363(req,resolved.owner,body,p);if(!device.ok)throw resetError('SECURITY_PASSKEY_RESET_DEVICE_BINDING_INVALID',403);
   const publicKeySha256=(()=>{const raw=diracPasskeyA2FBase64UrlToBuffer(registration.credentialPublicKeyCose);return raw.length?crypto.createHash('sha256').update(raw).digest('hex'):'';})();if(!/^[a-f0-9]{64}$/.test(publicKeySha256))throw resetError('SECURITY_PASSKEY_RESET_PUBLIC_KEY_INVALID',403);
   const signCount=Math.max(0,Number(registration.signCount||0));if(!Number.isSafeInteger(signCount))throw resetError('SECURITY_PASSKEY_RESET_SIGN_COUNT_INVALID',400);
-  const nowIso=new Date().toISOString(),credentialJson=diracSecurityPasskeyResetMinimalCredentialJsonV363({credential,response,clientData,payload:p,owner:resolved.owner,mode:'registration'});credentialJson.webauthn={rp_id:p.rpId,public_key_jwk:registration.publicKeyJwk,credential_public_key_cose:registration.credentialPublicKeyCose,aaguid:registration.aaguid,rotation_version:'dirac-passkey-single-active-rotation-v237',sign_count:signCount,backup_eligible:registration.backupEligible===true,backup_state:registration.backupState===true,device_bound:registration.deviceBound===true,sync_policy:'synced-passkey-server-device-binding-required-v2',verified_at:nowIso};credentialJson.device_binding={version:DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V367,algorithm:DIRAC_PASSKEY_SERVER_DEVICE_BINDING_ALGORITHM_V367,policy:DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V367,required:true,key_id:device.keyId,registered_at:nowIso,last_verified_at:nowIso};credentialJson.security_passkey_reset_v363={authorized_credential_id_hash:p.authorizingCredentialIdHash,authorized_session_id:p.sessionId,authorized_at:new Date(Number(p.issuedAtMs)).toISOString()};
-  const rotationId=crypto.randomUUID(),pendingExpiresAtMs=Date.now()+DIRAC_SECURITY_PASSKEY_RESET_PENDING_TTL_MS_V363;
+  const nowIso=new Date().toISOString(),credentialJson=diracSecurityPasskeyResetMinimalCredentialJsonV363({credential,response,clientData,payload:p,owner:resolved.owner,mode:'registration'});credentialJson.webauthn={rp_id:p.rpId,public_key_jwk:registration.publicKeyJwk,credential_public_key_cose:registration.credentialPublicKeyCose,aaguid:registration.aaguid,rotation_version:'dirac-passkey-single-active-rotation-v237',sign_count:signCount,backup_eligible:registration.backupEligible===true,backup_state:registration.backupState===true,device_bound:registration.deviceBound===true,sync_policy:'synced-passkey-server-device-binding-required-v2',verified_at:nowIso};credentialJson.device_binding={version:DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V367,algorithm:DIRAC_PASSKEY_SERVER_DEVICE_BINDING_ALGORITHM_V367,policy:DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V367,required:true,key_id:device.keyId,registered_at:nowIso,last_verified_at:nowIso};credentialJson.security_passkey_reset_v363={authorized_credential_id_hash:p.authorizingCredentialIdHash,authorized_session_id:p.rpcAuthSessionId,authorized_at:new Date(Number(p.issuedAtMs)).toISOString()};
+  const rotationId=p.rotationId,pendingExpiresAtMs=Date.now()+DIRAC_SECURITY_PASSKEY_RESET_PENDING_TTL_MS_V363;
   const ctx=diracCentralCurrentContextV149();if(ctx){ctx.__diracPasskeyResetAuthorizedV363=true;ctx.__diracPasskeyResetAuthorizationMethodV364=p.authorizationMethod;ctx.__diracPasskeyResetEmailVerificationHashV364=p.emailVerificationHash;ctx.__diracPasskeyResetAuthorizingCredentialHashV363=p.authorizingCredentialIdHash;ctx.__diracPasskeyResetAuthSessionIdV363=p.rpcAuthSessionId;}
   try{
     await securityResetPasskeyV237TopologyDiagnosticV369(req,resolved,p);
     await diracSecurityPasskeyResetConsumeTokenV363(tokenData.token,p);
-    const created=await supabaseFetch('/rest/v1/rpc/dirac_passkey_create_pending_v237',{method:'POST',auth:'service',prefer:'return=representation',body:{p_customer_id:resolved.owner.customerId,p_auth_user_id:resolved.owner.authUserId,p_email:resolved.owner.email,p_credential_id:credentialId,p_credential_json:credentialJson,p_transports:diracSecurityPasskeyResetTransportsV363(credential,response),p_sign_count:signCount,p_backup_eligible:registration.backupEligible===true,p_backup_state:registration.backupState===true,p_rotation_id:rotationId,p_rotation_purpose:'replace',p_expected_security_epoch:p.securityEpoch,p_authorizing_credential_id_hash:null,p_current_auth_session_id:p.rpcAuthSessionId,p_recovery_request_id:null,p_recovery_session_id:null,p_recovery_session_hash:null,p_public_key_sha256:publicKeySha256,p_pending_expires_at:new Date(pendingExpiresAtMs).toISOString()}});
+    const created=await supabaseFetch('/rest/v1/rpc/dirac_passkey_create_pending_v237',{method:'POST',auth:'service',prefer:'return=representation',body:{p_customer_id:resolved.owner.customerId,p_auth_user_id:resolved.owner.authUserId,p_email:resolved.owner.email,p_credential_id:credentialId,p_credential_json:credentialJson,p_transports:diracSecurityPasskeyResetTransportsV363(credential,response),p_sign_count:signCount,p_backup_eligible:registration.backupEligible===true,p_backup_state:registration.backupState===true,p_rotation_id:rotationId,p_rotation_purpose:'replace',p_expected_security_epoch:p.securityEpoch,p_authorizing_credential_id_hash:p.authorizingCredentialIdHash,p_current_auth_session_id:p.rpcAuthSessionId,p_recovery_request_id:null,p_recovery_session_id:null,p_recovery_session_hash:null,p_public_key_sha256:publicKeySha256,p_pending_expires_at:new Date(pendingExpiresAtMs).toISOString()}});
     const createdData=diracSecurityPasskeyResetRpcDataV363(created);if(!created||created.ok!==true||!createdData||createdData.ok!==true||!customerSecurityLooksLikeUuid(String(createdData.passkey_id||''))||!safeEqual(String(createdData.rotation_id||''),rotationId)||String(createdData.rotation_state||'')!=='pending'){await securityResetPasskeyV237DbContractDiagnosticV370(req,resolved,p,active[0],created);throw resetError('SECURITY_PASSKEY_RESET_PENDING_CREATE_FAILED',503);}
     const pendingRows=await diracSecurityPasskeyResetFetchRowV363(resolved.owner,{id:String(createdData.passkey_id),credentialId,rotationId},false),pending=pendingRows.length===1?pendingRows[0]:null;
-    if(!pending||pending.is_active!==false||String(pending.rotation_state||'')!=='pending'||String(pending.rotation_purpose||'')!=='replace'||Number(pending.expected_security_epoch||0)!==p.securityEpoch||String(pending.authorizing_credential_id_hash||'')||!safeEqual(String(pending.current_auth_session_id||''),p.rpcAuthSessionId)||pending.recovery_request_id||pending.recovery_session_id||pending.recovery_session_hash||pending.confirmed_at||pending.activated_at||pending.revoked_at||!diracSecurityPasskeyResetValidateOwnerRowV363(pending,resolved.owner))throw resetError('SECURITY_PASSKEY_RESET_PENDING_POSTCONDITION_FAILED',503);
+    if(!pending||pending.is_active!==false||String(pending.rotation_state||'')!=='pending'||String(pending.rotation_purpose||'')!=='replace'||Number(pending.expected_security_epoch||0)!==p.securityEpoch||!safeEqual(String(pending.authorizing_credential_id_hash||''),p.authorizingCredentialIdHash)||!safeEqual(String(pending.current_auth_session_id||''),p.rpcAuthSessionId)||pending.recovery_request_id||pending.recovery_session_id||pending.recovery_session_hash||pending.confirmed_at||pending.activated_at||pending.revoked_at||!diracSecurityPasskeyResetValidateOwnerRowV363(pending,resolved.owner))throw resetError('SECURITY_PASSKEY_RESET_PENDING_POSTCONDITION_FAILED',503);
     const actualExpiry=Date.parse(String(pending.pending_expires_at||''));if(!Number.isFinite(actualExpiry)||actualExpiry<=Date.now()+15000)throw resetError('SECURITY_PASSKEY_RESET_PENDING_EXPIRY_INVALID',503);
     const issued=diracSecurityPasskeyResetTokenV363(req,'confirm',{authUserId:resolved.owner.authUserId,customerId:resolved.owner.customerId,email:resolved.owner.email,sessionId:resolved.sessionId,rpcAuthSessionId:p.rpcAuthSessionId,securityEpoch:resolved.securityEpoch,authorizingPasskeyId:p.authorizingPasskeyId,authorizingCredentialIdHash:p.authorizingCredentialIdHash,activeCredentialSetHash:p.activeCredentialSetHash,authorizationMethod:p.authorizationMethod,emailVerificationHash:p.emailVerificationHash,pendingPasskeyId:String(pending.id),rotationId,publicKeySha256,serverDeviceBindingKeyId:p.serverDeviceBindingKeyId,deviceBindingKeyId:device.keyId,pendingExpiresAtMs:actualExpiry,expiresAtMs:Math.min(actualExpiry,Date.now()+DIRAC_SECURITY_PASSKEY_RESET_TOKEN_TTL_MS_V363)});
     return{ok:true,method:'passkey',passkeyMode:'confirm_pending',reset_passkey:true,confirmation_required:true,database_saved:true,pending_created:true,registered_now:false,device_binding_required:true,device_binding_policy:DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V367,setupToken:issued.token,mfaSetupToken:issued.token,expires_in:Math.floor((issued.payload.expiresAtMs-Date.now())/1000),publicKey:{challenge:issued.payload.challenge,rpId:issued.payload.rpId,timeout:Math.min(60000,issued.payload.expiresAtMs-Date.now()),userVerification:'required',allowCredentials:[{type:'public-key',id:credentialId,transports:Array.isArray(pending.transports)?pending.transports:[]}]},credential_id_hint:diracSecurityPasskeyResetSha256V363(credentialId).slice(0,12),message:'Passkey pengganti tersimpan pending. Konfirmasikan Passkey baru sekali lagi.'};
@@ -3719,7 +3747,7 @@ async function diracSecurityPasskeyResetRegisterV363(req,body,resolved,tokenData
 
 async function diracSecurityPasskeyResetConfirmV363(req,body,resolved,tokenData) {
   const p=tokenData.payload,rows=await diracSecurityPasskeyResetFetchRowV363(resolved.owner,{id:p.pendingPasskeyId,rotationId:p.rotationId},false),row=rows.length===1?rows[0]:null;
-  if(!row||row.is_active!==false||String(row.rotation_state||'')!=='pending'||String(row.rotation_purpose||'')!=='replace'||Number(row.expected_security_epoch||0)!==p.securityEpoch||String(row.authorizing_credential_id_hash||'')||!safeEqual(String(row.current_auth_session_id||''),p.rpcAuthSessionId)||!safeEqual(String(row.public_key_sha256||''),p.publicKeySha256)||Date.parse(String(row.pending_expires_at||''))!==Number(p.pendingExpiresAtMs)||row.confirmed_at||row.activated_at||row.revoked_at||!diracSecurityPasskeyResetValidateOwnerRowV363(row,resolved.owner))throw resetError('SECURITY_PASSKEY_RESET_PENDING_CONTEXT_INVALID',409);
+  if(!row||row.is_active!==false||String(row.rotation_state||'')!=='pending'||String(row.rotation_purpose||'')!=='replace'||Number(row.expected_security_epoch||0)!==p.securityEpoch||!safeEqual(String(row.authorizing_credential_id_hash||''),p.authorizingCredentialIdHash)||!safeEqual(String(row.current_auth_session_id||''),p.rpcAuthSessionId)||!safeEqual(String(row.public_key_sha256||''),p.publicKeySha256)||Date.parse(String(row.pending_expires_at||''))!==Number(p.pendingExpiresAtMs)||row.confirmed_at||row.activated_at||row.revoked_at||!diracSecurityPasskeyResetValidateOwnerRowV363(row,resolved.owner))throw resetError('SECURITY_PASSKEY_RESET_PENDING_CONTEXT_INVALID',409);
   const storedBinding=diracSecurityPasskeyResetStoredServerDeviceBindingV367(row);if(!storedBinding.ok||!safeEqual(storedBinding.keyId,p.deviceBindingKeyId))throw resetError('SECURITY_PASSKEY_RESET_PENDING_BINDING_INVALID',403);
   const recorded=await diracSecurityPasskeyResetRecordAssertionV363({req,row,owner:resolved.owner,payload:p,credential:body.credential,body,setupToken:tokenData.token,purpose:'confirm_pending',confirmPending:true,rotationId:p.rotationId});
   const confirmedRows=await diracSecurityPasskeyResetFetchRowV363(resolved.owner,{id:p.pendingPasskeyId,rotationId:p.rotationId},false),confirmed=confirmedRows.length===1?confirmedRows[0]:null;
@@ -3736,7 +3764,7 @@ async function diracSecurityPasskeyResetConfirmV363(req,body,resolved,tokenData)
 }
 
 async function diracSecurityPasskeyResetVerifyV363(req,body) {
-  const phase=String(body&&body.phase||'').trim().toLowerCase();if(!['email','register','confirm'].includes(phase))throw resetError('SECURITY_PASSKEY_RESET_PHASE_INVALID',400);
+  const phase=String(body&&body.phase||'').trim().toLowerCase();if(!['email','authorize','register','confirm'].includes(phase))throw resetError('SECURITY_PASSKEY_RESET_PHASE_INVALID',400);
   if(phase==='email'){
     if(!exactKeys(body,['action','phase','setupToken','code']))throw resetError('SECURITY_PASSKEY_RESET_VERIFY_BODY_INVALID',400);
     const resolved=await diracSecurityPasskeyResetResolveOwnerV363(req),tokenData=await diracSecurityPasskeyResetReadEmailTokenV364(req,body.setupToken,resolved);
@@ -3744,7 +3772,7 @@ async function diracSecurityPasskeyResetVerifyV363(req,body) {
   }
   if(!exactKeys(body,['action','phase','setupToken','credential','response']))throw resetError('SECURITY_PASSKEY_RESET_VERIFY_BODY_INVALID',400);
   const resolved=await diracSecurityPasskeyResetResolveOwnerV363(req),tokenData=await diracSecurityPasskeyResetReadTokenV363(req,body.setupToken,phase,resolved);
-  if(phase==='register')return diracSecurityPasskeyResetRegisterV363(req,body,resolved,tokenData);return diracSecurityPasskeyResetConfirmV363(req,body,resolved,tokenData);
+  if(phase==='authorize')return diracSecurityPasskeyResetAuthorizeOldV371(req,body,resolved,tokenData);if(phase==='register')return diracSecurityPasskeyResetRegisterV363(req,body,resolved,tokenData);return diracSecurityPasskeyResetConfirmV363(req,body,resolved,tokenData);
 }
 
 async function diracSecurityPasskeyResetEngineV363(req, res, body) {
