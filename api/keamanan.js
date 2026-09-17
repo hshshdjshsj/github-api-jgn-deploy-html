@@ -2858,7 +2858,7 @@ function diracSecurityPasskeyResetSignedSessionV363(req) {
       || !customerSecurityLooksLikeUuid(authUserId) || !isValidAuthEmail(email) || !customerSecurityLooksLikeUuid(sessionId)
       || !Number.isSafeInteger(iat) || iat <= 0 || !Number.isSafeInteger(exp) || iat > now + 60 || exp <= now || exp - iat <= 0 || exp - iat > 8 * 60 * 60
       || !/^[A-Za-z0-9_-]{43}$/.test(mfaAnchor) || !Number.isSafeInteger(mfaIat) || !Number.isSafeInteger(mfaExp)
-      || !Number.isSafeInteger(mfaEpoch) || mfaEpoch < 1 || mfaIat > now + 60 || mfaExp <= now || mfaIat < iat - 60 || mfaExp > exp || mfaExp - mfaIat <= 0 || mfaExp - mfaIat > 60 * 60 + 60) {
+      || !Number.isSafeInteger(mfaEpoch) || mfaEpoch < 1 || mfaIat > now + 60 || mfaExp <= now || mfaIat < iat - 60 || mfaExp > exp || mfaExp - mfaIat <= 0 || mfaExp - mfaIat > 8 * 60 * 60 + 60) {
     throw resetError('SECURITY_PASSKEY_RESET_MFA_SESSION_REQUIRED', 401);
   }
   return Object.freeze({ authUserId, email, sessionId, securityEpoch: mfaEpoch, issuedAt: iat, expiresAt: exp, mfaExpiresAt: mfaExp });
@@ -3776,7 +3776,7 @@ function securityTrustCurrentDeviceReadAnchorV366(req) {
   if (!payload || payload.typ !== 'dirac-domain-signed-session-v1' || !customerSecurityLooksLikeUuid(userId) || !isValidAuthEmail(email) || !customerSecurityLooksLikeUuid(sessionId)
       || !Number.isSafeInteger(issuedAt) || issuedAt <= 0 || !Number.isSafeInteger(expiresAt) || issuedAt > now + 60 || expiresAt <= now || expiresAt - issuedAt <= 0 || expiresAt - issuedAt > 8 * 60 * 60
       || !/^[A-Za-z0-9_-]{43}$/.test(anchorId) || !Number.isSafeInteger(anchorIssuedAt) || !Number.isSafeInteger(anchorExpiresAt) || !Number.isSafeInteger(securityEpoch) || securityEpoch < 1
-      || anchorIssuedAt > now + 60 || anchorExpiresAt <= now || anchorIssuedAt < issuedAt - 60 || anchorExpiresAt > expiresAt || anchorExpiresAt - anchorIssuedAt <= 0 || anchorExpiresAt - anchorIssuedAt > 60 * 60 + 60) {
+      || anchorIssuedAt > now + 60 || anchorExpiresAt <= now || anchorIssuedAt < issuedAt - 60 || anchorExpiresAt > expiresAt || anchorExpiresAt - anchorIssuedAt <= 0 || anchorExpiresAt - anchorIssuedAt > 8 * 60 * 60 + 60) {
     throw resetError('SECURITY_TRUST_DEVICE_MFA_ANCHOR_INVALID', 401);
   }
   const binding = securityTrustCurrentDeviceBindingHashV366('signed_session_anchor_v228', JSON.stringify([DIRAC_SECURITY_TRUST_ANCHOR_V366, userId, email, anchorId, securityEpoch]));
