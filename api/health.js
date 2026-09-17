@@ -69007,6 +69007,17 @@ Object.defineProperty(module.exports, '__diracCentralSupportRateLimitV365', {
   value: Object.freeze({ version: 'dirac-central-support-rate-authority-v365', take: diracCentralSupportRateLimitV365 }),
   enumerable: false, writable: false, configurable: false
 });
+Object.defineProperty(module.exports, '__diracPasskeyServerDeviceBindingAuthorityV360', {
+  value: Object.freeze({
+    version: 'dirac-passkey-server-device-binding-authority-v360',
+    bindingVersion: DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V360,
+    bindingAlgorithm: DIRAC_PASSKEY_SERVER_DEVICE_BINDING_ALGORITHM_V360,
+    bindingPolicy: DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V360,
+    read: diracPasskeyServerDeviceReadV360,
+    ensure: diracPasskeyServerDeviceEnsureV360
+  }),
+  enumerable: false, writable: false, configurable: false
+});
 Object.defineProperty(module.exports, '__diracCentralSupportDeviceTransitionV354', { value: true, enumerable: false, writable: false, configurable: false });
 
 Object.freeze(module.exports);
