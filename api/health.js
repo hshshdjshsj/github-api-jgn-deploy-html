@@ -3353,7 +3353,7 @@ const DIRAC_REGISTER_EMAIL_CHALLENGE_TYPE_V331 = 'dirac-register-email-challenge
 const DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331 = 2 * 60;
 const DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354 = 512;
 const DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354 = 768;
-const DIRAC_REGISTER_EMAIL_PROOF_SYMBOLS_V374 = '!#$%&()*+,-./:;<=>?@[]^{|}~';
+const DIRAC_REGISTER_EMAIL_PROOF_SYMBOLS_V374 = '!#$%&()*+,-./:;=?@[]^{|}~';
 const DIRAC_REGISTER_EMAIL_PROOF_ALPHABET_V354 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_' + DIRAC_REGISTER_EMAIL_PROOF_SYMBOLS_V374;
 const DIRAC_REGISTER_EMAIL_SMTP_RATE_V374 = 'dirac-register-email-smtp-rate-v374';
 const DIRAC_REGISTER_EMAIL_SMTP_RATE_PERMANENT_UNTIL_MS_V374 = 253370764800000;
@@ -3814,6 +3814,7 @@ function diracRegisterEmailMimeV331(message, account) {
       ['PENGGUNAAN', 'Sekali pakai'],
       ['REFERENSI', reference]
     ],
+    rowValueMaxLength: DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354,
     actionUrl: diracRoleOriginV250('auth') + '/masuk.html',
     actionText: 'BUKA HALAMAN PENDAFTARAN',
     warningTitle: 'JAGA KERAHASIAAN KODE',
@@ -44703,7 +44704,7 @@ const DIRAC_LOST_PASSKEY_VAULT_PATCH_V157 = 'lost-passkey-html-vault-aes256gcm-a
 const LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157 = 100;
 const LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355 = 512;
 const LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355 = 768;
-const LOST_PASSKEY_DYNAMIC_CODE_SYMBOLS_V374 = '!#$%&()*+,-./:;<=>?@[]^{|}~';
+const LOST_PASSKEY_DYNAMIC_CODE_SYMBOLS_V374 = '!#$%&()*+,-./:;=?@[]^{|}~';
 const LOST_PASSKEY_DYNAMIC_CODE_ALPHABET_V374 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_' + LOST_PASSKEY_DYNAMIC_CODE_SYMBOLS_V374;
 const DIRAC_LOST_PASSKEY_EMAIL_CODE_TTL_MS_V374 = 120000;
 
@@ -46590,6 +46591,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
           ['BERLAKU SAMPAI', customerSecurityRecoveryFormatWibV326(expiresAtV346)],
           ['METODE', 'Password + kode email ' + emailCodeLengthV355 + ' karakter / TTL 2 menit']
         ],
+        rowValueMaxLength: LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355,
         actionUrl: diracRoleOriginV250('auth') + '/masuk.html',
         actionText: 'KEMBALI KE HALAMAN MASUK',
         warningTitle: 'JANGAN BAGIKAN KODE INI',
@@ -50837,10 +50839,11 @@ function diracSecurityMailClientContextV327(req) {
   });
 }
 
-function diracSecurityMailRowsHtmlV327(rows) {
+function diracSecurityMailRowsHtmlV327(rows, valueMaximum = 500) {
+  const safeValueMaximum = Math.max(1, Math.min(1000, Number(valueMaximum || 500)));
   return (Array.isArray(rows) ? rows : []).slice(0, 60).map((row, index, all) => {
     const label = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(row && row[0], 100));
-    const value = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(row && row[1], 500));
+    const value = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(row && row[1], safeValueMaximum));
     const border = index < all.length - 1 ? 'border-bottom:1px solid #2c3544;' : '';
     return `<tr><td style="padding:16px 20px;${border}"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.13em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">${label}</div><div style="margin-top:6px;font-size:15px;line-height:1.55;font-weight:700;word-break:break-word;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${value || 'Tidak tersedia'}</div></div></div></td></tr>`;
   }).join('');
@@ -50881,7 +50884,7 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
   const actionFallback = diracRoleOriginV250('security') + '/keamanan.html';
   const actionUrl = diracSecurityMailEscapeV327(diracSecurityMailOfficialUrlV327(input.actionUrl || actionFallback, actionFallback));
   const actionText = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.actionText || 'BUKA PUSAT KEAMANAN', 80));
-  const rowsHtml = diracSecurityMailRowsHtmlV327(input.rows);
+  const rowsHtml = diracSecurityMailRowsHtmlV327(input.rows, input.rowValueMaxLength);
   const traceHtml = diracSecurityMailTraceHtmlV327(input.trace);
   const trustedDetailsHtml = typeof input.trustedDetailsHtml === 'string' && input.trustedDetailsHtml.length <= 200000 ? input.trustedDetailsHtml : '';
   return `<!doctype html>
@@ -50945,8 +50948,9 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
 }
 
 function diracSecurityMailTextV327(input = {}) {
+  const rowValueMaxLength = Math.max(1, Math.min(1000, Number(input.rowValueMaxLength || 500)));
   const rows = (Array.isArray(input.rows) ? input.rows : []).slice(0, 60)
-    .map((row) => diracSecurityMailCleanV327(row && row[0], 100) + ': ' + diracSecurityMailCleanV327(row && row[1], 500));
+    .map((row) => diracSecurityMailCleanV327(row && row[0], 100) + ': ' + diracSecurityMailCleanV327(row && row[1], rowValueMaxLength));
   const trace = (Array.isArray(input.trace) ? input.trace : []).slice(0, 30)
     .map((entry, index) => String(index + 1) + '. ' + diracSecurityMailCleanV327(entry && entry.stage, 100) + ' -> ' + diracSecurityMailCleanV327(entry && entry.result, 60) + ' (' + Math.max(0, Number(entry && entry.duration_ms || 0)) + ' ms)');
   return [
@@ -52790,6 +52794,7 @@ diracRegisterEmailDeliverV331 = async function diracRegisterEmailDeliverCustomer
     statusNote: 'Kode ' + String(String(message.proof || '').length) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) berlaku selama 2 menit dan hanya dapat digunakan satu kali.',
     detailsLabel: 'DETAIL VERIFIKASI',
     rows: [['KODE VERIFIKASI', String(message.proof || '')], ['MASA BERLAKU', '2 menit'], ['PENGGUNAAN', 'Sekali pakai'], ['REFERENSI', String(message.reference || '')]],
+    rowValueMaxLength: DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354,
     actionUrl: diracRoleOriginV250('auth') + '/masuk.html', actionText: 'BUKA HALAMAN PENDAFTARAN',
     warningTitle: 'JAGA KERAHASIAAN KODE',
     warning: 'Jangan berikan kode ini, password, token, cookie, atau data rahasia kepada siapa pun. Jika Anda tidak memulai pendaftaran, abaikan email ini.',
