@@ -3350,10 +3350,13 @@ async function notifyLoginSecurityIncidentSafe(incident) {
 const DIRAC_REGISTER_EMAIL_VERIFICATION_PATCH_V331 = 'dirac-register-email-verification-v331';
 const DIRAC_REGISTER_EMAIL_CHALLENGE_COOKIE_V331 = '__Host-dirac_register_email_v331';
 const DIRAC_REGISTER_EMAIL_CHALLENGE_TYPE_V331 = 'dirac-register-email-challenge-v331';
-const DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331 = 10 * 60;
-const DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354 = 100;
-const DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354 = 512;
-const DIRAC_REGISTER_EMAIL_PROOF_ALPHABET_V354 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331 = 2 * 60;
+const DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354 = 512;
+const DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354 = 768;
+const DIRAC_REGISTER_EMAIL_PROOF_SYMBOLS_V374 = '!#$%&()*+,-./:;<=>?@[]^{|}~';
+const DIRAC_REGISTER_EMAIL_PROOF_ALPHABET_V354 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_' + DIRAC_REGISTER_EMAIL_PROOF_SYMBOLS_V374;
+const DIRAC_REGISTER_EMAIL_SMTP_RATE_V374 = 'dirac-register-email-smtp-rate-v374';
+const DIRAC_REGISTER_EMAIL_SMTP_RATE_PERMANENT_UNTIL_MS_V374 = 253370764800000;
 const DIRAC_REGISTER_EMAIL_AUTHORITY_V331 = new WeakMap();
 
 function diracRegisterEmailCreateProofV354() {
@@ -3361,16 +3364,24 @@ function diracRegisterEmailCreateProofV354() {
     DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354,
     DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354 + 1
   );
-  const entropy = crypto.randomBytes(length);
-  let proof = '';
-  try {
-    for (let index = 0; index < entropy.length; index += 1) {
-      proof += DIRAC_REGISTER_EMAIL_PROOF_ALPHABET_V354[entropy[index] & 63];
-    }
-    return proof;
-  } finally {
-    entropy.fill(0);
-  }
+  const mandatory = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[crypto.randomInt(0, 26)]
+    + 'abcdefghijklmnopqrstuvwxyz'[crypto.randomInt(0, 26)]
+    + '0123456789'[crypto.randomInt(0, 10)]
+    + '_'
+    + DIRAC_REGISTER_EMAIL_PROOF_SYMBOLS_V374[crypto.randomInt(0, DIRAC_REGISTER_EMAIL_PROOF_SYMBOLS_V374.length)];
+  const filler = crypto.randomBytes(length).toString('base64url');
+  return (mandatory + filler).slice(0, length);
+}
+
+function diracRegisterEmailProofLooksValidV374(value, expectedLength) {
+  const proof = String(value || '');
+  return Number.isSafeInteger(Number(expectedLength))
+    && Number(expectedLength) >= DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354
+    && Number(expectedLength) <= DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354
+    && proof.length === Number(expectedLength)
+    && /^[A-Za-z0-9!#$%&()*+,\-./:;<=>?@\[\]^_{|}~]+$/.test(proof)
+    && /[A-Z]/.test(proof) && /[a-z]/.test(proof) && /[0-9]/.test(proof) && /_/.test(proof)
+    && /[!#$%&()*+,\-./:;<=>?@\[\]^{|}~]/.test(proof);
 }
 
 function diracRegisterEmailGuardContextV331(req) {
@@ -3550,7 +3561,7 @@ function diracRegisterEmailVerifyProofV331(req, input, proof) {
   const validProofLength = Number.isSafeInteger(expectedProofLength)
     && expectedProofLength >= DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354
     && expectedProofLength <= DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354;
-  if (!validProofLength || candidate.length !== expectedProofLength || !/^[A-Za-z0-9_-]+$/.test(candidate)) {
+  if (!validProofLength || !diracRegisterEmailProofLooksValidV374(candidate, expectedProofLength)) {
     return { ok: false, status: 400, code: 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID', restart: false };
   }
   const requestHash = diracRegisterEmailRequestHashV331(input);
@@ -3795,11 +3806,11 @@ function diracRegisterEmailMimeV331(message, account) {
     summary: 'Email ini dikirim karena alamat Anda digunakan untuk memulai pendaftaran. Salin kode verifikasi ke halaman pendaftaran yang masih terbuka.',
     statusLabel: 'STATUS VERIFIKASI',
     statusValue: 'MENUNGGU KONFIRMASI',
-    statusNote: 'Kode berlaku selama 10 menit dan hanya dapat digunakan satu kali.',
+    statusNote: 'Kode ' + String(proof.length) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) berlaku selama 2 menit dan hanya dapat digunakan satu kali.',
     detailsLabel: 'DETAIL VERIFIKASI',
     rows: [
       ['KODE VERIFIKASI', proof],
-      ['MASA BERLAKU', '10 menit'],
+      ['MASA BERLAKU', '2 menit'],
       ['PENGGUNAAN', 'Sekali pakai'],
       ['REFERENSI', reference]
     ],
@@ -4084,6 +4095,74 @@ function diracRegisterEmailRollbackResponseV366(payload, rollback) {
   });
 }
 
+function diracRegisterEmailSmtpCooldownMsV374(attempt) {
+  if (attempt === 1) return 5 * 60 * 1000;
+  if (attempt === 2) return 30 * 60 * 1000;
+  if (attempt === 3) return 60 * 60 * 1000;
+  if (attempt === 4) return 3 * 24 * 60 * 60 * 1000;
+  return 0;
+}
+
+function diracRegisterEmailSmtpRateIdentityV374(req, email) {
+  const ctx = diracRegisterEmailGuardContextV331(req);
+  const emailHash = crypto.createHash('sha256').update(normalizeAuthEmail(email), 'utf8').digest('hex');
+  const identityHash = crypto.createHash('sha256').update(String(ctx.identity && ctx.identity.key || ''), 'utf8').digest('hex');
+  if (!/^[a-f0-9]{64}$/.test(emailHash) || !/^[a-f0-9]{64}$/.test(identityHash)) throw Object.assign(new Error('REGISTER_EMAIL_SMTP_RATE_IDENTITY_INVALID'), { code: 'REGISTER_EMAIL_SMTP_RATE_IDENTITY_INVALID', statusCode: 503 });
+  const key = 'register-email-smtp-rate-v374:' + diracCentralHashV146([DIRAC_REGISTER_EMAIL_SMTP_RATE_V374, emailHash, identityHash].join('|'));
+  return Object.freeze({ key, emailHash, identityHash });
+}
+
+async function diracRegisterEmailSmtpRateWriteV374(identity, attemptCount, blockedUntilMs) {
+  const now = Date.now();
+  const record = { type: DIRAC_REGISTER_EMAIL_SMTP_RATE_V374, email_hash: identity.emailHash, identity_hash: identity.identityHash, attempt_count: attemptCount, blocked_until_ms: blockedUntilMs, updated_at_ms: now };
+  const result = await supabaseFetch('/rest/v1/dirac_persistent_bans?on_conflict=security_key', {
+    method: 'POST', auth: 'service', prefer: 'resolution=merge-duplicates,return=representation',
+    body: [{ security_key: identity.key, record_json: record, blocked_until_ms: blockedUntilMs, updated_at: new Date(now).toISOString(), expires_at: '9999-01-01T00:00:00.000Z' }]
+  });
+  const row = result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
+  if (!row || String(row.security_key || '') !== identity.key || Number(row.blocked_until_ms || 0) !== blockedUntilMs) throw Object.assign(new Error('REGISTER_EMAIL_SMTP_RATE_STORAGE_UNAVAILABLE'), { code: 'REGISTER_EMAIL_SMTP_RATE_STORAGE_UNAVAILABLE', statusCode: 503 });
+  return true;
+}
+
+async function diracRegisterEmailSmtpRateTakeV374(req, email) {
+  const identity = diracRegisterEmailSmtpRateIdentityV374(req, email);
+  const result = await supabaseFetch('/rest/v1/dirac_persistent_bans?select=' + encodeURIComponent('security_key,record_json,blocked_until_ms,expires_at') + '&security_key=eq.' + encodeURIComponent(identity.key) + '&limit=1', { method: 'GET', auth: 'service' });
+  if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > 1) throw Object.assign(new Error('REGISTER_EMAIL_SMTP_RATE_STORAGE_UNAVAILABLE'), { code: 'REGISTER_EMAIL_SMTP_RATE_STORAGE_UNAVAILABLE', statusCode: 503 });
+  const row = result.data.length === 1 ? result.data[0] : null;
+  const record = row && row.record_json && typeof row.record_json === 'object' && !Array.isArray(row.record_json) ? row.record_json : null;
+  let currentAttempt = 0, currentBlockedUntil = 0;
+  if (row) {
+    const keys = record ? Object.keys(record).sort().join(',') : '';
+    if (!record || keys !== 'attempt_count,blocked_until_ms,email_hash,identity_hash,type,updated_at_ms'
+        || record.type !== DIRAC_REGISTER_EMAIL_SMTP_RATE_V374
+        || !safeEqual(String(record.email_hash || ''), identity.emailHash)
+        || !safeEqual(String(record.identity_hash || ''), identity.identityHash)
+        || !Number.isSafeInteger(Number(record.attempt_count)) || Number(record.attempt_count) < 0 || Number(record.attempt_count) > 5
+        || !Number.isSafeInteger(Number(record.blocked_until_ms)) || Number(record.blocked_until_ms) < 0
+        || !Number.isSafeInteger(Number(record.updated_at_ms)) || Number(record.updated_at_ms) <= 0
+        || Number(row.blocked_until_ms || 0) !== Number(record.blocked_until_ms)) throw Object.assign(new Error('REGISTER_EMAIL_SMTP_RATE_STATE_INVALID'), { code: 'REGISTER_EMAIL_SMTP_RATE_STATE_INVALID', statusCode: 503 });
+    currentAttempt = Number(record.attempt_count);
+    currentBlockedUntil = Number(record.blocked_until_ms);
+  }
+  if (currentAttempt >= 5) return Object.freeze({ ok: false, banned: true, retryAfterSeconds: 0 });
+  if (currentBlockedUntil > Date.now()) return Object.freeze({ ok: false, limited: true, retryAfterSeconds: Math.max(1, Math.ceil((currentBlockedUntil - Date.now()) / 1000)), attemptCount: currentAttempt });
+  const nextAttempt = currentAttempt + 1;
+  if (nextAttempt >= 5) {
+    const banned = await diracCentralBanAuthorityBanV354(req, 'smtp_register_request_attempt_limit', 10 * 365 * 24 * 60 * 60);
+    if (!banned || banned.ok !== true) throw Object.assign(new Error('REGISTER_EMAIL_SMTP_PERMANENT_BAN_FAILED'), { code: 'REGISTER_EMAIL_SMTP_PERMANENT_BAN_FAILED', statusCode: 503 });
+    await diracRegisterEmailSmtpRateWriteV374(identity, 5, DIRAC_REGISTER_EMAIL_SMTP_RATE_PERMANENT_UNTIL_MS_V374);
+    return Object.freeze({ ok: false, banned: true, retryAfterSeconds: 0 });
+  }
+  const blockedUntilMs = Date.now() + diracRegisterEmailSmtpCooldownMsV374(nextAttempt);
+  await diracRegisterEmailSmtpRateWriteV374(identity, nextAttempt, blockedUntilMs);
+  return Object.freeze({ ok: true, attemptCount: nextAttempt, blockedUntilMs });
+}
+
+async function diracRegisterEmailSmtpRateResetV374(req, email) {
+  const identity = diracRegisterEmailSmtpRateIdentityV374(req, email);
+  return diracRegisterEmailSmtpRateWriteV374(identity, 0, 0);
+}
+
 async function domainRegister(req, res, preloadedBody) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, message: 'Gunakan POST.' });
 
@@ -4181,6 +4260,17 @@ async function domainRegister(req, res, preloadedBody) {
   const verificationTokenPresent = Object.prototype.hasOwnProperty.call(body, 'email_verification_token');
 
   if (!verificationTokenPresent) {
+    let smtpRateV374;
+    try { smtpRateV374 = await diracRegisterEmailSmtpRateTakeV374(req, email); }
+    catch (error) {
+      return res.status(Math.max(500, Math.min(599, Number(error && error.statusCode || 503) || 503))).json({ ok: false, code: String(error && error.code || 'REGISTER_EMAIL_SMTP_RATE_STORAGE_UNAVAILABLE'), message: 'Status pembatasan kode verifikasi belum dapat diverifikasi.' });
+    }
+    if (smtpRateV374 && smtpRateV374.banned === true) return res.status(423).json({ ok: false, code: 'REGISTER_EMAIL_SMTP_PERMANENTLY_BANNED', message: 'Permintaan kode verifikasi mencapai batas keamanan. Central ban/global ban permanen telah diterapkan.' });
+    if (smtpRateV374 && smtpRateV374.limited === true) {
+      const retryAfterSecondsV374 = Math.max(1, Math.min(3 * 24 * 60 * 60, Number(smtpRateV374.retryAfterSeconds || 60)));
+      try { res.setHeader('Retry-After', String(Math.ceil(retryAfterSecondsV374))); } catch (_) {}
+      return res.status(429).json({ ok: false, code: 'REGISTER_EMAIL_SMTP_RATE_LIMITED', message: 'Permintaan kode verifikasi masih dalam masa tunggu keamanan.', retry_after_seconds: Math.ceil(retryAfterSecondsV374) });
+    }
     const smtpConfig = diracRegisterEmailConfigV331();
     if (!smtpConfig) {
       diracRegisterEmailClearChallengeCookieV331(res);
@@ -4253,6 +4343,11 @@ async function domainRegister(req, res, preloadedBody) {
       restart_verification: true,
       message: 'Bukti verifikasi tidak dapat dikunci sebagai sekali pakai. Silakan kirim kode baru.'
     });
+  }
+  try { await diracRegisterEmailSmtpRateResetV374(req, email); }
+  catch (error) {
+    diracRegisterEmailClearChallengeCookieV331(res);
+    return res.status(503).json({ ok: false, code: String(error && error.code || 'REGISTER_EMAIL_SMTP_RATE_RESET_FAILED'), restart_verification: true, message: 'Status pembatasan kode verifikasi belum dapat direset secara aman. Silakan kirim kode baru.' });
   }
   diracRegisterEmailClearChallengeCookieV331(res);
 
@@ -19588,9 +19683,7 @@ async function midtransHandleWebhook(req, res) {
   const paymentAlreadyMatched = paymentAlreadyMatchedEarlyV372;
   const orderAlreadyPaid = orderAlreadyPaidEarlyV373;
   const orderMailDeliveryRequiredV368 = Boolean(success && (retryPendingMailEventV368 || (!effectiveDuplicateEventV351 && !paymentAlreadyMatched && !orderAlreadyPaid)));
-  const orderMailItemsPrefetchV369 = orderMailDeliveryRequiredV368
-    ? { items: [], totalItem: 0 }
-    : null;
+  const orderMailItemsPrefetchV369 = null;
 
   const txPatch = await midtransPatchPaymentTransaction(tx, mappedStatus, body, success);
   if (!txPatch.ok) {
@@ -19622,7 +19715,8 @@ async function midtransHandleWebhook(req, res) {
         webhookPayload: body,
         paidAt: capabilityContextV350.capability.evidence.confirmed_at,
         paidOrder: paidOrderForMailV372,
-        paidItems: orderMailItemsPrefetchV369
+        paidItems: orderMailItemsPrefetchV369,
+        paymentEvidence: capabilityContextV350.capability.evidence
       })
       : orderMailPaidWebhookSkipSummary('midtrans', processedDuplicateEventV368 ? 'duplicate_event_reconciled' : 'already_paid');
     if (orderMailDeliveryRequiredV368 && (!orderMailNotification || orderMailNotification.ok !== true
@@ -29668,18 +29762,66 @@ function orderMailPaidWebhookSkipSummary(provider, reason) {
   };
 }
 
+function orderMailPaymentDescriptorV374(provider, evidence, webhookPayload) {
+  const verified = evidence && typeof evidence === 'object' && !Array.isArray(evidence) ? evidence : {};
+  const raw = webhookPayload && typeof webhookPayload === 'object' && !Array.isArray(webhookPayload) ? webhookPayload : {};
+  const methodRaw = orderMailCleanText(verified.payment_type || raw.payment_type || '', 80).toLowerCase();
+  const payloadMethod = orderMailCleanText(raw.payment_type || '', 80).toLowerCase();
+  const payloadBound = !payloadMethod || !methodRaw || safeEqual(payloadMethod, methodRaw);
+  const firstVa = payloadBound && Array.isArray(raw.va_numbers) && raw.va_numbers.length === 1 && raw.va_numbers[0] && typeof raw.va_numbers[0] === 'object' ? raw.va_numbers[0] : null;
+  const bank = payloadBound ? orderMailCleanText(firstVa && firstVa.bank || raw.bank || '', 40).toUpperCase() : '';
+  const vaNumber = payloadBound ? orderMailCleanText(firstVa && firstVa.va_number || raw.permata_va_number || '', 64) : '';
+  const store = payloadBound ? orderMailCleanText(raw.store || '', 40).toUpperCase() : '';
+  const paymentCode = payloadBound ? orderMailCleanText(raw.payment_code || '', 80) : '';
+  const acquirer = payloadBound ? orderMailCleanText(raw.acquirer || '', 40).toUpperCase() : '';
+  const billKey = payloadBound ? orderMailCleanText(raw.bill_key || '', 80) : '';
+  const billerCode = payloadBound ? orderMailCleanText(raw.biller_code || '', 80) : '';
+  const maskedCard = payloadBound ? orderMailCleanText(raw.masked_card || '', 40) : '';
+  const methodLabel = methodRaw === 'gopay' ? 'GOPAY'
+    : methodRaw === 'shopeepay' ? 'SHOPEEPAY'
+      : methodRaw === 'qris' ? 'QRIS'
+        : methodRaw === 'bank_transfer' ? 'BANK TRANSFER'
+          : methodRaw === 'echannel' ? 'MANDIRI E-CHANNEL'
+            : methodRaw === 'credit_card' ? 'KARTU KREDIT/DEBIT'
+              : methodRaw === 'cstore' ? 'CONVENIENCE STORE'
+                : methodRaw === 'akulaku' ? 'AKULAKU'
+                  : methodRaw === 'kredivo' ? 'KREDIVO'
+                    : (methodRaw ? methodRaw.toUpperCase() : '-');
+  const bankTransferDetail = bank ? (vaNumber ? bank + ' · VA ' + vaNumber : bank) : (vaNumber ? 'VA ' + vaNumber : '');
+  const echannelDetail = 'MANDIRI' + (billerCode ? ' · BILLER ' + billerCode : '') + (billKey ? ' · BILL KEY ' + billKey : '');
+  const cstoreDetail = store ? (paymentCode ? store + ' · KODE ' + paymentCode : store) : (paymentCode ? 'KODE ' + paymentCode : '');
+  const cardDetail = bank ? (maskedCard ? bank + ' · ' + maskedCard : bank) : maskedCard;
+  const detail = methodRaw === 'bank_transfer' ? bankTransferDetail
+    : methodRaw === 'echannel' ? echannelDetail
+      : methodRaw === 'cstore' ? cstoreDetail
+        : methodRaw === 'credit_card' ? cardDetail
+          : acquirer;
+  return Object.freeze({
+    provider: orderMailCleanText(provider || '', 60),
+    method: methodLabel,
+    detail: orderMailCleanText(detail || '', 180),
+    transaction_id: orderMailCleanText(verified.transaction_id || raw.transaction_id || '', 140),
+    transaction_status: orderMailCleanText(verified.transaction_status || raw.transaction_status || '', 80),
+    fraud_status: orderMailCleanText(verified.fraud_status || raw.fraud_status || '', 80)
+  });
+}
+
 async function orderMailNotifyPaidOrderFromPaymentSafe(input) {
   const provider = orderMailCleanText(input && input.provider || 'payment_gateway', 40);
   const diagnosticTimingV371 = input && input.diagnosticTimingV371 && typeof input.diagnosticTimingV371 === 'object' ? input.diagnosticTimingV371 : null;
   const tx = input && input.tx && typeof input.tx === 'object' ? input.tx : null;
   const paidAt = orderMailCleanText(input && input.paidAt || diracNowIso(), 80);
   const paidOrder = input && input.paidOrder && typeof input.paidOrder === 'object' && !Array.isArray(input.paidOrder) ? input.paidOrder : null;
-  const paidItems = input && input.paidItems && typeof input.paidItems === 'object' && !Array.isArray(input.paidItems) ? input.paidItems : null;
+  const paidItems = input && input.paidItems && typeof input.paidItems === 'object' && !Array.isArray(input.paidItems)
+    && Array.isArray(input.paidItems.items) && input.paidItems.items.length ? input.paidItems : null;
+  const paymentEvidence = input && input.paymentEvidence && typeof input.paymentEvidence === 'object' && !Array.isArray(input.paymentEvidence) ? input.paymentEvidence : null;
+  const webhookPayload = input && input.webhookPayload && typeof input.webhookPayload === 'object' && !Array.isArray(input.webhookPayload) ? input.webhookPayload : null;
+  const paymentDescriptor = orderMailPaymentDescriptorV374(provider, paymentEvidence, webhookPayload);
 
   try {
     if (!tx || !tx.id) return orderMailPaidWebhookSkipSummary(provider, 'payment_transaction_missing');
 
-    const context = await orderMailBuildPaidInvoiceContextFromBackend(tx, provider, paidAt, paidOrder, paidItems);
+    const context = await orderMailBuildPaidInvoiceContextFromBackend(tx, provider, paidAt, paidOrder, paidItems, paymentDescriptor);
     if (!context.ok) {
       const skipped = orderMailPaidWebhookSkipSummary(provider, context.reason || 'paid_order_context_missing');
       skipped.ok = context.soft !== false;
@@ -29705,13 +29847,13 @@ async function orderMailNotifyPaidOrderFromPaymentSafe(input) {
   }
 }
 
-async function orderMailBuildPaidInvoiceContextFromBackend(tx, provider, paidAt, paidOrder, paidItems) {
-  if (tx.order_id) return orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, paidOrder, paidItems);
-  if (tx.domain_order_id) return orderMailBuildPaidDomainInvoiceContext(tx, provider, paidAt, paidOrder, paidItems);
+async function orderMailBuildPaidInvoiceContextFromBackend(tx, provider, paidAt, paidOrder, paidItems, paymentDescriptor) {
+  if (tx.order_id) return orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, paidOrder, paidItems, paymentDescriptor);
+  if (tx.domain_order_id) return orderMailBuildPaidDomainInvoiceContext(tx, provider, paidAt, paidOrder, paidItems, paymentDescriptor);
   return { ok: false, reason: 'missing_order_reference', message: 'Payment transaction tidak punya order_id/domain_order_id.' };
 }
 
-async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, paidOrder, paidItems) {
+async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, paidOrder, paidItems, paymentDescriptor) {
   const orderId = String(tx.order_id || '').trim();
   if (!orderId) return { ok: false, reason: 'regular_order_id_missing' };
 
@@ -29739,7 +29881,7 @@ async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, pai
     || !orderMailCleanText(order.customer_name || '', 120)
     || !orderMailCleanText(order.customer_phone || '', 80);
   const [itemPack, customerFallback] = await Promise.all([
-    paidItems ? Promise.resolve(paidItems) : diracUniversalPesananFetchRegularItems(order.id, amount, serviceType, false).catch(() => ({ items: [], totalItem: 0 })),
+    paidItems ? Promise.resolve(paidItems) : diracUniversalPesananFetchRegularItems(order.id, amount, serviceType, true),
     customerFallbackRequired ? orderMailFetchCustomerFallback(order.customer_id) : Promise.resolve({ name: '', email: '', phone: '' })
   ]);
   const customerEmail = orderMailNormalizeEmail(order.customer_email || customerFallback.email || '');
@@ -29774,13 +29916,19 @@ async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, pai
       payment: {
         url: '',
         provider,
-        invoice_id: tx.gateway_reference || tx.id || ''
+        invoice_id: tx.gateway_reference || tx.id || '',
+        method: orderMailCleanText(paymentDescriptor && paymentDescriptor.method || '', 80),
+        method_detail: orderMailCleanText(paymentDescriptor && paymentDescriptor.detail || '', 180),
+        transaction_id: orderMailCleanText(paymentDescriptor && paymentDescriptor.transaction_id || '', 140),
+        transaction_status: orderMailCleanText(paymentDescriptor && paymentDescriptor.transaction_status || '', 80),
+        fraud_status: orderMailCleanText(paymentDescriptor && paymentDescriptor.fraud_status || '', 80),
+        source_page: serviceType === 'parfum' ? 'parfum.html' : (serviceType === 'website' ? 'website.html' : 'pesanan.html')
       }
     }
   };
 }
 
-async function orderMailBuildPaidDomainInvoiceContext(tx, provider, paidAt, paidOrder, paidItems) {
+async function orderMailBuildPaidDomainInvoiceContext(tx, provider, paidAt, paidOrder, paidItems, paymentDescriptor) {
   const domainOrderId = String(tx.domain_order_id || '').trim();
   if (!domainOrderId) return { ok: false, reason: 'domain_order_id_missing' };
 
@@ -29807,7 +29955,7 @@ async function orderMailBuildPaidDomainInvoiceContext(tx, provider, paidAt, paid
     || !orderMailCleanText(order.customer_name || '', 120)
     || !orderMailCleanText(order.customer_whatsapp || '', 80);
   const [itemPack, customerFallback] = await Promise.all([
-    paidItems ? Promise.resolve(paidItems) : diracUniversalPesananFetchDomainItems(order.id, amount, order.domain_name).catch(() => ({ items: [], totalItem: 0 })),
+    paidItems ? Promise.resolve(paidItems) : diracUniversalPesananFetchDomainItems(order.id, amount, order.domain_name),
     customerFallbackRequired ? orderMailFetchCustomerFallback(order.customer_id) : Promise.resolve({ name: '', email: '', phone: '' })
   ]);
   const customerEmail = orderMailNormalizeEmail(order.customer_email || order.owner_email || customerFallback.email || '');
@@ -29837,7 +29985,13 @@ async function orderMailBuildPaidDomainInvoiceContext(tx, provider, paidAt, paid
       payment: {
         url: '',
         provider,
-        invoice_id: tx.gateway_reference || tx.id || ''
+        invoice_id: tx.gateway_reference || tx.id || '',
+        method: orderMailCleanText(paymentDescriptor && paymentDescriptor.method || '', 80),
+        method_detail: orderMailCleanText(paymentDescriptor && paymentDescriptor.detail || '', 180),
+        transaction_id: orderMailCleanText(paymentDescriptor && paymentDescriptor.transaction_id || '', 140),
+        transaction_status: orderMailCleanText(paymentDescriptor && paymentDescriptor.transaction_status || '', 80),
+        fraud_status: orderMailCleanText(paymentDescriptor && paymentDescriptor.fraud_status || '', 80),
+        source_page: 'domain.html'
       }
     }
   };
@@ -30019,7 +30173,13 @@ function orderMailNormalizeOrderInput(input) {
     payment: {
       url: orderMailCleanUrl(payment.url || payment.payment_url || ''),
       provider: orderMailCleanText(payment.provider || payment.payment_provider || '', 60),
-      invoice_id: orderMailCleanText(payment.invoice_id || payment.id || '', 120)
+      invoice_id: orderMailCleanText(payment.invoice_id || payment.id || '', 120),
+      method: orderMailCleanText(payment.method || '', 80),
+      method_detail: orderMailCleanText(payment.method_detail || '', 180),
+      transaction_id: orderMailCleanText(payment.transaction_id || '', 140),
+      transaction_status: orderMailCleanText(payment.transaction_status || '', 80),
+      fraud_status: orderMailCleanText(payment.fraud_status || '', 80),
+      source_page: orderMailCleanText(payment.source_page || '', 120)
     },
     items: items.map((item, index) => ({
       title: orderMailCleanText(item && (item.title || item.product_title || item.name || item.domain_name) || `Item ${index + 1}`, 180),
@@ -30027,6 +30187,7 @@ function orderMailNormalizeOrderInput(input) {
       unit_price: orderMailMoney(item && (item.unit_price ?? item.price ?? item.register_price ?? 0)),
       subtotal: orderMailMoney(item && (item.subtotal ?? 0)),
       description: orderMailCleanText(item && (item.description || item.notes || item.extension || item.product_doc_id) || '', 220),
+      product_doc_id: orderMailCleanText(item && item.product_doc_id || '', 120),
       image_url: orderMailAssetUrl(item && (item.image_url || item.image || item.img) || ''),
       category: orderMailCleanText(item && item.category || '', 80),
       fragrance_type: orderMailCleanText(item && item.fragrance_type || '', 80)
@@ -30399,7 +30560,7 @@ function orderMailItemsText(items, currency = 'IDR') {
   const rows = Array.isArray(items) && items.length ? items : [{ title: 'Total pesanan', quantity: 1, unit_price: 0, subtotal: 0 }];
   return rows.map((item, index) => {
     const subtotal = item.subtotal || (item.unit_price * item.quantity) || 0;
-    return `${index + 1}. ${item.title} x${item.quantity} - ${orderMailFormatCurrency(subtotal, currency)}`;
+    return `${index + 1}. ${item.title} x${item.quantity} | Harga satuan ${orderMailFormatCurrency(item.unit_price || 0, currency)} | Subtotal ${orderMailFormatCurrency(subtotal, currency)}${item.product_doc_id ? ' | Produk ' + item.product_doc_id : ''}${item.category ? ' | Kategori ' + item.category : ''}${item.fragrance_type ? ' | Tipe ' + item.fragrance_type : ''}`;
   }).join('\n');
 }
 function orderMailItemsHtml(items, currency = 'IDR') {
@@ -30418,7 +30579,7 @@ function orderMailProductCardsHtml(items, currency = 'IDR') {
     const image = orderMailAssetUrl(item.image_url || item.img || '') || orderMailDefaultProductImageUrl();
     const amount = orderMailFormatCurrency(item.subtotal || ((item.unit_price || 0) * (item.quantity || 1)), currency);
     const borderBottom = index < rows.length - 1 ? 'border-bottom:1px solid #2c3544;' : '';
-    return `<tr><td bgcolor="#10151e" style="padding:17px 18px;${borderBottom}background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr>${image ? `<td class="dirac-product-image" width="104" valign="top" style="width:104px;padding-right:14px"><img src="${orderMailEscapeHtml(image)}" width="90" alt="${orderMailEscapeHtml(item.title || 'Produk')}" style="display:block;width:90px;max-width:90px;height:auto;border-radius:12px;border:1px solid #344052;background:#0e1219;background-color:#0e1219"></td>` : ''}<td valign="top"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:16px;line-height:1.45;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(item.title || 'Item pesanan')}</div>${item.description ? `<div style="margin-top:6px;font-size:13px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${orderMailEscapeHtml(item.description)}</div>` : ''}<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin-top:11px;border-collapse:collapse"><tr><td valign="top" style="font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">QTY<br><strong style="font-size:14px;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(item.quantity || 1)}</strong></td><td valign="top" align="right" style="font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">SUBTOTAL<br><strong style="font-size:14px;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(amount)}</strong></td></tr></table></div></div></td></tr></table></td></tr>`;
+    return `<tr><td bgcolor="#10151e" style="padding:17px 18px;${borderBottom}background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr>${image ? `<td class="dirac-product-image" width="104" valign="top" style="width:104px;padding-right:14px"><img src="${orderMailEscapeHtml(image)}" width="90" alt="${orderMailEscapeHtml(item.title || 'Produk')}" style="display:block;width:90px;max-width:90px;height:auto;border-radius:12px;border:1px solid #344052;background:#0e1219;background-color:#0e1219"></td>` : ''}<td valign="top"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:16px;line-height:1.45;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(item.title || 'Item pesanan')}</div>${item.description ? `<div style="margin-top:6px;font-size:13px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${orderMailEscapeHtml(item.description)}</div>` : ''}${item.product_doc_id ? `<div style="margin-top:7px;font-size:11px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">ID PRODUK: ${orderMailEscapeHtml(item.product_doc_id)}</div>` : ''}${item.category ? `<div style="margin-top:4px;font-size:11px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">KATEGORI: ${orderMailEscapeHtml(item.category)}</div>` : ''}${item.fragrance_type ? `<div style="margin-top:4px;font-size:11px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">TIPE: ${orderMailEscapeHtml(item.fragrance_type)}</div>` : ''}<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin-top:11px;border-collapse:collapse"><tr><td valign="top" style="font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">QTY<br><strong style="font-size:14px;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(item.quantity || 1)}</strong></td><td valign="top" align="center" style="font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">HARGA SATUAN<br><strong style="font-size:14px;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(orderMailFormatCurrency(item.unit_price || 0, currency))}</strong></td><td valign="top" align="right" style="font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">SUBTOTAL<br><strong style="font-size:14px;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(amount)}</strong></td></tr></table></div></div></td></tr></table></td></tr>`;
   }).join('');
   return `<div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="margin:26px 0 12px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">RINCIAN PESANAN</div></div></div><table role="presentation" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="border-collapse:separate;border-spacing:0;width:100%;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">${cards}</table>`;
 }
@@ -44540,8 +44701,11 @@ const DIRAC_LOST_PASSKEY_VAULT_PATCH_V157 = 'lost-passkey-html-vault-aes256gcm-a
 
 /* RECO donor source lines 2795-2795 */
 const LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157 = 100;
-const LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355 = 100;
-const LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355 = 512;
+const LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355 = 512;
+const LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355 = 768;
+const LOST_PASSKEY_DYNAMIC_CODE_SYMBOLS_V374 = '!#$%&()*+,-./:;<=>?@[]^{|}~';
+const LOST_PASSKEY_DYNAMIC_CODE_ALPHABET_V374 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_' + LOST_PASSKEY_DYNAMIC_CODE_SYMBOLS_V374;
+const DIRAC_LOST_PASSKEY_EMAIL_CODE_TTL_MS_V374 = 120000;
 
 /* RECO donor source lines 2798-2798 */
 const LOST_PASSKEY_LINK_TOKEN_BYTES_V157 = 250;
@@ -45332,6 +45496,12 @@ function customerSecurityLostPasskeyRandomTextV157(length) {
   return out;
 }
 
+function customerSecurityLostPasskeyRandomDynamicTextV374(length) {
+  const size = Number(length || 0);
+  if (!Number.isSafeInteger(size) || size < 1 || size > LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355) return '';
+  return crypto.randomBytes(size).toString('base64url').slice(0, size);
+}
+
 /* RECO donor source lines 3841-3841 */
 const DIRAC_RECOVERY_DUAL_DELIVERY_PATCH_V182 = 'lost-passkey-email-website-code-all-or-reject-v182';
 
@@ -45357,9 +45527,9 @@ function customerSecurityLostPasskeyDynamicCodeV355(value, expectedLength = 0) {
         || expected < LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355
         || expected > LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355
         || length !== expected)) return '';
-  for (const char of value) {
-    if (!LOST_PASSKEY_SECRET_100_ALPHABET_V157.includes(char)) return '';
-  }
+  if (!/^[A-Za-z0-9!#$%&()*+,\-./:;<=>?@\[\]^_{|}~]+$/.test(value)
+      || !/[A-Z]/.test(value) || !/[a-z]/.test(value) || !/[0-9]/.test(value) || !/_/.test(value)
+      || !/[!#$%&()*+,\-./:;<=>?@\[\]^{|}~]/.test(value)) return '';
   return value;
 }
 
@@ -45368,8 +45538,13 @@ function customerSecurityLostPasskeyGenerateDynamicCodeV355() {
     LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355,
     LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355 + 1
   );
+  const prefix = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[crypto.randomInt(0, 26)]
+    + 'abcdefghijklmnopqrstuvwxyz'[crypto.randomInt(0, 26)]
+    + '0123456789'[crypto.randomInt(0, 10)]
+    + '_'
+    + LOST_PASSKEY_DYNAMIC_CODE_SYMBOLS_V374[crypto.randomInt(0, LOST_PASSKEY_DYNAMIC_CODE_SYMBOLS_V374.length)];
   return customerSecurityLostPasskeyDynamicCodeV355(
-    customerSecurityLostPasskeyRandomTextV157(length),
+    prefix + customerSecurityLostPasskeyRandomDynamicTextV374(length - prefix.length),
     length
   );
 }
@@ -46048,8 +46223,10 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   return { ok: false, status: 503, code: 'RECOVERY_EMAIL_PROVIDER_NOT_CONFIGURED', message: 'Provider email recovery belum dikonfigurasi.' };
 }
 
-const DIRAC_RECOVERY_EMAIL100_ISSUANCE_WINDOW_MS_V349 = 10 * 60 * 1000;
-const DIRAC_RECOVERY_EMAIL100_ISSUANCE_LIMIT_V349 = 2;
+const DIRAC_RECOVERY_EMAIL100_ISSUANCE_WINDOW_MS_V349 = 3 * 24 * 60 * 60 * 1000;
+const DIRAC_RECOVERY_EMAIL100_ISSUANCE_LIMIT_V349 = 5;
+const DIRAC_RECOVERY_EMAIL_SMTP_RATE_V374 = 'dirac-recovery-email-smtp-rate-v374';
+const DIRAC_RECOVERY_EMAIL_SMTP_RATE_PERMANENT_UNTIL_MS_V374 = 253370764800000;
 
 function customerSecurityLostPasskeyEmail100BindingMatchV349(metadata, observedBindings) {
   const stored = metadata && metadata.binding_hashes && typeof metadata.binding_hashes === 'object' && !Array.isArray(metadata.binding_hashes)
@@ -46067,73 +46244,73 @@ function customerSecurityLostPasskeyEmail100BindingMatchV349(metadata, observedB
   });
 }
 
-async function customerSecurityLostPasskeyEmail100IssuanceGateV349(owner, observedBindings) {
+function customerSecurityLostPasskeyEmail100CooldownMsV374(attempt) {
+  if (attempt === 1) return 5 * 60 * 1000;
+  if (attempt === 2) return 30 * 60 * 1000;
+  if (attempt === 3) return 60 * 60 * 1000;
+  if (attempt === 4) return 3 * 24 * 60 * 60 * 1000;
+  return 0;
+}
+
+function customerSecurityLostPasskeyEmail100RateIdentityV374(owner) {
   const customerId = String(owner && owner.customerId || '').trim();
   const authUserId = String(owner && owner.authUserId || '').trim();
-  if (!customerSecurityLooksLikeUuid(customerId) || !customerSecurityLooksLikeUuid(authUserId)) {
-    return { ok: false, code: 'RECOVERY_EMAIL100_RATE_OWNER_INVALID' };
+  if (!customerSecurityLooksLikeUuid(customerId) || !customerSecurityLooksLikeUuid(authUserId)) return null;
+  const key = 'recovery-email-smtp-rate-v374:' + diracCentralHashV146([DIRAC_RECOVERY_EMAIL_SMTP_RATE_V374, customerId, authUserId].join('|'));
+  return Object.freeze({ key, customerId, authUserId });
+}
+
+async function customerSecurityLostPasskeyEmail100RateWriteV374(identity, attemptCount, blockedUntilMs) {
+  const now = Date.now();
+  const record = { type: DIRAC_RECOVERY_EMAIL_SMTP_RATE_V374, customer_id: identity.customerId, auth_user_id: identity.authUserId, attempt_count: attemptCount, blocked_until_ms: blockedUntilMs, updated_at_ms: now };
+  const result = await supabaseFetch('/rest/v1/dirac_persistent_bans?on_conflict=security_key', {
+    method: 'POST', auth: 'service', prefer: 'resolution=merge-duplicates,return=representation',
+    body: [{ security_key: identity.key, record_json: record, blocked_until_ms: blockedUntilMs, updated_at: new Date(now).toISOString(), expires_at: '9999-01-01T00:00:00.000Z' }]
+  }).catch(() => null);
+  const row = result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
+  if (!row || String(row.security_key || '') !== identity.key || Number(row.blocked_until_ms || 0) !== blockedUntilMs) return false;
+  return true;
+}
+
+async function customerSecurityLostPasskeyEmail100IssuanceGateV349(req, owner, observedBindings) {
+  const identity = customerSecurityLostPasskeyEmail100RateIdentityV374(owner);
+  if (!identity) return { ok: false, code: 'RECOVERY_EMAIL100_RATE_OWNER_INVALID' };
+  const result = await supabaseFetch('/rest/v1/dirac_persistent_bans?select=' + encodeURIComponent('security_key,record_json,blocked_until_ms,expires_at') + '&security_key=eq.' + encodeURIComponent(identity.key) + '&limit=1', { method: 'GET', auth: 'service' }).catch(() => null);
+  if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > 1) return { ok: false, code: 'RECOVERY_EMAIL100_RATE_STORAGE_UNAVAILABLE' };
+  const row = result.data.length === 1 ? result.data[0] : null;
+  const record = row && row.record_json && typeof row.record_json === 'object' && !Array.isArray(row.record_json) ? row.record_json : null;
+  let attemptCount = 0, blockedUntilMs = 0;
+  if (row) {
+    const keys = record ? Object.keys(record).sort().join(',') : '';
+    if (!record || keys !== 'attempt_count,auth_user_id,blocked_until_ms,customer_id,type,updated_at_ms'
+        || record.type !== DIRAC_RECOVERY_EMAIL_SMTP_RATE_V374
+        || !safeEqual(String(record.customer_id || ''), identity.customerId)
+        || !safeEqual(String(record.auth_user_id || ''), identity.authUserId)
+        || !Number.isSafeInteger(Number(record.attempt_count)) || Number(record.attempt_count) < 0 || Number(record.attempt_count) > 5
+        || !Number.isSafeInteger(Number(record.blocked_until_ms)) || Number(record.blocked_until_ms) < 0
+        || !Number.isSafeInteger(Number(record.updated_at_ms)) || Number(record.updated_at_ms) <= 0
+        || Number(row.blocked_until_ms || 0) !== Number(record.blocked_until_ms)) return { ok: false, code: 'RECOVERY_EMAIL100_RATE_STATE_INVALID' };
+    attemptCount = Number(record.attempt_count);
+    blockedUntilMs = Number(record.blocked_until_ms);
   }
-  const nowMs = Date.now();
-  const sinceIso = new Date(nowMs - DIRAC_RECOVERY_EMAIL100_ISSUANCE_WINDOW_MS_V349).toISOString();
-  const select = 'request_id,status,created_at,sent_at,expires_at,used_at,revoked_at,metadata';
-  const path = '/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE
-    + '?select=' + encodeURIComponent(select)
-    + '&customer_id=eq.' + encodeURIComponent(customerId)
-    + '&auth_user_id=eq.' + encodeURIComponent(authUserId)
-    + '&created_at=gte.' + encodeURIComponent(sinceIso)
-    + '&order=created_at.desc&limit=8';
-  const result = await supabaseFetch(path, { method: 'GET', auth: 'service' }).catch(() => null);
-  if (!result || result.ok !== true || !Array.isArray(result.data)) {
-    return { ok: false, code: 'RECOVERY_EMAIL100_RATE_STORAGE_UNAVAILABLE' };
+  if (attemptCount >= DIRAC_RECOVERY_EMAIL100_ISSUANCE_LIMIT_V349) return { ok: true, banned: true, retryAfterSeconds: 0 };
+  if (blockedUntilMs > Date.now()) return { ok: true, limited: true, retryAfterSeconds: Math.max(1, Math.ceil((blockedUntilMs - Date.now()) / 1000)), attemptCount };
+  const nextAttempt = attemptCount + 1;
+  if (nextAttempt >= DIRAC_RECOVERY_EMAIL100_ISSUANCE_LIMIT_V349) {
+    const banned = await diracCentralBanAuthorityBanV354(req, 'smtp_recovery_request_attempt_limit', 10 * 365 * 24 * 60 * 60);
+    if (!banned || banned.ok !== true) return { ok: false, code: 'RECOVERY_EMAIL100_PERMANENT_BAN_FAILED' };
+    if (!await customerSecurityLostPasskeyEmail100RateWriteV374(identity, 5, DIRAC_RECOVERY_EMAIL_SMTP_RATE_PERMANENT_UNTIL_MS_V374)) return { ok: false, code: 'RECOVERY_EMAIL100_RATE_STORAGE_UNAVAILABLE' };
+    return { ok: true, banned: true, retryAfterSeconds: 0 };
   }
-  const rows = result.data.filter((row) => {
-    const metadata = row && row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {};
-    return metadata.mode === 'password_email_code_100_v347'
-      && metadata.delivery === 'email_code_100'
-      && metadata.code_verifier === 'hmac_sha512_root_pepper_v347';
-  });
-  const active = rows.find((row) => {
-    const expiresMs = Date.parse(String(row && row.expires_at || ''));
-    const requestId = customerSecurityNormalizeLostPasskeyRequestId(row && row.request_id);
-    const metadata = row && row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {};
-    return Boolean(requestId
-      && String(row && row.status || '') === 'pending'
-      && row && row.sent_at
-      && !row.used_at
-      && !row.revoked_at
-      && Number.isFinite(expiresMs)
-      && expiresMs > nowMs
-      && customerSecurityLostPasskeyEmail100BindingMatchV349(metadata, observedBindings));
-  }) || null;
-  if (active) {
-    const activeMetadataV355 = active.metadata && typeof active.metadata === 'object' && !Array.isArray(active.metadata) ? active.metadata : {};
-    const activeCodeLengthV355 = Number(activeMetadataV355.email_code_length || activeMetadataV355.recovery_code_length || activeMetadataV355.secret_email_length || 0);
-    if (!Number.isSafeInteger(activeCodeLengthV355)
-        || activeCodeLengthV355 < LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355
-        || activeCodeLengthV355 > LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355) {
-      return { ok: false, code: 'RECOVERY_EMAIL_CODE_LENGTH_METADATA_INVALID' };
-    }
-    return {
-      ok: true,
-      reuse: true,
-      requestId: String(active.request_id),
-      expiresAt: String(active.expires_at),
-      sentAt: String(active.sent_at || ''),
-      codeLength: activeCodeLengthV355
-    };
-  }
-  const issued = rows.filter((row) => {
-    const sentMs = Date.parse(String(row && row.sent_at || ''));
-    return Number.isFinite(sentMs) && sentMs > nowMs - DIRAC_RECOVERY_EMAIL100_ISSUANCE_WINDOW_MS_V349;
-  }).sort((left, right) => Date.parse(String(left.sent_at || '')) - Date.parse(String(right.sent_at || '')));
-  if (issued.length >= DIRAC_RECOVERY_EMAIL100_ISSUANCE_LIMIT_V349) {
-    const oldestSentMs = Date.parse(String(issued[0] && issued[0].sent_at || ''));
-    const retryAfterSeconds = Number.isFinite(oldestSentMs)
-      ? Math.max(1, Math.ceil((oldestSentMs + DIRAC_RECOVERY_EMAIL100_ISSUANCE_WINDOW_MS_V349 - nowMs) / 1000))
-      : 60;
-    return { ok: true, reuse: false, limited: true, retryAfterSeconds };
-  }
-  return { ok: true, reuse: false, limited: false };
+  const nextBlockedUntilMs = Date.now() + customerSecurityLostPasskeyEmail100CooldownMsV374(nextAttempt);
+  if (!await customerSecurityLostPasskeyEmail100RateWriteV374(identity, nextAttempt, nextBlockedUntilMs)) return { ok: false, code: 'RECOVERY_EMAIL100_RATE_STORAGE_UNAVAILABLE' };
+  return { ok: true, reuse: false, limited: false, attemptCount: nextAttempt };
+}
+
+async function customerSecurityLostPasskeyEmail100RateResetV374(owner) {
+  const identity = customerSecurityLostPasskeyEmail100RateIdentityV374(owner);
+  if (!identity) return false;
+  return customerSecurityLostPasskeyEmail100RateWriteV374(identity, 0, 0);
 }
 
 /* RECO donor source lines 4790-5119 */
@@ -46183,7 +46360,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
     : customerSecurityLostPasskeyBindings(req, owner);
 
   if (localWorker) {
-    const issuanceGateV349 = await customerSecurityLostPasskeyEmail100IssuanceGateV349(owner, observedBindings);
+    const issuanceGateV349 = await customerSecurityLostPasskeyEmail100IssuanceGateV349(req, owner, observedBindings);
     if (!issuanceGateV349 || issuanceGateV349.ok !== true) {
       return res.status(503).json({
         ok: false,
@@ -46191,21 +46368,11 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
         message: 'Status pembatasan recovery belum dapat diverifikasi.'
       });
     }
-    if (issuanceGateV349.reuse === true) {
-      return res.status(200).json({
-        ok: true,
-        request_id: String(issuanceGateV349.requestId),
-        expires_at: String(issuanceGateV349.expiresAt),
-        delivery: 'email_code_100',
-        email_code_delivery: 'gmail_smtp',
-        code_length: Number(issuanceGateV349.codeLength),
-        reused_pending: true,
-        message: 'Kode keamanan ' + Number(issuanceGateV349.codeLength) + ' karakter yang masih aktif sudah tersedia di email resmi akun.',
-        time: diracNowIso()
-      });
+    if (issuanceGateV349.banned === true) {
+      return res.status(423).json({ ok: false, code: 'RECOVERY_EMAIL100_PERMANENTLY_BANNED', message: 'Permintaan kode recovery mencapai batas keamanan. Central ban/global ban permanen telah diterapkan.' });
     }
     if (issuanceGateV349.limited === true) {
-      const retryAfterSecondsV349 = Math.max(1, Math.min(600, Number(issuanceGateV349.retryAfterSeconds || 60)));
+      const retryAfterSecondsV349 = Math.max(1, Math.min(3 * 24 * 60 * 60, Number(issuanceGateV349.retryAfterSeconds || 60)));
       try { res.setHeader('Retry-After', String(Math.ceil(retryAfterSecondsV349))); } catch (_) {}
       return res.status(429).json({
         ok: false,
@@ -46229,7 +46396,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
 
     const nowMsV346 = Date.now();
     const nowIsoV346 = new Date(nowMsV346).toISOString();
-    const expiresAtV346 = new Date(nowMsV346 + LOST_PASSKEY_RECOVERY_TTL_MINUTES_V157 * 60 * 1000).toISOString();
+    const expiresAtV346 = new Date(nowMsV346 + DIRAC_LOST_PASSKEY_EMAIL_CODE_TTL_MS_V374).toISOString();
     const requestIdV346 = customerSecurityLostPasskeyRequestId();
     let bindingsV346;
     try {
@@ -46363,7 +46530,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
         argon2id_params: customerSecurityLostPasskeyArgon2ParamsV157(64),
         argon2id_authoritative: false,
         compatibility_fields_non_authoritative: true,
-        expires_minutes: LOST_PASSKEY_RECOVERY_TTL_MINUTES_V157
+        expires_minutes: 2
       }
     }];
 
@@ -46407,12 +46574,12 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
 
       const referenceV346 = crypto.createHash('sha256').update(requestIdV346, 'utf8').digest('hex').slice(0, 10).toUpperCase();
       const htmlInputV346 = {
-        preheader: 'Kode pemulihan Passkey ' + emailCodeLengthV355 + ' karakter. Berlaku sampai ' + customerSecurityRecoveryFormatWibV326(expiresAtV346) + '.',
+        preheader: 'Kode pemulihan Passkey ' + emailCodeLengthV355 + ' karakter acak. Berlaku 2 menit sampai ' + customerSecurityRecoveryFormatWibV326(expiresAtV346) + '.',
         brandLabel: 'SECURE ACCOUNT RECOVERY',
         eyebrow: 'PASSKEY RECOVERY CODE',
         title: 'Kode Pemulihan\nPasskey',
         greeting: 'Yth. Pengguna Dirac Group,',
-        summary: 'Password akun sudah diverifikasi. Gunakan kode ' + emailCodeLengthV355 + ' karakter di bawah hanya pada halaman masuk resmi Dirac Group.',
+        summary: 'Password akun sudah diverifikasi. Gunakan kode ' + emailCodeLengthV355 + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) di bawah hanya pada halaman masuk resmi Dirac Group. Kode berlaku 2 menit.',
         statusLabel: 'STATUS PEMULIHAN',
         statusValue: 'PASSWORD TERVERIFIKASI',
         statusNote: 'Kode hanya berlaku untuk request ini dan tidak pernah ditampilkan kembali oleh API.',
@@ -46421,7 +46588,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
           ['KODE EMAIL — ' + emailCodeLengthV355 + ' KARAKTER', emailCode100V346],
           ['REFERENSI', referenceV346],
           ['BERLAKU SAMPAI', customerSecurityRecoveryFormatWibV326(expiresAtV346)],
-          ['METODE', 'Password + kode email ' + emailCodeLengthV355 + ' karakter']
+          ['METODE', 'Password + kode email ' + emailCodeLengthV355 + ' karakter / TTL 2 menit']
         ],
         actionUrl: diracRoleOriginV250('auth') + '/masuk.html',
         actionText: 'KEMBALI KE HALAMAN MASUK',
@@ -47002,6 +47169,10 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, lock ? 423 : 403, lock ? 'recovery_code_locked' : 'recovery_code_not_matched', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: expectedBinding, recoveryCodeOk: codeOk, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
 
+  if (!await customerSecurityLostPasskeyEmail100RateResetV374(owner)) {
+    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 503, 'recovery_email_rate_reset_failed', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: expectedBinding, recoveryCodeOk: codeOk, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+  }
+
   if (override && override.argonQueueTicket && !customerSecurityLostPasskeyQueueLeaseHealthyV188(override.argonQueueTicket)) {
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 503, 'recovery_argon2_lease_lost', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
@@ -47098,6 +47269,7 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     prefer: 'return=representation',
     body: {
       status: 'verified',
+      expires_at: sessionExpiresAt,
       metadata: verifiedMetadata
     }
   });
@@ -50711,6 +50883,7 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
   const actionText = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.actionText || 'BUKA PUSAT KEAMANAN', 80));
   const rowsHtml = diracSecurityMailRowsHtmlV327(input.rows);
   const traceHtml = diracSecurityMailTraceHtmlV327(input.trace);
+  const trustedDetailsHtml = typeof input.trustedDetailsHtml === 'string' && input.trustedDetailsHtml.length <= 200000 ? input.trustedDetailsHtml : '';
   return `<!doctype html>
 <html lang="id">
 <head>
@@ -50750,6 +50923,7 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
           <table class="dirac-button" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:0 0 9px;border-collapse:separate"><tr><td align="center" bgcolor="#5276e8" style="border-radius:10px;background:#5276e8;background-color:#5276e8"><a href="${actionUrl}" style="display:block;padding:17px 18px;font-size:15px;line-height:1.2;font-weight:800;letter-spacing:.04em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;text-decoration:none;border-radius:10px">${actionText}</a></td></tr></table>
           <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="margin:0 0 25px;text-align:center;font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tujuan resmi: ${diracSecurityMailEscapeV327(new URL(actionUrl).hostname)}</div><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${detailsLabel}</div></div></div>
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:13px 0 0;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">${rowsHtml}</table>
+          ${trustedDetailsHtml}
           ${traceHtml}
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1d1b17" style="width:100%;margin:28px 0;border-collapse:separate;border-spacing:0;border:1px solid #4a4030;border-radius:14px;overflow:hidden;background:#1d1b17;background-color:#1d1b17;background-image:linear-gradient(#1d1b17,#1d1b17)"><tr><td style="padding:18px 20px;border-left:4px solid #9a741f"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.14em;color:#f0c86c!important;-webkit-text-fill-color:#f0c86c!important;mso-color-alt:#f0c86c">${warningTitle}</div><p style="margin:10px 0 0;font-size:14px;line-height:1.65;color:#e8ebef!important;-webkit-text-fill-color:#e8ebef!important;mso-color-alt:#e8ebef">${warning}</p></div></div></td></tr></table>
           <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI DIRAC GROUP</div><p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${supportLead}</p></div></div>
@@ -52613,9 +52787,9 @@ diracRegisterEmailDeliverV331 = async function diracRegisterEmailDeliverCustomer
     title: 'Verifikasi Email\nPendaftaran', greeting: 'Yth. Calon Customer Dirac Group,',
     summary: 'Email ini dikirim karena alamat Anda digunakan untuk memulai pendaftaran. Salin kode verifikasi ke halaman pendaftaran yang masih terbuka.',
     statusLabel: 'STATUS VERIFIKASI', statusValue: 'MENUNGGU KONFIRMASI',
-    statusNote: 'Kode berlaku selama 10 menit dan hanya dapat digunakan satu kali.',
+    statusNote: 'Kode ' + String(String(message.proof || '').length) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) berlaku selama 2 menit dan hanya dapat digunakan satu kali.',
     detailsLabel: 'DETAIL VERIFIKASI',
-    rows: [['KODE VERIFIKASI', String(message.proof || '')], ['MASA BERLAKU', '10 menit'], ['PENGGUNAAN', 'Sekali pakai'], ['REFERENSI', String(message.reference || '')]],
+    rows: [['KODE VERIFIKASI', String(message.proof || '')], ['MASA BERLAKU', '2 menit'], ['PENGGUNAAN', 'Sekali pakai'], ['REFERENSI', String(message.reference || '')]],
     actionUrl: diracRoleOriginV250('auth') + '/masuk.html', actionText: 'BUKA HALAMAN PENDAFTARAN',
     warningTitle: 'JAGA KERAHASIAAN KODE',
     warning: 'Jangan berikan kode ini, password, token, cookie, atau data rahasia kepada siapa pun. Jika Anda tidak memulai pendaftaran, abaikan email ini.',
@@ -52855,18 +53029,31 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
   const shippingAddress = orderMailCleanText(data && data.order && data.order.shipping_address || data && data.customer && data.customer.shipping_address || '', 1400) || '-';
   const orderNote = orderMailCleanText(data && data.order && data.order.note || '', 700) || '-';
   const paymentProvider = orderMailCleanText(data && data.payment && data.payment.provider || '', 60).toUpperCase() || '-';
+  const paymentMethod = orderMailCleanText(data && data.payment && data.payment.method || '', 80).toUpperCase() || '-';
+  const paymentMethodDetail = orderMailCleanText(data && data.payment && data.payment.method_detail || '', 180) || '-';
+  const paymentTransactionId = orderMailCleanText(data && data.payment && data.payment.transaction_id || '', 140) || '-';
+  const paymentTransactionStatus = orderMailCleanText(data && data.payment && data.payment.transaction_status || '', 80).toUpperCase() || '-';
+  const paymentFraudStatus = orderMailCleanText(data && data.payment && data.payment.fraud_status || '', 80).toUpperCase() || '-';
+  const sourcePage = orderMailCleanText(data && data.payment && data.payment.source_page || '', 120) || '-';
   const paymentTime = orderMailFormatDate(data && data.order && data.order.created_at || diracNowIso());
   const rowsBase = [
     ['KODE PESANAN', data && data.order && data.order.code || '-'],
     ['LAYANAN', data && data.order && data.order.service_type || '-'],
     ['STATUS', paid ? 'LUNAS / PAID' : String(data && data.order && data.order.payment_status || data && data.order && data.order.order_status || 'ORDER').toUpperCase()],
     ['WAKTU PEMBAYARAN', paymentTime],
+    ['HALAMAN ORDER', sourcePage],
     ['GATEWAY PEMBAYARAN', paymentProvider],
+    ['METODE PEMBAYARAN', paymentMethod],
+    ['DETAIL METODE', paymentMethodDetail],
+    ['STATUS GATEWAY', paymentTransactionStatus],
+    ['STATUS FRAUD', paymentFraudStatus],
+    ['TRANSACTION ID GATEWAY', paymentTransactionId],
     ['REFERENSI PEMBAYARAN', data && data.payment && data.payment.invoice_id || '-'],
     ['SUBTOTAL', orderMailFormatCurrency(data && data.order && (data.order.subtotal || data.order.total) || 0, currency)],
     ['DISKON', orderMailFormatCurrency(data && data.order && data.order.discount || 0, currency)],
     ['ONGKIR', orderMailFormatCurrency(data && data.order && data.order.shipping_cost || 0, currency)],
-    ['TOTAL', orderMailFormatCurrency(data && data.order && data.order.total || 0, currency)]
+    ['TOTAL', orderMailFormatCurrency(data && data.order && data.order.total || 0, currency)],
+    ['JUMLAH ITEM BERBEDA', String(Array.isArray(data && data.items) ? data.items.length : 0)]
   ];
   const fulfillmentRows = [
     ['NAMA PENERIMA', customerName],
@@ -52882,16 +53069,6 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
     ['CATATAN PESANAN', orderNote.slice(0, 480)],
     ...(orderNote.length > 480 ? [['CATATAN PESANAN (LANJUTAN)', orderNote.slice(480, 700)]] : [])
   ];
-  const items = (Array.isArray(data && data.items) ? data.items : []).slice(0, 20).map((item, index) => {
-    const quantity = Math.max(1, Number(item && item.quantity || 1));
-    const unitPrice = Number(item && item.unit_price || 0);
-    const subtotal = Number(item && (item.subtotal || (unitPrice * quantity)) || 0);
-    return [
-      'ITEM ' + String(index + 1).padStart(2, '0'),
-      orderMailCleanText(item && item.title || 'Item', 120) + ' ×' + quantity + ' — HARGA SATUAN ' +
-        orderMailFormatCurrency(unitPrice, currency) + ' — SUBTOTAL ' + orderMailFormatCurrency(subtotal, currency)
-    ];
-  });
   const customerInput = {
     preheader: paid ? 'Pembayaran pesanan Anda telah diterima dan diverifikasi.' : 'Pesanan Anda telah diterima Dirac Group.',
     brandLabel: 'SECURE PAYMENT', eyebrow: paid ? 'PAYMENT CONFIRMED' : 'ORDER CONFIRMATION',
@@ -52900,7 +53077,7 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
     summary: paid ? 'Pembayaran Anda telah berhasil diterima dan diverifikasi. Email ini memuat data pembayaran, penerima, alamat pengiriman, catatan, dan rincian item yang tercatat pada backend.' : 'Pesanan Anda telah diterima. Email ini memuat data penerima, alamat pengiriman, catatan, dan rincian item yang tercatat pada backend.',
     statusLabel: 'STATUS PEMBAYARAN', statusValue: paid ? 'LUNAS / PAID' : 'MENUNGGU PEMBAYARAN',
     statusNote: paid ? 'Status paid ditetapkan setelah verifikasi webhook dan status pembayaran resmi.' : 'Informasi berasal dari backend pembayaran dan data pesanan resmi.', detailsLabel: 'RINCIAN INVOICE & PENGIRIMAN',
-    rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows, items), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'LIHAT PESANAN',
+    rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows), trustedDetailsHtml: orderMailProductCardsHtml(data && data.items, currency), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'LIHAT PESANAN',
     warningTitle: 'KEAMANAN PEMBAYARAN', warning: 'Dirac Group tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau data kartu melalui balasan email, WhatsApp, Instagram, atau telepon.',
     supportLead: 'Jika membutuhkan bantuan terkait pembayaran, invoice, alamat pengiriman, atau pesanan, gunakan kanal resmi Dirac Group.'
   };
@@ -52908,7 +53085,7 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
     ...customerInput, brandLabel: 'SECURE PAYMENT ADMIN', eyebrow: paid ? 'VERIFIED PAYMENT RECEIVED' : 'NEW ORDER NOTIFICATION',
     title: paid ? 'Pembayaran\nDiterima' : 'Order Baru\nDiterima', greeting: 'Yth. Admin / Owner Dirac Group,',
     summary: paid ? 'Pembayaran customer telah tervalidasi oleh backend. Data customer, alamat pengiriman, catatan, nilai transaksi, referensi pembayaran, dan seluruh item yang diperlukan untuk fulfilment tercantum di bawah ini.' : 'Order baru telah tercatat pada backend. Data customer, alamat pengiriman, catatan, dan rincian item tercantum di bawah ini.',
-    rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows, items), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'BUKA PESANAN'
+    rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows), trustedDetailsHtml: orderMailProductCardsHtml(data && data.items, currency), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'BUKA PESANAN'
   };
   return { ...legacy, customerHtml: diracSecurityCorporateEmailHtmlV327(customerInput), ownerHtml: diracSecurityCorporateEmailHtmlV327(ownerInput) };
 };
@@ -63478,6 +63655,21 @@ function diracCentralTransientPersistentBanKeyV284(identityKey) {
   return clean + ':transient-v284';
 }
 
+function diracCentralTransientNetworkBanKeyV372(ipValue) {
+  const clean = String(ipValue || '').trim().toLowerCase().replace(/^\[|\]$/g, '').split('%')[0];
+  let version = 0;
+  try { version = require('net').isIP(clean); } catch (_) { version = 0; }
+  let networkMaterial = '';
+  if (version === 4) networkMaterial = 'ipv4:' + clean;
+  if (version === 6) {
+    const bytes = diracCentralIpv6BytesV228(clean);
+    if (bytes) networkMaterial = 'ipv6-64:' + bytes.subarray(0, 8).toString('hex');
+  }
+  if (!networkMaterial) return '';
+  const digest = diracCentralHashV146('central-transient-network-v372|' + networkMaterial);
+  return /^[a-f0-9]{64}$/i.test(digest) ? 'central-ban-network-v372:' + digest : '';
+}
+
 function diracCentralTransientPersistentBanKeysV287(identity) {
   const source = identity && typeof identity === 'object' ? identity : {};
   const keys = [];
@@ -63488,6 +63680,8 @@ function diracCentralTransientPersistentBanKeysV287(identity) {
   const ip = String(parts.ip || '').trim();
   const ua = String(parts.ua || '').trim().slice(0, 500);
   const deviceHint = String(parts.deviceHint || '').trim().slice(0, 800);
+  const networkKeyV372 = diracCentralTransientNetworkBanKeyV372(ip);
+  if (networkKeyV372) keys.push(networkKeyV372);
   if (ip && ip !== 'unknown' && ua) {
     const stableDigest = diracCentralHashV146([
       'central-transient-cross-origin-device-v287',
