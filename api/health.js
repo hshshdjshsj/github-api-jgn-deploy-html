@@ -21214,6 +21214,87 @@ async function diracPasskeyA2FFetchCustomerById(customerId) {
   return supabaseFetch(path, { method: 'GET', auth: 'service' });
 }
 
+async function diracPasskeyA2FResolvePendingConfirmationOwnerV361(user, email, payload) {
+  const hardFail = async (reason, message, status = 403) => {
+    if (typeof diracCentralBanCurrentContextV146 === 'function') {
+      await diracCentralBanCurrentContextV146(reason).catch(() => null);
+    }
+    return { ok: false, status, message };
+  };
+  const authUserId = String(user && user.id || '').trim();
+  const authEmail = normalizeAuthEmail(email || (user && user.email));
+  const payloadMode = String(payload && payload.mode || '').toLowerCase();
+  const payloadAuthUserId = String(payload && payload.authUserId || '').trim();
+  const payloadCustomerId = String(payload && payload.customerId || '').trim();
+  const payloadEmailHash = String(payload && payload.emailHash || '');
+
+  if (!isValidAuthEmail(authEmail)) {
+    return hardFail('passkey_confirm_owner_invalid_email_v361', 'Email akun tidak valid untuk konfirmasi Passkey. Login ulang dulu.');
+  }
+  if (!customerSecurityLooksLikeUuid(authUserId)) {
+    return hardFail('passkey_confirm_owner_invalid_session_v361', 'Session login tidak valid untuk konfirmasi Passkey. Login ulang dulu.');
+  }
+  if (payloadMode !== 'confirm_pending'
+      || !customerSecurityLooksLikeUuid(payloadAuthUserId)
+      || !customerSecurityLooksLikeUuid(payloadCustomerId)
+      || !safeEqual(payloadAuthUserId, authUserId)
+      || !safeEqual(payloadEmailHash, customerMfaProfileId(authEmail))) {
+    return hardFail('passkey_confirm_owner_signed_binding_invalid_v361', 'Binding owner pada challenge konfirmasi Passkey tidak valid.');
+  }
+
+  const ownerSelect = 'auth_user_id,customer_id,email,link_status,disabled_at,revoked_at,customer:customers!inner(id,email)';
+  const ownerPath = '/rest/v1/security_customer_auth_links?select=' + encodeURIComponent(ownerSelect)
+    + '&auth_user_id=eq.' + encodeURIComponent(authUserId)
+    + '&customer_id=eq.' + encodeURIComponent(payloadCustomerId)
+    + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&limit=2';
+  const ownerResult = await supabaseFetch(ownerPath, { method: 'GET', auth: 'service' })
+    .catch((error) => ({ ok: false, status: 500, error }));
+  const ownerRows = ownerResult && ownerResult.ok === true && Array.isArray(ownerResult.data)
+    ? ownerResult.data
+    : [];
+  const link = ownerRows.length === 1 ? ownerRows[0] : null;
+  const customer = link && Array.isArray(link.customer)
+    ? (link.customer.length === 1 ? link.customer[0] : null)
+    : (link && link.customer && typeof link.customer === 'object' ? link.customer : null);
+  const linkAuthUserId = String(link && link.auth_user_id || '').trim();
+  const linkCustomerId = String(link && link.customer_id || '').trim();
+  const linkEmail = normalizeAuthEmail(link && link.email || '');
+  const customerId = String(customer && customer.id || '').trim();
+  const customerEmail = normalizeAuthEmail(customer && customer.email || '');
+  if (!ownerResult || ownerResult.ok !== true) {
+    return hardFail('passkey_confirm_owner_relation_read_failed_v361', 'Relasi owner akun belum bisa diverifikasi untuk konfirmasi Passkey.', 503);
+  }
+  if (!link
+      || !customer
+      || !customerSecurityLooksLikeUuid(linkAuthUserId)
+      || !customerSecurityLooksLikeUuid(linkCustomerId)
+      || !customerSecurityLooksLikeUuid(customerId)
+      || !isValidAuthEmail(linkEmail)
+      || !isValidAuthEmail(customerEmail)
+      || !safeEqual(linkAuthUserId, authUserId)
+      || !safeEqual(linkCustomerId, payloadCustomerId)
+      || !safeEqual(customerId, payloadCustomerId)
+      || !safeEqual(linkEmail, authEmail)
+      || !safeEqual(customerEmail, authEmail)
+      || String(link.link_status || '') !== 'active'
+      || link.disabled_at
+      || link.revoked_at) {
+    return hardFail('passkey_confirm_owner_relation_binding_invalid_v361', 'Relasi owner akun berubah selama konfirmasi Passkey.');
+  }
+
+  // The second confirm_pending request preserves the same current customers-row
+  // proof as the legacy resolver, but reads it atomically through the already
+  // owner-scoped active auth-link relation. This removes one redundant network
+  // round-trip without removing any owner/customer/email verification.
+  return {
+    ok: true,
+    authUserId,
+    customerId,
+    email: customerEmail,
+    source: 'confirm_pending_owner_relation_v361'
+  };
+}
+
 async function diracPasskeyA2FResolveOwner(user, email) {
   const hardFail = async (reason, message, status = 403) => {
     if (typeof diracCentralBanCurrentContextV146 === 'function') {
@@ -28042,9 +28123,13 @@ async function diracPasskeyA2FVerify(req, res) {
   }
 
   const email = normalizeAuthEmail(user.email);
+  const pendingConfirmationOwnerV361 = !recoveryAuthorityV281
+    && String(payload && payload.mode || '').toLowerCase() === 'confirm_pending';
   const owner = recoveryAuthorityV281
     ? recoveryAuthorityV281.owner
-    : await diracPasskeyA2FResolveOwner(user, email);
+    : pendingConfirmationOwnerV361
+      ? await diracPasskeyA2FResolvePendingConfirmationOwnerV361(user, email, payload)
+      : await diracPasskeyA2FResolveOwner(user, email);
   if (!owner.ok) {
     return res.status(owner.status || 409).json({ ok: false, method: 'passkey', message: owner.message || 'Akun belum siap untuk Passkey.' });
   }
