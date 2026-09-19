@@ -3878,6 +3878,7 @@ function diracRegisterEmailMimeV331(message, account) {
       ['KODE VERIFIKASI', proof],
       ['MASA BERLAKU', '2 menit'],
       ['PENGGUNAAN', 'Sekali pakai'],
+      ...diracSecurityMailClientRowsV381(message.client),
       ['REFERENSI', reference]
     ],
     rowValueMaxLength: DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354,
@@ -4353,7 +4354,8 @@ async function domainRegister(req, res, preloadedBody) {
       email,
       proof: challenge.proof,
       reference: challenge.reference,
-      createdAtMs: Date.now()
+      createdAtMs: Date.now(),
+      client: diracSecurityMailClientContextV327(req)
     }), smtpConfig);
     if (!delivery || delivery.ok !== true) {
       diracRegisterEmailClearChallengeCookieV331(res);
@@ -5002,6 +5004,108 @@ async function requireDomainProtectedDatabaseSessionLockSafe(req, res, user, mfa
   return null;
 }
 
+const DIRAC_PASSKEY_ROTATION_CONTINUITY_COOKIE_V382 = '__Host-dirac_pk_rotation_continuity_v382';
+const DIRAC_PASSKEY_ROTATION_CONTINUITY_TYPE_V382 = 'dirac-passkey-rotation-session-continuity-v382';
+
+function customerSecurityPasskeyRotationContinuityProofV382(req, user, customerId, accountSecurityEpoch, mfaSecurityEpoch, fingerprint) {
+  const ctx = diracCentralCurrentContextV149();
+  const authUserId = String(user && user.id || '').trim();
+  const authEmail = normalizeAuthEmail(user && user.email || '');
+  const method = String(req && req.method || '').toUpperCase();
+  if (!ctx || ctx.req !== req || String(ctx.action || '') !== 'domain_dashboard_me' || String(ctx.method || '').toUpperCase() !== 'GET' || method !== 'GET'
+      || diracCentralHandlerContextFullyPassedV211(ctx, req) !== true || !customerSecurityLooksLikeUuid(authUserId) || !isValidAuthEmail(authEmail)
+      || !customerSecurityLooksLikeUuid(String(customerId || '')) || !fingerprint || !/^[a-f0-9]{64}$/.test(String(fingerprint.session_token_hash || ''))
+      || !Number.isSafeInteger(accountSecurityEpoch) || accountSecurityEpoch < 2 || mfaSecurityEpoch !== accountSecurityEpoch) return null;
+  const cookies = parseCookies(req);
+  const proofCandidates = readCookieTokenCandidates(cookies, DIRAC_PASSKEY_ROTATION_CONTINUITY_COOKIE_V382).slice(0, 2);
+  if (proofCandidates.length !== 1) return null;
+  const raw = String(proofCandidates[0] || '').trim();
+  const parts = raw.split('.');
+  if (parts.length !== 2 || !/^[A-Za-z0-9_-]{40,4096}$/.test(parts[0]) || !/^[A-Za-z0-9_-]{43}$/.test(parts[1])) return null;
+  const expected = crypto.createHmac('sha256', diracCentralDeriveSecretV146('passkey-rotation-session-continuity-v382').toString('base64url')).update(parts[0]).digest('base64url');
+  if (!safeEqual(parts[1], expected)) return null;
+  let payload = null;
+  try {
+    const decoded = Buffer.from(parts[0], 'base64url');
+    if (decoded.length < 32 || decoded.length > 3072 || decoded.toString('base64url') !== parts[0]) return null;
+    payload = JSON.parse(decoded.toString('utf8'));
+  } catch (_) { return null; }
+  if (!payload || Object.keys(payload).sort().join(',') !== 'cid,epoch,exp,iat,nonce,rid,sexp,sid,sth,typ,uid') return null;
+  const now = Math.floor(Date.now() / 1000);
+  const iat = Number(payload.iat || 0), exp = Number(payload.exp || 0), sexp = Number(payload.sexp || 0), epoch = Number(payload.epoch || 0);
+  if (payload.typ !== DIRAC_PASSKEY_ROTATION_CONTINUITY_TYPE_V382 || !customerSecurityLooksLikeUuid(String(payload.uid || ''))
+      || !customerSecurityLooksLikeUuid(String(payload.cid || '')) || !customerSecurityLooksLikeUuid(String(payload.sid || '')) || !customerSecurityLooksLikeUuid(String(payload.rid || ''))
+      || !/^[a-f0-9]{64}$/.test(String(payload.sth || '')) || !/^[A-Za-z0-9_-]{32}$/.test(String(payload.nonce || ''))
+      || !Number.isSafeInteger(iat) || !Number.isSafeInteger(exp) || !Number.isSafeInteger(sexp) || !Number.isSafeInteger(epoch)
+      || iat <= 0 || iat > now + 5 || now - iat > 90 || exp <= now || exp > iat + 90 || sexp < exp || sexp <= now
+      || epoch !== accountSecurityEpoch || epoch !== mfaSecurityEpoch || !safeEqual(String(payload.uid), authUserId) || !safeEqual(String(payload.cid), String(customerId))) return null;
+  const signedCandidates = readCookieTokenCandidates(cookies, DOMAIN_SIGNED_SESSION_COOKIE).slice(0, 2);
+  if (signedCandidates.length !== 1) return null;
+  const signedValue = String(signedCandidates[0] || '').trim();
+  const signed = customerSecurityDecodeSignedSessionAnchorV228(signedValue);
+  const signedHash = crypto.createHash('sha256').update(signedValue).digest('hex');
+  if (!signed || !safeEqual(String(signed.userId || ''), authUserId) || !safeEqual(normalizeAuthEmail(signed.email || ''), authEmail)
+      || !safeEqual(String(signed.sessionId || ''), String(payload.sid)) || Number(signed.securityEpoch || 0) !== epoch || Number(signed.expiresAt || 0) !== sexp
+      || !safeEqual(signedHash, String(payload.sth)) || !safeEqual(String(fingerprint.session_token_hash || ''), String(payload.sth))) return null;
+  return Object.freeze({ uid: authUserId, cid: String(customerId), sid: String(payload.sid), rid: String(payload.rid), sth: String(payload.sth), epoch, iat, exp, sexp });
+}
+
+async function customerSecurityRecoverPasskeyRotationSessionV382(req, user, customerId, accountSecurityEpoch, mfaSecurityEpoch, fingerprint) {
+  const proof = customerSecurityPasskeyRotationContinuityProofV382(req, user, customerId, accountSecurityEpoch, mfaSecurityEpoch, fingerprint);
+  if (!proof) return null;
+  const passkeySelect = 'id,user_id,is_active,rotation_id,rotation_state,rotation_purpose,credential_epoch,expected_security_epoch,activated_at,revoked_at';
+  const passkeyPath = '/rest/v1/domain_passkeys?select=' + encodeURIComponent(passkeySelect)
+    + '&user_id=eq.' + encodeURIComponent(proof.cid) + '&rotation_id=eq.' + encodeURIComponent(proof.rid)
+    + '&is_active=eq.true&rotation_state=eq.active&rotation_purpose=eq.replace&credential_epoch=eq.' + encodeURIComponent(String(proof.epoch)) + '&limit=2';
+  const passkeyResult = await supabaseFetch(passkeyPath, { method: 'GET', auth: 'service' }).catch(() => null);
+  const passkeys = passkeyResult && passkeyResult.ok === true && Array.isArray(passkeyResult.data) ? passkeyResult.data : [];
+  const passkey = passkeys.length === 1 ? passkeys[0] : null;
+  const activatedAtMs = Date.parse(String(passkey && passkey.activated_at || ''));
+  if (!passkey || !safeEqual(String(passkey.user_id || ''), proof.cid) || passkey.is_active !== true || String(passkey.rotation_state || '') !== 'active'
+      || String(passkey.rotation_purpose || '') !== 'replace' || !safeEqual(String(passkey.rotation_id || ''), proof.rid)
+      || Number(passkey.credential_epoch || 0) !== proof.epoch || Number(passkey.expected_security_epoch || 0) !== proof.epoch - 1 || passkey.revoked_at
+      || !Number.isFinite(activatedAtMs) || Math.abs(activatedAtMs - proof.iat * 1000) > 120000) return null;
+  const select = 'id,customer_id,session_token_hash,status,last_seen_at,expires_at,revoked_at,revoke_reason,security_epoch,device_id';
+  const exactPath = '/rest/v1/security_customer_sessions?select=' + encodeURIComponent(select)
+    + '&customer_id=eq.' + encodeURIComponent(proof.cid) + '&id=eq.' + encodeURIComponent(proof.sid) + '&limit=2';
+  const exactResult = await supabaseFetch(exactPath, { method: 'GET', auth: 'service' }).catch(() => null);
+  if (!exactResult || exactResult.ok !== true || !Array.isArray(exactResult.data) || exactResult.data.length > 1) return null;
+  const existing = exactResult.data.length === 1 ? exactResult.data[0] : null;
+  const nowIso = new Date().toISOString();
+  let mutation = null;
+  if (existing) {
+    const existingExpiry = Date.parse(String(existing.expires_at || ''));
+    const existingStatus = String(existing.status || '').trim().toLowerCase();
+    const recoverableActive = existingStatus === 'active' && !existing.revoked_at && !existing.revoke_reason;
+    const recoverableRotationRevoke = existingStatus === 'revoked' && Boolean(existing.revoked_at) && String(existing.revoke_reason || '') === 'passkey_rotation_v237';
+    if (!safeEqual(String(existing.id || ''), proof.sid) || !safeEqual(String(existing.customer_id || ''), proof.cid) || Number(existing.security_epoch || 0) !== proof.epoch
+        || !Number.isFinite(existingExpiry) || existingExpiry <= Date.now() || (!recoverableActive && !recoverableRotationRevoke)) return null;
+    const patchPath = '/rest/v1/security_customer_sessions?select=' + encodeURIComponent(select)
+      + '&customer_id=eq.' + encodeURIComponent(proof.cid) + '&id=eq.' + encodeURIComponent(proof.sid)
+      + '&security_epoch=eq.' + encodeURIComponent(String(proof.epoch)) + '&status=eq.' + encodeURIComponent(existingStatus)
+      + (recoverableRotationRevoke ? '&revoke_reason=eq.passkey_rotation_v237' : '&revoked_at=is.null');
+    mutation = await supabaseFetch(patchPath, { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: {
+      session_token_hash: proof.sth, status: 'active', revoked_at: null, revoke_reason: null, last_seen_at: nowIso
+    } }).catch(() => null);
+  } else {
+    mutation = await supabaseFetch('/rest/v1/security_customer_sessions?select=' + encodeURIComponent(select), { method: 'POST', auth: 'service', prefer: 'return=representation', body: {
+      id: proof.sid, customer_id: proof.cid, session_token_hash: proof.sth, trusted_device: false,
+      metadata: { source: 'passkey_rotation_session_continuity_v382', auto_detected: false },
+      device_id: String(fingerprint.device_id || ''), device_name: String(fingerprint.device_name || ''), browser_name: String(fingerprint.browser_name || ''), operating_system: String(fingerprint.operating_system || ''),
+      user_agent: String(fingerprint.user_agent || ''), ip_address: fingerprint.ip_address || null, status: 'active', last_seen_at: nowIso,
+      expires_at: new Date(proof.sexp * 1000).toISOString(), security_epoch: proof.epoch, revoked_at: null, revoke_reason: null
+    } }).catch(() => null);
+  }
+  const changedRows = mutation && mutation.ok === true && Array.isArray(mutation.data) ? mutation.data : [];
+  const row = changedRows.length === 1 ? changedRows[0] : null;
+  const expiresAtMs = Date.parse(String(row && row.expires_at || ''));
+  const lastSeenMs = Date.parse(String(row && row.last_seen_at || ''));
+  if (!row || !safeEqual(String(row.id || ''), proof.sid) || !safeEqual(String(row.customer_id || ''), proof.cid) || !safeEqual(String(row.session_token_hash || ''), proof.sth)
+      || String(row.status || '').trim().toLowerCase() !== 'active' || row.revoked_at || row.revoke_reason || Number(row.security_epoch || 0) !== proof.epoch
+      || !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now() || !Number.isFinite(lastSeenMs) || Math.abs(lastSeenMs - Date.parse(nowIso)) > 1500) return null;
+  return row;
+}
+
 async function checkDomainProtectedDatabaseSessionLockSafe(req, user, mfa) {
   const authUserId = String(user && user.id || '').trim();
   if (!authUserId || !customerSecurityLooksLikeUuid(authUserId)) {
@@ -5160,7 +5264,7 @@ async function checkDomainProtectedDatabaseSessionLockSafe(req, user, mfa) {
   }
 
   const rows = Array.isArray(found.data) ? found.data : [];
-  const row = rows[0] || null;
+  let row = rows[0] || null;
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
   customerSecuritySessionDecisionDebugV219(req, 'protected_session.read', {
@@ -5175,22 +5279,31 @@ async function checkDomainProtectedDatabaseSessionLockSafe(req, user, mfa) {
   });
 
   if (!row || !row.id) {
-    customerSecuritySessionDecisionDebugV219(req, 'protected_session.missing_row_rejected', {
-      decision: 'clear_cookies_and_401',
-      database_operation: 'GET',
-      row_found: false,
-      row_has_id: false,
-      clear_cookies: true,
-      customer_digest: customerSecurityShortDigestV219(customerId)
-    });
-    return {
-      ok: false,
-      status: 401,
-      code: 'PROTECTED_SESSION_NOT_FOUND',
-      clearCookies: true,
-      customerId,
-      message: 'Sesi sudah dicabut atau tidak ditemukan. Silakan login dan verifikasi Passkey ulang.'
-    };
+    const recoveredRotationSession = await customerSecurityRecoverPasskeyRotationSessionV382(req, user, customerId, accountSecurityEpoch, mfaSecurityEpoch, fingerprint);
+    if (recoveredRotationSession && recoveredRotationSession.id) {
+      row = recoveredRotationSession;
+      customerSecuritySessionDecisionDebugV219(req, 'protected_session.passkey_rotation_continuity_recovered', {
+        decision: 'continue_existing_security_checks', database_operation: 'PATCH_OR_POST', row_found: true, row_has_id: true,
+        customer_digest: customerSecurityShortDigestV219(customerId), session_id_digest: customerSecurityShortDigestV219(row.id), session_status: String(row.status || '')
+      });
+    } else {
+      customerSecuritySessionDecisionDebugV219(req, 'protected_session.missing_row_rejected', {
+        decision: 'clear_cookies_and_401',
+        database_operation: 'GET',
+        row_found: false,
+        row_has_id: false,
+        clear_cookies: true,
+        customer_digest: customerSecurityShortDigestV219(customerId)
+      });
+      return {
+        ok: false,
+        status: 401,
+        code: 'PROTECTED_SESSION_NOT_FOUND',
+        clearCookies: true,
+        customerId,
+        message: 'Sesi sudah dicabut atau tidak ditemukan. Silakan login dan verifikasi Passkey ulang.'
+      };
+    }
   }
 
   const sessionSecurityEpoch = Number(row.security_epoch || 0);
@@ -51448,24 +51561,58 @@ function diracSecurityMailOsV327(userAgent) {
 
 function diracSecurityMailClientContextV327(req) {
   const headers = req && req.headers && typeof req.headers === 'object' ? req.headers : {};
-  const userAgent = String(headers['user-agent'] || '').slice(0, 500);
-  const ip = typeof getLoginSecurityIp === 'function' ? getLoginSecurityIp(req || {}) : '';
+  const userAgent = String(headers['user-agent'] || '').slice(0, 1000);
+  const publicIpRaw = typeof getLoginSecurityIp === 'function' ? String(getLoginSecurityIp(req || {}) || '').trim() : '';
+  const publicIp = publicIpRaw && publicIpRaw !== 'unknown' ? publicIpRaw.slice(0, 128) : 'Tidak tersedia';
   const vercelTrusted = String(process.env.VERCEL || '').trim() === '1';
-  const cleanLocation = (value) => typeof diracSecurityAlertLocationV321 === 'function'
-    ? diracSecurityAlertLocationV321(value)
-    : diracSecurityMailCleanV327(value, 80);
-  const locationParts = vercelTrusted
-    ? [headers['x-vercel-ip-city'], headers['x-vercel-ip-country-region'], headers['x-vercel-ip-country']]
-      .map(cleanLocation).filter((item) => item && item !== 'unavailable')
-    : [];
+  const safeHeader = (name, maximum = 300) => diracSecurityMailCleanV327(headers[name], maximum) || 'Tidak tersedia';
+  const safeUrl = (value) => { try { const parsed = new URL(String(value || '').trim()); return ['https:', 'http:'].includes(parsed.protocol) ? diracSecurityMailCleanV327(parsed.origin + parsed.pathname, 500) : 'Tidak tersedia'; } catch (_) { return 'Tidak tersedia'; } };
+  const decodedCity = (() => { try { return decodeURIComponent(String(headers['x-vercel-ip-city'] || '')).slice(0, 120); } catch (_) { return String(headers['x-vercel-ip-city'] || '').slice(0, 120); } })();
+  const city = vercelTrusted ? (diracSecurityMailCleanV327(decodedCity, 120) || 'Tidak tersedia') : 'Tidak tersedia';
+  const region = vercelTrusted ? safeHeader('x-vercel-ip-country-region', 120) : 'Tidak tersedia';
+  const country = vercelTrusted ? safeHeader('x-vercel-ip-country', 80) : 'Tidak tersedia';
+  const timezone = vercelTrusted ? safeHeader('x-vercel-ip-timezone', 120) : 'Tidak tersedia';
+  const latitude = vercelTrusted ? safeHeader('x-vercel-ip-latitude', 80) : 'Tidak tersedia', longitude = vercelTrusted ? safeHeader('x-vercel-ip-longitude', 80) : 'Tidak tersedia';
+  const asn = vercelTrusted ? safeHeader('x-vercel-ip-as-number', 80) : 'Tidak tersedia';
+  const networkName = vercelTrusted ? (safeHeader('x-vercel-ip-as-name', 200) !== 'Tidak tersedia' ? safeHeader('x-vercel-ip-as-name', 200) : safeHeader('x-vercel-ip-as-org', 200)) : 'Tidak tersedia';
+  const browserBase = typeof diracSecurityAlertBrowserV321 === 'function' ? diracSecurityAlertBrowserV321(userAgent) : 'Tidak dikenali';
+  const edge = userAgent.match(/Edg\/([0-9.]+)/i), opera = userAgent.match(/OPR\/([0-9.]+)/i), crios = userAgent.match(/CriOS\/([0-9.]+)/i), chrome = userAgent.match(/Chrome\/([0-9.]+)/i), fxios = userAgent.match(/FxiOS\/([0-9.]+)/i), firefox = userAgent.match(/Firefox\/([0-9.]+)/i), safari = userAgent.match(/Version\/([0-9.]+).*Safari\//i);
+  const browser = edge ? 'Microsoft Edge ' + edge[1] : opera ? 'Opera ' + opera[1] : crios ? 'Chrome iOS ' + crios[1] : chrome ? 'Chrome ' + chrome[1] : fxios ? 'Firefox iOS ' + fxios[1] : firefox ? 'Firefox ' + firefox[1] : safari ? 'Safari ' + safari[1] : browserBase;
+  const device = diracSecurityMailDeviceV327(userAgent), operatingSystem = diracSecurityMailOsV327(userAgent), acceptLanguage = safeHeader('accept-language', 300), clientHints = safeHeader('sec-ch-ua', 400), platform = safeHeader('sec-ch-ua-platform', 120), mobileHint = safeHeader('sec-ch-ua-mobile', 40), deviceModel = safeHeader('sec-ch-ua-model', 120);
+  const origin = safeUrl(headers.origin), referer = safeUrl(headers.referer || headers.referrer), host = safeHeader('host', 253);
+  const ctx = diracCentralCurrentContextV149(), requestId = ctx && ctx.req === req ? diracSecurityMailCleanV327(ctx.requestId, 128) : 'Tidak tersedia';
+  const edgeId = vercelTrusted ? safeHeader('x-vercel-id', 300) : 'Tidak tersedia', edgeRegion = edgeId !== 'Tidak tersedia' ? diracSecurityMailCleanV327(edgeId.split('::')[0], 80) : 'Tidak tersedia';
+  const browserFingerprint = crypto.createHash('sha256').update(JSON.stringify([userAgent, clientHints, platform, mobileHint, acceptLanguage])).digest('hex');
+  const deviceFingerprint = crypto.createHash('sha256').update(JSON.stringify([device, operatingSystem, userAgent, platform])).digest('hex');
+  const networkFingerprint = crypto.createHash('sha256').update(JSON.stringify([publicIp, asn, networkName, country, region, city])).digest('hex');
+  const requestFingerprint = crypto.createHash('sha256').update(JSON.stringify([String(req && req.method || ''), String(req && req.url || '').split('?')[0], publicIp, userAgent, origin, host])).digest('hex');
+  let sessionFingerprint = 'Tidak tersedia';
+  try {
+    const cookies = parseCookies(req), signedCookieName = String(process.env.DOMAIN_SIGNED_SESSION_COOKIE || 'dirac_domain_signed_session').trim();
+    const signedValue = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/.test(signedCookieName) ? String(cookies && cookies[signedCookieName] || '') : '';
+    if (signedValue) sessionFingerprint = crypto.createHash('sha256').update(signedValue).digest('hex');
+  } catch (_) {}
   return Object.freeze({
-    browser: typeof diracSecurityAlertBrowserV321 === 'function' ? diracSecurityAlertBrowserV321(userAgent) : 'Tidak dikenali',
-    device: diracSecurityMailDeviceV327(userAgent),
-    operatingSystem: diracSecurityMailOsV327(userAgent),
-    maskedIp: typeof diracSecurityAlertMaskIpV320 === 'function' ? diracSecurityAlertMaskIpV320(ip) : 'unavailable',
-    location: locationParts.join(', ') || 'Tidak tersedia',
-    locationSource: vercelTrusted ? 'Perkiraan metadata edge, bukan GPS' : 'Tidak tersedia'
+    browser, device, operatingSystem, userAgent: userAgent || 'Tidak tersedia', publicIp,
+    localIp: 'Tidak tersedia dari HTTP/browser; alamat IP LAN perangkat tidak diekspos ke server.',
+    maskedIp: typeof diracSecurityAlertMaskIpV320 === 'function' ? diracSecurityAlertMaskIpV320(publicIpRaw) : 'unavailable',
+    asn, networkName, country, region, city, timezone, coordinates: latitude !== 'Tidak tersedia' && longitude !== 'Tidak tersedia' ? latitude + ', ' + longitude : 'Tidak tersedia',
+    location: city !== 'Tidak tersedia' ? city + (region !== 'Tidak tersedia' ? ', ' + region : '') + (country !== 'Tidak tersedia' ? ', ' + country : '') : (region !== 'Tidak tersedia' ? region + (country !== 'Tidak tersedia' ? ', ' + country : '') : country), locationSource: vercelTrusted ? 'Metadata edge Vercel (perkiraan, bukan GPS)' : 'Tidak tersedia',
+    acceptLanguage, clientHints, platform, mobileHint, deviceModel: deviceModel === 'Tidak tersedia' ? 'Tidak tersedia dari browser' : deviceModel, browserFingerprint, deviceFingerprint, networkFingerprint, sessionFingerprint, requestFingerprint,
+    requestId: requestId || 'Tidak tersedia', host, origin, referer, edgeRegion, edgeId
   });
+}
+function diracSecurityMailClientRowsV381(client) {
+  const c = client && typeof client === 'object' ? client : {};
+  return [
+    ['PERANGKAT', c.device], ['MODEL PERANGKAT', c.deviceModel], ['SISTEM OPERASI', c.operatingSystem], ['BROWSER', c.browser], ['USER AGENT', c.userAgent],
+    ['IP PUBLIK ENDPOINT/PERANGKAT', c.publicIp], ['IP LOKAL PERANGKAT', c.localIp], ['IP TERSAMAR', c.maskedIp], ['ASN NETWORK', c.asn], ['NETWORK / ISP', c.networkName],
+    ['NEGARA', c.country], ['REGION', c.region], ['KOTA', c.city], ['LOKASI PERKIRAAN', c.location], ['TIMEZONE', c.timezone], ['KOORDINAT PERKIRAAN', c.coordinates], ['SUMBER LOKASI', c.locationSource],
+    ['ACCEPT-LANGUAGE', c.acceptLanguage], ['CLIENT PLATFORM', c.platform], ['CLIENT HINTS', c.clientHints], ['CLIENT MOBILE', c.mobileHint],
+    ['BROWSER FINGERPRINT SHA-256', c.browserFingerprint], ['DEVICE FINGERPRINT SHA-256', c.deviceFingerprint], ['NETWORK FINGERPRINT SHA-256', c.networkFingerprint],
+    ['SESSION FINGERPRINT SHA-256', c.sessionFingerprint], ['REQUEST FINGERPRINT SHA-256', c.requestFingerprint], ['REQUEST ID', c.requestId],
+    ['API HOST', c.host], ['ORIGIN', c.origin], ['REFERER', c.referer], ['EDGE REGION', c.edgeRegion], ['EDGE REQUEST ID', c.edgeId]
+  ];
 }
 
 function diracSecurityMailRowsHtmlV327(rows, valueMaximum = 500) {
@@ -51659,7 +51806,7 @@ async function diracUserSecurityResolveLoginFailureV336(req, payload, action, ht
       ['AKTIVITAS', 'Password tidak sesuai'], ['JUMLAH KESALAHAN', String(count)],
       ['AKHIR JEDA / TINDAKAN', until],
       ['WAKTU WIB', typeof formatDiracWibTime === 'function' ? formatDiracWibTime(Date.now()) : new Date().toISOString()],
-      ['PERANGKAT', client.device], ['BROWSER', client.browser], ['IP TERSAMAR', client.maskedIp], ['REFERENSI', reference]
+      ...diracSecurityMailClientRowsV381(client), ['REFERENSI', reference]
     ],
     actionUrl: diracRoleOriginV250('security') + '/keamanan.html',
     actionText: 'BUKA PUSAT KEAMANAN',
@@ -51809,7 +51956,7 @@ async function diracUserSecurityResolveAccessBlockV341(req, payload, action, htt
       ['CAKUPAN', scopeLabel],
       ['AKHIR PEMBATASAN / TINDAKAN', until],
       ['WAKTU WIB', typeof formatDiracWibTime === 'function' ? formatDiracWibTime(Date.now()) : new Date().toISOString()],
-      ['PERANGKAT', client.device], ['BROWSER', client.browser], ['IP TERSAMAR', client.maskedIp], ['REFERENSI', reference]
+      ...diracSecurityMailClientRowsV381(client), ['REFERENSI', reference]
     ],
     actionUrl: diracRoleOriginV250('security') + '/keamanan.html',
     actionText: 'BUKA PUSAT KEAMANAN',
@@ -51965,12 +52112,7 @@ function diracUserSecurityResolveEventV327(req, payload, action, committedOnly =
     ['AKTIVITAS', activity],
     ['METODE', method],
     ['WAKTU WIB', nowWib],
-    ['PERANGKAT', client.device],
-    ['SISTEM OPERASI', client.operatingSystem],
-    ['BROWSER', client.browser],
-    ['IP TERSAMAR', client.maskedIp],
-    ['PERKIRAAN LOKASI', client.location],
-    ['SUMBER LOKASI', client.locationSource],
+    ...diracSecurityMailClientRowsV381(client),
     ['REFERENSI', reference]
   ];
   const warning = 'Jika Anda tidak melakukan aktivitas ini, segera buka Pusat Keamanan, ganti password, tinjau Passkey dan sesi aktif, lalu hubungi bantuan resmi PT Dirac Inovasi Nusantara. Jangan membalas email ini dengan password, OTP, token, atau data rahasia.';
@@ -53432,7 +53574,7 @@ diracRegisterEmailDeliverV331 = async function diracRegisterEmailDeliverCustomer
     statusLabel: 'STATUS VERIFIKASI', statusValue: 'MENUNGGU KONFIRMASI',
     statusNote: 'Kode ' + String(String(message.proof || '').length) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) berlaku selama 2 menit dan hanya dapat digunakan satu kali.',
     detailsLabel: 'DETAIL VERIFIKASI',
-    rows: [['KODE VERIFIKASI', String(message.proof || '')], ['MASA BERLAKU', '2 menit'], ['PENGGUNAAN', 'Sekali pakai'], ['REFERENSI', String(message.reference || '')]],
+    rows: [['KODE VERIFIKASI', String(message.proof || '')], ['MASA BERLAKU', '2 menit'], ['PENGGUNAAN', 'Sekali pakai'], ...diracSecurityMailClientRowsV381(message.client), ['REFERENSI', String(message.reference || '')]],
     rowValueMaxLength: DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354,
     actionUrl: diracRoleOriginV250('auth') + '/masuk.html', actionText: 'BUKA HALAMAN PENDAFTARAN',
     warningTitle: 'JAGA KERAHASIAAN KODE',
@@ -69388,9 +69530,7 @@ function diracPasswordResetMailEventV338(record, client) {
     rows: [
       ['AKTIVITAS', 'Penggantian password terverifikasi'], ['METODE', 'WebAuthn Passkey'],
       ['WAKTU WIB', typeof formatDiracWibTime === 'function' ? formatDiracWibTime(record.committed_at_ms) : new Date(record.committed_at_ms).toISOString()],
-      ['PERANGKAT', client.device], ['SISTEM OPERASI', client.operatingSystem],
-      ['BROWSER', client.browser], ['IP TERSAMAR', client.maskedIp],
-      ['PERKIRAAN LOKASI', client.location], ['SUMBER LOKASI', client.locationSource],
+      ...diracSecurityMailClientRowsV381(client),
       ['REFERENSI', reference]
     ],
     actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN',
