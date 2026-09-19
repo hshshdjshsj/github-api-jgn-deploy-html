@@ -18272,7 +18272,7 @@ async function myOrdersFetchOrderItems(orderIds, customerIds) {
   const owners = Array.from(new Set((customerIds || []).filter(customerSecurityLooksLikeUuid))).slice(0, 20);
   const map = {};
   if (!ids.length || !owners.length) return map;
-  const select = 'id,order_id,customer_id,product_title,quantity,created_at';
+  const select = 'id,order_id,customer_id,product_title,quantity,unit_price,created_at';
   const path = '/rest/v1/order_items?select=' + encodeURIComponent(select)
     + '&order_id=in.(' + ids.map(encodeURIComponent).join(',') + ')'
     + '&customer_id=in.(' + owners.map(encodeURIComponent).join(',') + ')'
@@ -18288,10 +18288,19 @@ async function myOrdersFetchOrderItems(orderIds, customerIds) {
     const orderId = String(item && item.order_id || '');
     if (!orderId) return;
     if (!map[orderId]) map[orderId] = [];
+    const rawUnitPrice = typeof item.unit_price === 'number' || (typeof item.unit_price === 'string' && item.unit_price.trim())
+      ? Number(item.unit_price) : NaN;
+    const unitPrice = Number.isSafeInteger(rawUnitPrice) && rawUnitPrice >= 0 ? rawUnitPrice : null;
+    const rawQuantity = typeof item.quantity === 'number' || (typeof item.quantity === 'string' && item.quantity.trim())
+      ? Number(item.quantity) : NaN;
+    const lineSubtotal = unitPrice !== null && Number.isSafeInteger(rawQuantity) && rawQuantity >= 1 && rawQuantity <= 999
+      && Number.isSafeInteger(unitPrice * rawQuantity) ? unitPrice * rawQuantity : null;
     map[orderId].push({
       id: String(item.id || ''),
       title: myOrdersCleanText(item.product_title || 'Item pesanan', 180),
       quantity: myOrdersPositiveInteger(item.quantity || 1, 1, 999),
+      unit_price: unitPrice,
+      subtotal: lineSubtotal,
       created_at: item.created_at || ''
     });
   });
