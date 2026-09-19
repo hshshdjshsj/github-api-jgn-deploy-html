@@ -14929,9 +14929,9 @@ function diracRecoveryBrowserExactSecret100V345(value) {
   return value;
 }
 
-const DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_MIN_LENGTH_V355 = 100;
-const DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_MAX_LENGTH_V355 = 512;
-const DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_ALPHABET_V355 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_MIN_LENGTH_V355 = 512;
+const DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_MAX_LENGTH_V355 = 768;
+const DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_ALPHABET_V355 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_!#$%&()*+,./:;=?@[]^{|}~';
 
 function diracRecoveryBrowserDynamicCodeV355(value) {
   if (typeof value !== 'string') return '';
@@ -14940,6 +14940,8 @@ function diracRecoveryBrowserDynamicCodeV355(value) {
   for (const char of value) {
     if (!DIRAC_RECOVERY_BROWSER_DYNAMIC_CODE_ALPHABET_V355.includes(char)) return '';
   }
+  if (!/[A-Z]/.test(value) || !/[a-z]/.test(value) || !/[0-9]/.test(value) || !/_/.test(value)
+      || !/[!#$%&()*+,\-./:;=?@\[\]^{|}~]/.test(value)) return '';
   return value;
 }
 
@@ -40025,14 +40027,22 @@ async function diracBolaIdorV128ResolveKnownObjectOwners(objectIds, preferredTab
     const profilePermitBinding = profilePermit && DIRAC_CENTRAL_DATABASE_PERMIT_BINDINGS_V362.get(profilePermit);
     const profilePath = '/rest/v1/customers?select=' + encodeURIComponent('id,email,name,phone')
       + '&id=eq.' + encodeURIComponent(ids[0]) + '&limit=1';
+    const recoveryProfileRead = profileContext && profileContext.req
+      && ['customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify'].includes(profileContext.action)
+      && profileContext.classification === 'browser' && profileContext.method === 'POST'
+      && profileContext.req.method === 'POST'
+      && diracRecoveryBrowserOriginAllowedV362(profileContext.req, diracCsrfRequestOrigin(profileContext.req));
+    const dashboardProfileRead = profileContext && profileContext.req
+      && profileContext.action === 'domain_dashboard_me' && profileContext.method === 'GET'
+      && ((profileTarget && diracCsrfRequestOrigin(profileContext.req) === profileTarget.origin)
+        || diracCentralPtdinSourceV402(profileContext.req, 'domain_dashboard_me'));
     if (profileContext && profileContext.req
-        && profileContext.action === 'domain_dashboard_me' && profileContext.method === 'GET'
+        && (dashboardProfileRead || recoveryProfileRead)
         && diracCentralHandlerContextFullyPassedV211(profileContext, profileContext.req) === true
         && profileLegacyContext && profileLegacyContext.req === profileContext.req
-        && profileLegacyContext.action === 'domain_dashboard_me' && profileLegacyContext.method === 'GET'
+        && profileLegacyContext.action === profileContext.action && profileLegacyContext.method === profileContext.method
         && profileOwner && profileOwner.ok === true && profileOwner.customerIds.length === 1
         && profileOwner.customerIds[0] === ids[0]
-        && profileTarget && diracCsrfRequestOrigin(profileContext.req) === profileTarget.origin
         && profilePermit && profilePermit.action === profileContext.action
         && profilePermit.method === 'GET' && profilePermit.authMode === 'service'
         && profilePermit.path === profilePath && profilePermit.prefer === ''
@@ -58083,6 +58093,29 @@ try {
 
 try {
   const __diracCentralPreviousSupabaseFetchV146 = typeof supabaseFetch === 'function' ? supabaseFetch : null;
+  // Nested owner lookups and overlapping reads share this request flag. Restore
+  // its original value only after the last guarded service operation completes.
+  const serviceRoleScopesV378 = new WeakMap();
+  const enterServiceRoleScopeV378 = (ctx, options) => {
+    if (!ctx || !options || options.auth !== 'service') return null;
+    const active = serviceRoleScopesV378.get(ctx)
+      || { count: 0, original: ctx.__diracCentralSafeServiceRoleFetchV146 };
+    if (!Number.isSafeInteger(active.count) || active.count < 0 || active.count >= 64) {
+      throw new Error('CENTRAL_SERVICE_ROLE_SCOPE_DEPTH_INVALID');
+    }
+    active.count += 1;
+    serviceRoleScopesV378.set(ctx, active);
+    ctx.__diracCentralSafeServiceRoleFetchV146 = true;
+    return active;
+  };
+  const leaveServiceRoleScopeV378 = (ctx, active) => {
+    if (!active) return;
+    active.count -= 1;
+    if (active.count === 0) {
+      ctx.__diracCentralSafeServiceRoleFetchV146 = active.original;
+      serviceRoleScopesV378.delete(ctx);
+    }
+  };
   if (!__diracCentralPreviousSupabaseFetchV146) throw new Error('DIRAC_CENTRAL_SUPABASE_FETCH_MISSING');
   if (__diracCentralPreviousSupabaseFetchV146 && !__diracCentralPreviousSupabaseFetchV146.__diracCentralServiceRoleV146) {
     supabaseFetch = async function supabaseFetchCentralServiceRoleGuardV146(path, options = {}) {
@@ -58103,7 +58136,7 @@ try {
           return diracCentralCloneSupabaseResultV151(cachedResult);
         }
 
-        if (options && options.auth === 'service') ctx.__diracCentralSafeServiceRoleFetchV146 = true;
+        const serviceRoleScopeV378 = enterServiceRoleScopeV378(ctx, options);
         const fetchPromise = __diracCentralPreviousSupabaseFetchV146(path, options)
           .then((result) => {
             if (!result || result.ok !== true) {
@@ -58122,17 +58155,17 @@ try {
           diracCentralBindOwnerScopedSessionRowsV197(ctx, path, options, result);
           return diracCentralCloneSupabaseResultV151(result);
         } finally {
-          if (ctx) ctx.__diracCentralSafeServiceRoleFetchV146 = false;
+          leaveServiceRoleScopeV378(ctx, serviceRoleScopeV378);
         }
       }
 
-      if (ctx && options && options.auth === 'service') ctx.__diracCentralSafeServiceRoleFetchV146 = true;
+      const serviceRoleScopeV378 = enterServiceRoleScopeV378(ctx, options);
       try {
         const result = await __diracCentralPreviousSupabaseFetchV146(path, options);
         diracCentralBindOwnerScopedSessionRowsV197(ctx, path, options, result);
         return result;
       } finally {
-        if (ctx) ctx.__diracCentralSafeServiceRoleFetchV146 = false;
+        leaveServiceRoleScopeV378(ctx, serviceRoleScopeV378);
       }
     };
     Object.defineProperty(supabaseFetch, '__diracCentralServiceRoleV146', { value: true, enumerable: false });
@@ -58548,7 +58581,7 @@ function diracCentralBindOwnerScopedSessionRowsV197(ctx, path, options = {}, res
     if (params.get('order') !== 'created_at.desc' || params.get('limit') !== '80') return false;
 
     const expectedSelect = table === 'orders'
-      ? 'id,order_id,customer_id,customer_name,customer_email,customer_phone,service_type,subtotal,total,payment_method,payment_status,order_status,created_at'
+      ? 'id,order_id,customer_id,customer_name,customer_email,customer_phone,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at'
       : 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,dns_method,target_platform,domain_name,total_price,currency,order_status,status,payment_status,created_at';
     if (params.get('select') !== expectedSelect) return false;
 
@@ -59281,10 +59314,140 @@ function diracCentralClassifyActionV146(action) {
   return 'browser';
 }
 
+// PT page requests use the same raw capture, compliance gate and 30-stage
+// pipeline as /api/health. This private marker cannot be supplied by a browser.
+const DIRAC_PTDIN_REQUESTS_V402 = new WeakMap();
+const DIRAC_PTDIN_ACTIONS_V402 = Object.freeze([
+  'domain_health', 'domain_dashboard_me', 'domain_logout', 'my_orders',
+  'domain_orders', 'customer_security_overview', 'customer_security_account_request', 'create_payment'
+]);
+const DIRAC_PTDIN_SOURCE_PATHS_V402 = Object.freeze([
+  '/cekresi.html', '/detail-domain.html', '/detail-parfum.html', '/detail-project.html',
+  '/detail-tiket.html', '/invoice.html', '/notifikasi.html', '/profil.html',
+  '/tiket-bantuan.html', '/topup.html', '/domain.html'
+]);
+
+function diracCentralPtdinSourceV402(req, action) {
+  const entry = req && DIRAC_PTDIN_REQUESTS_V402.get(req);
+  if (!entry || entry.req !== req || entry.action !== String(action || '')
+      || entry.method !== String(req.method || '').toUpperCase()
+      || !DIRAC_PTDIN_ACTIONS_V402.includes(entry.action)) return false;
+  try {
+    const expectedOrigin = 'https://pt.' + diracBaseDomainV250();
+    const headers = req.headers || {};
+    if (String(headers.origin || '').trim().toLowerCase() !== expectedOrigin) return false;
+    const referrer = String(headers.referer || headers.referrer || '').trim();
+    // The public company-name read deliberately sends no referrer. Every
+    // authenticated business call and proof request sends its exact page path.
+    if (!referrer) return entry.action === 'domain_health'
+      && !Object.keys(req.query || {}).some((key) => /nonce|csrf/i.test(key));
+    const page = new URL(referrer);
+    return page.protocol === 'https:' && !page.port && !page.username && !page.password
+      && page.origin.toLowerCase() === expectedOrigin && !page.search && !page.hash
+      && DIRAC_PTDIN_SOURCE_PATHS_V402.includes(page.pathname);
+  } catch (_) { return false; }
+}
+
+async function diracCentralPtdinEntryV402(req, res) {
+  const raw = String(req && req.url || '');
+  const split = raw.indexOf('?');
+  const pathname = split < 0 ? raw : raw.slice(0, split);
+  if (pathname !== '/api/ptdin' || raw.length > 8192 || /[\u0000-\u0020\u007f]/.test(raw)
+      || DIRAC_PTDIN_REQUESTS_V402.has(req)) {
+    res.statusCode = 400;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.end(JSON.stringify({ ok: false, code: 'PTDIN_REQUEST_INVALID' }));
+  }
+  const query = new URLSearchParams(split < 0 ? '' : raw.slice(split + 1));
+  const action = query.getAll('action').length === 1 ? String(query.get('action') || '') : '';
+  const originalUrl = req.url;
+  const hadOriginalUrl = Object.prototype.hasOwnProperty.call(req, 'originalUrl');
+  const originalOriginalUrl = req.originalUrl;
+  DIRAC_PTDIN_REQUESTS_V402.set(req, Object.freeze({ req, action, method: String(req.method || '').toUpperCase() }));
+  try {
+    req.url = '/api/health' + (split < 0 ? '' : raw.slice(split));
+    req.originalUrl = req.url;
+    return await module.exports(req, res);
+  } finally {
+    DIRAC_PTDIN_REQUESTS_V402.delete(req);
+    req.url = originalUrl;
+    if (hadOriginalUrl) req.originalUrl = originalOriginalUrl; else delete req.originalUrl;
+  }
+}
+
+async function diracCentralPtdinDispatchV402(req, res, ctx) {
+  const entry = DIRAC_PTDIN_REQUESTS_V402.get(req);
+  const assertContext = () => {
+    if (!entry || DIRAC_PTDIN_REQUESTS_V402.get(req) !== entry || ctx.req !== req
+        || diracCentralCurrentContextV149() !== ctx || ctx.action !== entry.action
+        || ctx.method !== entry.method || !diracCentralPtdinSourceV402(req, ctx.action)
+        || !diracCentralHandlerContextFullyPassedV211(ctx, req)) {
+      throw new Error('PTDIN_FULL_CENTRAL_GUARD_REQUIRED');
+    }
+  };
+  assertContext();
+  if (req.method === 'OPTIONS') return __diracV202CompiledDispatcher(req, res);
+  const ptdin = require('./ptdin.js');
+  if (!Object.isFrozen(ptdin) || ptdin.__diracPtdinCentralGuardedBusinessV402 !== true
+      || typeof ptdin.__diracPtdinBusinessV402 !== 'function') throw new Error('PTDIN_BUSINESS_MODULE_INVALID');
+  let used = false;
+  let profileRead = false;
+  let active = true;
+  const operations = Object.freeze({
+    action: ctx.action,
+    readProfile: async () => {
+      assertContext();
+      if (!active || profileRead || used || ctx.action !== 'domain_dashboard_me' || ctx.method !== 'GET') {
+        throw new Error('PTDIN_PROFILE_OPERATION_REJECTED');
+      }
+      profileRead = true;
+      const owner = diracCentralOwnerFromStage26V217(ctx);
+      if (!owner || owner.customerIds.length !== 1) throw new Error('PTDIN_PROFILE_OWNER_REQUIRED');
+      const path = '/rest/v1/customers?select=' + encodeURIComponent('id,email,name,phone')
+        + '&id=eq.' + encodeURIComponent(owner.customerIds[0]) + '&limit=1';
+      const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+      assertContext();
+      if (!result || result.ok !== true || !Array.isArray(result.data)) return null;
+      if (result.data.length !== 1 || String(result.data[0].id || '') !== owner.customerIds[0]) return null;
+      const row = result.data[0];
+      return Object.freeze({ name: String(row.name || ''), email: normalizeAuthEmail(row.email || ''), phone: String(row.phone || '') });
+    },
+    run: async (project) => {
+      assertContext();
+      if (!active || used || typeof project !== 'function') throw new Error('PTDIN_DISPATCH_OPERATION_REJECTED');
+      used = true;
+      const originalJson = res.json;
+      if (typeof originalJson !== 'function') throw new Error('PTDIN_RESPONSE_GATEWAY_REQUIRED');
+      let responseCount = 0;
+      res.json = function diracPtdinProjectJsonV402(payload) {
+        assertContext();
+        if (++responseCount !== 1) throw new Error('PTDIN_RESPONSE_ALREADY_SENT');
+        const projected = project(payload);
+        if (projected && typeof projected.then === 'function') throw new Error('PTDIN_ASYNC_PROJECTOR_REJECTED');
+        return originalJson.call(res, projected);
+      };
+      try { return await __diracV202CompiledDispatcher(req, res); }
+      finally { res.json = originalJson; }
+    }
+  });
+  try { return await ptdin.__diracPtdinBusinessV402(req, res, operations); }
+  finally { active = false; }
+}
+
 function diracCentralVercel2OnlyActionGuardV150(action, req) {
   const clean = String(action || '').trim().toLowerCase();
   if (!clean) return { ok: false, reason: 'deployment_role_action_empty' };
   const role = diracAppRoleV250();
+  if (req && DIRAC_PTDIN_REQUESTS_V402.has(req)) {
+    const contract = diracCentralContractForActionV146(clean);
+    const method = String(req.method || '').toUpperCase();
+    const expectedMethod = method === 'OPTIONS'
+      ? String(req.headers && req.headers['access-control-request-method'] || '').toUpperCase() : method;
+    return role === 'auth' && diracCentralPtdinSourceV402(req, clean)
+      && contract && Array.isArray(contract.methods) && contract.methods.includes(expectedMethod)
+      ? { ok: true } : { ok: false, reason: 'ptdin_source_action_contract_invalid' };
+  }
   const common = new Set(['domain_health']);
   if (common.has(clean)) return { ok: true };
 
@@ -61934,7 +62097,8 @@ function diracCentralIsCheckoutCustomerOwnerReadServiceRoleV196(ctx, table, path
   if (ctx.action === 'domain_dashboard_me'
       && (!diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) || !dashboardOwner
         || dashboardOwner.customerIds.length !== 1 || !dashboardCheckoutSource
-        || diracCsrfRequestOrigin(ctx.req) !== dashboardCheckoutSource.origin)) return false;
+        || (diracCsrfRequestOrigin(ctx.req) !== dashboardCheckoutSource.origin
+          && !diracCentralPtdinSourceV402(ctx.req, 'domain_dashboard_me')))) return false;
   const boundCustomerId = String(dashboardOwner ? dashboardOwner.customerIds[0] : ctx.__diracCentralCheckoutOwnerCustomerIdV196 || '').trim();
   const boundAuthUserId = String(dashboardOwner ? dashboardOwner.authUserId : ctx.__diracCentralCheckoutOwnerAuthUserIdV196 || '').trim();
   if (!diracCentralLooksLikeUuidV146(boundCustomerId) || !diracCentralLooksLikeUuidV146(boundAuthUserId)) return false;
@@ -69447,6 +69611,7 @@ async function diracV202Dispatcher(req, res) {
     error.code = 'DIRAC_V202_DISPATCH_BEFORE_FULL_CENTRAL_GUARD';
     throw error;
   }
+  if (DIRAC_PTDIN_REQUESTS_V402.has(req)) return diracCentralPtdinDispatchV402(req, res, ctx);
   return __diracV202CompiledDispatcher(req, res);
 }
 
@@ -69893,6 +70058,7 @@ if (__diracRecoveryRoleV250) {
     || !DIRAC_CENTRAL_DISABLED_ACTIONS_V146.has(DIRAC_RECOVERY_WORKER_ACTION)) {
   throw new Error('DIRAC_NON_RECOVERY_ROLE_PROXY_ONLY_INVARIANT_FAILED_V250');
 }
+Object.defineProperty(module.exports, '__diracCentralPtdinEntryV402', { value: diracCentralPtdinEntryV402, enumerable: false, writable: false, configurable: false });
 Object.defineProperty(module.exports, '__diracRecoveryRoleAwareV250', { value: true, enumerable: false });
 Object.defineProperty(module.exports, '__diracPasswordResetMailNotifyCommittedV338', { value: diracPasswordResetMailNotifyCommittedV338, enumerable: false, writable: false, configurable: false });
 Object.defineProperty(module.exports, '__diracCentralBanAuthorityV354', {
