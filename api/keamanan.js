@@ -2546,20 +2546,20 @@ function diracSecurityMailBannerUrlV327() {
   return diracSmtpHeaderImageUrlV332();
 }
 function diracSecurityCorporateEmailHtmlV327(input = {}) {
-  const preheader = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.preheader || input.title || 'Notifikasi keamanan Dirac Group.', 180));
+  const preheader = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.preheader || input.title || 'Notifikasi keamanan PT Dirac Inovasi Nusantara.', 180));
   const bannerUrl = diracSecurityMailEscapeV327(diracSecurityMailBannerUrlV327());
   const brandLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.brandLabel || 'SECURE ACCOUNT RECOVERY', 80));
   const eyebrow = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.eyebrow || 'SECURITY ACTIVITY NOTICE', 90));
   const titleLines = String(input.title || 'Aktivitas Keamanan\nTerdeteksi').split(/\n+/).slice(0, 3)
     .map((line) => diracSecurityMailEscapeV327(diracSecurityMailCleanV327(line, 90))).filter(Boolean).join('<br>');
-  const greeting = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.greeting || 'Yth. Pengguna Dirac Group,', 160));
+  const greeting = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.greeting || 'Yth. Pengguna PT Dirac Inovasi Nusantara,', 160));
   const summary = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.summary || '', 700));
   const statusLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.statusLabel || 'STATUS KEAMANAN', 100));
   const statusValue = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.statusValue || 'TERLINDUNGI', 180));
   const statusNote = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.statusNote || '', 400));
   const detailsLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.detailsLabel || 'DETAIL AKTIVITAS', 100));
   const warningTitle = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warningTitle || 'PERINGATAN KEAMANAN', 100));
-  const warning = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warning || 'Jika aktivitas ini bukan dilakukan oleh Anda, segera amankan akun dan hubungi bantuan resmi Dirac Group.', 700));
+  const warning = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warning || 'Jika aktivitas ini bukan dilakukan oleh Anda, segera amankan akun dan hubungi bantuan resmi PT Dirac Inovasi Nusantara.', 700));
   const supportLead = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.supportLead || 'Butuh bantuan untuk memeriksa aktivitas keamanan? Hubungi tim support melalui kanal resmi berikut.', 300));
   const actionFallback = diracRoleOriginV250('security') + '/keamanan.html';
   const actionUrl = diracSecurityMailEscapeV327(diracSecurityMailOfficialUrlV327(input.actionUrl || actionFallback, actionFallback));
@@ -2573,7 +2573,7 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="supported-color-schemes" content="dark">
-  <title>Dirac Group Secure Security Notification</title>
+  <title>PT Dirac Inovasi Nusantara Secure Security Notification</title>
   <style>
     :root { color-scheme:dark; supported-color-schemes:dark; }
     body { margin:0!important; padding:0!important; }
@@ -2597,8 +2597,8 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
     <tr><td class="dirac-outer-pad" align="center" bgcolor="#090c12" style="padding:18px 12px;background:#090c12;background-color:#090c12;background-image:linear-gradient(#090c12,#090c12)">
       <table class="dirac-shell" role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#141820" style="width:100%;max-width:600px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:18px;overflow:hidden;box-shadow:0 18px 48px rgba(0,0,0,.24);background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
         <tr><td style="padding:0;line-height:0;font-size:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="50%" height="4" bgcolor="#5276e8" style="height:4px;line-height:4px;font-size:0;background:#5276e8;background-color:#5276e8">&nbsp;</td><td width="30%" height="4" bgcolor="#148ba4" style="height:4px;line-height:4px;font-size:0;background:#148ba4;background-color:#148ba4">&nbsp;</td><td width="20%" height="4" bgcolor="#9a741f" style="height:4px;line-height:4px;font-size:0;background:#9a741f;background-color:#9a741f">&nbsp;</td></tr></table></td></tr>
-        <tr><td bgcolor="#10151e" style="padding:0;line-height:0;font-size:0;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><img src="${bannerUrl}" width="600" alt="Dirac Group Secure Security" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;background:#10151e;background-color:#10151e"></td></tr>
-        <tr><td class="dirac-pad" bgcolor="#141820" style="padding:27px 32px 13px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:21px;line-height:1.2;font-weight:800;letter-spacing:.14em;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">DIRAC GROUP</div><div style="margin-top:7px;font-size:11px;line-height:1.4;font-weight:700;letter-spacing:.2em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${brandLabel}</div></div></div></td></tr>
+        <tr><td bgcolor="#10151e" style="padding:0;line-height:0;font-size:0;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><img src="${bannerUrl}" width="600" alt="PT Dirac Inovasi Nusantara Secure Security" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;background:#10151e;background-color:#10151e"></td></tr>
+        <tr><td class="dirac-pad" bgcolor="#141820" style="padding:27px 32px 13px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:21px;line-height:1.2;font-weight:800;letter-spacing:.14em;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">PT Dirac Inovasi Nusantara</div><div style="margin-top:7px;font-size:11px;line-height:1.4;font-weight:700;letter-spacing:.2em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${brandLabel}</div></div></div></td></tr>
         <tr><td class="dirac-pad" bgcolor="#141820" style="padding:24px 32px 32px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
           <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#9eb6ff!important;-webkit-text-fill-color:#9eb6ff!important;mso-color-alt:#9eb6ff">${eyebrow}</div><div class="dirac-title" style="margin-top:13px;font-size:38px;line-height:1.16;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${titleLines}</div><p style="margin:25px 0 0;font-size:17px;line-height:1.55;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${greeting}</p><p style="margin:12px 0 0;font-size:16px;line-height:1.65;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">${summary}</p></div></div>
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1a1f29" style="width:100%;margin:24px 0 18px;border-collapse:separate;border-spacing:0;border:1px solid #303a49;border-radius:14px;overflow:hidden;box-shadow:0 8px 22px rgba(0,0,0,.12);background:#1a1f29;background-color:#1a1f29;background-image:linear-gradient(#1a1f29,#1a1f29)"><tr><td style="padding:18px 20px;border-left:4px solid #5276e8"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#9eb6ff!important;-webkit-text-fill-color:#9eb6ff!important;mso-color-alt:#9eb6ff">${statusLabel}</div><div style="margin-top:8px;font-size:19px;line-height:1.45;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${statusValue}</div>${statusNote ? `<div style="margin-top:7px;font-size:13px;line-height:1.55;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${statusNote}</div>` : ''}</div></div></td></tr></table>
@@ -2607,16 +2607,16 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:13px 0 0;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">${rowsHtml}</table>
           ${traceHtml}
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1d1b17" style="width:100%;margin:28px 0;border-collapse:separate;border-spacing:0;border:1px solid #4a4030;border-radius:14px;overflow:hidden;background:#1d1b17;background-color:#1d1b17;background-image:linear-gradient(#1d1b17,#1d1b17)"><tr><td style="padding:18px 20px;border-left:4px solid #9a741f"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.14em;color:#f0c86c!important;-webkit-text-fill-color:#f0c86c!important;mso-color-alt:#f0c86c">${warningTitle}</div><p style="margin:10px 0 0;font-size:14px;line-height:1.65;color:#e8ebef!important;-webkit-text-fill-color:#e8ebef!important;mso-color-alt:#e8ebef">${warning}</p></div></div></td></tr></table>
-          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI DIRAC GROUP</div><p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${supportLead}</p></div></div>
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI PT Dirac Inovasi Nusantara</div><p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${supportLead}</p></div></div>
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:0 0 13px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WHATSAPP</div><a href="https://wa.me/6287892523968" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">0878 9252 3968</a></div></div></td></tr>
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL SUPPORT</div><a href="mailto:${diracSecurityMailEscapeV327(diracSupportEmailV250())}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${diracSecurityMailEscapeV327(diracSupportEmailV250())}</a></div></div></td></tr>
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL PERUSAHAAN</div><a href="mailto:companydirac@gmail.com" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">companydirac@gmail.com</a></div></div></td></tr>
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">INSTAGRAM</div><a href="https://www.instagram.com/diraccorp/" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">@diraccorp</a></div></div></td></tr>
           </table>
-          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><p style="margin:0;font-size:12px;line-height:1.65;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tim Dirac Group tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui WhatsApp, Instagram, telepon, maupun balasan email.</p></div></div>
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><p style="margin:0;font-size:12px;line-height:1.65;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tim PT Dirac Inovasi Nusantara tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui WhatsApp, Instagram, telepon, maupun balasan email.</p></div></div>
         </td></tr>
-        <tr><td class="dirac-footer-pad" bgcolor="#b9dcff" style="padding:24px 26px 26px;border-top:1px solid #79aee5;background:#b9dcff;background-color:#b9dcff;background-image:linear-gradient(#b9dcff,#b9dcff)"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10213a" style="width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24466c;border-radius:16px;overflow:hidden;box-shadow:0 10px 24px rgba(14,42,72,.18);background:#10213a;background-color:#10213a;background-image:linear-gradient(#10213a,#10213a)"><tr><td style="padding:22px 24px 23px;border-left:4px solid #27a2bd"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:18px;line-height:1.3;font-weight:800;letter-spacing:.14em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">DIRAC GROUP</div><div style="margin-top:7px;font-size:11px;line-height:1.5;font-weight:700;letter-spacing:.13em;color:#d9e8ff!important;-webkit-text-fill-color:#d9e8ff!important;mso-color-alt:#d9e8ff">RECOVERY &bull; PRIVACY &bull; SECURITY</div><div style="margin-top:14px;font-size:13px;line-height:1.55;color:#d7e7f8!important;-webkit-text-fill-color:#d7e7f8!important;mso-color-alt:#d7e7f8">Secure Recovery &middot; Protected Delivery</div><p style="margin:17px 0 0;font-size:11px;line-height:1.65;color:#bfd0e3!important;-webkit-text-fill-color:#bfd0e3!important;mso-color-alt:#bfd0e3">Email ini dibuat otomatis oleh sistem Dirac Group. Mohon tidak membalas dan jangan meneruskan material keamanan kepada pihak lain.</p></div></div></td></tr></table></td></tr>
+        <tr><td class="dirac-footer-pad" bgcolor="#b9dcff" style="padding:24px 26px 26px;border-top:1px solid #79aee5;background:#b9dcff;background-color:#b9dcff;background-image:linear-gradient(#b9dcff,#b9dcff)"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10213a" style="width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24466c;border-radius:16px;overflow:hidden;box-shadow:0 10px 24px rgba(14,42,72,.18);background:#10213a;background-color:#10213a;background-image:linear-gradient(#10213a,#10213a)"><tr><td style="padding:22px 24px 23px;border-left:4px solid #27a2bd"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:18px;line-height:1.3;font-weight:800;letter-spacing:.14em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">PT Dirac Inovasi Nusantara</div><div style="margin-top:7px;font-size:11px;line-height:1.5;font-weight:700;letter-spacing:.13em;color:#d9e8ff!important;-webkit-text-fill-color:#d9e8ff!important;mso-color-alt:#d9e8ff">RECOVERY &bull; PRIVACY &bull; SECURITY</div><div style="margin-top:14px;font-size:13px;line-height:1.55;color:#d7e7f8!important;-webkit-text-fill-color:#d7e7f8!important;mso-color-alt:#d7e7f8">Secure Recovery &middot; Protected Delivery</div><p style="margin:17px 0 0;font-size:11px;line-height:1.65;color:#bfd0e3!important;-webkit-text-fill-color:#bfd0e3!important;mso-color-alt:#bfd0e3">Email ini dibuat otomatis oleh sistem PT Dirac Inovasi Nusantara. Mohon tidak membalas dan jangan meneruskan material keamanan kepada pihak lain.</p></div></div></td></tr></table></td></tr>
         <tr><td style="padding:0;line-height:0;font-size:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="50%" height="4" bgcolor="#5276e8" style="height:4px;line-height:4px;font-size:0;background:#5276e8;background-color:#5276e8">&nbsp;</td><td width="30%" height="4" bgcolor="#148ba4" style="height:4px;line-height:4px;font-size:0;background:#148ba4;background-color:#148ba4">&nbsp;</td><td width="20%" height="4" bgcolor="#9a741f" style="height:4px;line-height:4px;font-size:0;background:#9a741f;background-color:#9a741f">&nbsp;</td></tr></table></td></tr>
       </table>
     </td></tr>
@@ -2630,7 +2630,7 @@ function diracSecurityMailTextV327(input = {}) {
   const trace = (Array.isArray(input.trace) ? input.trace : []).slice(0, 30)
     .map((entry, index) => String(index + 1) + '. ' + diracSecurityMailCleanV327(entry && entry.stage, 100) + ' -> ' + diracSecurityMailCleanV327(entry && entry.result, 60) + ' (' + Math.max(0, Number(entry && entry.duration_ms || 0)) + ' ms)');
   return [
-    'DIRAC GROUP - ' + diracSecurityMailCleanV327(input.eyebrow || 'SECURITY ACTIVITY NOTICE', 100),
+    'PT Dirac Inovasi Nusantara - ' + diracSecurityMailCleanV327(input.eyebrow || 'SECURITY ACTIVITY NOTICE', 100),
     '',
     diracSecurityMailCleanV327(String(input.title || '').replace(/\n+/g, ' '), 200),
     '',
@@ -2651,7 +2651,7 @@ function diracSecurityMailTextV327(input = {}) {
     'Email Perusahaan: companydirac@gmail.com',
     'Instagram: @diraccorp',
     '',
-    'Dirac Group tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui telepon, chat, atau balasan email.'
+    'PT Dirac Inovasi Nusantara tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui telepon, chat, atau balasan email.'
   ].filter((line, index, all) => line !== '' || (index > 0 && all[index - 1] !== '')).join('\r\n');
 }
 function securityResetSmtpConfigV342() {
@@ -2819,7 +2819,7 @@ async function securityResetGmailMailV352(account, record, subject, text, html, 
       || !account || account.host !== 'smtp.gmail.com' || account.port !== 465 || !isValidAuthEmail(account.user) || !isValidAuthEmail(record.email)) throw resetError('SECURITY_RESET_SMTP_CONTEXT_REQUIRED', 503);
   const boundary = 'dirac-password-reset-' + crypto.randomBytes(18).toString('hex');
   const mime = [
-    'From: Dirac Group Security <' + account.user + '>', 'To: ' + record.email,
+    'From: PT Dirac Inovasi Nusantara Security <' + account.user + '>', 'To: ' + record.email,
     'Subject: =?UTF-8?B?' + Buffer.from(subject, 'utf8').toString('base64') + '?=',
     'MIME-Version: 1.0', 'Content-Type: multipart/alternative; boundary="' + boundary + '"', '',
     '--' + boundary, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '',
@@ -2852,16 +2852,16 @@ async function securityResetSendCommittedPasswordMailV342(record) {
   const reference = String(record.commit_id).slice(0, 10).toUpperCase();
   let timeText = new Date(record.committed_at_ms).toISOString();
   try { timeText = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(record.committed_at_ms)) + ' WIB'; } catch (_) {}
-  const subject = 'DiracGroup Security - Password Berhasil Diganti [' + reference + ']';
+  const subject = 'PT Dirac Inovasi Nusantara Security - Password Berhasil Diganti [' + reference + ']';
   const htmlInput = {
-    preheader: 'Password akun Dirac Group berhasil diganti.', brandLabel: 'SECURE ACCOUNT SECURITY', eyebrow: 'PASSWORD SECURITY NOTICE',
-    title: 'Password Berhasil\nDiganti', greeting: 'Yth. Pengguna Dirac Group,',
+    preheader: 'Password akun PT Dirac Inovasi Nusantara berhasil diganti.', brandLabel: 'SECURE ACCOUNT SECURITY', eyebrow: 'PASSWORD SECURITY NOTICE',
+    title: 'Password Berhasil\nDiganti', greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
     summary: 'Password akun Anda telah diganti setelah verifikasi kata sandi akun saat ini dan kode SMTP satu kali, lalu perubahan dikomit oleh server.',
-    statusLabel: 'STATUS PASSWORD', statusValue: 'PASSWORD BARU AKTIF', statusNote: 'Perubahan ini telah dikonfirmasi oleh server keamanan Dirac Group.',
+    statusLabel: 'STATUS PASSWORD', statusValue: 'PASSWORD BARU AKTIF', statusNote: 'Perubahan ini telah dikonfirmasi oleh server keamanan PT Dirac Inovasi Nusantara.',
     detailsLabel: 'DETAIL PERUBAHAN', rows: [['AKTIVITAS','Perubahan password akun'],['METODE VERIFIKASI','Kata sandi akun + kode SMTP'],['WAKTU',timeText],['REFERENSI',reference]],
     actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN',
-    warningTitle: 'PERIKSA JIKA BUKAN ANDA', warning: 'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi kanal resmi Dirac Group. Jangan bagikan password, OTP, token, cookie, kode keamanan, atau Passkey.',
-    supportLead: 'Jika membutuhkan bantuan terkait keamanan password, gunakan kanal resmi Dirac Group berikut.'
+    warningTitle: 'PERIKSA JIKA BUKAN ANDA', warning: 'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi kanal resmi PT Dirac Inovasi Nusantara. Jangan bagikan password, OTP, token, cookie, kode keamanan, atau Passkey.',
+    supportLead: 'Jika membutuhkan bantuan terkait keamanan password, gunakan kanal resmi PT Dirac Inovasi Nusantara berikut.'
   };
   const text = diracSecurityMailTextV327(htmlInput);
   const html = diracSecurityCorporateEmailHtmlV327(htmlInput);
@@ -3477,10 +3477,10 @@ async function diracSecurityPasskeyResetSendEmailCodeV364(req, owner, code, payl
   const config = securityResetUserMailConfigV352();
   if (!config) throw resetError('SECURITY_PASSKEY_RESET_EMAIL_CONFIGURATION_UNAVAILABLE', 503);
   const reference = diracSecurityPasskeyResetSha256V363(String(payload.jti || '')).slice(0, 10).toUpperCase();
-  const subject = 'DiracGroup Security - Kode Verifikasi Ganti Passkey [' + reference + ']';
+  const subject = 'PT Dirac Inovasi Nusantara Security - Kode Verifikasi Ganti Passkey [' + reference + ']';
   const htmlInput = {
-    preheader: 'Kode verifikasi satu kali untuk mengganti Passkey akun Dirac Group.', brandLabel: 'SECURE PASSKEY REPLACEMENT', eyebrow: 'PASSKEY VERIFICATION CODE',
-    title: 'Kode Verifikasi\nGanti Passkey', greeting: 'Yth. Pengguna Dirac Group,',
+    preheader: 'Kode verifikasi satu kali untuk mengganti Passkey akun PT Dirac Inovasi Nusantara.', brandLabel: 'SECURE PASSKEY REPLACEMENT', eyebrow: 'PASSKEY VERIFICATION CODE',
+    title: 'Kode Verifikasi\nGanti Passkey', greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
     summary: 'Permintaan penggantian Passkey telah lolos verifikasi kata sandi pada server utama. Masukkan kode berikut hanya pada halaman keamanan resmi yang sedang Anda gunakan.',
     statusLabel: 'KODE VERIFIKASI', statusValue: '__DIRAC_PASSKEY_RESET_CODE_' + reference + '__', statusNote: 'Kode ' + String(payload.codeLength) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) ini berlaku selama 2 menit dan hanya dapat digunakan untuk satu proses penggantian Passkey.',
     detailsLabel: 'DETAIL VERIFIKASI', rows: [['AKTIVITAS','Penggantian Passkey'],['METODE OTORISASI','Kata sandi akun + kode email satu kali'],['MASA BERLAKU','2 menit'],['REFERENSI',reference]],
@@ -3515,10 +3515,10 @@ async function diracSecurityPasskeyResetSendChangedNoticeV372(req, owner, rotati
   const reference = diracSecurityPasskeyResetSha256V363(String(rotationId || '')).slice(0, 10).toUpperCase();
   let timeText = new Date().toISOString();
   try { timeText = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date()) + ' WIB'; } catch (_) {}
-  const subject = 'DiracGroup Security - Passkey Berhasil Diganti [' + reference + ']';
+  const subject = 'PT Dirac Inovasi Nusantara Security - Passkey Berhasil Diganti [' + reference + ']';
   const htmlInput = {
     preheader: 'Passkey akun Anda berhasil diganti.', brandLabel: 'SECURE PASSKEY REPLACEMENT', eyebrow: 'PASSKEY SECURITY NOTICE',
-    title: 'Passkey Berhasil\nDiganti', greeting: 'Yth. Pengguna Dirac Group,',
+    title: 'Passkey Berhasil\nDiganti', greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
     summary: 'Passkey baru telah diaktifkan setelah verifikasi kata sandi akun, kode email satu kali, Passkey lama, Passkey baru, dan pengikatan perangkat server.',
     statusLabel: 'STATUS PASSKEY', statusValue: 'PASSKEY BARU AKTIF', statusNote: 'Sesi perangkat yang melakukan verifikasi tetap aktif dengan security epoch terbaru; sesi autentikasi lain tetap dicabut oleh rotasi keamanan.',
     detailsLabel: 'DETAIL PERUBAHAN', rows: [['AKTIVITAS','Penggantian Passkey'],['WAKTU',timeText],['SECURITY EPOCH',String(securityEpoch)],['REFERENSI',reference]],
@@ -3640,10 +3640,10 @@ async function diracPasswordChangeSendSmtpCodeV365(req, owner, code, payload) {
   const smtpPool = securityResetSmtpPoolV366();
   if (!config || !smtpPool || smtpPool.ok !== true || !smtpPool.accounts.length) throw resetError('PASSWORD_CHANGE_SMTP_CONFIGURATION_UNAVAILABLE', 503);
   const reference = diracSecurityPasskeyResetSha256V363(String(payload.jti || '')).slice(0, 10).toUpperCase();
-  const subject = 'DiracGroup Security - Kode Ganti Kata Sandi [' + reference + ']';
+  const subject = 'PT Dirac Inovasi Nusantara Security - Kode Ganti Kata Sandi [' + reference + ']';
   const htmlInput = {
-    preheader: 'Kode SMTP satu kali untuk mengganti kata sandi akun Dirac Group.', brandLabel: 'SECURE PASSWORD CHANGE', eyebrow: 'PASSWORD VERIFICATION CODE',
-    title: 'Kode Verifikasi\nGanti Kata Sandi', greeting: 'Yth. Pengguna Dirac Group,',
+    preheader: 'Kode SMTP satu kali untuk mengganti kata sandi akun PT Dirac Inovasi Nusantara.', brandLabel: 'SECURE PASSWORD CHANGE', eyebrow: 'PASSWORD VERIFICATION CODE',
+    title: 'Kode Verifikasi\nGanti Kata Sandi', greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
     summary: 'Kata sandi akun saat ini telah diverifikasi pada server utama. Masukkan kode berikut hanya pada halaman keamanan resmi yang sedang Anda gunakan.',
     statusLabel: 'KODE VERIFIKASI', statusValue: '__DIRAC_PASSWORD_CHANGE_CODE_' + reference + '__', statusNote: 'Kode ' + String(payload.codeLength) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) ini berlaku selama 2 menit dan hanya dapat digunakan satu kali.',
     detailsLabel: 'DETAIL VERIFIKASI', rows: [['AKTIVITAS','Perubahan kata sandi'],['METODE OTORISASI','Kata sandi akun + kode SMTP'],['MASA BERLAKU','2 menit'],['REFERENSI',reference]],
@@ -4059,8 +4059,22 @@ async function diracSecurityPasskeyResetConfirmV363(req,res,body,resolved,tokenD
   }finally{if(ctx){ctx.__diracPasskeyResetAuthorizedV363=false;ctx.__diracPasskeyResetAuthorizationMethodV364='';ctx.__diracPasskeyResetEmailVerificationHashV364='';ctx.__diracPasskeyResetAuthorizingCredentialHashV363='';ctx.__diracPasskeyResetAuthSessionIdV363='';}}
 }
 
+async function diracSecurityPasskeyResetStatusV375(req,body) {
+  const newCredentialId=String(body&&body.new_credential_id||'').trim(),oldCredentialId=String(body&&body.old_credential_id||'').trim();
+  if(!/^[A-Za-z0-9_-]{16,4096}$/.test(newCredentialId)||!/^[A-Za-z0-9_-]{16,4096}$/.test(oldCredentialId)||safeEqual(newCredentialId,oldCredentialId))throw resetError('SECURITY_PASSKEY_RESET_STATUS_CREDENTIAL_INVALID',400);
+  const resolved=await diracSecurityPasskeyResetResolveOwnerV363(req),epoch=Number(resolved.securityEpoch||0),active=await diracSecurityPasskeyResetListActiveV363(resolved.owner),newRows=await diracSecurityPasskeyResetFetchRowV363(resolved.owner,{credentialId:newCredentialId},true),oldRows=await diracSecurityPasskeyResetFetchRowV363(resolved.owner,{credentialId:oldCredentialId},false),newRow=newRows.length===1?newRows[0]:null,oldRow=oldRows.length===1?oldRows[0]:null;
+  if(!Number.isSafeInteger(epoch)||epoch<2||active.length!==1||!newRow||!oldRow||!safeEqual(String(active[0].id||''),String(newRow.id||''))||!safeEqual(String(newRow.credential_id||''),newCredentialId)||newRow.is_active!==true||String(newRow.rotation_state||'')!=='active'||String(newRow.rotation_purpose||'')!=='replace'||Number(newRow.credential_epoch||0)!==epoch||Number(newRow.expected_security_epoch||0)!==epoch-1||!newRow.confirmed_at||!newRow.activated_at||newRow.pending_expires_at||newRow.revoked_at||!safeEqual(String(newRow.authorizing_credential_id_hash||''),diracSecurityPasskeyResetSha256V363(oldCredentialId))||!diracSecurityPasskeyResetValidateOwnerRowV363(newRow,resolved.owner)||!safeEqual(String(oldRow.credential_id||''),oldCredentialId)||oldRow.is_active!==false||String(oldRow.rotation_state||'')!=='revoked'||Number(oldRow.credential_epoch||0)!==epoch-1||!oldRow.revoked_at||String(oldRow.revoke_reason||'')!=='replaced_by_rotation_v237'||!diracSecurityPasskeyResetValidateOwnerRowV363(oldRow,resolved.owner)||safeEqual(String(oldRow.id||''),String(newRow.id||'')))throw resetError('SECURITY_PASSKEY_RESET_STATUS_POSTCONDITION_FAILED',409);
+  const storedBinding=diracSecurityPasskeyResetStoredServerDeviceBindingV367(newRow),currentBinding=diracSecurityPasskeyResetServerDeviceAuthorityV367().read(req,resolved.owner);
+  if(!storedBinding.ok||!currentBinding||currentBinding.ok!==true||!safeEqual(String(currentBinding.keyId||''),storedBinding.keyId))throw resetError('SECURITY_PASSKEY_RESET_STATUS_BINDING_INVALID',403);
+  return{ok:true,verified:true,method:'passkey',passkeyMode:'rotation_status',reset_passkey:true,database_saved:true,registered_now:true,old_passkeys_deactivated:1,device_binding_verified:true,device_binding_policy:DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V367,security_epoch:epoch,credential_id_hint:diracSecurityPasskeyResetSha256V363(newCredentialId).slice(0,12),login_required:false,session_continued:true};
+}
+
 async function diracSecurityPasskeyResetVerifyV363(req,res,body) {
-  const phase=String(body&&body.phase||'').trim().toLowerCase();if(!['email','authorize','register','confirm'].includes(phase))throw resetError('SECURITY_PASSKEY_RESET_PHASE_INVALID',400);
+  const phase=String(body&&body.phase||'').trim().toLowerCase();if(!['email','authorize','register','confirm','status'].includes(phase))throw resetError('SECURITY_PASSKEY_RESET_PHASE_INVALID',400);
+  if(phase==='status'){
+    if(!exactKeys(body,['action','phase','new_credential_id','old_credential_id']))throw resetError('SECURITY_PASSKEY_RESET_VERIFY_BODY_INVALID',400);
+    return diracSecurityPasskeyResetStatusV375(req,body);
+  }
   if(phase==='email'){
     if(!exactKeys(body,['action','phase','setupToken','code']))throw resetError('SECURITY_PASSKEY_RESET_VERIFY_BODY_INVALID',400);
     const resolved=await diracSecurityPasskeyResetResolveOwnerV363(req),tokenData=await diracSecurityPasskeyResetReadEmailTokenV364(req,body.setupToken,resolved);
