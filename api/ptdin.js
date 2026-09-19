@@ -28,6 +28,13 @@ if (!centralSecurityReady(centralHandler)) throw new Error('PTDIN_CENTRAL_HANDLE
 function cleanText(value, maximum) {
   return String(value == null ? '' : value).replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, maximum);
 }
+function invoiceLegalIdentifier(value, minimumDigits, maximumDigits) {
+  if (typeof value !== 'string' || value.length > 40 || /[^0-9 .-]/.test(value)) return '';
+  const text = value.trim();
+  if (!/^[0-9]+(?:[ .-][0-9]+)*$/.test(text)) return '';
+  const digits = text.replace(/[ .-]/g, '').length;
+  return digits >= minimumDigits && digits <= maximumDigits ? text : '';
+}
 function ownRows(value, maximum) {
   return Array.isArray(value) ? value.filter((row) => row && typeof row === 'object' && !Array.isArray(row)).slice(0, maximum) : [];
 }
@@ -67,6 +74,11 @@ function projectResponse(action, view, payload, profile) {
     out.orders = ownRows(payload.orders, 120).filter((order) => orderMatchesView(order, out.view));
     out.summary = orderSummary(out.orders);
     out.partial = Boolean(payload.diagnostics && (payload.diagnostics.generic_orders_ready === false || payload.diagnostics.domain_orders_ready === false));
+    if (out.view === 'invoice') out.invoice_issuer = {
+      legal_name: 'PT Dirac Inovasi Nusantara',
+      nib: invoiceLegalIdentifier(process.env.DIRAC_INVOICE_NIB, 13, 13),
+      npwp: invoiceLegalIdentifier(process.env.DIRAC_INVOICE_NPWP, 15, 16)
+    };
     if (out.view === 'shipment') out.tracking_available = false;
     if (out.view === 'projects') out.project_progress_available = false;
     if (out.view === 'topup') out.balance_available = false;
