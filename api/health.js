@@ -3891,7 +3891,7 @@ function diracRegisterEmailMimeV331(message, account) {
   const html = diracExecutiveEscalationAppendHtmlV380(diracSecurityCorporateEmailHtmlV327(htmlInput));
   const messageId = crypto.createHash('sha256').update(proof + '|' + reference + '|register-email-v331').digest('hex') + '@' + diracBaseDomainV250();
   return [
-    'From: ' + diracSecurityAlertMimeHeaderV320('Dirac Secure') + ' <' + account.user + '>',
+    'From: ' + diracSecurityAlertMimeHeaderV320('PT Dirac Inovasi Nusantara') + ' <' + account.user + '>',
     'To: ' + message.email,
     'Subject: Kode verifikasi pendaftaran PT Dirac Inovasi Nusantara [' + reference + ']',
     'Date: ' + new Date(Number(message.createdAtMs || Date.now())).toUTCString(),
@@ -7676,9 +7676,6 @@ function getDiracRestTableFromPath(path) {
 }
 
 function resolveDiracSupabaseTargetKey(path, options = {}) {
-  const forced = String(options.db || options.database || '').trim();
-  if (forced && DIRAC_SUPABASE_TARGET_ENVS[forced]) return forced;
-
   const exactPath = String(path || '');
   if (exactPath === '/rest/v1/rpc/dirac_central_atomic_consume_v230'
       || exactPath === '/rest/v1/rpc/dirac_central_atomic_claim_record_v230'
@@ -7693,8 +7690,13 @@ function resolveDiracSupabaseTargetKey(path, options = {}) {
   ].filter(Boolean));
   if (tableName && dedicatedSecurityTables.has(tableName)) return 'security';
 
+  // Dedicated security state has one authority; a business-target override must
+  // never redirect ban/rate-limit/atomic operations to another project.
+  const forced = String(options.db || options.database || '').trim();
+  if (forced && Object.prototype.hasOwnProperty.call(DIRAC_SUPABASE_TARGET_ENVS, forced)) return forced;
+
   if (!shouldUseDiracMultiDbRouter()) return 'legacy';
-  return DIRAC_TABLE_DB_MAP[tableName] || 'legacy';
+  return Object.prototype.hasOwnProperty.call(DIRAC_TABLE_DB_MAP, tableName) ? DIRAC_TABLE_DB_MAP[tableName] : 'legacy';
 }
 
 function readDiracSupabaseCredentialsLegacyV1(targetKey) {
@@ -13449,16 +13451,19 @@ function customerSecurityBuildPdfPasswordContextV156(accountPassword, websiteRec
   };
 }
 
-async function customerSecurityVerifyAccountPasswordForPdfV156(email, accountPassword) {
+async function customerSecurityVerifyAccountPasswordForPdfV156(email, accountPassword, expectedAuthUserId) {
   const normalizedEmail = normalizeAuthEmail(email);
   const password = String(accountPassword || '');
-  if (!isValidAuthEmail(normalizedEmail) || !password) return { ok: false, status: 400 };
+  if (!isValidAuthEmail(normalizedEmail) || !password || !customerSecurityLooksLikeUuid(expectedAuthUserId)) return { ok: false, status: 400 };
   const result = await supabaseFetch('/auth/v1/token?grant_type=password', {
     method: 'POST',
     auth: 'anon',
     body: { email: normalizedEmail, password }
   });
-  return { ok: !!result.ok, status: result.status || (result.ok ? 200 : 403) };
+  const user = result && result.data && result.data.user;
+  const directIdentityVerified = Boolean(result && result.ok === true && user
+    && user.id === expectedAuthUserId && normalizeAuthEmail(user.email || '') === normalizedEmail);
+  return { ok: directIdentityVerified, status: directIdentityVerified ? 200 : (result && result.ok === false ? result.status || 503 : 403) };
 }
 
 function customerSecurityBuildEncryptedRecoveryPdfV156(input) {
@@ -13890,7 +13895,7 @@ async function customerSecuritySendLostPasskeyRecoveryEmail(to, fileName, fileBu
   if (customerSecurityRecoverySmtpConfig()) {
     return customerSecuritySendRecoveryEmailViaSmtp(email, fileName, fileBuffer, context);
   }
-  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Secure <no-reply@' + diracBaseDomainV250() + '>')).trim();
+  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('PT Dirac Inovasi Nusantara <no-reply@' + diracBaseDomainV250() + '>')).trim();
   const subject = 'PT Dirac Inovasi Nusantara Secure Recovery - PDF Pemulihan Passkey';
   const text = diracExecutiveEscalationAppendTextV380([
     'File recovery Passkey terenkripsi terlampir.',
@@ -13916,7 +13921,7 @@ async function customerSecuritySendLostPasskeyRecoveryEmail(to, fileName, fileBu
   if (process.env.BREVO_API_KEY) {
     try {
       const senderEmail = String(process.env.BREVO_SENDER_EMAIL || process.env.DIRAC_RECOVERY_SENDER_EMAIL || '').trim();
-      const senderName = String(process.env.BREVO_SENDER_NAME || 'Dirac Secure').trim();
+      const senderName = String(process.env.BREVO_SENDER_NAME || 'PT Dirac Inovasi Nusantara').trim();
       if (!senderEmail) return { ok: false, status: 503, code: 'BREVO_SENDER_MISSING', message: 'BREVO_SENDER_EMAIL belum diatur.' };
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
@@ -15273,6 +15278,51 @@ function diracRecoveryBrowserInstallResponseGuardV287(res, context) {
   };
 }
 
+async function customerSecurityRunLocalRecoveryV375(req, res, action, access, material) {
+  const ctx = diracCentralCurrentContextV149();
+  const allowedActions = ['customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify'];
+  if (!ctx || ctx.req !== req || !allowedActions.includes(action)
+      || ctx.action !== action || ctx.classification !== 'browser'
+      || ctx.method !== 'POST' || req.method !== 'POST'
+      || !diracCentralHandlerContextFullyPassedV211(ctx, req)) {
+    return res.status(403).json({ ok: false, code: 'CENTRAL_GUARD_REQUIRED', message: 'Permintaan wajib melewati Central Guard.' });
+  }
+  const trustedOwner = diracCentralOwnerFromVerifiedContextV215(req, access && access.authUserId);
+  if (!trustedOwner || trustedOwner.ok !== true || !access || !access.user
+      || trustedOwner.authUserId !== access.authUserId
+      || !Array.isArray(trustedOwner.customerIds) || trustedOwner.customerIds.length !== 1
+      || trustedOwner.customerIds[0] !== access.customerId
+      || String(access.user.id || '') !== access.authUserId) {
+    return res.status(403).json({ ok: false, code: 'RECOVERY_OWNER_CONTEXT_INVALID', message: 'Identitas recovery tidak cocok dengan sesi terverifikasi.' });
+  }
+  const owner = await customerSecurityResolveLostPasskeyOwner(access);
+  if (!owner || owner.ok !== true || owner.authUserId !== trustedOwner.authUserId
+      || owner.customerId !== trustedOwner.customerIds[0]) {
+    return res.status(owner && owner.status || 403).json({ ok: false, code: 'RECOVERY_OWNER_INVALID', message: 'Pemilik akun recovery belum dapat diverifikasi.' });
+  }
+  if (!customerSecurityRecoveryWorkerSecret()) {
+    return res.status(503).json({ ok: false, code: 'RECOVERY_SESSION_SECRET_UNAVAILABLE', message: 'Konfigurasi sesi recovery belum tersedia.' });
+  }
+  const bindings = customerSecurityLostPasskeyBindings(req, owner);
+  const override = {
+    localWorker: true, access, owner, bindings,
+    passwordLatestMaterial: String(material && material.passwordLatestMaterial || ''),
+    requestId: String(material && material.requestId || ''),
+    recoveryCode: String(material && material.recoveryCode || ''),
+    emailCodeOnlyV342: true
+  };
+  try {
+    if (action === 'customer_security_recovery_codes_generate') {
+      override.activePasskeys = await customerSecurityLostPasskeyActivePasskeys(owner);
+      return await DIRAC_MERGED_RECOVERY_V251.generateRecoveryCodes(req, res, action, override);
+    }
+    return await DIRAC_MERGED_RECOVERY_V251.verifyRecoveryCode(req, res, action, override);
+  } finally {
+    override.passwordLatestMaterial = '';
+    override.recoveryCode = '';
+  }
+}
+
 async function customerSecurityGenerateRecoveryCodes(req, res, action, override = null) {
   const localWorker = Boolean(override && override.localWorker === true);
   if (localWorker && !customerSecurityRecoveryWorkerLocalDeploymentAllowed()) {
@@ -15304,8 +15354,7 @@ async function customerSecurityGenerateRecoveryCodes(req, res, action, override 
       return res.status(403).json({ ok: false, code, message: 'Permintaan recovery terenkripsi ditolak.' });
     }
   }
-  // SERVER 1 proxy-only boundary: use only the already-authenticated session identity.
-  // Official customer/link/passkey resolution is repeated authoritatively on Server 2.
+  // The private local bridge revalidates this authenticated owner against the official customer record.
   const owner = localWorker && override && override.owner
     ? override.owner
     : {
@@ -15332,7 +15381,7 @@ async function customerSecurityGenerateRecoveryCodes(req, res, action, override 
         message: 'Password akun wajib diisi untuk membuat password PDF recovery.'
       });
     }
-    const verifiedPassword = await customerSecurityVerifyAccountPasswordForPdfV156(owner.email, accountPassword);
+    const verifiedPassword = await customerSecurityVerifyAccountPasswordForPdfV156(owner.email, accountPassword, owner.authUserId);
     if (!verifiedPassword.ok) {
       await customerSecurityRegisterFailedVerification(req, action, 'recovery_pdf_account_password_invalid', access.customerId);
       return res.status(403).json({ ok: false, code: 'ACCOUNT_PASSWORD_INVALID', message: 'Password akun belum sesuai.' });
@@ -15364,8 +15413,7 @@ async function customerSecurityGenerateRecoveryCodes(req, res, action, override 
         message: 'Password akun wajib diisi untuk membuat password PDF recovery.'
       });
     }
-    // Credential verification is intentionally performed only by Server 2.
-    // Server 1 seals this material inside the hybrid worker envelope and relays it.
+    // The private recovery helper verifies this password against the authenticated owner.
     recoveryPdfOptions = { accountPassword };
   }
 
@@ -15381,7 +15429,9 @@ async function customerSecurityGenerateRecoveryCodes(req, res, action, override 
     : customerSecurityLostPasskeyBindings(req, owner);
 
   if (!localWorker) {
-    return customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, access, owner, activePasskeys, bindings, recoveryPdfOptions || {});
+    return customerSecurityRunLocalRecoveryV375(req, res, action, access, {
+      passwordLatestMaterial: recoveryPdfOptions && recoveryPdfOptions.accountPassword || ''
+    });
   }
 
   const nowMs = Date.now();
@@ -16022,8 +16072,7 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
     return res.status(400).json({ ok: false, code: 'ACCOUNT_PASSWORD_REQUIRED', message: 'Password akun wajib diverifikasi bersama kode email.' });
   }
 
-  // SERVER 1 proxy-only boundary: no customer-table or passkey-table recovery lookup.
-  // Server 2 resolves and validates the official owner and active passkeys.
+  // The private local bridge resolves the official owner and active passkeys.
   const owner = {
     ok: true,
     authUserId: String(access && access.authUserId || ''),
@@ -16039,11 +16088,10 @@ async function customerSecurityVerifyRecoveryCode(req, res, action) {
   const activePasskeys = [];
   const bindings = customerSecurityLostPasskeyBindings(req, owner);
 
-  // SERVER 1 remains proxy-only for password verification. The password is sealed
-  // inside the existing hybrid worker envelope and verified authoritatively on SERVER 2.
-  return customerSecurityVerifyRecoveryCodeViaWorker(
-    req, res, action, access, owner, activePasskeys, bindings, requestId, code, accountPassword
-  );
+  // Recovery executes under this original, fully verified browser request context.
+  return customerSecurityRunLocalRecoveryV375(req, res, action, access, {
+    requestId, recoveryCode: code, passwordLatestMaterial: accountPassword
+  });
 
 
 
@@ -20791,7 +20839,7 @@ function diracPasskeyA2FRpId(req) {
 }
 
 function diracPasskeyA2FRpName() {
-  return String(process.env.WEBAUTHN_RP_NAME || process.env.DIRAC_WEBAUTHN_RP_NAME || 'Dirac Secure').trim() || 'Dirac Secure';
+  return String(process.env.WEBAUTHN_RP_NAME || process.env.DIRAC_WEBAUTHN_RP_NAME || 'PT Dirac Inovasi Nusantara').trim() || 'PT Dirac Inovasi Nusantara';
 }
 
 function diracPasskeyA2FAttestationPolicy() {
@@ -43990,6 +44038,24 @@ __diracV202RegisterMiddleware(async function diracRecoveryWorkerWrapper(req, res
    ============================================================ */
 const DIRAC_MERGED_RECOVERY_V251 = (() => {
 'use strict';
+
+// Bounded recovery-only creation profile. Existing vaults/hashes keep their
+// recorded costs: changing a raw KDF's parameters would change its derived key.
+function diracRecoveryArgonProfileAllowedV360(params) {
+  if (!params || typeof params !== 'object') return false;
+  const memoryCost = Number(params.memoryCost);
+  const timeCost = Number(params.timeCost);
+  const parallelism = Number(params.parallelism);
+  const hashLength = Number(params.hashLength);
+  if (!Number.isSafeInteger(memoryCost) || !Number.isSafeInteger(timeCost)
+      || !Number.isSafeInteger(parallelism) || hashLength !== 64) return false;
+  const current = memoryCost === 65536 && timeCost === 3 && parallelism === 1;
+  // Historical producers used exactly 100 MiB (merged) or 500 MiB (worker).
+  // Do not turn the old validator's 5 GiB ceiling into an allocation allowance.
+  const legacy = (memoryCost === 102400 || memoryCost === 512000)
+    && timeCost >= 4 && timeCost <= 12 && parallelism === 4;
+  return current || legacy;
+}
 /* RECO donor source lines 8-1188 */
 const DIRAC_RECOVERY_CRYPTO_V2 = (() => {
 'use strict';
@@ -44321,20 +44387,7 @@ function assertExactObjectKeys(value, expectedKeys, code) {
 
 function assertArgon2Profile(params) {
   assertExactObjectKeys(params, ['memoryCost', 'timeCost', 'parallelism', 'hashLength'], 'ARGON2_FIELDS_INVALID');
-  const memoryCost = Number(params.memoryCost);
-  const timeCost = Number(params.timeCost);
-  const parallelism = Number(params.parallelism);
-  const hashLength = Number(params.hashLength);
-  if (!Number.isSafeInteger(memoryCost)
-      || memoryCost < 102400
-      || memoryCost > 102400
-      || !Number.isSafeInteger(timeCost)
-      || timeCost < 4
-      || timeCost > 12
-      || parallelism !== 4
-      || hashLength !== 64) {
-    throw fail('ARGON2_PROFILE_INVALID');
-  }
+  if (!diracRecoveryArgonProfileAllowedV360(params)) throw fail('ARGON2_PROFILE_INVALID');
   return true;
 }
 
@@ -45835,41 +45888,31 @@ function customerSecurityLostPasskeyArgon2EnvIntegerV191(name, fallback, minimum
 
 /* RECO donor source lines 3724-3761 */
 function customerSecurityLostPasskeyArgon2ProfilesV191() {
-  const configuredMemory = Math.min(customerSecurityLostPasskeyArgon2EnvIntegerV191(
-    'DIRAC_LOST_PASSKEY_ARGON2_MEMORY_KIB', 102400, 102400, 102400
-  ), 102400);
-  const configuredTime = customerSecurityLostPasskeyArgon2EnvIntegerV191(
-    'DIRAC_LOST_PASSKEY_ARGON2_TIME_COST', 4, 4, 12
-  );
-  const configuredParallelism = customerSecurityLostPasskeyArgon2EnvIntegerV191(
-    'DIRAC_LOST_PASSKEY_ARGON2_PARALLELISM', 4, 4, 4
-  );
-  const hpkeMinimumMemory = Math.min(customerSecurityLostPasskeyArgon2EnvIntegerV191(
-    'DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB', configuredMemory, 102400, 102400
-  ), 102400);
-  const hpkeMinimumTime = customerSecurityLostPasskeyArgon2EnvIntegerV191(
-    'DIRAC_RECOVERY_HPKE_ARGON2_TIME_COST', configuredTime, 4, 12
-  );
-  const main = Object.freeze({
-    memoryCost: Math.max(configuredMemory, hpkeMinimumMemory),
-    timeCost: Math.max(configuredTime, hpkeMinimumTime),
-    parallelism: configuredParallelism
-  });
-  const linkOpen = Object.freeze({
-    memoryCost: Math.min(customerSecurityLostPasskeyArgon2EnvIntegerV191(
-      'DIRAC_LOST_PASSKEY_LINK_OPEN_ARGON2_MEMORY_KIB', main.memoryCost, 102400, 102400
-    ), 102400),
-    timeCost: customerSecurityLostPasskeyArgon2EnvIntegerV191(
-      'DIRAC_LOST_PASSKEY_LINK_OPEN_ARGON2_TIME_COST', main.timeCost, 4, 12
-    ),
-    parallelism: customerSecurityLostPasskeyArgon2EnvIntegerV191(
-      'DIRAC_LOST_PASSKEY_LINK_OPEN_ARGON2_PARALLELISM', 4, 4, 4
-    )
-  });
+  // The single-server creation cost is fixed in code; retain validation of the
+  // existing ENV names so legacy deployments migrate without new configuration.
+  // Legacy values do not override this bounded creation profile. Verification
+  // below uses each accepted PHC's stored parameters, never these new defaults.
+  const validateMemory = (name) => {
+    const value = customerSecurityLostPasskeyArgon2EnvIntegerV191(name, 65536, 65536, 5242880);
+    if (value !== 65536 && value !== 102400 && value < 512000) throw customerSecurityRecoveryWorkerTransportFailV190('RECOVERY_ARGON2_PROFILE_INVALID');
+  };
+  const validateParallelism = (name) => {
+    const value = customerSecurityLostPasskeyArgon2EnvIntegerV191(name, 1, 1, 4);
+    if (value !== 1 && value !== 4) throw customerSecurityRecoveryWorkerTransportFailV190('RECOVERY_ARGON2_PROFILE_INVALID');
+  };
+  validateMemory('DIRAC_LOST_PASSKEY_ARGON2_MEMORY_KIB');
+  validateMemory('DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB');
+  validateMemory('DIRAC_LOST_PASSKEY_LINK_OPEN_ARGON2_MEMORY_KIB');
+  customerSecurityLostPasskeyArgon2EnvIntegerV191('DIRAC_LOST_PASSKEY_ARGON2_TIME_COST', 3, 3, 12);
+  customerSecurityLostPasskeyArgon2EnvIntegerV191('DIRAC_RECOVERY_HPKE_ARGON2_TIME_COST', 3, 3, 12);
+  customerSecurityLostPasskeyArgon2EnvIntegerV191('DIRAC_LOST_PASSKEY_LINK_OPEN_ARGON2_TIME_COST', 3, 3, 12);
+  validateParallelism('DIRAC_LOST_PASSKEY_ARGON2_PARALLELISM');
+  validateParallelism('DIRAC_LOST_PASSKEY_LINK_OPEN_ARGON2_PARALLELISM');
+  const main = Object.freeze({ memoryCost: 65536, timeCost: 3, parallelism: 1 });
   return Object.freeze({
     main,
-    linkOpen,
-    hpkeMinimum: Object.freeze({ memoryCost: hpkeMinimumMemory, timeCost: hpkeMinimumTime })
+    linkOpen: main,
+    hpkeMinimum: Object.freeze({ memoryCost: 65536, timeCost: 3 })
   });
 }
 
@@ -46213,16 +46256,10 @@ async function customerSecurityLostPasskeyArgon2VerifyHashV157(label, value, enc
   const hash = String(encodedHash || '');
   if (!hash.startsWith('$argon2id$')) return false;
   const encodedParams = customerSecurityLostPasskeyArgon2EncodedParamsV171(hash);
-  const profiles = customerSecurityLostPasskeyArgon2ProfilesV191();
-  const profileAllowed = encodedParams && [profiles.main, profiles.linkOpen].some((profile) => (
-    encodedParams.memoryCost === 102400
-      && encodedParams.memoryCost === profile.memoryCost
-      && encodedParams.timeCost === profile.timeCost
-      && encodedParams.parallelism === profile.parallelism
-      && encodedParams.hashLength === 64
-  ));
-  if (!profileAllowed) return false;
+  customerSecurityLostPasskeyArgon2ProfilesV191();
+  if (!diracRecoveryArgonProfileAllowedV360(encodedParams)) return false;
   const argon2 = customerSecurityGetArgon2();
+  // PHC carries the original m/t/p; never rehash old material at the new cost.
   return await argon2.verify(hash, customerSecurityLostPasskeySensitiveHashInputV157(label, value, pepper, rootSecret));
 }
 
@@ -46599,7 +46636,7 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   const recoveryLink = customerSecurityLostPasskeyOfficialEmailLinkV187(context);
   if (!recoveryLink) return { ok: false, status: 500, code: 'RECOVERY_EMAIL_LINK_INVALID', message: 'Link recovery resmi tidak valid.' };
   const emailContext = Object.assign({}, context, { recoveryLink });
-  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Secure <no-reply@' + diracBaseDomainV250() + '>')).trim();
+  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('PT Dirac Inovasi Nusantara <no-reply@' + diracBaseDomainV250() + '>')).trim();
   const subjectRef = crypto.createHash('sha256').update(recoveryLink, 'utf8').digest('hex').slice(0, 10).toUpperCase();
   const subject = 'PT Dirac Inovasi Nusantara Secure Recovery - Link Pemulihan Passkey [' + subjectRef + ']';
   const text = diracExecutiveEscalationAppendTextV380([
@@ -46701,7 +46738,7 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   if (process.env.BREVO_API_KEY) {
     try {
       const senderEmail = String(process.env.BREVO_SENDER_EMAIL || process.env.DIRAC_RECOVERY_SENDER_EMAIL || '').trim();
-      const senderName = String(process.env.BREVO_SENDER_NAME || 'Dirac Secure').trim();
+      const senderName = String(process.env.BREVO_SENDER_NAME || 'PT Dirac Inovasi Nusantara').trim();
       if (!senderEmail) return { ok: false, status: 503, code: 'BREVO_SENDER_MISSING', message: 'BREVO_SENDER_EMAIL belum diatur.' };
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
@@ -46837,7 +46874,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
     });
   }
 
-  const verifiedPassword = await customerSecurityVerifyAccountPasswordForPdfV156(owner.email, passwordMaterial);
+  const verifiedPassword = await customerSecurityVerifyAccountPasswordForPdfV156(owner.email, passwordMaterial, owner.authUserId);
   if (!verifiedPassword.ok) {
     await customerSecurityRegisterFailedVerification(req, action, 'recovery_account_password_invalid', access.customerId);
     return res.status(403).json({ ok: false, code: 'ACCOUNT_PASSWORD_INVALID', message: 'Password akun belum sesuai.' });
@@ -47008,6 +47045,8 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
         source: 'lost_passkey_recovery',
         patch: 'lost-passkey-password-email100-v347',
         mode: 'password_email_code_100_v347',
+        processing_authority: 'main_server_v375',
+        password_factor_required_on_verify: true,
         delivery: 'email_code_100',
         password_formula: 'account_password_plus_email_code_100',
         recovery_code_hash_label: 'recovery_code',
@@ -47037,14 +47076,18 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
         return res.status(createdV346.status || 500).json({ ok: false, code: 'RECOVERY_REQUEST_STORE_FAILED', message: 'Gagal menyimpan recovery request.' });
       }
 
-      const deliveryPreparedV346 = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346), {
+      const deliveryPreparedV346 = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346)
+          + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+          + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId), {
         method: 'PATCH',
         auth: 'service',
         prefer: 'return=minimal',
         body: { sent_at: nowIsoV346 }
       });
       if (!deliveryPreparedV346.ok) {
-        await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346), {
+        await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346)
+          + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+          + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId), {
           method: 'PATCH', auth: 'service', body: { status: 'revoked', sent_at: null, revoked_at: diracNowIso() }
         }).catch(() => null);
         return res.status(deliveryPreparedV346.status || 500).json({ ok: false, code: 'RECOVERY_EMAIL100_PRECOMMIT_FAILED', message: 'Recovery request belum dapat dikomit sebelum pengiriman email.' });
@@ -47061,7 +47104,9 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
       const replyToV346 = diracSecurityMailEmailV327(process.env.DIRAC_USER_SECURITY_REPLY_TO) || diracSecurityMailEmailV327(diracSupportEmailV250());
       if (smtpHostV346 !== 'smtp.gmail.com' || smtpPortV346 !== 465 || !smtpSecureV346 || !smtpUserV346
           || smtpPassV346.length < 16 || smtpPassV346.length > 128 || !replyToV346) {
-        await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346), {
+        await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346)
+          + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+          + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId), {
           method: 'PATCH', auth: 'service', body: { status: 'revoked', sent_at: null, revoked_at: diracNowIso() }
         }).catch(() => null);
         return res.status(503).json({ ok: false, code: 'RECOVERY_GMAIL_SMTP_CONFIGURATION_INVALID', message: 'Gmail SMTP recovery belum terkonfigurasi dengan benar.' });
@@ -47111,7 +47156,9 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
       });
       const sentV346 = await diracUserSecuritySendSmtpV327(eventV346, smtpConfigV346);
       if (!sentV346 || sentV346.ok !== true || sentV346.provider !== 'gmail_smtp' || Number(sentV346.status) !== 250) {
-        await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346), {
+        await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestIdV346)
+          + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+          + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId), {
           method: 'PATCH', auth: 'service', body: { status: 'revoked', sent_at: null, revoked_at: diracNowIso() }
         }).catch(() => null);
         return res.status(502).json({ ok: false, code: String(sentV346 && sentV346.code || 'RECOVERY_GMAIL_SMTP_DELIVERY_FAILED'), message: 'Kode recovery belum dapat dikirim melalui Gmail SMTP.' });
@@ -47457,6 +47504,52 @@ function customerSecurityLostPasskeyWorkerBindingsRecoV251(body, owner) {
 }
 
 /* RECO donor source lines 8536-8824 */
+async function diracRecoveryCompareAndSetRequestV356(row, owner, next) {
+  const attemptCount = row && row.attempt_count == null ? 0 : row && row.attempt_count;
+  const nextStatus = next && next.status;
+  const allowedFields = nextStatus === 'verified' ? ['status', 'metadata'] : ['status', 'used_at', 'revoked_at', 'metadata'];
+  if (!next || !next.metadata || typeof next.metadata !== 'object' || Array.isArray(next.metadata)
+      || Object.keys(next).some((key) => !allowedFields.includes(key))
+      || (nextStatus === 'verified' && !/^[a-f0-9]{64}$/.test(String(next.metadata.verification_session_hash || '')))) {
+    return { ok: false, status: 409, data: null };
+  }
+  if (!row || !owner || !['pending', 'verified'].includes(row.status)
+      || !['verified', 'used'].includes(nextStatus)
+      || (nextStatus === 'used' && row.status !== 'verified')
+      || row.used_at || row.revoked_at || row.locked_at
+      || !Number.isSafeInteger(attemptCount) || attemptCount < 0
+      || attemptCount > LOST_PASSKEY_RECOVERY_ATTEMPT_LIMIT
+      || (nextStatus === 'verified' && attemptCount >= LOST_PASSKEY_RECOVERY_ATTEMPT_LIMIT)
+      || row.customer_id !== owner.customerId || row.auth_user_id !== owner.authUserId
+      || !Number.isFinite(Date.parse(row.expires_at)) || Date.parse(row.expires_at) <= Date.now()) {
+    return { ok: false, status: 409, data: null };
+  }
+  const nextAttempts = nextStatus === 'verified' ? attemptCount + 1 : attemptCount;
+  const attemptFilter = row.attempt_count == null ? 'is.null' : 'eq.' + attemptCount;
+  const path = '/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE
+    + '?select=' + encodeURIComponent('request_id,customer_id,auth_user_id,status,attempt_count,used_at,revoked_at,locked_at,metadata')
+    + '&request_id=eq.' + encodeURIComponent(row.request_id)
+    + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+    + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId)
+    + '&status=eq.' + row.status + '&attempt_count=' + attemptFilter
+    + '&expires_at=gt.' + encodeURIComponent(new Date().toISOString())
+    + '&used_at=is.null&revoked_at=is.null&locked_at=is.null';
+  const result = await supabaseFetch(path, {
+    method: 'PATCH', auth: 'service', prefer: 'return=representation',
+    body: { ...next, attempt_count: nextAttempts }
+  });
+  const changed = result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
+  if (!changed || changed.request_id !== row.request_id || changed.customer_id !== owner.customerId
+      || changed.auth_user_id !== owner.authUserId || changed.status !== nextStatus
+      || changed.attempt_count !== nextAttempts || changed.locked_at
+      || (nextStatus === 'verified' && (changed.used_at || changed.revoked_at
+        || !changed.metadata || !safeEqual(String(changed.metadata.verification_session_hash || ''), String(next.metadata && next.metadata.verification_session_hash || ''))))
+      || (nextStatus === 'used' && (Date.parse(changed.used_at) !== Date.parse(next.used_at) || Date.parse(changed.revoked_at) !== Date.parse(next.revoked_at)))) {
+    return { ok: false, status: result && result.ok === false ? result.status || 503 : 409, data: null };
+  }
+  return { ok: true, status: 200, data: [changed] };
+}
+
 async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, action, override = {}) {
   const owner = override && override.owner;
   const bindings = override && override.bindings;
@@ -47468,27 +47561,15 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     await customerSecurityRegisterFailedVerification(req, action, 'invalid_recovery_worker_verify_payload', access && access.customerId).catch(() => null);
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 400, 'invalid_recovery_worker_verify_payload', { request_id: requestId, customer_id: owner && owner.customerId, auth_user_id: owner && owner.authUserId, email: owner && owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
-  if (!customerSecurityLostPasskeyDynamicCodeV355(code)) {
-    await customerSecurityRegisterFailedVerification(req, action, 'invalid_email_code_100', access.customerId).catch(() => null);
-    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 400, 'invalid_email_code_100', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+  const emailCodeOnlyV342 = Boolean(override && override.emailCodeOnlyV342 === true);
+  if (emailCodeOnlyV342
+      ? !customerSecurityLostPasskeyDynamicCodeV355(code)
+      : Array.from(code).length !== LOST_PASSKEY_RECOVERY_CODE_LENGTH_V157) {
+    await customerSecurityRegisterFailedVerification(req, action, emailCodeOnlyV342 ? 'invalid_email_code_100' : 'invalid_recovery_code_length', access.customerId).catch(() => null);
+    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 400, emailCodeOnlyV342 ? 'invalid_email_code_100' : 'invalid_recovery_code_length', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
 
-  const passwordMaterial = customerSecurityExtractPasswordMaterialV157({
-    password_latest_material: override && (override.passwordLatestMaterial || override.password_latest_material || ''),
-    password_latest_proof: override && (override.passwordLatestProof || override.password_latest_proof || ''),
-    account_password: override && override.accountPassword || ''
-  });
-  if (!passwordMaterial) {
-    await customerSecurityRegisterFailedVerification(req, action, 'recovery_password_missing_on_verify', access.customerId).catch(() => null);
-    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 400, 'recovery_password_missing_on_verify', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
-  }
-  const verifiedPassword = await customerSecurityVerifyAccountPasswordForPdfV156(owner.email, passwordMaterial);
-  if (!verifiedPassword.ok) {
-    await customerSecurityRegisterFailedVerification(req, action, 'recovery_account_password_invalid_on_verify', access.customerId).catch(() => null);
-    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_account_password_invalid_on_verify', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
-  }
-
-  const vaultSecrets = customerSecurityLostPasskeyRequireVaultSecretsV157();
+  let vaultSecrets = customerSecurityLostPasskeyRequireVaultSecretsV157();
   if (!vaultSecrets.ok) {
     customerSecurityLostPasskeyWorkerVerifyTraceV174('vault_secret_check_failed', vaultSecrets.code || 'vault_secret_invalid', {
       owner,
@@ -47497,7 +47578,7 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
       code,
       workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY,
       httpStatus: 503,
-      debugHint: 'Server 2 env Argon2id/root secret/pepper belum valid, jadi verify berhenti sebelum baca recovery request.'
+      debugHint: 'Konfigurasi Argon2id/root secret/pepper server utama belum valid, jadi verify berhenti sebelum baca recovery request.'
     });
     return res.status(503).json({ ok: false, code: vaultSecrets.code, message: vaultSecrets.message });
   }
@@ -47505,12 +47586,14 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
   const path = '/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?select=' +
     encodeURIComponent('id,request_id,customer_id,auth_user_id,email_hash,customer_binding_hash,auth_user_binding_hash,device_binding_hash,ip_hash,user_agent_hash,recovery_code_hash,status,attempt_count,expires_at,used_at,revoked_at,locked_at,old_passkey_ids,metadata') +
     '&request_id=eq.' + encodeURIComponent(requestId) +
-    '&limit=1';
+    '&customer_id=eq.' + encodeURIComponent(owner.customerId) +
+    '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId) +
+    '&limit=2';
 
   const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
   if (!result.ok) return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 500, 'recovery_request_read_failed', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, supabaseStatus: result.status, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
 
-  const row = Array.isArray(result.data) ? result.data[0] : null;
+  const row = Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
   if (!row || !row.id) {
     await customerSecurityRegisterFailedVerification(req, action, 'recovery_request_not_found', access.customerId).catch(() => null);
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 404, 'recovery_request_not_found', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, rowChecked: true, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
@@ -47519,7 +47602,9 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
   const nowMs = Date.now();
   const recoveryStatus = String(row.status || '');
   const recoveryExpiresMs = new Date(row.expires_at).getTime();
-  if (row.used_at
+  const attempts = row.attempt_count == null ? 0 : row.attempt_count;
+  if (!Number.isSafeInteger(attempts) || attempts < 0 || attempts >= LOST_PASSKEY_RECOVERY_ATTEMPT_LIMIT
+    || row.used_at
     || row.revoked_at
     || row.locked_at
     || !Number.isFinite(recoveryExpiresMs)
@@ -47534,6 +47619,29 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_owner_mismatch', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
   const metadata = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+  if (emailCodeOnlyV342 && metadata.processing_authority !== 'main_server_v375') {
+    return res.status(409).json({ ok: false, code: 'RECOVERY_REQUEST_REISSUE_REQUIRED', message: 'Akses pemulihan lama dicabut. Minta kode recovery baru untuk melanjutkan.' });
+  }
+
+  const passwordMaterial = customerSecurityExtractPasswordMaterialV157({
+    password_latest_material: override && (override.passwordLatestMaterial || override.password_latest_material || ''),
+    password_latest_proof: override && (override.passwordLatestProof || override.password_latest_proof || ''),
+    account_password: override && override.accountPassword || ''
+  });
+  if (!passwordMaterial) {
+    await customerSecurityRegisterFailedVerification(req, action, 'recovery_password_missing_on_verify', access.customerId).catch(() => null);
+    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 400, 'recovery_password_missing_on_verify', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+  }
+  const verifiedPassword = await customerSecurityVerifyAccountPasswordForPdfV156(owner.email, passwordMaterial, owner.authUserId);
+  if (!verifiedPassword.ok) {
+    await customerSecurityRegisterFailedVerification(req, action, 'recovery_account_password_invalid_on_verify', access.customerId).catch(() => null);
+    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_account_password_invalid_on_verify', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+  }
+
+  vaultSecrets = customerSecurityLostPasskeySecretsForMetadataV281(metadata, vaultSecrets);
+  if (!vaultSecrets.ok) {
+    return res.status(503).json({ ok: false, code: vaultSecrets.code, message: vaultSecrets.message });
+  }
   if (String(metadata.binding_profile || '') !== DIRAC_LOST_PASSKEY_AUTHORITATIVE_BINDING_V231
       || String(metadata.binding_rp_id || '') !== DIRAC_LOST_PASSKEY_RP_ID_V231) {
     await customerSecurityRegisterFailedVerification(req, action, 'recovery_binding_profile_invalid', access.customerId).catch(() => null);
@@ -47567,26 +47675,23 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     ip: !safeEqual(String(row.ip_hash || ''), bindings.ipHash),
     user_agent: !safeEqual(String(row.user_agent_hash || ''), bindings.userAgentHash)
   };
-  const verifierModeV347 = String(metadata.mode || '') === 'password_email_code_100_v347';
   const expectedEmailCodeLengthV355 = Number(metadata.email_code_length || metadata.recovery_code_length || metadata.secret_email_length || 0);
-  if (verifierModeV347
-      && (!customerSecurityLostPasskeyDynamicCodeV355(code, expectedEmailCodeLengthV355)
-        || String(metadata.code_verifier || '') !== 'hmac_sha512_root_pepper_v347'
-        || String(metadata.binding_verifier || '') !== 'hmac_sha512_root_pepper_v347')) {
-    await customerSecurityRegisterFailedVerification(req, action, 'recovery_verifier_profile_invalid', access.customerId).catch(() => null);
-    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_verifier_profile_invalid', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
-  }
+  const verifierModeV347 = Boolean(emailCodeOnlyV342
+    && String(metadata.mode || '') === 'password_email_code_100_v347'
+    && String(metadata.delivery || '') === 'email_code_100'
+    && String(metadata.code_verifier || '') === 'hmac_sha512_root_pepper_v347'
+    && String(metadata.binding_verifier || '') === 'hmac_sha512_root_pepper_v347'
+    && String(metadata.recovery_code_hash_label || '') === 'recovery_code'
+    && customerSecurityLostPasskeyDynamicCodeV355(code, expectedEmailCodeLengthV355)
+    && Number(metadata.recovery_code_length || metadata.secret_email_length || 0) === expectedEmailCodeLengthV355
+    && metadata.password_factor_required_on_verify === true);
 
   let expectedBinding = false;
   let codeOk = false;
   if (verifierModeV347) {
-    const verifierSecretsV347 = customerSecurityLostPasskeySecretsForMetadataV281(metadata, vaultSecrets);
-    if (!verifierSecretsV347.ok) {
-      return res.status(503).json({ ok: false, code: verifierSecretsV347.code, message: verifierSecretsV347.message });
-    }
-    const verifierKeyV347 = crypto.createHmac('sha512', Buffer.from(verifierSecretsV347.rootSecret, 'utf8'))
+    const verifierKeyV347 = crypto.createHmac('sha512', Buffer.from(vaultSecrets.rootSecret, 'utf8'))
       .update('dirac-lost-passkey-email100-verifier-key-v347\n', 'utf8')
-      .update(String(verifierSecretsV347.pepper || ''), 'utf8')
+      .update(String(vaultSecrets.pepper || ''), 'utf8')
       .digest();
     try {
       const expectedBindingMacV347 = crypto.createHmac('sha512', verifierKeyV347)
@@ -47613,32 +47718,50 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
       verifierKeyV347.fill(0);
     }
   } else {
-    let argonQueueTicketV348 = override && override.argonQueueTicket || null;
-    let ownsArgonQueueTicketV348 = false;
-    if (!argonQueueTicketV348) {
-      argonQueueTicketV348 = await customerSecurityLostPasskeyQueueAcquireV164(req, {
+    if (emailCodeOnlyV342
+        && (String(metadata.recovery_mode || '') !== 'password_plus_email100_then_passkey'
+          || String(metadata.recovery_code_hash_label || '') !== 'email_secret'
+          || String(metadata.email_secret_hash || '') !== String(row.recovery_code_hash || '')
+          || Number(metadata.secret_email_length || 0) !== LOST_PASSKEY_SECRET_100_CHAR_LENGTH_V157
+          || metadata.password_factor_required_on_verify !== true)) {
+      await customerSecurityRegisterFailedVerification(req, action, 'recovery_email100_metadata_invalid', access.customerId).catch(() => null);
+      return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_email100_metadata_invalid', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: false, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+    }
+
+    let legacyQueueTicketV350 = override && override.argonQueueTicket || null;
+    let ownsLegacyQueueTicketV350 = false;
+    if (!legacyQueueTicketV350) {
+      legacyQueueTicketV350 = await customerSecurityLostPasskeyQueueAcquireV164(req, {
         nonce: requestId,
-        caller_id: 'server2_recovery_verify_v348',
+        caller_id: 'server2_recovery_verify_v350',
         queue_task: DIRAC_RECOVERY_WORKER_TASK_VERIFY
       });
-      ownsArgonQueueTicketV348 = Boolean(argonQueueTicketV348 && argonQueueTicketV348.ok);
+      ownsLegacyQueueTicketV350 = Boolean(legacyQueueTicketV350 && legacyQueueTicketV350.ok);
     }
-    if (!argonQueueTicketV348 || !argonQueueTicketV348.ok) {
-      return res.status(argonQueueTicketV348 && argonQueueTicketV348.status || 503).json({
+    if (!legacyQueueTicketV350 || !legacyQueueTicketV350.ok) {
+      return res.status(legacyQueueTicketV350 && legacyQueueTicketV350.status || 503).json({
         ok: false,
-        code: 'RECOVERY_ARGON2_BUSY',
+        code: legacyQueueTicketV350 && legacyQueueTicketV350.code || 'RECOVERY_ARGON2_BUSY',
         message: 'Verifikasi recovery sedang diproses. Silakan coba kembali.'
       });
     }
     try {
-      if (!customerSecurityLostPasskeyQueueLeaseHealthyV188(argonQueueTicketV348)) {
+      if (!customerSecurityLostPasskeyQueueLeaseHealthyV188(legacyQueueTicketV350)) {
         return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 503, 'recovery_argon2_lease_lost', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
       }
-      expectedBinding = await customerSecurityLostPasskeyArgon2VerifyHashV157('binding', customerSecurityLostPasskeyCanonical(authoritativeBindings), metadata.binding_hash_commitment, vaultSecrets.pepper, vaultSecrets.rootSecret);
-      codeOk = await customerSecurityLostPasskeyArgon2VerifyHashV157('recovery_code', code, row.recovery_code_hash, vaultSecrets.pepper, vaultSecrets.rootSecret);
+      expectedBinding = await customerSecurityLostPasskeyArgon2VerifyHashV157(
+        'binding', customerSecurityLostPasskeyCanonical(authoritativeBindings), metadata.binding_hash_commitment, vaultSecrets.pepper, vaultSecrets.rootSecret
+      );
+      codeOk = expectedBinding ? await customerSecurityLostPasskeyArgon2VerifyHashV157(
+        emailCodeOnlyV342 ? 'email_secret' : 'recovery_code',
+        code,
+        emailCodeOnlyV342 ? String(metadata.email_secret_hash || '') : row.recovery_code_hash,
+        vaultSecrets.pepper,
+        vaultSecrets.rootSecret
+      ) : false;
     } finally {
-      if (ownsArgonQueueTicketV348) {
-        try { await argonQueueTicketV348.release(); } catch (_) {}
+      if (ownsLegacyQueueTicketV350) {
+        try { await legacyQueueTicketV350.release(); } catch (_) {}
       }
     }
   }
@@ -47649,34 +47772,60 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
   }
 
   if (!codeOk) {
-    const nextAttempts = Number(row.attempt_count || 0) + 1;
-    const lock = nextAttempts >= LOST_PASSKEY_RECOVERY_ATTEMPT_LIMIT;
-    await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestId), {
-      method: 'PATCH',
-      auth: 'service',
-      body: {
-        attempt_count: nextAttempts,
-        status: lock ? 'locked' : row.status,
-        locked_at: lock ? diracNowIso() : row.locked_at || null,
-        metadata: { ...metadata, last_failed_verify_at: diracNowIso(), failed_verify_source: action, patch: DIRAC_LOST_PASSKEY_VAULT_PATCH_V157 }
-      }
-    }).catch(() => null);
-    await customerSecurityRegisterFailedVerification(req, action, lock ? 'recovery_code_locked' : 'recovery_code_not_matched', access.customerId).catch(() => null);
-    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, lock ? 423 : 403, lock ? 'recovery_code_locked' : 'recovery_code_not_matched', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: expectedBinding, recoveryCodeOk: codeOk, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
-  }
-
-  if (!await customerSecurityLostPasskeyEmail100RateResetV374(owner)) {
-    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 503, 'recovery_email_rate_reset_failed', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: expectedBinding, recoveryCodeOk: codeOk, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
-  }
-
-  if (override && override.argonQueueTicket && !customerSecurityLostPasskeyQueueLeaseHealthyV188(override.argonQueueTicket)) {
-    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 503, 'recovery_argon2_lease_lost', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+    const failure = await diracRecoveryRegisterFailureV282(requestId, emailCodeOnlyV342 ? 'email_code_100' : 'recovery_code', action, owner).catch(() => null);
+    if (!failure || !['recorded', 'locked'].includes(failure.outcome)) {
+      return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 503, 'recovery_failure_state_unavailable', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: expectedBinding, recoveryCodeOk: codeOk, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
+    }
+    await customerSecurityRegisterFailedVerification(req, action, failure.locked ? 'recovery_code_locked' : 'recovery_code_not_matched', access.customerId).catch(() => null);
+    return customerSecurityLostPasskeyGenericWorkerErrorV157(res, failure.locked ? 423 : 403, failure.locked ? 'recovery_code_locked' : 'recovery_code_not_matched', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: expectedBinding, recoveryCodeOk: codeOk, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
 
   const activePasskeys = await customerSecurityLostPasskeyActivePasskeys(owner);
   if (!activePasskeys.length) return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 409, 'active_passkey_not_found', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: expectedBinding, recoveryCodeOk: codeOk, activePasskeyCount: 0, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
 
   const now = diracNowIso();
+  const recoverySessionToken = crypto.randomBytes(32).toString('base64url');
+  const recoverySessionHash = customerSecurityLostPasskeyRecoverySessionHash(recoverySessionToken);
+  const sessionExpiresAt = new Date(Date.now() + Math.max(5, Math.min(30, Number(process.env.DIRAC_LOST_PASSKEY_SESSION_MINUTES || 10))) * 60 * 1000).toISOString();
+  const verifiedMetadata = {
+    ...metadata,
+    source: 'lost_passkey_recovery_code_verify',
+    verification_session_hash: recoverySessionHash,
+    verified_by_endpoint: action,
+    verified_by_worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY,
+    verified_at: now,
+    recovery_session_created_at: now,
+    recovery_session_expires_at: sessionExpiresAt,
+    binding_profile: DIRAC_LOST_PASSKEY_AUTHORITATIVE_BINDING_V231,
+    observed_browser_risk_changed: observedRiskChanged,
+    patch: DIRAC_LOST_PASSKEY_VAULT_PATCH_V157
+  };
+
+  const patched = await diracRecoveryCompareAndSetRequestV356(row, owner, { status: 'verified', metadata: verifiedMetadata });
+
+  if (!patched.ok) {
+    const failedBody = { ok: false, code: 'RECOVERY_REQUEST_VERIFY_PATCH_FAILED', message: 'Gagal menandai recovery request sebagai verified.' };
+    const failedTrace = customerSecurityLostPasskeyWorkerVerifyTraceV174('verify_request_patch_failed', 'recovery_request_verify_patch_failed', {
+      owner,
+      bindings,
+      requestId,
+      code,
+      row,
+      metadata,
+      bindingCommitmentOk: expectedBinding,
+      recoveryCodeOk: codeOk,
+      activePasskeyCount: activePasskeys.length,
+      supabaseStatus: patched.status,
+      workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY,
+      httpStatus: patched.status || 500,
+      responseBody: failedBody,
+      sessionInsertAttempted: false,
+      debugHint: 'Recovery request claim failed before session creation.'
+    });
+    if (customerSecurityLostPasskeyRootCauseDebugEnabledV173()) failedBody.worker_verify_debug = failedTrace;
+    return res.status(patched.status || 500).json(failedBody);
+  }
+
   if (verifiedRetry) {
     const previousSessionRevoked = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_SESSION_TABLE
       + '?request_id=eq.' + encodeURIComponent(requestId)
@@ -47684,7 +47833,8 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
       + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId)
       + '&status=eq.verified'
       + '&used_at=is.null'
-      + '&revoked_at=is.null', {
+      + '&revoked_at=is.null'
+      + '&select=' + encodeURIComponent('status,used_at,revoked_at'), {
       method: 'PATCH',
       auth: 'service',
       prefer: 'return=representation',
@@ -47693,15 +47843,14 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
         revoked_at: now
       }
     });
-    if (!previousSessionRevoked.ok) {
+    if (!previousSessionRevoked.ok || !Array.isArray(previousSessionRevoked.data)
+        || previousSessionRevoked.data.some((item) => !item || item.status !== 'revoked' || item.used_at || Date.parse(item.revoked_at) !== Date.parse(now))) {
       return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 503, 'recovery_session_rotation_failed', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: expectedBinding, recoveryCodeOk: codeOk, activePasskeyCount: activePasskeys.length, supabaseStatus: previousSessionRevoked.status, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
     }
   }
 
-  const recoverySessionToken = crypto.randomBytes(32).toString('base64url');
-  const recoverySessionHash = customerSecurityLostPasskeyRecoverySessionHash(recoverySessionToken);
-  const sessionExpiresAt = new Date(Date.now() + Math.max(5, Math.min(30, Number(process.env.DIRAC_LOST_PASSKEY_SESSION_MINUTES || 10))) * 60 * 1000).toISOString();
-  const sessionCreated = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_SESSION_TABLE, {
+  const sessionCreated = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_SESSION_TABLE
+    + '?select=' + encodeURIComponent('status,created_at,expires_at'), {
     method: 'POST',
     auth: 'service',
     prefer: 'return=representation',
@@ -47723,7 +47872,8 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     }]
   });
 
-  if (!sessionCreated.ok) {
+  if (!sessionCreated.ok || !Array.isArray(sessionCreated.data) || sessionCreated.data.length !== 1
+      || sessionCreated.data[0].status !== 'verified' || Date.parse(sessionCreated.data[0].expires_at) !== Date.parse(sessionExpiresAt)) {
     const failedBody = { ok: false, code: 'RECOVERY_SESSION_CREATE_FAILED', message: 'Gagal membuat recovery session.' };
     const failedTrace = customerSecurityLostPasskeyWorkerVerifyTraceV174('verify_session_create_failed', 'recovery_session_create_failed', {
       owner,
@@ -47746,58 +47896,28 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     return res.status(sessionCreated.status || 500).json(failedBody);
   }
 
-  const verifiedMetadata = {
-    ...metadata,
-    source: 'lost_passkey_recovery_code_verify',
-    verified_by_endpoint: action,
-    verified_by_worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY,
-    verified_at: now,
-    recovery_session_created_at: now,
-    recovery_session_expires_at: sessionExpiresAt,
-    binding_profile: DIRAC_LOST_PASSKEY_AUTHORITATIVE_BINDING_V231,
-    observed_browser_risk_changed: observedRiskChanged,
-    patch: DIRAC_LOST_PASSKEY_VAULT_PATCH_V157
-  };
+  const confirmed = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE
+    + '?select=' + encodeURIComponent('request_id,status,used_at,revoked_at,locked_at,expires_at,metadata')
+    + '&request_id=eq.' + encodeURIComponent(requestId)
+    + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+    + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId) + '&limit=2', { method: 'GET', auth: 'service' });
+  const confirmedRow = confirmed && confirmed.ok === true && Array.isArray(confirmed.data) && confirmed.data.length === 1 ? confirmed.data[0] : null;
+  if (!confirmedRow || confirmedRow.request_id !== requestId || confirmedRow.status !== 'verified'
+      || confirmedRow.used_at || confirmedRow.revoked_at || confirmedRow.locked_at
+      || !Number.isFinite(Date.parse(confirmedRow.expires_at)) || Date.parse(confirmedRow.expires_at) <= Date.now()
+      || !confirmedRow.metadata || !safeEqual(String(confirmedRow.metadata.verification_session_hash || ''), recoverySessionHash)) {
+    return res.status(409).json({ ok: false, code: 'RECOVERY_VERIFICATION_STATE_CHANGED', message: 'Recovery request berubah. Ulangi recovery.' });
+  }
 
-  const patched = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?request_id=eq.' + encodeURIComponent(requestId), {
-    method: 'PATCH',
-    auth: 'service',
-    prefer: 'return=representation',
-    body: {
-      status: 'verified',
-      expires_at: sessionExpiresAt,
-      metadata: verifiedMetadata
-    }
-  });
-
-  if (!patched.ok) {
-    const failedBody = { ok: false, code: 'RECOVERY_REQUEST_VERIFY_PATCH_FAILED', message: 'Gagal menandai recovery request sebagai verified.' };
-    const failedTrace = customerSecurityLostPasskeyWorkerVerifyTraceV174('verify_request_patch_failed', 'recovery_request_verify_patch_failed', {
-      owner,
-      bindings,
-      requestId,
-      code,
-      row,
-      metadata,
-      bindingCommitmentOk: expectedBinding,
-      recoveryCodeOk: codeOk,
-      activePasskeyCount: activePasskeys.length,
-      supabaseStatus: patched.status,
-      workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY,
-      httpStatus: patched.status || 500,
-      responseBody: failedBody,
-      sessionInsertAttempted: true,
-      debugHint: 'Recovery session berhasil dibuat, tetapi update status recovery request ke verified gagal.'
-    });
-    if (customerSecurityLostPasskeyRootCauseDebugEnabledV173()) failedBody.worker_verify_debug = failedTrace;
-    return res.status(patched.status || 500).json(failedBody);
+  if (!await customerSecurityLostPasskeyEmail100RateResetV374(owner)) {
+    return res.status(503).json({ ok: false, code: 'RECOVERY_EMAIL100_RATE_RESET_FAILED', message: 'Status pembatasan recovery belum dapat diperbarui.' });
   }
 
   await customerSecurityWriteGuardEvent(access.customerId, {
     event_type: 'lost_passkey_recovery_verified',
     status: 'success',
     risk_level: 'high',
-    description: 'Server 2 memvalidasi recovery code lost passkey dari signed SERVER 1 payload dan membuat recovery session terbatas.',
+    description: 'Server utama memvalidasi password dan kode email recovery dalam konteks browser terverifikasi dan membuat sesi pemulihan terbatas.',
     req,
     metadata: { action, request_id: requestId, patch: DIRAC_LOST_PASSKEY_VAULT_PATCH_V157 }
   });
@@ -47806,14 +47926,17 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     ok: true,
     valid: true,
     active: true,
-    method: 'recovery_code',
+    method: emailCodeOnlyV342 ? 'password_email_100' : 'recovery_code',
     purpose: LOST_PASSKEY_RECOVERY_PURPOSE,
     request_id: requestId,
-    message: 'Recovery code valid. Recovery session terbatas untuk daftar Passkey baru sudah dibuat.',
+    message: emailCodeOnlyV342
+      ? 'Kode email ' + expectedEmailCodeLengthV355 + ' karakter valid. Recovery session terbatas untuk daftar Passkey baru sudah dibuat.'
+      : 'Recovery code valid. Recovery session terbatas untuk daftar Passkey baru sudah dibuat.',
     recovery_session_token: recoverySessionToken,
     recovery_session_expires_at: sessionExpiresAt,
     dashboard_access: false,
-    recovery_code_verified: true,
+    recovery_code_verified: !emailCodeOnlyV342,
+    email_code_100_verified: emailCodeOnlyV342,
     time: now
   };
 
@@ -47831,7 +47954,7 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
     httpStatus: 200,
     responseBody,
     sessionInsertAttempted: true,
-    debugHint: 'Server 2 memvalidasi recovery code, membuat recovery_session_token, dan response sudah bisa membuka tahap daftar Passkey baru.'
+    debugHint: 'Server utama memvalidasi kode recovery, membuat sesi pemulihan, dan mengizinkan tahap pendaftaran Passkey baru.'
   });
 
   if (customerSecurityLostPasskeyRootCauseDebugEnabledV173()) {
@@ -48174,9 +48297,16 @@ function diracRecoveryHpkeEnvGuardV159() {
   const keyId = diracRecoveryHpkeAsciiV159(diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_KEY_ID'), 1, 80);
   const pepper = diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_PEPPER');
   const server1Url = diracRecoveryHpkeServer1UrlV159();
-  const configuredMinimumMemory = diracRecoveryHpkeEnvIntegerV159('DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB', 102400, 102400);
-  const minimumMemory = configuredMinimumMemory ? Math.min(configuredMinimumMemory, 102400) : 0;
-  const minimumTime = diracRecoveryHpkeEnvIntegerV159('DIRAC_RECOVERY_HPKE_ARGON2_TIME_COST', 4, 12);
+  let minimumMemory = 0;
+  let minimumTime = 0;
+  try {
+    const profile = customerSecurityLostPasskeyArgon2ProfilesV191().hpkeMinimum;
+    if (diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_ARGON2_MEMORY_KIB')
+        && diracRecoveryHpkeEnvTextV159('DIRAC_RECOVERY_HPKE_ARGON2_TIME_COST')) {
+      minimumMemory = profile.memoryCost;
+      minimumTime = profile.timeCost;
+    }
+  } catch (_) {}
   const server1OnlyEnv = [
     'DIRAC_RECOVERY_WORKER_URL',
     'DIRAC_RECOVERY_WORKER_CALLER',
@@ -48216,15 +48346,13 @@ function diracRecoveryHpkeServer1UrlV159() {
 /* RECO donor source lines 10202-10218 */
 function diracRecoveryHpkeArgon2PolicyV159(encodedHash, minimumMemory, minimumTime) {
   const parsed = customerSecurityLostPasskeyArgon2EncodedParamsV171(encodedHash);
-  if (!parsed || parsed.hashLength !== 64) return { ok: false };
+  if (!parsed) return { ok: false };
   const memory = Number(parsed.memoryCost);
   const time = Number(parsed.timeCost);
   const parallelism = Number(parsed.parallelism);
   return {
-    ok: Number.isSafeInteger(memory) && Number.isSafeInteger(time) && Number.isSafeInteger(parallelism)
-      && memory >= 102400 && memory >= minimumMemory && memory <= 102400
-      && time >= 4 && time >= minimumTime && time <= 12
-      && parallelism === 4,
+    ok: diracRecoveryArgonProfileAllowedV360(parsed)
+      && memory >= Number(minimumMemory) && time >= Number(minimumTime),
     memory,
     time,
     parallelism
@@ -48691,15 +48819,23 @@ async function diracRecoveryHpkeSendProofV159(env, proofBody) {
   }
 }
 
-async function diracRecoveryRegisterFailureV282(requestId, failureKind, failureSource) {
+async function diracRecoveryRegisterFailureV282(requestId, failureKind, failureSource, owner = null) {
   const cleanRequestId = String(requestId || '');
   const kind = String(failureKind || '');
   const source = String(failureSource || '');
-  const allowed = (kind === 'recovery_code'
+  const allowed = ((kind === 'recovery_code' || kind === 'email_code_100')
       && [DIRAC_RECOVERY_HPKE_VERIFY_ACTION_V159, 'customer_security_recovery_code_verify'].includes(source))
     || (kind === 'link_token' && source === DIRAC_LOST_PASSKEY_RECOVERY_LINK_ACTION_V165);
   if (!/^[A-Za-z0-9_-]{16,120}$/.test(cleanRequestId) || !allowed) {
     throw DIRAC_RECOVERY_CRYPTO_V2.fail('RECOVERY_FAILURE_ARGUMENT_INVALID');
+  }
+
+  const ownerScope = owner
+    ? '&customer_id=eq.' + encodeURIComponent(String(owner.customerId || ''))
+      + '&auth_user_id=eq.' + encodeURIComponent(String(owner.authUserId || ''))
+    : '';
+  if (owner && (!customerSecurityLooksLikeUuid(owner.customerId) || !customerSecurityLooksLikeUuid(owner.authUserId))) {
+    throw DIRAC_RECOVERY_CRYPTO_V2.fail('RECOVERY_FAILURE_OWNER_INVALID');
   }
 
   // Zero-schema CAS. The existing request row is the authority. We update only
@@ -48707,7 +48843,7 @@ async function diracRecoveryRegisterFailureV282(requestId, failureKind, failureS
   for (let casAttempt = 0; casAttempt < 5; casAttempt += 1) {
     const read = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE
       + '?select=' + encodeURIComponent('request_id,status,attempt_count,expires_at,used_at,revoked_at,locked_at')
-      + '&request_id=eq.' + encodeURIComponent(cleanRequestId)
+      + '&request_id=eq.' + encodeURIComponent(cleanRequestId) + ownerScope
       + '&limit=2', { method: 'GET', auth: 'service' });
     if (!read || read.ok !== true || !Array.isArray(read.data)) {
       throw DIRAC_RECOVERY_CRYPTO_V2.fail('RECOVERY_FAILURE_STORAGE_UNAVAILABLE');
@@ -48751,7 +48887,7 @@ async function diracRecoveryRegisterFailureV282(requestId, failureKind, failureS
       ? '&attempt_count=is.null'
       : '&attempt_count=eq.' + encodeURIComponent(String(currentAttempts));
     const patched = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE
-      + '?request_id=eq.' + encodeURIComponent(cleanRequestId)
+      + '?request_id=eq.' + encodeURIComponent(cleanRequestId) + ownerScope
       + '&status=eq.' + encodeURIComponent(status)
       + attemptFilter
       + '&expires_at=gt.' + encodeURIComponent(new Date().toISOString())
@@ -48782,7 +48918,7 @@ async function diracRecoveryRegisterFailureV282(requestId, failureKind, failureS
   }
   const finalRead = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE
     + '?select=' + encodeURIComponent('request_id,status,attempt_count,expires_at,used_at,revoked_at,locked_at')
-    + '&request_id=eq.' + encodeURIComponent(cleanRequestId)
+    + '&request_id=eq.' + encodeURIComponent(cleanRequestId) + ownerScope
     + '&limit=2', { method: 'GET', auth: 'service' });
   const finalRows = finalRead && finalRead.ok === true && Array.isArray(finalRead.data) ? finalRead.data : [];
   const finalRow = finalRows.length === 1 ? finalRows[0] : null;
@@ -49744,19 +49880,9 @@ function diracRecoveryLinkOpenArgonPolicyV202(metadata) {
   const exactBinding = memoryCost === encodedParams.memoryCost
     && timeCost === encodedParams.timeCost
     && parallelism === encodedParams.parallelism;
-  let required;
-  try { required = customerSecurityLostPasskeyLinkOpenArgon2ParamsV171(64); }
+  try { customerSecurityLostPasskeyLinkOpenArgon2ParamsV171(64); }
   catch (_) { return { ok: false, encoded: '' }; }
-  const strictProfile = Number.isSafeInteger(memoryCost)
-    && memoryCost >= 102400
-    && memoryCost >= Number(required.memoryCost || 0)
-    && memoryCost <= 102400
-    && Number.isSafeInteger(timeCost)
-    && timeCost >= 4
-    && timeCost >= Number(required.timeCost || 0)
-    && timeCost <= 12
-    && parallelism === 4
-    && parallelism === Number(required.parallelism || 0);
+  const strictProfile = diracRecoveryArgonProfileAllowedV360(encodedParams);
   return { ok: exactBinding && strictProfile, encoded };
 }
 
@@ -51872,7 +51998,7 @@ function diracUserSecurityMimeV327(event, config) {
   const senderDomain = String(config.smtpUser || '').split('@')[1] || 'gmail.com';
   const messageId = crypto.createHash('sha256').update(event.reference + '|' + event.kind + '|' + Date.now()).digest('hex').slice(0, 32) + '@' + senderDomain;
   return [
-    'From: ' + diracSecurityAlertMimeHeaderV320('Dirac Secure') + ' <' + config.smtpUser + '>',
+    'From: ' + diracSecurityAlertMimeHeaderV320('PT Dirac Inovasi Nusantara') + ' <' + config.smtpUser + '>',
     'To: ' + event.email,
     'Reply-To: ' + config.replyTo,
     'Subject: ' + diracSecurityAlertMimeHeaderV320(event.subject),
@@ -51945,7 +52071,7 @@ async function diracUserSecuritySendV327(event, config) {
         'Idempotency-Key': ('dirac-user-security-' + event.kind + '-' + event.reference).slice(0, 256)
       },
       body: JSON.stringify({
-        from: 'Dirac Secure <' + config.resendFromEmail + '>',
+        from: 'PT Dirac Inovasi Nusantara <' + config.resendFromEmail + '>',
         to: [event.email],
         reply_to: config.replyTo,
         subject: event.subject,
@@ -52283,14 +52409,17 @@ diracSecurityAlertSnapshotV320 = function diracSecurityAlertSnapshotCorporateV32
     ? diracSecurityAlertCodeV321(reasonRaw, 'withheld', 120)
     : diracSecurityMailCleanV327(reasonRaw, 120);
   const blockedUntilMs = Number(nested.blocked_until_ms || direct.blocked_until_ms || 0);
+  const banPermanent = nested.ban_permanent === true || direct.ban_permanent === true;
   const ttlSeconds = Math.max(0, Math.min(315360000, Number(nested.ttl_seconds || direct.ttl_seconds || 0)));
   const banType = typeof diracSecurityAlertCodeV321 === 'function'
     ? diracSecurityAlertCodeV321(nested.ban_type || direct.ban_type || '', 'unavailable', 120)
     : diracSecurityMailCleanV327(nested.ban_type || direct.ban_type || '', 120);
   const normalizedEvent = String(event || '').toLowerCase();
   const centralBanWritten = nested.persistent_ban_written === true || normalizedEvent === 'persistent_ban_written';
+  const customerAccessBanWritten = typeof nested.customer_access_ban_written === 'boolean' ? nested.customer_access_ban_written : null;
   let centralBanStatus = 'REQUEST DIBLOKIR';
-  if (centralBanWritten) centralBanStatus = 'PERSISTENT BAN DITULIS / AKTIF';
+  if (centralBanWritten && normalizedEvent === 'persistent_ban_write_failed' && customerAccessBanWritten === false) centralBanStatus = 'CENTRAL BAN AKTIF / MIRROR AKSES CUSTOMER GAGAL';
+  else if (centralBanWritten) centralBanStatus = 'PERSISTENT BAN DITULIS / AKTIF';
   else if (normalizedEvent === 'persistent_ban_write_failed') centralBanStatus = 'PERSISTENT BAN GAGAL DITULIS';
   else if (normalizedEvent === 'account_or_device_ban_enforced') centralBanStatus = 'BAN AKUN / PERANGKAT DIBERLAKUKAN';
   const blockedUntil = Number.isFinite(blockedUntilMs) && blockedUntilMs > 0
@@ -52321,10 +52450,13 @@ diracSecurityAlertSnapshotV320 = function diracSecurityAlertSnapshotCorporateV32
     request_id: requestId,
     failure_id: failureId,
     reason_code: reasonCode,
+    failure_class: diracSecurityAlertCodeV321(direct.failure_class || ctx && ctx.failureClassificationV221 && ctx.failureClassificationV221.failureClass || '', 'unclassified', 80),
     central_ban_written: centralBanWritten,
+    customer_access_ban_written: customerAccessBanWritten,
     central_ban_status: centralBanStatus,
     ban_type: banType,
-    ban_ttl_seconds: ttlSeconds,
+    ban_permanent: banPermanent,
+    ban_ttl_seconds: banPermanent ? null : ttlSeconds,
     blocked_until: blockedUntil || 'unavailable',
     phase: diracSecurityMailCleanV327(direct.phase || ctx && ctx.executionPhaseV211 || 'unavailable', 60) || 'unavailable',
     stage_index: stageIndex,
@@ -52352,9 +52484,10 @@ function diracSecurityAlertCorporateMimeV327(snapshot, config) {
   const event = String(snapshot && snapshot.event || '').toLowerCase();
   const isPersistent = event === 'persistent_ban_written' || snapshot.central_ban_written === true;
   const writeFailed = event === 'persistent_ban_write_failed';
-  const title = isPersistent
-    ? 'Central Ban Telah\nDitulis'
-    : (writeFailed ? 'Penulisan Central Ban\nGagal' : 'Percobaan Serangan\nBerhasil Diblokir');
+  const mirrorWriteFailed = isPersistent && writeFailed && snapshot.customer_access_ban_written === false;
+  const title = mirrorWriteFailed
+    ? 'Central Ban Aktif\nMirror Akses Gagal'
+    : (isPersistent ? 'Central Ban Telah\nDitulis' : (writeFailed ? 'Penulisan Central Ban\nGagal' : 'Request Diblokir\nCentral Guard'));
   const reference = diracSecurityAlertCorrelationReferenceV333(
     snapshot.failure_id,
     snapshot.request_id
@@ -52368,9 +52501,10 @@ function diracSecurityAlertCorporateMimeV327(snapshot, config) {
     ['CENTRAL BAN', snapshot.central_ban_status || 'REQUEST DIBLOKIR'],
     ['BAN TRACKING ID', trackingId],
     ['JENIS BAN', snapshot.ban_type || 'unavailable'],
-    ['TTL BAN', snapshot.ban_ttl_seconds ? String(snapshot.ban_ttl_seconds) + ' detik' : 'unavailable'],
+    ['TTL BAN', snapshot.ban_permanent === true ? 'PERMANEN' : (snapshot.ban_ttl_seconds ? String(snapshot.ban_ttl_seconds) + ' detik' : 'unavailable')],
     ['BLOK SAMPAI', snapshot.blocked_until || 'unavailable'],
     ['KLASIFIKASI', snapshot.threat_class],
+    ['FAILURE CLASS', snapshot.failure_class || 'unclassified'],
     ['SEVERITY', snapshot.severity],
     ['EVENT', snapshot.event],
     ['REASON CODE', snapshot.reason_code || snapshot.reason],
@@ -52416,11 +52550,13 @@ function diracSecurityAlertCorporateMimeV327(snapshot, config) {
     eyebrow: 'CENTRAL GUARD SECURITY ALERT',
     title,
     greeting: 'Yth. Owner dan Tim Cyber PT Dirac Inovasi Nusantara,',
-    summary: isPersistent
-      ? 'Central Guard mendeteksi pelanggaran keamanan terkonfirmasi, menolak request, dan berhasil menulis persistent ban sesuai kebijakan fail-closed.'
-      : (writeFailed
-        ? 'Central Guard menolak request, tetapi penulisan persistent ban tidak berhasil diselesaikan. Sistem tetap fail-closed dan memerlukan pemeriksaan owner atau tim cyber.'
-        : 'Central Guard mendeteksi indikasi serangan atau percobaan akses berbahaya dan menolak request secara otomatis.'),
+    summary: mirrorWriteFailed
+      ? 'Central Guard menolak request dan berhasil menulis persistent ban, tetapi penulisan mirror blok akses customer gagal. Sistem tetap fail-closed dan memerlukan pemeriksaan owner atau tim cyber.'
+      : (isPersistent
+        ? 'Central Guard menolak request dan berhasil menulis persistent ban sesuai kebijakan fail-closed. Periksa klasifikasi, reason code, dan jejak pemeriksaan untuk menentukan penyebabnya.'
+        : (writeFailed
+          ? 'Central Guard menolak request, tetapi penulisan persistent ban tidak berhasil diselesaikan. Sistem tetap fail-closed dan memerlukan pemeriksaan owner atau tim cyber.'
+          : 'Central Guard menolak request karena pemeriksaan keamanan tidak terpenuhi. Periksa klasifikasi, reason code, dan jejak pemeriksaan untuk menentukan penyebabnya.')),
     statusLabel: 'CENTRAL GUARD STATUS',
     statusValue: snapshot.central_ban_status || 'BLOCKED / FAIL-CLOSED',
     statusNote: snapshot.threat_class + ' · Severity ' + snapshot.severity,
@@ -52433,7 +52569,7 @@ function diracSecurityAlertCorporateMimeV327(snapshot, config) {
     warning,
     supportLead: 'Untuk koordinasi respons insiden, gunakan kanal resmi PT Dirac Inovasi Nusantara berikut dan jangan meneruskan data sensitif melalui email.'
   };
-  const subject = '[DIRAC ' + snapshot.severity + '] ' + String(title).replace(/\n/g, ' ') + ' [' + trackingId + '] [' + reference + ']';
+  const subject = '[PT Dirac Inovasi Nusantara ' + snapshot.severity + '] ' + String(title).replace(/\n/g, ' ') + ' [' + trackingId + '] [' + reference + ']';
   const htmlBody = diracExecutiveEscalationAppendHtmlV380(diracSecurityCorporateEmailHtmlV327(htmlInput));
   const textBody = diracExecutiveEscalationAppendTextV380(diracSecurityMailTextV327(htmlInput));
   const boundary = 'dirac-alert-v327-' + crypto.randomBytes(16).toString('hex');
@@ -52735,7 +52871,7 @@ async function diracSecurityMailBrevoV330(message, config) {
     htmlContent: diracExecutiveEscalationAppendHtmlV380(String(message.html || '')),
     headers: { 'X-Dirac-Reference': String(message.reference || '').slice(0, 64) }
   };
-  if (message.replyTo) payload.replyTo = { name: 'Dirac Support', email: message.replyTo };
+  if (message.replyTo) payload.replyTo = { name: 'PT Dirac Inovasi Nusantara', email: message.replyTo };
   return diracSecurityMailProviderHttpV330('brevo', 'https://api.brevo.com/v3/smtp/email', {
     'api-key': config.brevoApiKey,
     'Content-Type': 'application/json',
@@ -53036,7 +53172,7 @@ function diracSecurityMailParseCorporateMimeV330(mime) {
 diracUserSecuritySendV327 = async function diracUserSecuritySendCascadeV330(event, config) {
   if (!event || !config) return Object.freeze({ ok: false, provider: 'internal', status: 0, limited: false, code: 'USER_SECURITY_EVENT_OR_CONFIG_INVALID' });
   const message = Object.freeze({
-    fromName: 'Dirac Secure',
+    fromName: 'PT Dirac Inovasi Nusantara',
     recipients: [event.email],
     replyTo: config.replyTo,
     subject: event.subject,
@@ -53172,7 +53308,7 @@ function diracCustomerMailMimeV352(message, account, replyTo) {
   const reference = String(message && message.reference || crypto.randomBytes(8).toString('hex')).slice(0, 64);
   const messageId = crypto.createHash('sha256').update(reference + '|' + String(message.subject || '') + '|' + Date.now()).digest('hex').slice(0, 32) + '@' + senderDomain;
   const headers = [
-    'From: ' + diracSecurityAlertMimeHeaderV320(String(message.fromName || 'Dirac Secure')) + ' <' + account.user + '>',
+    'From: ' + diracSecurityAlertMimeHeaderV320(String(message.fromName || 'PT Dirac Inovasi Nusantara')) + ' <' + account.user + '>',
     'To: ' + (message.recipients || []).join(', '),
     replyTo ? 'Reply-To: ' + replyTo : '',
     'Subject: ' + diracSecurityAlertMimeHeaderV320(String(message.subject || 'PT Dirac Inovasi Nusantara')),
@@ -53268,7 +53404,7 @@ async function diracCustomerMailSmtpCascadeV352(message, config) {
 diracUserSecuritySendV327 = async function diracUserSecuritySendCascadeV352(event, config) {
   if (!event || !config) return Object.freeze({ ok: false, provider: 'internal', status: 0, limited: false, code: 'USER_SECURITY_EVENT_OR_CONFIG_INVALID' });
   const message = Object.freeze({
-    fromName: 'Dirac Secure', recipients: [event.email], replyTo: config.replyTo,
+    fromName: 'PT Dirac Inovasi Nusantara', recipients: [event.email], replyTo: config.replyTo,
     subject: event.subject, text: event.text, html: event.html, reference: event.reference
   });
   return diracSecurityMailProviderCascadeV330(message, config, () => diracCustomerMailSmtpCascadeV352(message, config));
@@ -53295,7 +53431,7 @@ diracRegisterEmailDeliverV331 = async function diracRegisterEmailDeliverCustomer
     supportLead: 'Jika membutuhkan bantuan terkait pendaftaran, gunakan kanal resmi PT Dirac Inovasi Nusantara berikut.'
   };
   const generic = Object.freeze({
-    fromName: 'Dirac Secure', recipients: [message.email], replyTo: config.replyTo,
+    fromName: 'PT Dirac Inovasi Nusantara', recipients: [message.email], replyTo: config.replyTo,
     subject: 'Kode verifikasi pendaftaran PT Dirac Inovasi Nusantara [' + String(message.reference || '') + ']',
     text: diracSecurityMailTextV327(htmlInput), html: diracSecurityCorporateEmailHtmlV327(htmlInput), reference: String(message.reference || '')
   });
@@ -53331,13 +53467,15 @@ diracSecurityAlertConfigV320 = function diracSecurityAlertConfigCyberSmtpOnlyV35
     DIRAC_SECURITY_ALERT_SMTP_ONLY_DIAGNOSTIC_LOGGED_V352 = true;
     try {
       const diagnostic = diracSecurityAlertReadinessDiagnosticV332();
-      console.error('[dirac-security-alert-readiness-v352]', JSON.stringify({
+      const failureCodes = Array.isArray(diagnostic && diagnostic.failure_codes)
+        ? diagnostic.failure_codes.filter((code) => !/^DIRAC_SECURITY_ALERT_(?:BREVO|RESEND|PROVIDER_)/.test(String(code))).slice(0, 32)
+        : [];
+      const logReadiness = base && ready && failureCodes.length === 0 ? console.info : console.error;
+      logReadiness('[dirac-security-alert-readiness-v352]', JSON.stringify({
         patch: 'dirac-security-alert-smtp-only-diagnostic-v352',
         ready: Boolean(base && ready),
         config_available: Boolean(base),
-        failure_codes: Array.isArray(diagnostic && diagnostic.failure_codes)
-          ? diagnostic.failure_codes.filter((code) => !/^DIRAC_SECURITY_ALERT_(?:BREVO|RESEND|PROVIDER_)/.test(String(code))).slice(0, 32)
-          : [],
+        failure_codes: failureCodes,
         provider: 'gmail_smtp',
         brevo_fallback_ready: brevoFallbackReady,
         resend_fallback_ready: resendFallbackReady,
@@ -53359,7 +53497,8 @@ diracSecurityAlertSendV320 = async function diracSecurityAlertSendCyberSmtpOnlyV
   const eventNameV352 = diracSecurityMailCleanV327(snapshot && snapshot.event || 'security_alert', 80);
   const logDeliveryV352 = (input) => {
     try {
-      console.error('[dirac-security-alert-delivery-v352]', JSON.stringify({
+      const logDelivery = input && input.ok === true ? console.info : console.error;
+      logDelivery('[dirac-security-alert-delivery-v352]', JSON.stringify({
         patch: 'dirac-security-alert-smtp-only-diagnostic-v352',
         event: eventNameV352,
         alert_reference: alertReferenceV352,
@@ -55221,11 +55360,24 @@ function diracCentralRawRequestHeaderGuardV228(req, ctx) {
 async function diracCentralCaptureRawRequestV230(req) {
   if (!req || typeof req !== 'object') return { ok: false, reason: 'raw_request_object_required' };
   try {
+    const method = String(req.method || 'GET').toUpperCase();
+    const declared = String(req.headers && req.headers['content-length'] || '').trim();
+    const rawQueryV264 = String(req.url || '').split('?').slice(1).join('?');
+    const rawActionV264 = diracV143NormalizeAction(String(new URLSearchParams(rawQueryV264).get('action') || ''));
+    const contractLimit = Number(diracCentralContractForActionV146(rawActionV264).maxBodyBytes || 0);
+    const rawLimit = Math.max(1024, contractLimit || Number(diracUltraBodyLimitBytes(rawActionV264, method) || 128 * 1024));
+    if (declared && Number(declared) > rawLimit) return { ok: false, reason: 'raw_body_too_large' };
     const candidates = [req.__diracRawBodyBufferV230, req.__diracRawJsonV221, req.rawBody, req.bodyRaw, req.raw];
     let buffer = null;
     for (const value of candidates) {
-      if (Buffer.isBuffer(value) || value instanceof Uint8Array) { buffer = Buffer.from(value); break; }
-      if (typeof value === 'string') { buffer = Buffer.from(value, 'utf8'); break; }
+      if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+        if (value.byteLength > rawLimit) return { ok: false, reason: 'raw_body_too_large' };
+        buffer = Buffer.from(value); break;
+      }
+      if (typeof value === 'string') {
+        if (Buffer.byteLength(value, 'utf8') > rawLimit) return { ok: false, reason: 'raw_body_too_large' };
+        buffer = Buffer.from(value, 'utf8'); break;
+      }
     }
     const bodyDescriptorV230 =
       Object.getOwnPropertyDescriptor(req, 'body');
@@ -55244,18 +55396,16 @@ async function diracCentralCaptureRawRequestV230(req) {
       (Buffer.isBuffer(bodyValueV230) ||
         bodyValueV230 instanceof Uint8Array)
     ) {
+      if (bodyValueV230.byteLength > rawLimit) return { ok: false, reason: 'raw_body_too_large' };
       buffer = Buffer.from(bodyValueV230);
     }
 
     if (!buffer && typeof bodyValueV230 === 'string') {
+      if (Buffer.byteLength(bodyValueV230, 'utf8') > rawLimit) return { ok: false, reason: 'raw_body_too_large' };
       buffer = Buffer.from(bodyValueV230, 'utf8');
     }
 
-    const method = String(req.method || 'GET').toUpperCase();
-    const declared = String(req.headers && req.headers['content-length'] || '').trim();
     const bodyCapable = !['GET', 'HEAD', 'OPTIONS'].includes(method);
-    const rawQueryV264 = String(req.url || '').split('?').slice(1).join('?');
-    const rawActionV264 = diracV143NormalizeAction(String(new URLSearchParams(rawQueryV264).get('action') || ''));
     const rawReplayAttemptV264 = Boolean(
       rawActionV264 === 'security_report' &&
       bodyCapable &&
@@ -55282,10 +55432,6 @@ async function diracCentralCaptureRawRequestV230(req) {
         streamReadable
       );
     if (!buffer && bodyExpected && streamReadable) {
-      const action = rawActionV264;
-      const contractLimit = Number(diracCentralContractForActionV146(action).maxBodyBytes || 0);
-      const rawLimit = Math.max(1024, contractLimit || Number(diracUltraBodyLimitBytes(action, method) || 128 * 1024));
-      if (declared && Number(declared) > rawLimit) return { ok: false, reason: 'raw_body_too_large' };
       buffer = await new Promise((resolve, reject) => {
         const chunks = [];
         let total = 0;
@@ -63070,8 +63216,8 @@ function diracSecurityAlertConfigV320() {
   const user = diracSecurityAlertEmailV320(process.env.DIRAC_SECURITY_ALERT_SMTP_USER);
   const appPassword = String(process.env.DIRAC_SECURITY_ALERT_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
   const fromEmail = diracSecurityAlertEmailV320(process.env.DIRAC_SECURITY_ALERT_FROM_EMAIL || user);
-  const fromName = String(process.env.DIRAC_SECURITY_ALERT_FROM_NAME || 'Dirac Central Guard')
-    .replace(/[\r\n<>]/g, '').trim().slice(0, 80) || 'Dirac Central Guard';
+  const fromName = String(process.env.DIRAC_SECURITY_ALERT_FROM_NAME || 'PT Dirac Inovasi Nusantara')
+    .replace(/[\r\n<>]/g, '').trim().slice(0, 80) || 'PT Dirac Inovasi Nusantara';
   const recipients = Array.from(new Set(String(process.env.DIRAC_SECURITY_ALERT_TO || '')
     .split(/[;,\s]+/).map(diracSecurityAlertEmailV320).filter(Boolean))).slice(0, 5);
   const hmacSecretText = String(process.env.DIRAC_SECURITY_ALERT_HMAC_SECRET || '');
@@ -63330,7 +63476,7 @@ function diracSecurityAlertBase64LinesV320(value) {
 }
 
 function diracSecurityAlertMessageV320(snapshot, config) {
-  const subject = '[DIRAC ' + snapshot.severity + '] ' + snapshot.threat_class + ' · ' + snapshot.failure_id;
+  const subject = '[PT Dirac Inovasi Nusantara ' + snapshot.severity + '] ' + snapshot.threat_class + ' · ' + snapshot.failure_id;
   const rows = [
     ['Status', 'BLOCKED / FAIL-CLOSED'],
     ['Klasifikasi', snapshot.threat_class],
@@ -63361,7 +63507,7 @@ function diracSecurityAlertMessageV320(snapshot, config) {
     ? snapshot.trace.map((entry, index) => (index + 1) + '. ' + entry.stage + ' → ' + entry.result + ' (' + entry.duration_ms + ' ms)').join('\n')
     : 'Tidak tersedia.';
   const textBody = [
-    'DIRAC CENTRAL GUARD — SECURITY INCIDENT',
+    'PT Dirac Inovasi Nusantara — SECURITY INCIDENT',
     '',
     ...rows.map((row) => row[0] + ': ' + row[1]),
     '',
@@ -63380,7 +63526,7 @@ function diracSecurityAlertMessageV320(snapshot, config) {
     : '<li>Tidak tersedia.</li>';
   const htmlBody = '<!doctype html><html><body style="margin:0;background:#070b16;font-family:Arial,sans-serif;color:#f8fafc">'
     + '<div style="padding:30px 12px"><div style="max-width:760px;margin:auto;border:1px solid #26334d;border-radius:20px;overflow:hidden;background:#101827">'
-    + '<div style="padding:26px;background:linear-gradient(135deg,#7f1d1d,#dc2626 55%,#f97316)"><div style="font-size:12px;letter-spacing:.18em;font-weight:700">DIRAC CENTRAL GUARD</div>'
+    + '<div style="padding:26px;background:linear-gradient(135deg,#7f1d1d,#dc2626 55%,#f97316)"><div style="font-size:12px;letter-spacing:.18em;font-weight:700">PT Dirac Inovasi Nusantara</div>'
     + '<h1 style="margin:9px 0 4px;font-size:25px">Ancaman diblokir secara otomatis</h1><div style="opacity:.9">' + diracSecurityAlertHtmlV320(snapshot.threat_class) + '</div></div>'
     + '<div style="padding:22px"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#3f1218;color:#fda4af;font-size:12px;font-weight:800">'
     + diracSecurityAlertHtmlV320(snapshot.severity) + ' · FAIL-CLOSED</div><table role="presentation" style="width:100%;border-collapse:collapse;margin-top:18px;font-size:13px">'
@@ -63935,11 +64081,15 @@ function diracCentralRuntimeSecretEntriesV194(includeVendorKeys) {
   for (const name of Object.keys(process.env)) {
     if (/(?:VERSION|KEY_ID|DEBUG|ACTIONS|TABLES)$/i.test(name)) continue;
     if (/(?:PUBLIC_KEY|PUBLIC_KEY_PEM|PUBLIC_KEY_DER_B64|ANON_KEY|PUBLISHABLE_KEY)$/i.test(name)) continue;
-    const internal = /(?:SECRET|PEPPER|PRIVATE_KEY|PRIVATE_KEY_PEM|PRIVATE_KEY_DER_B64|SERVICE_ROLE_KEY|SERVICE_KEY|APP_PASSWORD)$/i.test(name);
+    const internal = /(?:SECRET|PEPPER|PRIVATE_KEY|PRIVATE_KEY_PEM|PRIVATE_KEY_DER_B64|SERVICE_ROLE_KEY|SERVICE_KEY|APP_PASSWORD(?:_(?:[1-9]|10))?)$/i.test(name);
     const vendor = includeVendorKeys && /(?:API_KEY|SERVER_KEY|ACCESS_TOKEN|REFRESH_TOKEN)$/i.test(name);
     if (!internal && !vendor) continue;
     const value = String(process.env[name] || '');
     if (value.length >= 16) entries.push({ name, value });
+    if (/APP_PASSWORD(?:_(?:[1-9]|10))?$/i.test(name)) {
+      const normalized = value.replace(/\s+/g, '');
+      if (normalized !== value && normalized.length >= 16) entries.push({ name, value: normalized });
+    }
   }
   return entries;
 }
@@ -64336,6 +64486,15 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
     created_at: new Date(now).toISOString()
   };
   if (accountBoundHtmlBanV358) record.account_bound_v358 = true;
+  // Report the effective persistence policy; the writer below promotes ban
+  // records to the permanent sentinel without changing the requested lockout.
+  const banPermanent = diracPersistentSecurityRecordIsPermanentV335(record, persistentKeys[0]);
+  const banDiagnostic = {
+    ban_type: record.type,
+    ban_permanent: banPermanent,
+    ttl_seconds: banPermanent ? null : Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000),
+    blocked_until_ms: banPermanent ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 : blockedUntilMs
+  };
   const writeResults = await Promise.all(persistentKeys.map((persistentKey) =>
     writePersistentSecurityJsonRequiredV194(
       persistentKey,
@@ -64349,8 +64508,7 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
     try {
       if (typeof diracCentralEmitDebugV211 === 'function') diracCentralEmitDebugV211(ctx, 'persistent_ban_write_failed', {
         persistent_ban_written: false,
-        ban_type: record.type,
-        ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000)
+        ...banDiagnostic
       });
     } catch (suppressedErrorV284) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV284); }
     return { ok: false };
@@ -64364,8 +64522,7 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
         diracCentralEmitDebugV211(ctx, 'persistent_ban_write_failed', {
           persistent_ban_written: true,
           customer_access_ban_written: false,
-          ban_type: record.type,
-          ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000)
+          ...banDiagnostic
         });
         failedMirrorAlertDrainV352 = DIRAC_SECURITY_ALERT_STATE_V320 && DIRAC_SECURITY_ALERT_STATE_V320.drainPromise;
       }
@@ -64383,9 +64540,7 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
     if (typeof diracCentralEmitDebugV211 === 'function') {
       diracCentralEmitDebugV211(ctx, 'persistent_ban_written', {
         persistent_ban_written: true,
-        ban_type: record.type,
-        ttl_seconds: Math.ceil(DIRAC_CENTRAL_TRANSIENT_PERSISTENT_BAN_MS_V284 / 1000),
-        blocked_until_ms: blockedUntilMs
+        ...banDiagnostic
       });
       persistentBanAlertDrainV331 = DIRAC_SECURITY_ALERT_STATE_V320 && DIRAC_SECURITY_ALERT_STATE_V320.drainPromise;
     }
