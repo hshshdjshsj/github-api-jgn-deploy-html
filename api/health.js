@@ -22779,19 +22779,9 @@ async function diracPasskeyA2FUpdateUsage({ row, owner, response, credential, cl
     ...currentCredentialJson,
     webauthn: {
       ...(currentCredentialJson.webauthn && typeof currentCredentialJson.webauthn === 'object' ? currentCredentialJson.webauthn : {}),
-      backup_eligible: assertion.backupEligible === true,
+      sign_count: signCount,
       backup_state: assertion.backupState === true,
-      device_bound: assertion.deviceBound === true,
-      sync_policy: deviceBinding.serverBound === true ? 'synced-passkey-server-device-binding-v2' : 'synced-passkey-device-binding-required-v1'
-    },
-    device_binding: {
-      ...(currentCredentialJson.device_binding && typeof currentCredentialJson.device_binding === 'object' ? currentCredentialJson.device_binding : {}),
-      version: deviceBinding.version,
-      algorithm: deviceBinding.algorithm,
-      policy: deviceBinding.policy,
-      required: true,
-      key_id: deviceBinding.keyId,
-      ...(deviceBinding.publicKeyJwk ? { public_key_jwk: deviceBinding.publicKeyJwk } : {}),
+      last_verified_at: nowIso
     },
     last_authentication: diracPasskeyA2FMinimalCredentialJson({ credential, response, clientData, payload, owner, req, mode: 'authentication' })
   };
