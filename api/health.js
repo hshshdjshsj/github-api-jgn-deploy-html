@@ -1421,10 +1421,31 @@ async function domainHealth(req, res) {
     return diracPasskeyConfirmDashboardCookieRoundtripV241(req, res);
   }
 
+  const companyNameV385 = diracCanonicalCompanyNameV381();
+  const acceptV385 = String(req.headers && req.headers.accept || '')
+    .split(',')
+    .map((value) => String(value || '').trim().split(';')[0].toLowerCase());
+  if (acceptV385.includes('application/vnd.dirac.company+json')) {
+    const etagV385 = '"dirac-company-v385-' + crypto.createHash('sha256').update(companyNameV385, 'utf8').digest('hex').slice(0, 32) + '"';
+    const varyV385 = String(res.getHeader && res.getHeader('Vary') || '')
+      .split(',')
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+    if (!varyV385.some((value) => value.toLowerCase() === 'accept')) varyV385.push('Accept');
+    if (varyV385.length) res.setHeader('Vary', varyV385.join(', '));
+    res.setHeader('Cache-Control', 'private, max-age=31536000, must-revalidate');
+    res.setHeader('ETag', etagV385);
+    const ifNoneMatchV385 = String(req.headers && req.headers['if-none-match'] || '')
+      .split(',')
+      .map((value) => String(value || '').trim());
+    if (ifNoneMatchV385.includes('*') || ifNoneMatchV385.includes(etagV385)) return res.status(304).end();
+    return res.status(200).json({ ok: true, company_name: companyNameV385 });
+  }
+
   const healthPayload = {
     ok: true,
     service: 'dirac-domain',
-    company_name: diracCanonicalCompanyNameV381(),
+    company_name: companyNameV385,
     debugPatch: DIRAC_COOKIE_SESSION_PATCH,
     signedSessionCookie: DOMAIN_SIGNED_SESSION_COOKIE,
     message: 'Domain API aktif.',
