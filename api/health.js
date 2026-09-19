@@ -1400,7 +1400,9 @@ function diracBoundedMapSetV321(map, key, value, maximumSize, now, expiryReader)
 }
 
 function diracCanonicalCompanyNameV381() {
-  const raw = String(process.env.ORDER_OWNER_FROM_NAME || '').replace(/\s+/g, ' ').trim();
+  let raw = String(process.env.ORDER_OWNER_FROM_NAME || '').replace(/\s+/g, ' ').trim();
+  const repeated = /^(PT\s+[A-Za-z0-9][A-Za-z0-9 .,&'()\/-]{2,76}?)(?:\s*\1)$/i.exec(raw);
+  if (repeated) raw = String(repeated[1] || '').replace(/\s+/g, ' ').trim();
   if (!raw || raw.length > 80 || /[<>\r\n\u0000-\u001f\u007f]/.test(raw)) return 'PT Dirac Inovasi Nusantara';
   const forbidden = new RegExp(('dig' + 'daya') + '|' + ('dirac' + '\s*' + 'group'), 'i');
   if (forbidden.test(raw)) return 'PT Dirac Inovasi Nusantara';
