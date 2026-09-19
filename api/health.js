@@ -16856,6 +16856,19 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
       subtotal: backendQuote.subtotal,
       shipping_cost: backendQuote.shippingCost || 0,
       discount: backendQuote.discount || 0,
+      taxable_amount: backendQuote.taxableAmount || 0,
+      tax_amount: backendQuote.taxAmount || 0,
+      tax_effective_rate_bps: backendQuote.taxEffectiveRateBps || DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps,
+      tax_statutory_rate_bps: backendQuote.taxStatutoryRateBps || DIRAC_COMMERCE_PRICING_V401.taxStatutoryRateBps,
+      tax_dpp_numerator: backendQuote.taxDppNumerator || DIRAC_COMMERCE_PRICING_V401.taxDppNumerator,
+      tax_dpp_denominator: backendQuote.taxDppDenominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator,
+      shipping_origin_code: backendQuote.shippingQuote && backendQuote.shippingQuote.originCode || null,
+      shipping_distance_km: backendQuote.shippingQuote && backendQuote.shippingQuote.distanceKm || 0,
+      shipping_actual_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.actualWeightGrams || 0,
+      shipping_volumetric_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.volumetricWeightGrams || 0,
+      shipping_billable_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.billableWeightGrams || 0,
+      shipping_mode: backendQuote.shippingQuote && backendQuote.shippingQuote.mode || 'standard',
+      shipping_breakdown: backendQuote.shippingQuote || {},
       total: backendQuote.total,
       note: checkoutNote || null,
       payment_method: 'Belum dipilih',
@@ -16885,7 +16898,11 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
         quantity,
         unitPrice: backendQuote.unitPrice,
         costPrice: backendQuote.costPrice,
-        subtotal: backendQuote.subtotal
+        subtotal: backendQuote.subtotal,
+        shippingWeightGrams: backendQuote.product && backendQuote.product.shipping_weight_grams || 500,
+        shippingLengthCm: backendQuote.product && backendQuote.product.shipping_length_cm || 20,
+        shippingWidthCm: backendQuote.product && backendQuote.product.shipping_width_cm || 15,
+        shippingHeightCm: backendQuote.product && backendQuote.product.shipping_height_cm || 10
       }];
 
   const itemBodies = quoteItems.map((item) => {
@@ -16894,7 +16911,11 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
       product_title: sessionOwnershipCheckoutCleanText(item.productTitle || backendQuote.productTitle || 'Item pesanan', 180),
       quantity: sessionOwnershipCheckoutPositiveInteger(item.quantity || 1, 1, 999),
       unit_price: sessionOwnershipCheckoutPositiveMoney(item.unitPrice || 0),
-      cost_price: sessionOwnershipCheckoutNonNegativeMoney(item.costPrice || 0)
+      cost_price: sessionOwnershipCheckoutNonNegativeMoney(item.costPrice || 0),
+      shipping_weight_grams: sessionOwnershipCheckoutPositiveInteger(item.shippingWeightGrams || 500, 1, 50000),
+      shipping_length_cm: Number(item.shippingLengthCm || 20),
+      shipping_width_cm: Number(item.shippingWidthCm || 15),
+      shipping_height_cm: Number(item.shippingHeightCm || 10)
     };
     const productDocId = sessionOwnershipCheckoutCleanText(item.productDocId || '', 80);
     if (productDocId) row.product_doc_id = productDocId;
@@ -16932,6 +16953,21 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     subtotal: backendQuote.subtotal,
     shipping_cost: backendQuote.shippingCost || 0,
     discount: backendQuote.discount || 0,
+    taxable_amount: backendQuote.taxableAmount || 0,
+    tax_amount: backendQuote.taxAmount || 0,
+    tax_label: backendQuote.taxLabel || sessionOwnershipCheckoutTaxLabel(backendQuote.taxAmount || 0),
+    tax_effective_rate_bps: backendQuote.taxEffectiveRateBps || DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps,
+    tax_statutory_rate_bps: backendQuote.taxStatutoryRateBps || DIRAC_COMMERCE_PRICING_V401.taxStatutoryRateBps,
+    tax_dpp_numerator: backendQuote.taxDppNumerator || DIRAC_COMMERCE_PRICING_V401.taxDppNumerator,
+    tax_dpp_denominator: backendQuote.taxDppDenominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator,
+    shipping_origin_code: backendQuote.shippingQuote && backendQuote.shippingQuote.originCode || '',
+    shipping_origin_label: backendQuote.shippingQuote && backendQuote.shippingQuote.originLabel || '',
+    shipping_distance_km: backendQuote.shippingQuote && backendQuote.shippingQuote.distanceKm || 0,
+    shipping_actual_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.actualWeightGrams || 0,
+    shipping_volumetric_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.volumetricWeightGrams || 0,
+    shipping_billable_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.billableWeightGrams || 0,
+    shipping_mode: backendQuote.shippingQuote && backendQuote.shippingQuote.mode || 'standard',
+    shipping_breakdown: backendQuote.shippingQuote || {},
     voucher_code: backendQuote.voucherCode || '',
     currency: 'IDR',
     order_status: 'pending',
@@ -17023,12 +17059,204 @@ function sessionOwnershipCheckoutBuildParfumQuoteTitle(items) {
   return summary.length > 480 ? summary.slice(0, 477) + '...' : summary;
 }
 
+const DIRAC_COMMERCE_PRICING_V401 = Object.freeze({
+  taxEffectiveRateBps: 1100,
+  taxStatutoryRateBps: 1200,
+  taxDppNumerator: 11,
+  taxDppDenominator: 12,
+  volumetricDivisor: 6000,
+  packagingBaseGrams: 200,
+  packagingPerItemGrams: 50,
+  freeShipThresholdIdr: 299000,
+  freeShipMaxSubsidyIdr: 25000
+});
+
+const DIRAC_SHIPPING_ORIGINS_V401 = Object.freeze({
+  surabaya: Object.freeze({ code: 'surabaya', label: 'Surabaya', lat: -7.2575, lng: 112.7521 }),
+  jakarta: Object.freeze({ code: 'jakarta', label: 'Jakarta', lat: -6.2088, lng: 106.8456 }),
+  sleman: Object.freeze({ code: 'sleman', label: 'Sleman', lat: -7.7325, lng: 110.4024 })
+});
+
+const DIRAC_SHIPPING_PROVINCE_CENTROIDS_V401 = Object.freeze({
+  'aceh': [-5.5483,95.3238], 'sumatera utara':[3.5952,98.6722], 'sumatera barat':[-0.9471,100.4172],
+  'riau':[0.5333,101.4500], 'kepulauan riau':[0.9167,104.4500], 'jambi':[-1.6101,103.6131],
+  'sumatera selatan':[-2.9761,104.7754], 'kepulauan bangka belitung':[-2.1291,106.1133], 'bengkulu':[-3.7928,102.2608],
+  'lampung':[-5.3971,105.2668], 'banten':[-6.1200,106.1503], 'dki jakarta':[-6.2088,106.8456],
+  'jawa barat':[-6.9175,107.6191], 'jawa tengah':[-6.9667,110.4167], 'di yogyakarta':[-7.7956,110.3695], 'daerah istimewa yogyakarta':[-7.7956,110.3695],
+  'daerah khusus ibukota jakarta':[-6.2088,106.8456], 'jawa timur':[-7.2575,112.7521], 'bali':[-8.6705,115.2126], 'nusa tenggara barat':[-8.5833,116.1167],
+  'nusa tenggara timur':[-10.1772,123.6070], 'kalimantan barat':[-0.0263,109.3425], 'kalimantan tengah':[-2.2096,113.9108],
+  'kalimantan selatan':[-3.3194,114.5908], 'kalimantan timur':[-0.5022,117.1536], 'kalimantan utara':[3.3000,117.6333],
+  'sulawesi utara':[1.4748,124.8421], 'gorontalo':[0.5435,123.0568], 'sulawesi tengah':[-0.9003,119.8780],
+  'sulawesi barat':[-2.6774,118.8935], 'sulawesi selatan':[-5.1477,119.4327], 'sulawesi tenggara':[-3.9985,122.5120],
+  'maluku':[-3.6954,128.1814], 'maluku utara':[0.7906,127.3842], 'papua barat':[-0.8615,134.0620],
+  'papua barat daya':[-0.8762,131.2558], 'papua':[-2.5337,140.7181], 'papua selatan':[-8.4932,140.4018],
+  'papua tengah':[-4.2699,136.0800], 'papua pegunungan':[-4.0836,138.9574]
+});
+
+function sessionOwnershipCheckoutNormalizeGeoText(value) {
+  return String(value || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function sessionOwnershipCheckoutParseDestinationAddress(address) {
+  const text = String(address || '');
+  const countryMatch = text.match(/(?:Negara|Country)\s*:\s*([^|]+)/i);
+  const provinceMatch = text.match(/(?:Provinsi\/State\/Region|Provinsi|State\/Region)\s*:\s*([^|]+)/i);
+  const cityMatch = text.match(/(?:Kota\/Kabupaten\/City|Kota\/Kabupaten|City)\s*:\s*([^|]+)/i);
+  const postalMatch = text.match(/(?:Kode Pos|Postal Code)\s*:\s*([^|]+)/i);
+  return {
+    country: sessionOwnershipCheckoutCleanText(countryMatch && countryMatch[1] || 'Indonesia', 80),
+    province: sessionOwnershipCheckoutCleanText(provinceMatch && provinceMatch[1] || '', 120),
+    city: sessionOwnershipCheckoutCleanText(cityMatch && cityMatch[1] || '', 160),
+    postalCode: sessionOwnershipCheckoutCleanText(postalMatch && postalMatch[1] || '', 24)
+  };
+}
+
+function sessionOwnershipCheckoutDestinationCoordinates(destination) {
+  const row = destination && typeof destination === 'object' ? destination : {};
+  const country = sessionOwnershipCheckoutNormalizeGeoText(row.country || 'indonesia');
+  if (country && country !== 'indonesia' && country !== 'id') return null;
+  const city = sessionOwnershipCheckoutNormalizeGeoText(row.city);
+  const province = sessionOwnershipCheckoutNormalizeGeoText(row.province);
+  if (city.includes('surabaya')) return { lat: -7.2575, lng: 112.7521, provinceKey: province || 'jawa timur' };
+  if (city.includes('jakarta')) return { lat: -6.2088, lng: 106.8456, provinceKey: 'dki jakarta' };
+  if (city.includes('sleman')) return { lat: -7.7325, lng: 110.4024, provinceKey: 'di yogyakarta' };
+  if (city.includes('yogyakarta') || city.includes('jogja')) return { lat: -7.7956, lng: 110.3695, provinceKey: 'di yogyakarta' };
+  const coords = DIRAC_SHIPPING_PROVINCE_CENTROIDS_V401[province];
+  return Array.isArray(coords) && coords.length === 2 ? { lat: Number(coords[0]), lng: Number(coords[1]), provinceKey: province } : null;
+}
+
+function sessionOwnershipCheckoutHaversineKm(lat1, lng1, lat2, lng2) {
+  const toRad = Math.PI / 180;
+  const dLat = (Number(lat2) - Number(lat1)) * toRad;
+  const dLng = (Number(lng2) - Number(lng1)) * toRad;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(Number(lat1) * toRad) * Math.cos(Number(lat2) * toRad) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+}
+
+function sessionOwnershipCheckoutShippingOrigin(code) {
+  const clean = String(code || '').trim().toLowerCase();
+  return DIRAC_SHIPPING_ORIGINS_V401[clean] || null;
+}
+
+function sessionOwnershipCheckoutChooseShippingOrigin(destinationCoords, forcedOriginCode) {
+  const forced = sessionOwnershipCheckoutShippingOrigin(forcedOriginCode);
+  if (forced) return forced;
+  if (!destinationCoords) return null;
+  const surabaya = DIRAC_SHIPPING_ORIGINS_V401.surabaya;
+  const jakarta = DIRAC_SHIPPING_ORIGINS_V401.jakarta;
+  const sleman = DIRAC_SHIPPING_ORIGINS_V401.sleman;
+  const ds = sessionOwnershipCheckoutHaversineKm(surabaya.lat, surabaya.lng, destinationCoords.lat, destinationCoords.lng);
+  const dj = sessionOwnershipCheckoutHaversineKm(jakarta.lat, jakarta.lng, destinationCoords.lat, destinationCoords.lng);
+  const dl = sessionOwnershipCheckoutHaversineKm(sleman.lat, sleman.lng, destinationCoords.lat, destinationCoords.lng);
+  if (ds <= dj && ds <= dl) return surabaya;
+  if (dj <= ds && dj <= dl) return jakarta;
+  return sleman;
+}
+
+function sessionOwnershipCheckoutShippingRateBand(distanceKm) {
+  const km = Number(distanceKm || 0);
+  if (km <= 50) return { base: 10000, perKg: 4000, perExtraItem: 500, band: '0-50km' };
+  if (km <= 200) return { base: 14000, perKg: 5500, perExtraItem: 750, band: '51-200km' };
+  if (km <= 500) return { base: 20000, perKg: 7500, perExtraItem: 1000, band: '201-500km' };
+  if (km <= 1000) return { base: 28000, perKg: 9500, perExtraItem: 1250, band: '501-1000km' };
+  if (km <= 2000) return { base: 40000, perKg: 13000, perExtraItem: 1500, band: '1001-2000km' };
+  return { base: 55000, perKg: 17000, perExtraItem: 2000, band: '>2000km' };
+}
+
+function sessionOwnershipCheckoutShippingRegionalSurcharge(provinceKey) {
+  const key = sessionOwnershipCheckoutNormalizeGeoText(provinceKey);
+  if (key === 'bali') return 5000;
+  if (key === 'nusa tenggara barat' || key === 'nusa tenggara timur') return 10000;
+  if (key.startsWith('kalimantan ')) return 12000;
+  if (key.startsWith('sulawesi ') || key === 'gorontalo') return 15000;
+  if (key.startsWith('maluku')) return 25000;
+  if (key.startsWith('papua')) return 35000;
+  return 0;
+}
+
+function sessionOwnershipCheckoutShippingMode(body) {
+  const raw = String(body && body.shipping_mode || 'standard').trim().toLowerCase();
+  if (!['standard', 'express', 'pickup'].includes(raw)) {
+    const error = new Error('Mode pengiriman tidak valid.');
+    error.statusCode = 400;
+    throw error;
+  }
+  return raw;
+}
+
+function sessionOwnershipCheckoutBuildShippingQuote(body, shippingInput, taxableAmount) {
+  const input = shippingInput && typeof shippingInput === 'object' ? shippingInput : {};
+  const mode = sessionOwnershipCheckoutShippingMode(body);
+  const itemCount = sessionOwnershipCheckoutPositiveInteger(input.itemCount || 0, 0, 49950);
+  const productWeightGrams = sessionOwnershipCheckoutNonNegativeMoney(input.actualWeightGrams || 0);
+  const volumetricWeightGrams = sessionOwnershipCheckoutNonNegativeMoney(input.volumetricWeightGrams || 0);
+  const packagingGrams = itemCount > 0 ? DIRAC_COMMERCE_PRICING_V401.packagingBaseGrams + (DIRAC_COMMERCE_PRICING_V401.packagingPerItemGrams * itemCount) : 0;
+  const actualWeightGrams = productWeightGrams + packagingGrams;
+  const billableWeightGrams = Math.max(actualWeightGrams, volumetricWeightGrams);
+  const billableKg = Math.max(1, Math.ceil(billableWeightGrams / 1000));
+  const destination = sessionOwnershipCheckoutParseDestinationAddress(sessionOwnershipCheckoutBuildShippingAddress(body));
+  const destinationCoords = sessionOwnershipCheckoutDestinationCoordinates(destination);
+  if (!destinationCoords) {
+    const error = new Error('Alamat tujuan Indonesia belum dapat dipetakan ke provinsi/kota untuk menghitung ongkir.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const origin = sessionOwnershipCheckoutChooseShippingOrigin(destinationCoords, input.forcedOriginCode || '');
+  if (!origin) {
+    const error = new Error('Gudang asal pengiriman belum dapat ditentukan.');
+    error.statusCode = 409;
+    throw error;
+  }
+  const airDistanceKm = sessionOwnershipCheckoutHaversineKm(origin.lat, origin.lng, destinationCoords.lat, destinationCoords.lng);
+  const distanceKm = Math.max(5, Math.ceil(airDistanceKm * 1.22));
+  const band = sessionOwnershipCheckoutShippingRateBand(distanceKm);
+  const regionalSurcharge = sessionOwnershipCheckoutShippingRegionalSurcharge(destinationCoords.provinceKey || destination.province);
+  const extraKg = Math.max(0, billableKg - 1);
+  const extraItems = Math.max(0, itemCount - 1);
+  const standardRaw = band.base + (extraKg * band.perKg) + (extraItems * band.perExtraItem) + regionalSurcharge;
+  const grossShipping = mode === 'pickup' ? 0 : Math.ceil((mode === 'express' ? standardRaw * 1.6 : standardRaw) / 1000) * 1000;
+  const freeShippingSubsidy = mode === 'standard' && Number(taxableAmount || 0) >= DIRAC_COMMERCE_PRICING_V401.freeShipThresholdIdr
+    ? Math.min(grossShipping, DIRAC_COMMERCE_PRICING_V401.freeShipMaxSubsidyIdr)
+    : 0;
+  const shippingCost = Math.max(0, grossShipping - freeShippingSubsidy);
+  return {
+    mode,
+    shippingCost,
+    grossShipping,
+    freeShippingSubsidy,
+    originCode: origin.code,
+    originLabel: origin.label,
+    destinationProvince: destination.province,
+    destinationCity: destination.city,
+    destinationPostalCode: destination.postalCode,
+    distanceKm,
+    actualWeightGrams,
+    volumetricWeightGrams,
+    billableWeightGrams: billableKg * 1000,
+    billableKg,
+    regionalSurcharge,
+    rateBand: band.band,
+    rateBase: band.base,
+    ratePerKg: band.perKg,
+    ratePerExtraItem: band.perExtraItem,
+    estimateMethod: 'internal_distance_weight_v401'
+  };
+}
+
+function sessionOwnershipCheckoutTaxLabel(taxAmount) {
+  return Number(taxAmount || 0) > 0 ? 'PPN efektif 11% (12% × DPP 11/12)' : 'PPN 0%';
+}
+
 async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, requestedProductTitle, quantity }) {
   const normalizedServiceType = sessionOwnershipCheckoutNormalizeServiceType(serviceType);
 
   if (normalizedServiceType === 'parfum') {
     const checkoutItems = sessionOwnershipCheckoutExtractParfumItems(body, requestedProductTitle, quantity);
     const quoteItems = [];
+    let shippingActualWeightGrams = 0;
+    let shippingVolumetricWeightGrams = 0;
+    let shippingItemCount = 0;
+    let shippingForcedOriginCode = '';
     const requireReady = String(process.env.CHECKOUT_REQUIRE_PRODUCT_READY || 'false').trim().toLowerCase() === 'true';
 
     if (!checkoutItems.length) {
@@ -17070,6 +17298,29 @@ async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, re
         return { ok: false, status: 409, message: `Produk ${productTitle || itemTitle} belum ready. Checkout dihentikan.` };
       }
 
+      const shippingWeightGrams = Number(product.shipping_weight_grams);
+      const shippingLengthCm = Number(product.shipping_length_cm);
+      const shippingWidthCm = Number(product.shipping_width_cm);
+      const shippingHeightCm = Number(product.shipping_height_cm);
+      const shippingOriginCode = String(product.shipping_origin_code || 'auto').trim().toLowerCase();
+      if (!Number.isInteger(shippingWeightGrams) || shippingWeightGrams < 1 || shippingWeightGrams > 50000
+          || !Number.isFinite(shippingLengthCm) || shippingLengthCm <= 0 || shippingLengthCm > 200
+          || !Number.isFinite(shippingWidthCm) || shippingWidthCm <= 0 || shippingWidthCm > 200
+          || !Number.isFinite(shippingHeightCm) || shippingHeightCm <= 0 || shippingHeightCm > 200
+          || !['auto', 'surabaya', 'jakarta', 'sleman'].includes(shippingOriginCode)) {
+        return { ok: false, status: 409, message: `Data berat/dimensi/gudang produk ${productTitle || itemTitle} belum valid untuk perhitungan ongkir.` };
+      }
+      if (shippingOriginCode !== 'auto') {
+        if (shippingForcedOriginCode && shippingForcedOriginCode !== shippingOriginCode) {
+          return { ok: false, status: 409, message: 'Satu checkout tidak boleh mencampur produk dari gudang asal yang berbeda.' };
+        }
+        shippingForcedOriginCode = shippingOriginCode;
+      }
+      const itemVolumetricWeightGrams = Math.ceil((shippingLengthCm * shippingWidthCm * shippingHeightCm / DIRAC_COMMERCE_PRICING_V401.volumetricDivisor) * 1000 * itemQty);
+      shippingActualWeightGrams += shippingWeightGrams * itemQty;
+      shippingVolumetricWeightGrams += itemVolumetricWeightGrams;
+      shippingItemCount += itemQty;
+
       quoteItems.push({
         productDocId,
         productTitle,
@@ -17077,13 +17328,28 @@ async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, re
         unitPrice,
         costPrice,
         subtotal: unitPrice * itemQty,
+        shippingWeightGrams,
+        shippingLengthCm,
+        shippingWidthCm,
+        shippingHeightCm,
+        shippingOriginCode,
         product
       });
     }
 
-    const subtotal = quoteItems.reduce((sum, item) => sum + item.subtotal, 0);
-    const adjustments = await sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, normalizedServiceType);
-    const totalQty = quoteItems.reduce((sum, item) => sum + item.quantity, 0);
+    const quoteAggregate = quoteItems.reduce((acc, item) => {
+      acc.subtotal += item.subtotal;
+      acc.quantity += item.quantity;
+      return acc;
+    }, { subtotal: 0, quantity: 0 });
+    const subtotal = quoteAggregate.subtotal;
+    const adjustments = await sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, normalizedServiceType, {
+      actualWeightGrams: shippingActualWeightGrams,
+      volumetricWeightGrams: shippingVolumetricWeightGrams,
+      itemCount: shippingItemCount,
+      forcedOriginCode: shippingForcedOriginCode
+    });
+    const totalQty = quoteAggregate.quantity;
     const productTitle = sessionOwnershipCheckoutBuildParfumQuoteTitle(quoteItems);
     const first = quoteItems[0] || {};
 
@@ -17099,6 +17365,14 @@ async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, re
       subtotal,
       shippingCost: adjustments.shippingCost || 0,
       discount: adjustments.discount || 0,
+      taxableAmount: adjustments.taxableAmount || 0,
+      taxAmount: adjustments.taxAmount || 0,
+      taxLabel: adjustments.taxLabel || '',
+      taxEffectiveRateBps: adjustments.taxEffectiveRateBps || DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps,
+      taxStatutoryRateBps: adjustments.taxStatutoryRateBps || DIRAC_COMMERCE_PRICING_V401.taxStatutoryRateBps,
+      taxDppNumerator: adjustments.taxDppNumerator || DIRAC_COMMERCE_PRICING_V401.taxDppNumerator,
+      taxDppDenominator: adjustments.taxDppDenominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator,
+      shippingQuote: adjustments.shippingQuote || null,
       voucherCode: adjustments.voucherCode || '',
       total: adjustments.total,
       items: quoteItems,
@@ -17292,9 +17566,8 @@ function sessionOwnershipCheckoutBuildOrderNote(body) {
   return sessionOwnershipCheckoutCleanText(pieces.join(' | '), 700);
 }
 
-async function sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, serviceType) {
+async function sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, serviceType, shippingInput) {
   const baseSubtotal = sessionOwnershipCheckoutNonNegativeMoney(subtotal || 0);
-  const shippingCost = sessionOwnershipCheckoutExtractShippingCost(body);
   const voucherCode = sessionOwnershipCheckoutExtractVoucherCode(body);
 
   // A discount is financial authority. Browser totals never supply it, including
@@ -17310,15 +17583,27 @@ async function sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, s
   const discountSource = backendVoucher.ok === true ? backendVoucher.source : 'none';
   const rawDiscount = backendVoucher.ok === true ? backendVoucher.discount : 0;
   const discount = Math.min(baseSubtotal, sessionOwnershipCheckoutNonNegativeMoney(rawDiscount));
-  const total = Math.max(0, baseSubtotal - discount + shippingCost);
+  const taxableAmount = Math.max(0, baseSubtotal - discount);
+  const taxAmount = Math.round(taxableAmount * DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps / 10000);
+  const shippingQuote = sessionOwnershipCheckoutBuildShippingQuote(body, shippingInput, taxableAmount);
+  const shippingCost = shippingQuote.shippingCost;
+  const total = Math.max(0, taxableAmount + taxAmount + shippingCost);
 
   return {
     subtotal: baseSubtotal,
     shippingCost,
     discount,
+    taxableAmount,
+    taxAmount,
+    taxLabel: sessionOwnershipCheckoutTaxLabel(taxAmount),
+    taxEffectiveRateBps: DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps,
+    taxStatutoryRateBps: DIRAC_COMMERCE_PRICING_V401.taxStatutoryRateBps,
+    taxDppNumerator: DIRAC_COMMERCE_PRICING_V401.taxDppNumerator,
+    taxDppDenominator: DIRAC_COMMERCE_PRICING_V401.taxDppDenominator,
+    shippingQuote,
     voucherCode,
     total,
-    priceSource: sessionOwnershipCheckoutPriceSourceWithAdjustments(serviceType, discount, shippingCost, voucherCode, discountSource)
+    priceSource: sessionOwnershipCheckoutPriceSourceWithAdjustments(serviceType, discount, shippingCost, voucherCode, discountSource, taxAmount)
   };
 }
 
@@ -17597,7 +17882,7 @@ function sessionOwnershipCheckoutCalculateVoucherDiscount(row, subtotal) {
   return Math.min(baseSubtotal, Math.max(0, Math.round(discount)));
 }
 
-function sessionOwnershipCheckoutPriceSourceWithAdjustments(serviceType, discount, shippingCost, voucherCode, discountSource) {
+function sessionOwnershipCheckoutPriceSourceWithAdjustments(serviceType, discount, shippingCost, voucherCode, discountSource, taxAmount) {
   const base = sessionOwnershipCheckoutNormalizeServiceType(serviceType) === 'parfum'
     ? 'products.price.multi_item_server_locked'
     : 'manual_unpaid_quote_no_gateway';
@@ -17606,6 +17891,7 @@ function sessionOwnershipCheckoutPriceSourceWithAdjustments(serviceType, discoun
     const source = sessionOwnershipCheckoutCleanText(discountSource || '', 80);
     flags.push(voucherCode ? `voucher_discount_applied${source ? ':' + source : ''}` : `discount_applied${source ? ':' + source : ''}`);
   }
+  if (Number(taxAmount || 0) > 0) flags.push('ppn_effective_11_applied');
   if (Number(shippingCost || 0) > 0) flags.push('shipping_cost_applied');
   return flags.length ? `${base}+${flags.join('+')}` : base;
 }
@@ -17829,7 +18115,7 @@ async function myOrdersResolveOwner(authUserId, userEmail) {
 async function myOrdersFetchGenericOrders(owner, userEmail) {
   const orderMap = new Map();
   const errors = [];
-  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,service_type,subtotal,total,payment_method,payment_status,order_status,created_at';
+  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at';
 
   async function addRowsFromPath(path) {
     const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
@@ -17910,6 +18196,22 @@ function myOrdersNormalizeGenericOrder(row, items) {
     customer_email: normalizeAuthEmail(row.customer_email || ''),
     customer_phone: myOrdersCleanText(row.customer_phone || '', 80),
     subtotal: myOrdersMoney(row.subtotal ?? total),
+    shipping_cost: myOrdersMoney(row.shipping_cost ?? 0),
+    discount: myOrdersMoney(row.discount ?? 0),
+    taxable_amount: myOrdersMoney(row.taxable_amount ?? 0),
+    tax_amount: myOrdersMoney(row.tax_amount ?? 0),
+    tax_label: sessionOwnershipCheckoutTaxLabel(row.tax_amount || 0),
+    tax_effective_rate_bps: Number(row.tax_effective_rate_bps || DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps),
+    tax_statutory_rate_bps: Number(row.tax_statutory_rate_bps || DIRAC_COMMERCE_PRICING_V401.taxStatutoryRateBps),
+    tax_dpp_numerator: Number(row.tax_dpp_numerator || DIRAC_COMMERCE_PRICING_V401.taxDppNumerator),
+    tax_dpp_denominator: Number(row.tax_dpp_denominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator),
+    shipping_origin_code: myOrdersCleanText(row.shipping_origin_code || '', 40),
+    shipping_origin_label: sessionOwnershipCheckoutShippingOrigin(row.shipping_origin_code) && sessionOwnershipCheckoutShippingOrigin(row.shipping_origin_code).label || '',
+    shipping_distance_km: Number(row.shipping_distance_km || 0),
+    shipping_actual_weight_grams: Number(row.shipping_actual_weight_grams || 0),
+    shipping_volumetric_weight_grams: Number(row.shipping_volumetric_weight_grams || 0),
+    shipping_billable_weight_grams: Number(row.shipping_billable_weight_grams || 0),
+    shipping_mode: myOrdersCleanText(row.shipping_mode || 'standard', 20),
     total,
     currency: 'IDR',
     payment_method: myOrdersCleanText(row.payment_method || 'Belum dipilih', 80),
@@ -19891,7 +20193,7 @@ async function midtransFetchPaidInvoiceOrderAfterBindingV376(tx) {
   if (tx.order_id) {
     const orderId = String(tx.order_id || '').trim();
     if (!orderId) return null;
-    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at';
+    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_status,order_status,created_at';
     const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select)
       + '&id=eq.' + encodeURIComponent(orderId)
       + '&customer_id=eq.' + encodeURIComponent(customerId)
@@ -29387,7 +29689,7 @@ async function diracUniversalPesananFetchOwnedRegularOrder(inputOrderId, custome
 
   if (!filters.length) return { ok: false, status: 400, message: 'Order ID regular tidak valid.' };
 
-  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,service_type,subtotal,total,payment_method,payment_status,order_status,created_at';
+  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at';
   const path = '/rest/v1/orders?select=' + encodeURIComponent(select)
     + '&customer_id=eq.' + encodeURIComponent(customerId)
     + '&or=' + encodeURIComponent(`(${filters.join(',')})`)
@@ -29948,7 +30250,7 @@ async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, pai
     && paidOrder.payment_status === 'paid'
     && midtransStrictMoneyV350(paidOrder.total) === midtransStrictMoneyV350(tx.amount) ? paidOrder : null;
   if (!order) {
-    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at';
+    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_status,order_status,created_at';
     const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select) + '&id=eq.' + encodeURIComponent(orderId)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id) + '&limit=1', {
       method: 'GET',
@@ -29985,6 +30287,19 @@ async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, pai
         subtotal: orderMailMoney(order.subtotal || amount),
         shipping_cost: orderMailMoney(order.shipping_cost || 0),
         discount: orderMailMoney(order.discount || 0),
+        taxable_amount: orderMailMoney(order.taxable_amount || 0),
+        tax_amount: orderMailMoney(order.tax_amount || 0),
+        tax_label: sessionOwnershipCheckoutTaxLabel(order.tax_amount || 0),
+        tax_effective_rate_bps: Number(order.tax_effective_rate_bps || DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps),
+        tax_statutory_rate_bps: Number(order.tax_statutory_rate_bps || DIRAC_COMMERCE_PRICING_V401.taxStatutoryRateBps),
+        tax_dpp_numerator: Number(order.tax_dpp_numerator || DIRAC_COMMERCE_PRICING_V401.taxDppNumerator),
+        tax_dpp_denominator: Number(order.tax_dpp_denominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator),
+        shipping_origin_code: orderMailCleanText(order.shipping_origin_code || '', 40),
+        shipping_distance_km: Number(order.shipping_distance_km || 0),
+        shipping_actual_weight_grams: Number(order.shipping_actual_weight_grams || 0),
+        shipping_volumetric_weight_grams: Number(order.shipping_volumetric_weight_grams || 0),
+        shipping_billable_weight_grams: Number(order.shipping_billable_weight_grams || 0),
+        shipping_mode: orderMailCleanText(order.shipping_mode || 'standard', 20),
         currency: String(tx.currency || 'IDR').toUpperCase(),
         order_status: 'paid',
         payment_status: 'paid',
@@ -30243,6 +30558,19 @@ function orderMailNormalizeOrderInput(input) {
       subtotal: orderMailMoney(order.subtotal ?? total),
       shipping_cost: orderMailMoney(order.shipping_cost ?? order.ongkir ?? order.delivery_fee ?? 0),
       discount: orderMailMoney(order.discount ?? order.discount_amount ?? order.voucher_discount ?? 0),
+      taxable_amount: orderMailMoney(order.taxable_amount ?? 0),
+      tax_amount: orderMailMoney(order.tax_amount ?? 0),
+      tax_label: orderMailCleanText(order.tax_label || sessionOwnershipCheckoutTaxLabel(order.tax_amount || 0), 120),
+      tax_effective_rate_bps: Number(order.tax_effective_rate_bps || DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps),
+      tax_statutory_rate_bps: Number(order.tax_statutory_rate_bps || DIRAC_COMMERCE_PRICING_V401.taxStatutoryRateBps),
+      tax_dpp_numerator: Number(order.tax_dpp_numerator || DIRAC_COMMERCE_PRICING_V401.taxDppNumerator),
+      tax_dpp_denominator: Number(order.tax_dpp_denominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator),
+      shipping_origin_code: orderMailCleanText(order.shipping_origin_code || '', 40),
+      shipping_distance_km: Number(order.shipping_distance_km || 0),
+      shipping_actual_weight_grams: Number(order.shipping_actual_weight_grams || 0),
+      shipping_volumetric_weight_grams: Number(order.shipping_volumetric_weight_grams || 0),
+      shipping_billable_weight_grams: Number(order.shipping_billable_weight_grams || 0),
+      shipping_mode: orderMailCleanText(order.shipping_mode || 'standard', 20),
       currency,
       order_status: orderMailCleanText(order.order_status || 'pending', 40),
       payment_status: orderMailCleanText(order.payment_status || 'unpaid', 40),
@@ -30286,6 +30614,8 @@ function orderMailBuildNewOrderMessages(data) {
   const subtotal = orderMailFormatCurrency(data.order.subtotal || data.order.total, data.order.currency);
   const shippingCost = orderMailFormatCurrency(data.order.shipping_cost || 0, data.order.currency);
   const discount = orderMailFormatCurrency(data.order.discount || 0, data.order.currency);
+  const taxAmount = orderMailFormatCurrency(data.order.tax_amount || 0, data.order.currency);
+  const taxLabel = orderMailCleanText(data.order.tax_label || sessionOwnershipCheckoutTaxLabel(data.order.tax_amount || 0), 120);
   const total = orderMailFormatCurrency(data.order.total, data.order.currency);
   const created = orderMailFormatDate(data.order.created_at);
   const itemsText = orderMailItemsText(data.items, data.order.currency);
@@ -30321,9 +30651,18 @@ function orderMailBuildNewOrderMessages(data) {
   const noteTextLine = orderNote ? `Catatan: ${orderNote}` : '';
   const shippingInfoRows = shippingAddress ? [['Alamat pengiriman', shippingAddress]] : [];
   const noteInfoRows = orderNote ? [['Catatan', orderNote]] : [];
+  const shippingOrigin = sessionOwnershipCheckoutShippingOrigin(data.order.shipping_origin_code);
+  const shippingSummaryRows = data.order.shipping_origin_code ? [
+    ['Gudang asal', shippingOrigin ? shippingOrigin.label : data.order.shipping_origin_code],
+    ['Jarak estimasi', `${Number(data.order.shipping_distance_km || 0)} km`],
+    ['Berat tagihan', `${Math.max(0, Number(data.order.shipping_billable_weight_grams || 0))} gram`],
+    ['Mode pengiriman', String(data.order.shipping_mode || 'standard').toUpperCase()]
+  ] : [];
+  const taxTextLine = Number(data.order.tax_amount || 0) > 0 ? `${taxLabel}: ${taxAmount}` : '';
   const pricingInfoRows = [
     ['Subtotal', subtotal],
     ['Diskon/Voucher', discount],
+    ...(taxTextLine ? [[taxLabel, taxAmount]] : []),
     ['Ongkir', shippingCost],
     ['Total akhir', total]
   ];
@@ -30343,6 +30682,7 @@ function orderMailBuildNewOrderMessages(data) {
     `Layanan: ${serviceLabel}`,
     `Subtotal: ${subtotal}`,
     `Diskon/Voucher: ${discount}`,
+    taxTextLine,
     `Ongkir: ${shippingCost}`,
     `Total: ${total}`,
     `Status: ${statusLabel}`,
@@ -30374,6 +30714,7 @@ function orderMailBuildNewOrderMessages(data) {
     noteTextLine,
     `Subtotal: ${subtotal}`,
     `Diskon/Voucher: ${discount}`,
+    taxTextLine,
     `Ongkir: ${shippingCost}`,
     `Total: ${total}`,
     `Status bayar: ${statusLabel}`,
@@ -30401,6 +30742,7 @@ function orderMailBuildNewOrderMessages(data) {
       ...pricingInfoRows,
       ['Status', statusLabel],
       ...shippingInfoRows,
+      ...shippingSummaryRows,
       ...noteInfoRows,
       ['Waktu pembayaran', created],
       ['Referensi pembayaran', data.payment.invoice_id || '-']
@@ -30434,6 +30776,7 @@ function orderMailBuildNewOrderMessages(data) {
       ['Email', data.customer.email || '-'],
       ['HP/WA', data.customer.phone || '-'],
       ...shippingInfoRows,
+      ...shippingSummaryRows,
       ...noteInfoRows,
       ...pricingInfoRows,
       ['Status bayar', statusLabel],
@@ -35154,7 +35497,7 @@ function sessionOwnershipCheckoutV116SafeRestEqValue(value) {
 
 async function sessionOwnershipCheckoutFindProductForCheckout(body, requestedProductTitle) {
   const idCandidates = sessionOwnershipCheckoutProductIdCandidates(body);
-  const select = 'slug,doc_id,firebase_id,title,name,price,cost_price,stock,status,is_ready,is_active';
+  const select = 'slug,doc_id,firebase_id,title,name,price,cost_price,stock,status,is_ready,is_active,shipping_weight_grams,shipping_length_cm,shipping_width_cm,shipping_height_cm,shipping_origin_code';
   if (!idCandidates.length) {
     return {
       ok: false,
@@ -60694,7 +61037,7 @@ function diracCentralMidtransWebhookServiceRoleDecisionV350(ctx, table, path, op
       ? 'id,customer_id,total,payment_status,order_status'
       : 'id,customer_id,total_price,payment_status,order_status,status';
     const invoiceSelect = expectedTable === 'orders'
-      ? 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,total,payment_status,order_status,created_at'
+      ? 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_status,order_status,created_at'
       : 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at';
     const selectOk = one('select', select) || Boolean(cap.success && state && one('select', invoiceSelect));
     const ok = cleanTable === expectedTable && parsed.pathname === '/rest/v1/' + expectedTable
@@ -61532,6 +61875,19 @@ function diracCentralCheckoutOrderRowsSafeV146(body) {
     'subtotal',
     'shipping_cost',
     'discount',
+    'taxable_amount',
+    'tax_amount',
+    'tax_effective_rate_bps',
+    'tax_statutory_rate_bps',
+    'tax_dpp_numerator',
+    'tax_dpp_denominator',
+    'shipping_origin_code',
+    'shipping_distance_km',
+    'shipping_actual_weight_grams',
+    'shipping_volumetric_weight_grams',
+    'shipping_billable_weight_grams',
+    'shipping_mode',
+    'shipping_breakdown',
     'total',
     'note',
     'payment_method',
@@ -61549,7 +61905,25 @@ function diracCentralCheckoutOrderRowsSafeV146(body) {
     if (String(row.payment_method || '') !== 'Belum dipilih') return false;
     if (String(row.payment_status || '').toLowerCase() !== 'unpaid') return false;
     if (String(row.order_status || '').toLowerCase() !== 'pending') return false;
-    return ['subtotal', 'shipping_cost', 'discount', 'total'].every((key) => diracCentralIsNonNegativeNumberV146(row[key]));
+    if (!['subtotal', 'shipping_cost', 'discount', 'taxable_amount', 'tax_amount', 'shipping_distance_km', 'shipping_actual_weight_grams', 'shipping_volumetric_weight_grams', 'shipping_billable_weight_grams', 'total'].every((key) => diracCentralIsNonNegativeNumberV146(row[key]))) return false;
+    if (Number(row.tax_effective_rate_bps) !== 1100 || Number(row.tax_statutory_rate_bps) !== 1200
+        || Number(row.tax_dpp_numerator) !== 11 || Number(row.tax_dpp_denominator) !== 12) return false;
+    if (!/^(surabaya|jakarta|sleman)$/.test(String(row.shipping_origin_code || ''))) return false;
+    if (!/^(standard|express|pickup)$/.test(String(row.shipping_mode || ''))) return false;
+    if (!row.shipping_breakdown || typeof row.shipping_breakdown !== 'object' || Array.isArray(row.shipping_breakdown)) return false;
+    if (String(row.shipping_breakdown.estimateMethod || '') !== 'internal_distance_weight_v401'
+        || String(row.shipping_breakdown.originCode || '') !== String(row.shipping_origin_code || '')
+        || String(row.shipping_breakdown.mode || '') !== String(row.shipping_mode || '')
+        || Number(row.shipping_breakdown.shippingCost) !== Number(row.shipping_cost)
+        || Number(row.shipping_breakdown.distanceKm) !== Number(row.shipping_distance_km)
+        || Number(row.shipping_breakdown.actualWeightGrams) !== Number(row.shipping_actual_weight_grams)
+        || Number(row.shipping_breakdown.volumetricWeightGrams) !== Number(row.shipping_volumetric_weight_grams)
+        || Number(row.shipping_breakdown.billableWeightGrams) !== Number(row.shipping_billable_weight_grams)) return false;
+    const expectedTaxable = Math.max(0, Math.round(Number(row.subtotal)) - Math.round(Number(row.discount)));
+    const expectedTax = Math.round(expectedTaxable * 1100 / 10000);
+    if (Number(row.taxable_amount) !== expectedTaxable || Number(row.tax_amount) !== expectedTax) return false;
+    if (Number(row.total) !== expectedTaxable + expectedTax + Number(row.shipping_cost)) return false;
+    return true;
   });
 }
 
@@ -61562,7 +61936,11 @@ function diracCentralCheckoutOrderItemRowsSafeV152(body) {
     'product_title',
     'quantity',
     'unit_price',
-    'cost_price'
+    'cost_price',
+    'shipping_weight_grams',
+    'shipping_length_cm',
+    'shipping_width_cm',
+    'shipping_height_cm'
   ]);
   if (!rows.length || rows.length > 50) return false;
   return rows.every((row) => {
@@ -61577,6 +61955,14 @@ function diracCentralCheckoutOrderItemRowsSafeV152(body) {
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 999) return false;
     if (!diracCentralIsNonNegativeNumberV146(row.unit_price)) return false;
     if (!diracCentralIsNonNegativeNumberV146(row.cost_price)) return false;
+    const shippingWeight = Number(row.shipping_weight_grams);
+    const shippingLength = Number(row.shipping_length_cm);
+    const shippingWidth = Number(row.shipping_width_cm);
+    const shippingHeight = Number(row.shipping_height_cm);
+    if (!Number.isInteger(shippingWeight) || shippingWeight < 1 || shippingWeight > 50000) return false;
+    if (!Number.isFinite(shippingLength) || shippingLength <= 0 || shippingLength > 200
+        || !Number.isFinite(shippingWidth) || shippingWidth <= 0 || shippingWidth > 200
+        || !Number.isFinite(shippingHeight) || shippingHeight <= 0 || shippingHeight > 200) return false;
     return true;
   });
 }
@@ -64353,7 +64739,7 @@ function diracCentralContractForActionV146(action) {
     customer_session_handoff_consume: { methods: ['POST'], allowed: ['action', 'ticket', 'csrf', 'nonce', 'idempotency_key'], required: ['ticket'], maxBodyBytes: 4096, maxFieldBytes: 1024, mutation: true },
     domain_logout: postOnly,
     domain_checkout: { ...postOnly, required: ['domain'] },
-    checkout_order: { ...postOnly, allowed: commonPost.concat(['service_type', 'product_title', 'total', 'payment_method', 'customer_address', 'customer_note', 'source', 'product_id', 'title', 'qty', 'client_price', 'client_subtotal']) },
+    checkout_order: { ...postOnly, allowed: commonPost.concat(['service_type', 'product_title', 'total', 'payment_method', 'customer_address', 'customer_note', 'source', 'shipping_mode', 'product_id', 'title', 'qty', 'client_price', 'client_subtotal']) },
     create_payment: postOnly,
     customer_security_revoke_session: { ...postOnly, required: ['session_id'] },
     customer_security_revoke_other_sessions: postOnly,
