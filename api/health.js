@@ -29689,7 +29689,7 @@ async function diracUniversalPesananFetchOwnedRegularOrder(inputOrderId, custome
 
   if (!filters.length) return { ok: false, status: 400, message: 'Order ID regular tidak valid.' };
 
-  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at';
+  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,service_type,subtotal,total,payment_method,payment_status,order_status,created_at';
   const path = '/rest/v1/orders?select=' + encodeURIComponent(select)
     + '&customer_id=eq.' + encodeURIComponent(customerId)
     + '&or=' + encodeURIComponent(`(${filters.join(',')})`)
@@ -58240,16 +58240,21 @@ function diracCentralBindOwnerScopedSessionRowsV197(ctx, path, options = {}, res
         const expectedAmount = typeof lockedPaymentMoney === 'function'
           ? lockedPaymentMoney(row && (row.total ?? row.subtotal ?? 0))
           : Number(row && (row.total ?? row.subtotal ?? 0));
+        const expectedItemTotal = typeof lockedPaymentMoney === 'function'
+          ? lockedPaymentMoney((row && row.subtotal) ?? 0)
+          : Number((row && row.subtotal) ?? 0);
         const expectedServiceType = typeof lockedPaymentNormalizeServiceType === 'function'
           ? lockedPaymentNormalizeServiceType(row && row.service_type || 'order')
           : String(row && row.service_type || 'order').trim().toLowerCase();
         const expectedOrderCode = typeof lockedPaymentCleanText === 'function'
           ? lockedPaymentCleanText(rowOrderCode || rowId, 100)
           : String(rowOrderCode || rowId).trim().slice(0, 100);
-        if (!Number.isFinite(expectedAmount) || expectedAmount <= 0 || !expectedServiceType || !expectedOrderCode) return false;
+        if (!Number.isFinite(expectedAmount) || expectedAmount <= 0
+            || !Number.isFinite(expectedItemTotal) || expectedItemTotal <= 0
+            || !expectedServiceType || !expectedOrderCode) return false;
         ctx.__diracCentralCreatePaymentExpectedV199 = {
           kind: 'regular', customerId: ownerCustomerId, objectId: rowId,
-          amount: expectedAmount, serviceType: expectedServiceType,
+          amount: expectedAmount, itemTotal: expectedItemTotal, serviceType: expectedServiceType,
           orderCode: expectedOrderCode, amountSource: 'orders.total.database'
         };
         return diracCentralAddOwnerBoundObjectValuesV198(ctx, [rowId]);
@@ -61804,7 +61809,8 @@ function diracCentralIsCreatePaymentTransactionServiceRoleV199(ctx, table, path,
     if (String(metadata.order_kind || '') !== String(expected.kind || '')) return false;
     if (String(metadata.order_code || '') !== String(expected.orderCode || '')) return false;
     if (String(metadata.amount_source || '') !== String(expected.amountSource || '')) return false;
-    if (Number(metadata.item_total) !== Number(expected.amount)) return false;
+    const expectedItemTotal = expected.itemTotal === undefined ? expected.amount : expected.itemTotal;
+    if (!Number.isFinite(Number(expectedItemTotal)) || Number(metadata.item_total) !== Number(expectedItemTotal)) return false;
     if (metadata.frontend_amount_ignored !== true || metadata.frontend_invoice_storage_trusted !== false) return false;
     const startedAtMs = Date.parse(String(metadata.create_payment_started_at || ''));
     if (!Number.isFinite(startedAtMs) || Math.abs(Date.now() - startedAtMs) > 10 * 60 * 1000) return false;
