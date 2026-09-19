@@ -794,7 +794,7 @@ function diracExecutiveEscalationTextV380() {
     'Email: supportdirac@gmail.com',
     'WhatsApp: +62 882-0092-57589',
     'Jangan mengirim password, OTP, PIN, CVV, passkey, cookie, token, atau secret dalam laporan.'
-  ].join('\\r\\n');
+  ].join('\r\n');
 }
 
 function diracExecutiveEscalationHtmlV380() {
@@ -805,7 +805,7 @@ function diracExecutiveEscalationAppendTextV380(value) {
   const text = String(value || '');
   const marker = 'LAPORAN LANGSUNG KE DIREKTUR UTAMA / FOUNDER';
   if (text.includes(marker)) return text;
-  return text + (text ? '\\r\\n\\r\\n' : '') + diracExecutiveEscalationTextV380();
+  return text + (text ? '\r\n\r\n' : '') + diracExecutiveEscalationTextV380();
 }
 
 function diracExecutiveEscalationAppendHtmlV380(value) {
@@ -13859,13 +13859,13 @@ async function customerSecuritySendLostPasskeyRecoveryEmail(to, fileName, fileBu
   }
   const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Secure <no-reply@' + diracBaseDomainV250() + '>')).trim();
   const subject = 'DiracGroup Secure Recovery - PDF Pemulihan Passkey';
-  const text = [
+  const text = diracExecutiveEscalationAppendTextV380([
     'File recovery Passkey terenkripsi terlampir.',
     'Request ID: ' + String(context.requestId || ''),
     'Berlaku sampai: ' + customerSecurityRecoveryFormatWibV326(context.expiresAt || ''),
     'Jangan kirimkan file ini ke pihak lain. Kata sandi file hanya diberikan owner setelah verifikasi SOP.'
-  ].join('\n\n');
-  const html = customerSecurityRecoveryEmailHtmlV156(context);
+  ].join('\n\n'));
+  const html = diracExecutiveEscalationAppendHtmlV380(customerSecurityRecoveryEmailHtmlV156(context));
   const content = Buffer.from(fileBuffer).toString('base64');
   if (process.env.RESEND_API_KEY) {
     try {
@@ -40573,8 +40573,8 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message, diagnos
           from: `${fromName} <${fromEmail}>`,
           to: recipients,
           subject: String(message.subject || 'Dirac Group Order'),
-          text: String(message.text || ''),
-          html: String(message.html || '<p>Dirac Group</p>')
+          text: diracExecutiveEscalationAppendTextV380(String(message.text || '')),
+          html: diracExecutiveEscalationAppendHtmlV380(String(message.html || '<p>Dirac Group</p>'))
         })
       });
       if (response && response.ok) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, 'resend');
@@ -40603,8 +40603,8 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message, diagnos
           sender: { email: fromEmail, name: fromName },
           to: recipients.map((email) => ({ email })),
           subject: String(message.subject || 'Dirac Group Order'),
-          textContent: String(message.text || ''),
-          htmlContent: String(message.html || '<p>Dirac Group</p>')
+          textContent: diracExecutiveEscalationAppendTextV380(String(message.text || '')),
+          htmlContent: diracExecutiveEscalationAppendHtmlV380(String(message.html || '<p>Dirac Group</p>'))
         })
       });
       if (response && response.ok) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, 'brevo');
@@ -46569,7 +46569,7 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('Dirac Secure <no-reply@' + diracBaseDomainV250() + '>')).trim();
   const subjectRef = crypto.createHash('sha256').update(recoveryLink, 'utf8').digest('hex').slice(0, 10).toUpperCase();
   const subject = 'DiracGroup Secure Recovery - Link Pemulihan Passkey [' + subjectRef + ']';
-  const text = [
+  const text = diracExecutiveEscalationAppendTextV380([
     'Link recovery Passkey resmi sudah dibuat.',
     'Request ID: ' + String(context.requestId || ''),
     'Berlaku sampai: ' + customerSecurityRecoveryFormatWibV326(context.expiresAt || ''),
@@ -46578,8 +46578,8 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
     'Jangan bagikan email secret, link, atau isi pesan ini kepada pihak lain. Website secret hanya tampil di website yang masih login.',
     'Bantuan resmi Dirac Group:\nWhatsApp: 0878 9252 3968\nEmail Support: ' + diracSupportEmailV250() + '\nEmail Perusahaan: companydirac@gmail.com\nInstagram: @diraccorp',
     'Tim Dirac Group tidak pernah meminta Secret Email, Secret Website, password, OTP, atau hasil decrypt melalui WhatsApp, Instagram, telepon, maupun balasan email.'
-  ].join('\n\n');
-  const html = customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(emailContext);
+  ].join('\n\n'));
+  const html = diracExecutiveEscalationAppendHtmlV380(customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(emailContext));
 
   if (customerSecurityRecoverySmtpConfig()) {
     const config = customerSecurityRecoverySmtpConfig();
@@ -51916,8 +51916,8 @@ async function diracUserSecuritySendV327(event, config) {
         to: [event.email],
         reply_to: config.replyTo,
         subject: event.subject,
-        text: event.text,
-        html: event.html
+        text: diracExecutiveEscalationAppendTextV380(event.text),
+        html: diracExecutiveEscalationAppendHtmlV380(event.html)
       }),
       signal: controller ? controller.signal : undefined
     });
@@ -52698,8 +52698,8 @@ async function diracSecurityMailBrevoV330(message, config) {
     sender: { name: String(message.fromName || 'Dirac Group'), email: config.brevoFromEmail },
     to: message.recipients.map((emailAddress) => ({ email: emailAddress })),
     subject: String(message.subject || ''),
-    textContent: String(message.text || ''),
-    htmlContent: String(message.html || ''),
+    textContent: diracExecutiveEscalationAppendTextV380(String(message.text || '')),
+    htmlContent: diracExecutiveEscalationAppendHtmlV380(String(message.html || '')),
     headers: { 'X-Dirac-Reference': String(message.reference || '').slice(0, 64) }
   };
   if (message.replyTo) payload.replyTo = { name: 'Dirac Support', email: message.replyTo };
@@ -52715,8 +52715,8 @@ async function diracSecurityMailResendV330(message, config) {
     from: String(message.fromName || 'Dirac Group') + ' <' + config.resendFromEmail + '>',
     to: message.recipients,
     subject: String(message.subject || ''),
-    text: String(message.text || ''),
-    html: String(message.html || '')
+    text: diracExecutiveEscalationAppendTextV380(String(message.text || '')),
+    html: diracExecutiveEscalationAppendHtmlV380(String(message.html || ''))
   };
   if (message.replyTo) payload.reply_to = message.replyTo;
   return diracSecurityMailProviderHttpV330('resend', 'https://api.resend.com/emails', {
