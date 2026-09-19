@@ -3885,7 +3885,7 @@ async function diracSecurityPasskeyResetRecordAssertionV363({req,row,owner,paylo
 
 async function diracSecurityPasskeyResetStartV363(req,res,body) {
   if(!exactKeys(body,['action','password']))throw resetError('SECURITY_PASSKEY_RESET_START_BODY_INVALID',400);
-  const resolved=await diracSecurityPasskeyResetResolveOwnerV363(req),passwordAuth=await diracSecurityPasskeyReplacementVerifyPasswordV367(resolved.owner,body.password);
+  const resolved=await diracSecurityPasskeyResetResolveOwnerV363(req),passwordAuth=await diracSecurityPasskeyReplacementVerifyPasswordV367(resolved.owner,body.password);let retainAuthSession=false;
   try{
     const serverDevice=diracSecurityPasskeyResetServerDeviceAuthorityV367().ensure(req,res,resolved.owner);
     if(!serverDevice||serverDevice.ok!==true||!/^[a-f0-9]{64}$/.test(String(serverDevice.keyId||'')))throw resetError(serverDevice&&serverDevice.tampered===true?'SECURITY_PASSKEY_RESET_DEVICE_COOKIE_TAMPERED':'SECURITY_PASSKEY_RESET_DEVICE_BINDING_UNAVAILABLE',serverDevice&&serverDevice.tampered===true?403:503);
@@ -3893,10 +3893,10 @@ async function diracSecurityPasskeyResetStartV363(req,res,body) {
     const row=active[0],credentialHash=diracSecurityPasskeyResetSha256V363(String(row.credential_id)),activeSetHash=diracSecurityPasskeyResetActiveSetHashV363(active);
     await diracSecurityPasskeyResetEmailRateV364(req,'send',resolved.owner.customerId,3,600,600);
     const code=diracSecurityPasskeyResetEmailCodeV364();
-    const issued=diracSecurityPasskeyResetEmailTokenV364(req,{authUserId:resolved.owner.authUserId,customerId:resolved.owner.customerId,email:resolved.owner.email,sessionId:resolved.sessionId,rpcAuthSessionId:resolved.sessionId,securityEpoch:resolved.securityEpoch,authorizingPasskeyId:String(row.id),authorizingCredentialIdHash:credentialHash,activeCredentialSetHash:activeSetHash,serverDeviceBindingKeyId:serverDevice.keyId},code);
-    await diracSecurityPasskeyResetSendEmailCodeV364(req,resolved.owner,code,issued.payload);
+    const issued=diracSecurityPasskeyResetEmailTokenV364(req,{authUserId:resolved.owner.authUserId,customerId:resolved.owner.customerId,email:resolved.owner.email,sessionId:resolved.sessionId,rpcAuthSessionId:passwordAuth.rpcAuthSessionId,securityEpoch:resolved.securityEpoch,authorizingPasskeyId:String(row.id),authorizingCredentialIdHash:credentialHash,activeCredentialSetHash:activeSetHash,serverDeviceBindingKeyId:serverDevice.keyId},code);
+    await diracSecurityPasskeyResetSendEmailCodeV364(req,resolved.owner,code,issued.payload);retainAuthSession=true;
     return{ok:true,method:'password_email',passkeyMode:'email_verification',reset_passkey:true,email_verification_required:true,email_sent:true,code_length:code.length,setupToken:issued.token,mfaSetupToken:issued.token,expires_in:Math.floor((issued.payload.expiresAtMs-Date.now())/1000),message:'Kode verifikasi '+String(code.length)+' digit telah dikirim ke email akun.'};
-  }finally{await diracSecurityPasskeyResetCleanupAuthSessionV371(passwordAuth.accessToken).catch(()=>false);}
+  }finally{if(!retainAuthSession)await diracSecurityPasskeyResetCleanupAuthSessionV371(passwordAuth.accessToken).catch(()=>false);}
 }
 
 async function diracSecurityPasskeyResetEmailAuthorizeV364(req,body,resolved,tokenData) {
