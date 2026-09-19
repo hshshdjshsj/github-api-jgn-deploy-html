@@ -53469,6 +53469,9 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
   const paymentFraudStatus = orderMailCleanText(data && data.payment && data.payment.fraud_status || '', 80).toUpperCase() || '-';
   const sourcePage = orderMailCleanText(data && data.payment && data.payment.source_page || '', 120) || '-';
   const paymentTime = orderMailFormatDate(data && data.order && data.order.created_at || diracNowIso());
+  const taxableAmount = orderMailMoney(data && data.order && data.order.taxable_amount || 0);
+  const taxAmount = orderMailMoney(data && data.order && data.order.tax_amount || 0);
+  const taxLabel = orderMailCleanText(data && data.order && (data.order.tax_label || sessionOwnershipCheckoutTaxLabel(taxAmount)) || sessionOwnershipCheckoutTaxLabel(taxAmount), 120).toUpperCase();
   const rowsBase = [
     ['KODE PESANAN', data && data.order && data.order.code || '-'],
     ['LAYANAN', data && data.order && data.order.service_type || '-'],
@@ -53484,6 +53487,10 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
     ['REFERENSI PEMBAYARAN', data && data.payment && data.payment.invoice_id || '-'],
     ['SUBTOTAL', orderMailFormatCurrency(data && data.order && (data.order.subtotal || data.order.total) || 0, currency)],
     ['DISKON', orderMailFormatCurrency(data && data.order && data.order.discount || 0, currency)],
+    ...((taxAmount > 0 || taxableAmount > 0) ? [
+      ['DPP SETELAH DISKON', orderMailFormatCurrency(taxableAmount, currency)],
+      [taxLabel, orderMailFormatCurrency(taxAmount, currency)]
+    ] : []),
     ['ONGKIR', orderMailFormatCurrency(data && data.order && data.order.shipping_cost || 0, currency)],
     ['TOTAL', orderMailFormatCurrency(data && data.order && data.order.total || 0, currency)],
     ['JUMLAH ITEM BERBEDA', String(Array.isArray(data && data.items) ? data.items.length : 0)]
