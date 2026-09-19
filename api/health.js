@@ -786,6 +786,39 @@ function diracUniversalBrowserOriginsV250() {
   return origins;
 }
 
+
+function diracExecutiveEscalationTextV380() {
+  return [
+    'LAPORAN LANGSUNG KE DIREKTUR UTAMA / FOUNDER',
+    'Untuk dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra PT Dirac Inovasi Nusantara, laporan dapat disampaikan langsung kepada Achmad Zaenuddin, Direktur Utama sekaligus Founder.',
+    'Email: supportdirac@gmail.com',
+    'WhatsApp: +62 882-0092-57589',
+    'Jangan mengirim password, OTP, PIN, CVV, passkey, cookie, token, atau secret dalam laporan.'
+  ].join('\\r\\n');
+}
+
+function diracExecutiveEscalationHtmlV380() {
+  return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" data-dirac-executive-report="v380" style="width:100%;margin:18px 0 0;border-collapse:collapse"><tr><td style="padding:16px;border:1px solid #c8cfd6;background:#f7f8fa;color:#17202a;font-family:Arial,Helvetica,sans-serif"><div style="font-size:13px;line-height:1.4;font-weight:700">Laporan langsung ke Direktur Utama / Founder</div><p style="margin:8px 0 10px;font-size:12px;line-height:1.55">Untuk dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra PT Dirac Inovasi Nusantara, laporan dapat disampaikan langsung kepada Achmad Zaenuddin, Direktur Utama sekaligus Founder.</p><div style="font-size:12px;line-height:1.65"><strong>Email:</strong> <a href="mailto:supportdirac@gmail.com">supportdirac@gmail.com</a><br><strong>WhatsApp:</strong> <a href="https://wa.me/62882009257589">+62 882-0092-57589</a></div><p style="margin:10px 0 0;font-size:11px;line-height:1.5;color:#4b5563">Jangan mengirim password, OTP, PIN, CVV, passkey, cookie, token, atau secret dalam laporan.</p></td></tr></table>';
+}
+
+function diracExecutiveEscalationAppendTextV380(value) {
+  const text = String(value || '');
+  const marker = 'LAPORAN LANGSUNG KE DIREKTUR UTAMA / FOUNDER';
+  if (text.includes(marker)) return text;
+  return text + (text ? '\\r\\n\\r\\n' : '') + diracExecutiveEscalationTextV380();
+}
+
+function diracExecutiveEscalationAppendHtmlV380(value) {
+  const html = String(value || '');
+  if (html.includes('data-dirac-executive-report="v380"')) return html;
+  const block = diracExecutiveEscalationHtmlV380();
+  const bodyIndex = html.toLowerCase().lastIndexOf('</body>');
+  if (bodyIndex >= 0) return html.slice(0, bodyIndex) + block + html.slice(bodyIndex);
+  const htmlIndex = html.toLowerCase().lastIndexOf('</html>');
+  if (htmlIndex >= 0) return html.slice(0, htmlIndex) + block + html.slice(htmlIndex);
+  return html + block;
+}
+
 function diracSupportEmailV250() {
   const explicit = String(process.env.DIRAC_SUPPORT_EMAIL || '').trim();
   return explicit || ('support@' + diracBaseDomainV250());
@@ -3821,8 +3854,8 @@ function diracRegisterEmailMimeV331(message, account) {
     warning: 'Jangan berikan kode ini, password, token, cookie, atau data rahasia kepada siapa pun. Jika Anda tidak memulai pendaftaran, abaikan email ini.',
     supportLead: 'Jika membutuhkan bantuan terkait pendaftaran, gunakan kanal resmi Dirac Group berikut.'
   };
-  const text = diracSecurityMailTextV327(htmlInput);
-  const html = diracSecurityCorporateEmailHtmlV327(htmlInput);
+  const text = diracExecutiveEscalationAppendTextV380(diracSecurityMailTextV327(htmlInput));
+  const html = diracExecutiveEscalationAppendHtmlV380(diracSecurityCorporateEmailHtmlV327(htmlInput));
   const messageId = crypto.createHash('sha256').update(proof + '|' + reference + '|register-email-v331').digest('hex') + '@' + diracBaseDomainV250();
   return [
     'From: ' + diracSecurityAlertMimeHeaderV320('Dirac Secure') + ' <' + account.user + '>',
@@ -13757,13 +13790,13 @@ async function customerSecuritySendRecoveryEmailViaSmtp(to, fileName, fileBuffer
   if (!isValidAuthEmail(fromEmail)) return { ok: false, status: 503, code: 'RECOVERY_SMTP_FROM_INVALID', message: 'Email pengirim recovery tidak valid.' };
 
   const subject = 'DiracGroup Secure Recovery - PDF Pemulihan Passkey';
-  const text = [
+  const text = diracExecutiveEscalationAppendTextV380([
     'File recovery Passkey terenkripsi terlampir.',
     'Request ID: ' + String(context.requestId || ''),
     'Berlaku sampai: ' + customerSecurityRecoveryFormatWibV326(context.expiresAt || ''),
     'Jangan kirimkan file ini ke pihak lain. Kata sandi file hanya diberikan owner setelah verifikasi SOP.'
-  ].join('\r\n\r\n');
-  const html = customerSecurityRecoveryEmailHtmlV156(context);
+  ].join('\r\n\r\n'));
+  const html = diracExecutiveEscalationAppendHtmlV380(customerSecurityRecoveryEmailHtmlV156(context));
   const boundary = 'dirac-recovery-' + crypto.randomBytes(18).toString('hex');
   const mime = [
     'From: ' + from,
@@ -31175,8 +31208,8 @@ function orderMailBuildMimeMessage(message) {
   const to = (message.to || []).map((email) => `<${orderMailNormalizeEmail(email)}>`).join(', ');
   const subject = orderMailHeaderName(message.subject || 'Dirac Group Order');
   const msgId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@${diracBaseDomainV250()}>`;
-  const text = orderMailBase64Body(message.text || '');
-  const html = orderMailBase64Body(message.html || '<p>Dirac Group</p>');
+  const text = orderMailBase64Body(diracExecutiveEscalationAppendTextV380(message.text || ''));
+  const html = orderMailBase64Body(diracExecutiveEscalationAppendHtmlV380(message.html || '<p>Dirac Group</p>'));
 
   return [
     `From: ${from}`,
@@ -46564,12 +46597,12 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
       'Content-Type: text/plain; charset=UTF-8',
       'Content-Transfer-Encoding: base64',
       '',
-      customerSecurityRecoveryBase64Lines(Buffer.from(text, 'utf8')),
+      customerSecurityRecoveryBase64Lines(Buffer.from(diracExecutiveEscalationAppendTextV380(text), 'utf8')),
       '--' + boundary,
       'Content-Type: text/html; charset=UTF-8',
       'Content-Transfer-Encoding: base64',
       '',
-      customerSecurityRecoveryBase64Lines(Buffer.from(html, 'utf8')),
+      customerSecurityRecoveryBase64Lines(Buffer.from(diracExecutiveEscalationAppendHtmlV380(html), 'utf8')),
       '--' + boundary + '--',
       ''
     ].join('\r\n');
@@ -51821,12 +51854,12 @@ function diracUserSecurityMimeV327(event, config) {
     'Content-Type: text/plain; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
-    diracSecurityAlertBase64LinesV320(event.text),
+    diracSecurityAlertBase64LinesV320(diracExecutiveEscalationAppendTextV380(event.text)),
     '--' + boundary,
     'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
-    diracSecurityAlertBase64LinesV320(event.html),
+    diracSecurityAlertBase64LinesV320(diracExecutiveEscalationAppendHtmlV380(event.html)),
     '--' + boundary + '--',
     ''
   ].join('\r\n');
@@ -52368,8 +52401,8 @@ function diracSecurityAlertCorporateMimeV327(snapshot, config) {
     supportLead: 'Untuk koordinasi respons insiden, gunakan kanal resmi Dirac Group berikut dan jangan meneruskan data sensitif melalui email.'
   };
   const subject = '[DIRAC ' + snapshot.severity + '] ' + String(title).replace(/\n/g, ' ') + ' [' + trackingId + '] [' + reference + ']';
-  const htmlBody = diracSecurityCorporateEmailHtmlV327(htmlInput);
-  const textBody = diracSecurityMailTextV327(htmlInput);
+  const htmlBody = diracExecutiveEscalationAppendHtmlV380(diracSecurityCorporateEmailHtmlV327(htmlInput));
+  const textBody = diracExecutiveEscalationAppendTextV380(diracSecurityMailTextV327(htmlInput));
   const boundary = 'dirac-alert-v327-' + crypto.randomBytes(16).toString('hex');
   const senderDomain = String(config.fromEmail || '').split('@')[1] || 'gmail.com';
   const messageId = diracSecurityAlertHmacV320('message-id-v327', snapshot.request_id + '|' + snapshot.timestamp_utc + '|' + reference) + '@' + senderDomain;
@@ -53121,12 +53154,12 @@ function diracCustomerMailMimeV352(message, account, replyTo) {
     'Content-Type: text/plain; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
-    diracSecurityAlertBase64LinesV320(String(message.text || '')),
+    diracSecurityAlertBase64LinesV320(diracExecutiveEscalationAppendTextV380(String(message.text || ''))),
     '--' + boundary,
     'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
-    diracSecurityAlertBase64LinesV320(String(message.html || '')),
+    diracSecurityAlertBase64LinesV320(diracExecutiveEscalationAppendHtmlV380(String(message.html || ''))),
     '--' + boundary + '--',
     ''
   ].join('\r\n');
