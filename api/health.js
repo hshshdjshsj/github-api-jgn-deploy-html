@@ -60639,8 +60639,25 @@ function diracCentralContractGuardV146(req, ctx) {
   if (ctx && ctx.action === DIRAC_RECOVERY_WORKER_ACTION && ctx.body && ctx.body.transport_version === DIRAC_RECOVERY_WORKER_TRANSPORT_VERSION_V190) {
     return diracCentralRecoveryExactContractV251(req, ctx);
   }
-  const contract = diracCentralContractForActionV146(ctx.action);
+  let contract = diracCentralContractForActionV146(ctx.action);
   if (!contract || !contract.methods || !contract.methods.length) return { ok: false, reason: 'action_contract_missing' };
+  let ptdinContract = null;
+  if (req && DIRAC_PTDIN_REQUESTS_V402.has(req)) {
+    const ptdin = require('./ptdin.js');
+    const extensions = ptdin && ptdin.__diracPtdinCentralContractsV403;
+    ptdinContract = extensions && Object.prototype.hasOwnProperty.call(extensions, ctx.action) ? extensions[ctx.action] : null;
+    if (ptdinContract) {
+      if (!Object.isFrozen(ptdin) || !Object.isFrozen(extensions) || !Object.isFrozen(ptdinContract)
+          || !Array.isArray(ptdinContract.allowed) || !Object.isFrozen(ptdinContract.allowed)
+          || !Array.isArray(ptdinContract.required) || !Object.isFrozen(ptdinContract.required)
+          || typeof ptdinContract.enumField !== 'string' || !ptdinContract.allowed.includes(ptdinContract.enumField)
+          || !ptdinContract.required.includes(ptdinContract.enumField)
+          || !Array.isArray(ptdinContract.enumValues) || !Object.isFrozen(ptdinContract.enumValues)) {
+        return { ok: false, reason: 'ptdin_contract_extension_invalid' };
+      }
+      contract = { ...contract, allowed: (contract.allowed || []).concat(ptdinContract.allowed), required: (contract.required || []).concat(ptdinContract.required) };
+    }
+  }
   const source = ctx.method === 'GET' || ctx.method === 'HEAD' ? (req && req.query || {}) : (ctx.body || {});
   const clean = diracCentralFlattenObjectV146(source, 0, '', 400);
   const allowed = new Set(['action'].concat(contract.allowed || []));
@@ -60662,6 +60679,9 @@ function diracCentralContractGuardV146(req, ctx) {
     if (String(item.value || '').length > (contract.maxFieldBytes || 3000)) return { ok: false, reason: 'field_too_long_' + key };
     const format = diracCentralValidateFieldFormatV146(key, item.value);
     if (!format.ok) return { ok: false, reason: format.reason };
+  }
+  if (ptdinContract && !ptdinContract.enumValues.includes(String(source[ptdinContract.enumField] || '').trim().toLowerCase())) {
+    return { ok: false, reason: 'ptdin_contract_enum_invalid' };
   }
   if (ctx.method === 'GET' && contract.mutation) return { ok: false, reason: 'mutation_get_rejected' };
   return { ok: true };

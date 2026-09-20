@@ -7,6 +7,12 @@ const CAPABILITIES = Object.freeze({ profile_edit: false, dns_edit: false,
   live_tracking: false, wallet: false, ticket_reply: false, account_review: true });
 const ORDER_VIEWS = Object.freeze(['invoice', 'parfum', 'projects', 'topup', 'shipment']);
 const DIGITAL_SERVICES = Object.freeze(['topup_game', 'isi_pulsa', 'paket_data', 'isi_saldo', 'isi_saldo_etoll', 'transfer_luar_negeri']);
+const PTDIN_CENTRAL_CONTRACTS_V403 = Object.freeze({
+  customer_security_account_request: Object.freeze({
+    allowed: Object.freeze(['request_type']), required: Object.freeze(['request_type']), enumField: 'request_type',
+    enumValues: Object.freeze(['security_review', 'export_data', 'deactivate_account', 'reactivate_account'])
+  })
+});
 
 function centralSecurityReady(handler) {
   return typeof handler === 'function' && Object.isFrozen(handler)
@@ -221,6 +227,7 @@ async function ptdinHandler(req, res) {
 }
 Object.defineProperty(ptdinHandler, 'config', { value: centralHandler.config, enumerable: true });
 Object.defineProperty(ptdinHandler, '__diracPtdinBusinessV402', { value: ptdinBusiness });
+Object.defineProperty(ptdinHandler, '__diracPtdinCentralContractsV403', { value: PTDIN_CENTRAL_CONTRACTS_V403 });
 Object.defineProperty(ptdinHandler, '__diracPtdinCentralGuardedBusinessV402', { value: true });
 Object.freeze(ptdinHandler);
 module.exports = ptdinHandler;
