@@ -2797,7 +2797,21 @@ function diracSecurityMailTextV327(input = {}) {
     'PT Dirac Inovasi Nusantara tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui telepon, chat, atau balasan email.'
   ].filter((line, index, all) => line !== '' || (index > 0 && all[index - 1] !== '')).join('\r\n');
 }
+const SECURITY_RESET_REQUEST_MEMO_V404 = new WeakMap();
+function securityResetRequestMemoV404() {
+  let ctx = null;
+  try { ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null; } catch (_) { ctx = null; }
+  if (!ctx || typeof ctx !== 'object') return null;
+  let memo = SECURITY_RESET_REQUEST_MEMO_V404.get(ctx);
+  if (!memo) {
+    memo = new Map();
+    SECURITY_RESET_REQUEST_MEMO_V404.set(ctx, memo);
+  }
+  return memo;
+}
 function securityResetSmtpConfigV342() {
+  const requestMemoV404 = securityResetRequestMemoV404();
+  if (requestMemoV404 && requestMemoV404.has('smtpConfig')) return requestMemoV404.get('smtpConfig');
   const host = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim();
   const port = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 465);
   const secure = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || '').trim().toLowerCase() === 'true';
@@ -2807,13 +2821,20 @@ function securityResetSmtpConfigV342() {
   const user = canonicalConfigured ? canonicalUser : normalizeAuthEmail(process.env.DIRAC_USER_SECURITY_SMTP_USER || '');
   const pass = canonicalConfigured ? canonicalPass : String(process.env.DIRAC_USER_SECURITY_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
   if (host !== 'smtp.gmail.com' || port !== 465 || secure !== true || !isValidAuthEmail(user)
-      || !/^[A-Za-z0-9]{16,128}$/.test(pass)) return null;
-  return { host, port, user, pass };
+      || !/^[A-Za-z0-9]{16,128}$/.test(pass)) {
+    if (requestMemoV404) requestMemoV404.set('smtpConfig', null);
+    return null;
+  }
+  const resolvedSmtpConfigV404 = Object.freeze({ host, port, user, pass });
+  if (requestMemoV404) requestMemoV404.set('smtpConfig', resolvedSmtpConfigV404);
+  return resolvedSmtpConfigV404;
 }
 
 function securityResetSmtpPoolV366() {
+  const requestMemoV404 = securityResetRequestMemoV404();
+  if (requestMemoV404 && requestMemoV404.has('smtpPool')) return requestMemoV404.get('smtpPool');
   const transport = securityResetSmtpConfigV342();
-  if (!transport) return Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_PRIMARY_REQUIRED', accounts: Object.freeze([]) });
+  if (!transport) { const result = Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_PRIMARY_REQUIRED', accounts: Object.freeze([]) }); if (requestMemoV404) requestMemoV404.set('smtpPool', result); return result; }
   const accounts = [];
   const users = new Set();
   const passwords = new Set();
@@ -2829,14 +2850,19 @@ function securityResetSmtpPoolV366() {
       pass = String(process.env.DIRAC_REGISTER_SMTP_APP_PASSWORD_2 || '').replace(/\s+/g, '');
     }
     if (!user && !pass) continue;
-    if (!isValidAuthEmail(user) || !/^[A-Za-z0-9]{16,128}$/.test(pass)) return Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_SLOT_' + slot + '_INVALID', accounts: Object.freeze([]) });
-    if (users.has(user) || passwords.has(pass)) return Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_SLOT_DUPLICATE', accounts: Object.freeze([]) });
+    if (!isValidAuthEmail(user) || !/^[A-Za-z0-9]{16,128}$/.test(pass)) { const result = Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_SLOT_' + slot + '_INVALID', accounts: Object.freeze([]) }); if (requestMemoV404) requestMemoV404.set('smtpPool', result); return result; }
+    if (users.has(user) || passwords.has(pass)) { const result = Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_SLOT_DUPLICATE', accounts: Object.freeze([]) }); if (requestMemoV404) requestMemoV404.set('smtpPool', result); return result; }
     users.add(user); passwords.add(pass);
     accounts.push(Object.freeze({ host: transport.host, port: transport.port, user, pass, slot }));
   }
-  if (!accounts.length || accounts[0].slot !== 1 || !safeEqual(accounts[0].user, transport.user) || !safeEqual(accounts[0].pass, transport.pass))
-    return Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_PRIMARY_MISMATCH', accounts: Object.freeze([]) });
-  return Object.freeze({ ok: true, code: '', accounts: Object.freeze(accounts) });
+  if (!accounts.length || accounts[0].slot !== 1 || !safeEqual(accounts[0].user, transport.user) || !safeEqual(accounts[0].pass, transport.pass)) {
+    const result = Object.freeze({ ok: false, code: 'PASSWORD_CHANGE_SMTP_PRIMARY_MISMATCH', accounts: Object.freeze([]) });
+    if (requestMemoV404) requestMemoV404.set('smtpPool', result);
+    return result;
+  }
+  const result = Object.freeze({ ok: true, code: '', accounts: Object.freeze(accounts) });
+  if (requestMemoV404) requestMemoV404.set('smtpPool', result);
+  return result;
 }
 
 async function securityResetSmtpReadV342(socket) {
@@ -2885,6 +2911,8 @@ function securityResetDotStuffV342(value) {
 }
 
 function securityResetUserMailConfigV352() {
+  const requestMemoV404 = securityResetRequestMemoV404();
+  if (requestMemoV404 && requestMemoV404.has('userMailConfig')) return requestMemoV404.get('userMailConfig');
   const brevoKey = String(process.env.DIRAC_USER_SECURITY_BREVO_API_KEY || '').trim();
   const brevoFrom = normalizeAuthEmail(process.env.DIRAC_USER_SECURITY_BREVO_FROM_EMAIL || '');
   const resendKey = String(process.env.DIRAC_USER_SECURITY_RESEND_API_KEY || '').trim();
@@ -2902,12 +2930,17 @@ function securityResetUserMailConfigV352() {
   };
   if (String(process.env.DIRAC_USER_SECURITY_EMAIL_ENABLED || '').trim().toLowerCase() !== 'true'
       || !primary || !brevoKeyValid || !isValidAuthEmail(brevoFrom) || !officialSender(brevoFrom)
-      || !/^re_[A-Za-z0-9_-]{16,252}$/.test(resendKey) || !isValidAuthEmail(resendFrom) || !officialSender(resendFrom)) return null;
+      || !/^re_[A-Za-z0-9_-]{16,252}$/.test(resendKey) || !isValidAuthEmail(resendFrom) || !officialSender(resendFrom)) {
+    if (requestMemoV404) requestMemoV404.set('userMailConfig', null);
+    return null;
+  }
   const secondary = isValidAuthEmail(secondaryUser) && /^[A-Za-z0-9]{16,128}$/.test(secondaryPass)
     && secondaryUser !== primary.user && secondaryPass !== primary.pass
-    ? { host: primary.host, port: primary.port, user: secondaryUser, pass: secondaryPass }
+    ? Object.freeze({ host: primary.host, port: primary.port, user: secondaryUser, pass: secondaryPass })
     : null;
-  return { brevoKey, brevoFrom, resendKey, resendFrom, primary, secondary };
+  const resolvedMailConfigV404 = Object.freeze({ brevoKey, brevoFrom, resendKey, resendFrom, primary, secondary });
+  if (requestMemoV404) requestMemoV404.set('userMailConfig', resolvedMailConfigV404);
+  return resolvedMailConfigV404;
 }
 
 function securityResetProviderLimitedV352(provider, status, body) {

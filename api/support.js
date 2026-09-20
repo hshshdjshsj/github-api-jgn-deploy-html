@@ -212,6 +212,18 @@ class PublicError extends Error {
 }
 
 function env(name) { return String(process.env[name] || '').trim(); }
+const SUPPORT_REQUEST_MEMO_V404 = new WeakMap();
+function supportRequestMemoV404() {
+  let ctx = null;
+  try { ctx = typeof supportCentralCurrentContextV146 === 'function' ? supportCentralCurrentContextV146() : null; } catch (_) { ctx = null; }
+  if (!ctx || typeof ctx !== 'object') return null;
+  let memo = SUPPORT_REQUEST_MEMO_V404.get(ctx);
+  if (!memo) {
+    memo = new Map();
+    SUPPORT_REQUEST_MEMO_V404.set(ctx, memo);
+  }
+  return memo;
+}
 function envTrue(name, fallback) {
   const value = env(name);
   if (!value) return Boolean(fallback);
@@ -240,6 +252,10 @@ function supportDerivedCustomerSecretV362(label) {
 function config() {
   const currentContext = supportCentralCurrentContextV146();
   const customerConfigOnly = Boolean(currentContext && CUSTOMER_CONFIG_ACTIONS_V357.has(String(currentContext.action || '')));
+  const requestMemoV404 = supportRequestMemoV404();
+  const configMemoKeyV404 = customerConfigOnly ? 'config:customer' : 'config:admin';
+  const cachedConfigV404 = requestMemoV404 && requestMemoV404.get(configMemoKeyV404);
+  if (cachedConfigV404) return { ...cachedConfigV404 };
   const supportSupabaseUrl = env('DIRAC_SUPPORT_SUPABASE_URL').replace(/\/+$/, '');
   const useMainCustomerDatabase = Boolean(customerConfigOnly && !supportSupabaseUrl);
   const supabaseUrl = supportSupabaseUrl || (useMainCustomerDatabase ? env('DOMAIN_SUPABASE_URL').replace(/\/+$/, '') : '');
@@ -277,7 +293,7 @@ function config() {
     throw new PublicError(503, 'SUPPORT_SECRETS_WEAK', 'Secret keamanan support wajib kuat dan berbeda satu sama lain.');
   }
   if (turnstileRequired && (!turnstileSiteKey || !turnstileSecretKey)) throw new PublicError(503, 'TURNSTILE_CONFIG_MISSING', 'Verifikasi anti-bot support belum dikonfigurasi lengkap.');
-  return {
+  const resolvedConfigV404 = Object.freeze({
     supabaseUrl,
     publishableKey,
     secretKey,
@@ -294,7 +310,9 @@ function config() {
     // Realtime admin authorization is deliberately AAL2-only in SQL, so the
     // HTTP capability must never be weaker than the channel capability.
     adminMfaRequired: true
-  };
+  });
+  if (requestMemoV404) requestMemoV404.set(configMemoKeyV404, resolvedConfigV404);
+  return { ...resolvedConfigV404 };
 }
 
 function primaryAdminBindingCanonical(cfg) {
@@ -335,15 +353,23 @@ function requirePinnedPrimaryAdmin(staff) {
 }
 
 function allowedOrigins() {
+  const requestMemoV404 = supportRequestMemoV404();
+  const cachedOriginsV404 = requestMemoV404 && requestMemoV404.get('allowedOrigins');
+  if (cachedOriginsV404 instanceof Set) return cachedOriginsV404;
   const values = env('DIRAC_SUPPORT_ALLOWED_ORIGINS').split(',').map((value) => value.trim()).filter(Boolean);
   if (isProduction()) values.push('https://cs.' + supportBaseDomain());
   else values.push('http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173', 'http://127.0.0.1:5173');
-  return new Set(values.map((value) => {
+  const resolvedOriginsV404 = new Set(values.map((value) => {
     try { return new URL(value).origin; } catch (_) { return ''; }
   }).filter(Boolean));
+  if (requestMemoV404) requestMemoV404.set('allowedOrigins', resolvedOriginsV404);
+  return resolvedOriginsV404;
 }
 
 function supportBaseDomain() {
+  const requestMemoV404 = supportRequestMemoV404();
+  const cachedDomainV404 = requestMemoV404 && requestMemoV404.get('baseDomain');
+  if (typeof cachedDomainV404 === 'string' && cachedDomainV404) return cachedDomainV404;
   const configured = env('DIRAC_BASE_DOMAIN').toLowerCase().replace(/^\.+|\.+$/g, '');
   if (!configured) {
     if (!isProduction()) return 'localhost';
@@ -352,6 +378,7 @@ function supportBaseDomain() {
   if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(configured)) {
     throw new PublicError(500, 'SUPPORT_BASE_DOMAIN_CONFIG_INVALID', 'Konfigurasi base domain support tidak valid.');
   }
+  if (requestMemoV404) requestMemoV404.set('baseDomain', configured);
   return configured;
 }
 function supportCustomerAuthEmailDomain() {
@@ -708,7 +735,14 @@ function cookieString(name, value, options) {
 
 function clearCookie(res, name, sameSite) { appendCookie(res, cookieString(name, '', { maxAge: 0, sameSite: sameSite || 'Strict' })); }
 
-function sessionKey() { return crypto.createHash('sha256').update(config().cookieSecret, 'utf8').digest(); }
+function sessionKey() {
+  const requestMemoV404 = supportRequestMemoV404();
+  const cachedKeyV404 = requestMemoV404 && requestMemoV404.get('sessionKey');
+  if (Buffer.isBuffer(cachedKeyV404) && cachedKeyV404.length === 32) return cachedKeyV404;
+  const resolvedKeyV404 = crypto.createHash('sha256').update(config().cookieSecret, 'utf8').digest();
+  if (requestMemoV404) requestMemoV404.set('sessionKey', resolvedKeyV404);
+  return resolvedKeyV404;
+}
 function seal(name, payload) {
   const nonce = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', sessionKey(), nonce, { authTagLength: 16 });

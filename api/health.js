@@ -7789,6 +7789,48 @@ function getDiracRestTableFromPath(path) {
   }
 }
 
+const DIRAC_SUPABASE_ALLOWED_METHODS_V404 = new Set(['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE']);
+const DIRAC_DEDICATED_SECURITY_TABLES_V404 = new Set([
+  DIRAC_PERSISTENT_BAN_TABLE,
+  DIRAC_S2S_SECURITY_TABLE,
+  String(typeof DOMAIN_LOGIN_RATE_TABLE !== 'undefined' ? DOMAIN_LOGIN_RATE_TABLE : '').trim()
+].filter(Boolean));
+
+const DIRAC_SUPABASE_RUNTIME_MEMO_V404 = new WeakMap();
+function diracSupabaseRequestRuntimeMemoV404() {
+  let ctx = null;
+  try { ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null; } catch (_) { ctx = null; }
+  if (!ctx || typeof ctx !== 'object') return null;
+  let memo = DIRAC_SUPABASE_RUNTIME_MEMO_V404.get(ctx);
+  if (!memo) {
+    memo = Object.freeze({ credentials: new Map(), origins: new Map() });
+    DIRAC_SUPABASE_RUNTIME_MEMO_V404.set(ctx, memo);
+  }
+  return memo;
+}
+
+function diracSupabaseCredentialResultV404(memo, cacheKey, result) {
+  const canonical = Object.freeze({ ...result });
+  if (memo && memo.credentials instanceof Map) memo.credentials.set(cacheKey, canonical);
+  return { ...canonical };
+}
+
+function diracSupabaseValidatedOriginV404(rawUrl) {
+  const raw = String(rawUrl || '');
+  const memo = diracSupabaseRequestRuntimeMemoV404();
+  if (memo && memo.origins instanceof Map && memo.origins.has(raw)) return memo.origins.get(raw);
+  const configured = new URL(raw);
+  if (configured.protocol !== 'https:'
+      || configured.username
+      || configured.password
+      || configured.search
+      || configured.hash
+      || (configured.port && configured.port !== '443')) throw new Error('SUPABASE_URL_INVALID');
+  const origin = configured.origin;
+  if (memo && memo.origins instanceof Map) memo.origins.set(raw, origin);
+  return origin;
+}
+
 function resolveDiracSupabaseTargetKey(path, options = {}) {
   const exactPath = String(path || '');
   if (exactPath === '/rest/v1/rpc/dirac_central_atomic_consume_v230'
@@ -7797,12 +7839,7 @@ function resolveDiracSupabaseTargetKey(path, options = {}) {
       || exactPath === '/rest/v1/rpc/dirac_central_security_log_v230') return 'security';
 
   const tableName = getDiracRestTableFromPath(path);
-  const dedicatedSecurityTables = new Set([
-    DIRAC_PERSISTENT_BAN_TABLE,
-    DIRAC_S2S_SECURITY_TABLE,
-    String(typeof DOMAIN_LOGIN_RATE_TABLE !== 'undefined' ? DOMAIN_LOGIN_RATE_TABLE : '').trim()
-  ].filter(Boolean));
-  if (tableName && dedicatedSecurityTables.has(tableName)) return 'security';
+  if (tableName && DIRAC_DEDICATED_SECURITY_TABLES_V404.has(tableName)) return 'security';
 
   // Dedicated security state has one authority; a business-target override must
   // never redirect ban/rate-limit/atomic operations to another project.
@@ -7867,7 +7904,7 @@ async function supabaseFetch(path, options = {}) {
     return { ok: false, status: 400, data: { code: 'SUPABASE_PATH_INVALID' } };
   }
   const method = String(options.method || 'GET').toUpperCase();
-  if (!['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(method)) {
+  if (!DIRAC_SUPABASE_ALLOWED_METHODS_V404.has(method)) {
     return { ok: false, status: 405, data: { code: 'SUPABASE_METHOD_NOT_ALLOWED' } };
   }
   const targetKey = resolveDiracSupabaseTargetKey(cleanPath, options);
@@ -7900,16 +7937,7 @@ async function supabaseFetch(path, options = {}) {
 
   let targetOrigin = '';
   try {
-    const configured = new URL(String(target.url || ''));
-    if (configured.protocol !== 'https:'
-        || configured.username
-        || configured.password
-        || configured.search
-        || configured.hash
-        || (configured.port && configured.port !== '443')) {
-      throw new Error('SUPABASE_URL_INVALID');
-    }
-    targetOrigin = configured.origin;
+    targetOrigin = diracSupabaseValidatedOriginV404(target.url);
   } catch (_) {
     return { ok: false, status: 503, data: { code: 'SUPABASE_CONFIGURATION_INVALID' } };
   }
@@ -18346,7 +18374,7 @@ async function myOrdersResolveOwner(authUserId, userEmail) {
 async function myOrdersFetchGenericOrders(owner, userEmail) {
   const orderMap = new Map();
   const errors = [];
-  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at';
+  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at';
 
   async function addRowsFromPath(path) {
     const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
@@ -18435,6 +18463,7 @@ function myOrdersNormalizeGenericOrder(row, items) {
     customer_name: myOrdersCleanText(row.customer_name || '', 120),
     customer_email: normalizeAuthEmail(row.customer_email || ''),
     customer_phone: myOrdersCleanText(row.customer_phone || '', 80),
+    shipping_address: myOrdersCleanText(row.shipping_address || '', 520),
     subtotal: myOrdersMoney(row.subtotal ?? total),
     shipping_cost: myOrdersMoney(row.shipping_cost ?? 0),
     discount: myOrdersMoney(row.discount ?? 0),
@@ -41026,15 +41055,19 @@ function diracV107ShouldSkip(req, action, method) {
 function readDiracSupabaseCredentials(targetKey) {
   const key = DIRAC_SUPABASE_TARGET_ENVS[targetKey] ? targetKey : 'legacy';
   const envs = DIRAC_SUPABASE_TARGET_ENVS[key];
+  const memoV404 = diracSupabaseRequestRuntimeMemoV404();
+  const cacheKeyV404 = key + '|' + (shouldUseStrictDiracMultiDbRouter() ? 'strict' : 'compat');
+  const cachedV404 = memoV404 && memoV404.credentials instanceof Map ? memoV404.credentials.get(cacheKeyV404) : null;
+  if (cachedV404) return { ...cachedV404 };
 
   if (key === 'legacy') {
-    return {
+    return diracSupabaseCredentialResultV404(memoV404, cacheKeyV404, {
       targetKey: 'legacy',
       url: requiredEnv(envs.url).replace(/\/$/, ''),
       anonKey: requiredEnv(envs.anonKey),
       serviceKey: requiredEnv(envs.serviceKey),
       authRepairPatch: DIRAC_AUTH_REGISTER_SAFE_BOLA_REPAIR_PATCH_V131
-    };
+    });
   }
 
   const url = String(process.env[envs.url] || '').trim();
@@ -41046,13 +41079,13 @@ function readDiracSupabaseCredentials(targetKey) {
   }
 
   if (url && anonKey && serviceKey) {
-    return {
+    return diracSupabaseCredentialResultV404(memoV404, cacheKeyV404, {
       targetKey: key,
       url: url.replace(/\/$/, ''),
       anonKey,
       serviceKey,
       authRepairPatch: DIRAC_AUTH_REGISTER_SAFE_BOLA_REPAIR_PATCH_V131
-    };
+    });
   }
 
   if (shouldUseStrictDiracMultiDbRouter()) {
@@ -41060,7 +41093,7 @@ function readDiracSupabaseCredentials(targetKey) {
   }
 
   const legacy = DIRAC_SUPABASE_TARGET_ENVS.legacy;
-  return {
+  return diracSupabaseCredentialResultV404(memoV404, cacheKeyV404, {
     targetKey: 'legacy',
     requestedTargetKey: key,
     fallback: true,
@@ -41068,7 +41101,7 @@ function readDiracSupabaseCredentials(targetKey) {
     anonKey: requiredEnv(legacy.anonKey),
     serviceKey: requiredEnv(legacy.serviceKey),
     authRepairPatch: DIRAC_AUTH_REGISTER_SAFE_BOLA_REPAIR_PATCH_V131
-  };
+  });
 }
 
 try {
@@ -58563,6 +58596,7 @@ const __diracV202CentralGuardHandler = async function diracCentralSecurityGuardW
 __diracV202MarkWrapperFlag('__diracCentralSecurityGuardV146');
 
 
+const DIRAC_CENTRAL_DEFAULT_BEARER_HASH_V404 = loginSecurityHash('default');
 function diracCentralSupabaseRequestCacheKeyV151(path, options = {}) {
   const method = String(options && options.method || 'GET').toUpperCase();
   if (method !== 'GET') return '';
@@ -58571,7 +58605,8 @@ function diracCentralSupabaseRequestCacheKeyV151(path, options = {}) {
   if (!diracCentralIsRequestCacheableSupabaseReadV151(rawPath)) return '';
 
   const authMode = String(options && options.auth || 'anon');
-  const bearerHash = loginSecurityHash(String(options && options.bearer || 'default'));
+  const bearerValueV404 = String(options && options.bearer || 'default');
+  const bearerHash = bearerValueV404 === 'default' ? DIRAC_CENTRAL_DEFAULT_BEARER_HASH_V404 : loginSecurityHash(bearerValueV404);
   return ['supabase-read-v151', method, authMode, bearerHash, rawPath].join('|');
 }
 
@@ -58787,7 +58822,7 @@ function diracCentralBindOwnerScopedSessionRowsV197(ctx, path, options = {}, res
     if (params.get('order') !== 'created_at.desc' || params.get('limit') !== '80') return false;
 
     const expectedSelect = table === 'orders'
-      ? 'id,order_id,customer_id,customer_name,customer_email,customer_phone,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at'
+      ? 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at'
       : 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,dns_method,target_platform,domain_name,total_price,currency,order_status,payment_status,created_at';
     if (params.get('select') !== expectedSelect) return false;
 

@@ -52,31 +52,24 @@ function orderMatchesView(order, view) {
   return true;
 }
 function orderSummary(rows) {
-  return {
-    total_orders: rows.length,
-    unpaid: rows.filter((row) => row.payment_status === 'unpaid').length,
-    paid: rows.filter((row) => row.payment_status === 'paid').length,
-    pending: rows.filter((row) => row.order_status === 'pending' || row.order_status === 'pending_payment').length,
-    processing: rows.filter((row) => row.order_status === 'processing').length,
-    completed: rows.filter((row) => row.order_status === 'completed').length,
-    failed: rows.filter((row) => row.order_status === 'failed' || row.order_status === 'cancelled').length,
-    unpaid_total: rows.filter((row) => row.payment_status === 'unpaid').reduce((sum, row) => {
+  const summary = rows.reduce((out, row) => {
+    if (row.payment_status === 'unpaid') {
+      out.unpaid += 1;
       const amount = Number(row.total);
-      return Number.isSafeInteger(amount) && amount >= 0 && Number.isSafeInteger(sum + amount) ? sum + amount : sum;
-    }, 0)
-  };
+      if (Number.isSafeInteger(amount) && amount >= 0 && Number.isSafeInteger(out.unpaid_total + amount)) out.unpaid_total += amount;
+    } else if (row.payment_status === 'paid') out.paid += 1;
+    if (row.order_status === 'pending' || row.order_status === 'pending_payment') out.pending += 1;
+    else if (row.order_status === 'processing') out.processing += 1;
+    else if (row.order_status === 'completed') out.completed += 1;
+    else if (row.order_status === 'failed' || row.order_status === 'cancelled') out.failed += 1;
+    return out;
+  }, { total_orders: rows.length, unpaid: 0, paid: 0, pending: 0, processing: 0, completed: 0, failed: 0, unpaid_total: 0 });
+  return summary;
 }
 
 function moneyValue(value) {
   const amount = Number(value);
   return Number.isSafeInteger(amount) && amount >= 0 ? amount : 0;
-}
-function safeMoneySum(rows, predicate) {
-  return rows.reduce((sum, row) => {
-    if (predicate && !predicate(row)) return sum;
-    const amount = moneyValue(row.total ?? row.total_price);
-    return Number.isSafeInteger(sum + amount) ? sum + amount : sum;
-  }, 0);
 }
 function safeIsoEdge(rows, newest) {
   let picked = null;
@@ -89,65 +82,100 @@ function safeIsoEdge(rows, newest) {
 }
 function orderAnalytics(rows) {
   const services = new Map();
-  rows.forEach((row) => {
+  const stats = rows.reduce((out, row) => {
     const key = cleanText(row.service_type || row.service_label || 'order', 80).toLowerCase() || 'order';
     services.set(key, (services.get(key) || 0) + 1);
-  });
+    const amount = moneyValue(row.total ?? row.total_price);
+    if (Number.isSafeInteger(out.total_value + amount)) out.total_value += amount;
+    if (row.payment_status === 'paid') {
+      out.paid_count += 1;
+      if (Number.isSafeInteger(out.paid_total + amount)) out.paid_total += amount;
+    } else if (row.payment_status === 'unpaid') {
+      out.unpaid_count += 1;
+      if (Number.isSafeInteger(out.unpaid_total + amount)) out.unpaid_total += amount;
+    }
+    if (row.order_status === 'processing') out.processing_count += 1;
+    else if (row.order_status === 'completed') out.completed_count += 1;
+    else if (row.order_status === 'pending' || row.order_status === 'pending_payment') out.pending_count += 1;
+    const time = Date.parse(String(row && row.created_at || ''));
+    if (Number.isFinite(time)) {
+      if (!out.latest || time > out.latest.time) out.latest = { time, value: String(row.created_at) };
+      if (!out.first || time < out.first.time) out.first = { time, value: String(row.created_at) };
+    }
+    return out;
+  }, { total_value: 0, paid_total: 0, unpaid_total: 0, paid_count: 0, unpaid_count: 0, processing_count: 0, completed_count: 0, pending_count: 0, latest: null, first: null });
   let topService = '', topCount = 0;
   services.forEach((count, key) => { if (count > topCount) { topService = key; topCount = count; } });
   return {
     record_count: rows.length,
-    total_value: safeMoneySum(rows),
-    paid_total: safeMoneySum(rows, (row) => row.payment_status === 'paid'),
-    unpaid_total: safeMoneySum(rows, (row) => row.payment_status === 'unpaid'),
-    paid_count: rows.filter((row) => row.payment_status === 'paid').length,
-    unpaid_count: rows.filter((row) => row.payment_status === 'unpaid').length,
-    processing_count: rows.filter((row) => row.order_status === 'processing').length,
-    completed_count: rows.filter((row) => row.order_status === 'completed').length,
-    pending_count: rows.filter((row) => row.order_status === 'pending' || row.order_status === 'pending_payment').length,
-    latest_order_at: safeIsoEdge(rows, true),
-    first_order_at: safeIsoEdge(rows, false),
+    total_value: stats.total_value,
+    paid_total: stats.paid_total,
+    unpaid_total: stats.unpaid_total,
+    paid_count: stats.paid_count,
+    unpaid_count: stats.unpaid_count,
+    processing_count: stats.processing_count,
+    completed_count: stats.completed_count,
+    pending_count: stats.pending_count,
+    latest_order_at: stats.latest ? stats.latest.value : null,
+    first_order_at: stats.first ? stats.first.value : null,
     top_service: topService || null,
     top_service_count: topCount,
     scope: 'latest_120_records_max'
   };
 }
 function domainAnalytics(rows) {
-  let itemCount = 0, renewalReferenceTotal = 0;
-  rows.forEach((row) => {
+  const stats = rows.reduce((out, row) => {
     const items = ownRows(row.domain_order_items, 100);
-    itemCount += items.length || (row.domain_name ? 1 : 0);
+    out.domain_count += items.length || (row.domain_name ? 1 : 0);
     items.forEach((item) => {
       const renewal = moneyValue(item.renewal_price);
-      if (Number.isSafeInteger(renewalReferenceTotal + renewal)) renewalReferenceTotal += renewal;
+      if (Number.isSafeInteger(out.renewal_reference_total + renewal)) out.renewal_reference_total += renewal;
     });
-  });
+    if (row.payment_status === 'paid') out.paid_count += 1;
+    else if (row.payment_status === 'unpaid') out.unpaid_count += 1;
+    const amount = moneyValue(row.total_price);
+    if (Number.isSafeInteger(out.total_value + amount)) out.total_value += amount;
+    const time = Date.parse(String(row && row.created_at || ''));
+    if (Number.isFinite(time) && (!out.latest || time > out.latest.time)) out.latest = { time, value: String(row.created_at) };
+    return out;
+  }, { domain_count: 0, paid_count: 0, unpaid_count: 0, total_value: 0, renewal_reference_total: 0, latest: null });
   return {
     order_count: rows.length,
-    domain_count: itemCount,
-    paid_count: rows.filter((row) => row.payment_status === 'paid').length,
-    unpaid_count: rows.filter((row) => row.payment_status === 'unpaid').length,
-    total_value: rows.reduce((sum, row) => {
-      const amount = moneyValue(row.total_price);
-      return Number.isSafeInteger(sum + amount) ? sum + amount : sum;
-    }, 0),
-    renewal_reference_total: renewalReferenceTotal,
-    latest_order_at: safeIsoEdge(rows, true)
+    domain_count: stats.domain_count,
+    paid_count: stats.paid_count,
+    unpaid_count: stats.unpaid_count,
+    total_value: stats.total_value,
+    renewal_reference_total: stats.renewal_reference_total,
+    latest_order_at: stats.latest ? stats.latest.value : null
   };
 }
 function securityAnalytics(overview) {
   const events = ownRows(overview.events, 120);
   const tickets = ownRows(overview.account_requests, 120);
   const counts = overview.counts && typeof overview.counts === 'object' ? overview.counts : {};
+  const eventStats = events.reduce((out, row) => {
+    if (cleanText(row.risk_level, 20).toLowerCase() === 'high') out.high_risk_count += 1;
+    if (cleanText(row.status, 20).toLowerCase() === 'info') out.info_count += 1;
+    const time = Date.parse(String(row && row.created_at || ''));
+    if (Number.isFinite(time) && (!out.latest || time > out.latest.time)) out.latest = { time, value: String(row.created_at) };
+    return out;
+  }, { high_risk_count: 0, info_count: 0, latest: null });
+  const ticketStats = tickets.reduce((out, row) => {
+    const status = cleanText(row.status, 30).toLowerCase();
+    if (status === 'pending') out.ticket_pending += 1;
+    else if (status === 'processing') out.ticket_processing += 1;
+    else if (status === 'completed') out.ticket_completed += 1;
+    return out;
+  }, { ticket_pending: 0, ticket_processing: 0, ticket_completed: 0 });
   return {
     event_count: events.length,
-    high_risk_count: events.filter((row) => cleanText(row.risk_level, 20).toLowerCase() === 'high').length,
-    info_count: events.filter((row) => cleanText(row.status, 20).toLowerCase() === 'info').length,
-    latest_event_at: safeIsoEdge(events, true),
+    high_risk_count: eventStats.high_risk_count,
+    info_count: eventStats.info_count,
+    latest_event_at: eventStats.latest ? eventStats.latest.value : null,
     ticket_count: tickets.length,
-    ticket_pending: tickets.filter((row) => cleanText(row.status, 30).toLowerCase() === 'pending').length,
-    ticket_processing: tickets.filter((row) => cleanText(row.status, 30).toLowerCase() === 'processing').length,
-    ticket_completed: tickets.filter((row) => cleanText(row.status, 30).toLowerCase() === 'completed').length,
+    ticket_pending: ticketStats.ticket_pending,
+    ticket_processing: ticketStats.ticket_processing,
+    ticket_completed: ticketStats.ticket_completed,
     active_session_count: Number.isSafeInteger(Number(counts.sessions)) ? Number(counts.sessions) : 0
   };
 }
@@ -167,6 +195,13 @@ function projectResponse(action, view, payload, profile) {
     out.summary = orderSummary(out.orders);
     out.analytics = orderAnalytics(out.orders);
     out.account_analytics = orderAnalytics(allOrders);
+    const latestOrder = allOrders[0] || null;
+    out.profile_supplement = {
+      phone: cleanText(latestOrder && latestOrder.customer_phone, 80),
+      address: cleanText(latestOrder && (latestOrder.shipping_address || latestOrder.customer_address || latestOrder.address || latestOrder.alamat || latestOrder.delivery_address || latestOrder.recipient_address), 520),
+      registered_at: cleanText(payload.user && payload.user.created_at, 64) || null,
+      customer_since: safeIsoEdge(allOrders, false)
+    };
     out.partial = Boolean(payload.diagnostics && (payload.diagnostics.generic_orders_ready === false || payload.diagnostics.domain_orders_ready === false));
     if (out.view === 'invoice') out.invoice_issuer = {
       legal_name: 'PT Dirac Inovasi Nusantara',
