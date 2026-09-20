@@ -60,6 +60,91 @@ function orderSummary(rows) {
     }, 0)
   };
 }
+
+function moneyValue(value) {
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) && amount >= 0 ? amount : 0;
+}
+function safeMoneySum(rows, predicate) {
+  return rows.reduce((sum, row) => {
+    if (predicate && !predicate(row)) return sum;
+    const amount = moneyValue(row.total ?? row.total_price);
+    return Number.isSafeInteger(sum + amount) ? sum + amount : sum;
+  }, 0);
+}
+function safeIsoEdge(rows, newest) {
+  let picked = null;
+  for (const row of rows) {
+    const time = Date.parse(String(row && row.created_at || ''));
+    if (!Number.isFinite(time)) continue;
+    if (!picked || (newest ? time > picked.time : time < picked.time)) picked = { time, value: String(row.created_at) };
+  }
+  return picked ? picked.value : null;
+}
+function orderAnalytics(rows) {
+  const services = new Map();
+  rows.forEach((row) => {
+    const key = cleanText(row.service_type || row.service_label || 'order', 80).toLowerCase() || 'order';
+    services.set(key, (services.get(key) || 0) + 1);
+  });
+  let topService = '', topCount = 0;
+  services.forEach((count, key) => { if (count > topCount) { topService = key; topCount = count; } });
+  return {
+    record_count: rows.length,
+    total_value: safeMoneySum(rows),
+    paid_total: safeMoneySum(rows, (row) => row.payment_status === 'paid'),
+    unpaid_total: safeMoneySum(rows, (row) => row.payment_status === 'unpaid'),
+    paid_count: rows.filter((row) => row.payment_status === 'paid').length,
+    unpaid_count: rows.filter((row) => row.payment_status === 'unpaid').length,
+    processing_count: rows.filter((row) => row.order_status === 'processing').length,
+    completed_count: rows.filter((row) => row.order_status === 'completed').length,
+    pending_count: rows.filter((row) => row.order_status === 'pending' || row.order_status === 'pending_payment').length,
+    latest_order_at: safeIsoEdge(rows, true),
+    first_order_at: safeIsoEdge(rows, false),
+    top_service: topService || null,
+    top_service_count: topCount,
+    scope: 'latest_120_records_max'
+  };
+}
+function domainAnalytics(rows) {
+  let itemCount = 0, renewalReferenceTotal = 0;
+  rows.forEach((row) => {
+    const items = ownRows(row.domain_order_items, 100);
+    itemCount += items.length || (row.domain_name ? 1 : 0);
+    items.forEach((item) => {
+      const renewal = moneyValue(item.renewal_price);
+      if (Number.isSafeInteger(renewalReferenceTotal + renewal)) renewalReferenceTotal += renewal;
+    });
+  });
+  return {
+    order_count: rows.length,
+    domain_count: itemCount,
+    paid_count: rows.filter((row) => row.payment_status === 'paid').length,
+    unpaid_count: rows.filter((row) => row.payment_status === 'unpaid').length,
+    total_value: rows.reduce((sum, row) => {
+      const amount = moneyValue(row.total_price);
+      return Number.isSafeInteger(sum + amount) ? sum + amount : sum;
+    }, 0),
+    renewal_reference_total: renewalReferenceTotal,
+    latest_order_at: safeIsoEdge(rows, true)
+  };
+}
+function securityAnalytics(overview) {
+  const events = ownRows(overview.events, 120);
+  const tickets = ownRows(overview.account_requests, 120);
+  const counts = overview.counts && typeof overview.counts === 'object' ? overview.counts : {};
+  return {
+    event_count: events.length,
+    high_risk_count: events.filter((row) => cleanText(row.risk_level, 20).toLowerCase() === 'high').length,
+    info_count: events.filter((row) => cleanText(row.status, 20).toLowerCase() === 'info').length,
+    latest_event_at: safeIsoEdge(events, true),
+    ticket_count: tickets.length,
+    ticket_pending: tickets.filter((row) => cleanText(row.status, 30).toLowerCase() === 'pending').length,
+    ticket_processing: tickets.filter((row) => cleanText(row.status, 30).toLowerCase() === 'processing').length,
+    ticket_completed: tickets.filter((row) => cleanText(row.status, 30).toLowerCase() === 'completed').length,
+    active_session_count: Number.isSafeInteger(Number(counts.sessions)) ? Number(counts.sessions) : 0
+  };
+}
 function projectResponse(action, view, payload, profile) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload.ok !== true) return payload;
   if (action === 'domain_health' || action === 'domain_logout') return payload;
@@ -71,8 +156,11 @@ function projectResponse(action, view, payload, profile) {
     out.profile = matchingProfile ? { name: cleanText(profile.name, 120), email: cleanText(profile.email, 254), phone: cleanText(profile.phone, 80) } : null;
   } else if (action === 'my_orders') {
     out.view = view || 'invoice';
-    out.orders = ownRows(payload.orders, 120).filter((order) => orderMatchesView(order, out.view));
+    const allOrders = ownRows(payload.orders, 120);
+    out.orders = allOrders.filter((order) => orderMatchesView(order, out.view));
     out.summary = orderSummary(out.orders);
+    out.analytics = orderAnalytics(out.orders);
+    out.account_analytics = orderAnalytics(allOrders);
     out.partial = Boolean(payload.diagnostics && (payload.diagnostics.generic_orders_ready === false || payload.diagnostics.domain_orders_ready === false));
     if (out.view === 'invoice') out.invoice_issuer = {
       legal_name: 'PT Dirac Inovasi Nusantara',
@@ -85,6 +173,7 @@ function projectResponse(action, view, payload, profile) {
   } else if (action === 'domain_orders') {
     out.domains = JSON.parse(JSON.stringify(ownRows(payload.data, 120)));
     out.data = ownRows(payload.data, 120);
+    out.domain_summary = domainAnalytics(out.domains);
   } else if (action === 'customer_security_overview') {
     const overview = payload.overview && typeof payload.overview === 'object' ? payload.overview : {};
     out.view = view || 'notifications';
@@ -92,6 +181,19 @@ function projectResponse(action, view, payload, profile) {
     out.notifications = JSON.parse(JSON.stringify(ownRows(overview.events, 120)));
     out.partial = overview.partial === true || payload.security_data_ready === false;
     out.warnings = Array.isArray(overview.warnings) ? JSON.parse(JSON.stringify(overview.warnings.slice(0, 20))) : [];
+    out.security_summary = securityAnalytics(overview);
+    out.security_settings = overview.settings && typeof overview.settings === 'object' ? {
+      email_active: overview.settings.email_active === true,
+      two_factor_enabled: overview.settings.two_factor_enabled === true,
+      two_factor_method: cleanText(overview.settings.two_factor_method, 40),
+      notify_new_login: overview.settings.notify_new_login === true,
+      notify_password_change: overview.settings.notify_password_change === true,
+      notify_new_device: overview.settings.notify_new_device === true,
+      password_changed_at: overview.settings.password_changed_at || null,
+      last_security_check_at: overview.settings.last_security_check_at || null,
+      account_locked: overview.settings.account_locked === true,
+      locked_until: overview.settings.locked_until || null
+    } : null;
     out.ticket_kind = 'account_security_request';
   }
   return out;
