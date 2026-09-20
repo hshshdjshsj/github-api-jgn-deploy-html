@@ -30078,7 +30078,7 @@ async function diracUniversalPesananFetchRegularItems(orderId, amount, serviceTy
       quantity,
       unit_price: unitPrice,
       subtotal,
-      image_url: orderMailAssetUrl(product.image_url || product.img || ''),
+      image_url: orderMailProductAssetUrl(productKey, product.image_url || product.img || ''),
       description: orderMailCleanText(product.description || product.notes || product.long_description || product.category || '', 220),
       category: orderMailCleanText(product.category || '', 80),
       fragrance_type: orderMailCleanText(product.fragrance_type || '', 80)
@@ -30830,7 +30830,7 @@ function orderMailNormalizeOrderInput(input) {
       subtotal: orderMailMoney(item && (item.subtotal ?? 0)),
       description: orderMailCleanText(item && (item.description || item.notes || item.extension || item.product_doc_id) || '', 220),
       product_doc_id: orderMailCleanText(item && item.product_doc_id || '', 120),
-      image_url: orderMailAssetUrl(item && (item.image_url || item.image || item.img) || ''),
+      image_url: orderMailProductAssetUrl(item && item.product_doc_id || '', item && (item.image_url || item.image || item.img) || ''),
       category: orderMailCleanText(item && item.category || '', 80),
       fragrance_type: orderMailCleanText(item && item.fragrance_type || '', 80)
     })).filter((item) => item.title)
@@ -31041,6 +31041,38 @@ function orderMailAssetUrl(value) {
   const base = orderMailAssetBaseUrl();
   const path = raw.startsWith('/') ? raw : '/' + raw;
   return orderMailCleanUrl(base + path);
+}
+function orderMailCatalogImagePath(productDocId, value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.length > 600) return raw;
+  const idText = String(productDocId || '').trim();
+  if (!/^\d{1,4}$/.test(idText)) return raw;
+  const id = Number(idText);
+  let folder = '';
+  if (id >= 1 && id <= 98) folder = 'gambar-01';
+  else if ((id >= 99 && id <= 159) || (id >= 1001 && id <= 1037)) folder = 'gambar-02';
+  else if (id >= 160 && id <= 257) folder = 'gambar-03';
+  else if (id >= 258 && id <= 355) folder = 'gambar-04';
+  if (!folder) return raw;
+  let fileName = raw;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port) return raw;
+    fileName = parsed.pathname.slice(parsed.pathname.lastIndexOf('/') + 1);
+  } catch (_) {
+    fileName = raw.slice(raw.lastIndexOf('/') + 1);
+  }
+  if (!/^[A-Za-z0-9._-]+\.webp$/i.test(fileName)) return raw;
+  return folder + '/' + fileName;
+}
+function orderMailProductAssetUrl(productDocId, value) {
+  const clean = orderMailAssetUrl(orderMailCatalogImagePath(productDocId, value));
+  if (!clean) return '';
+  try {
+    const url = new URL(clean);
+    url.searchParams.set('dirac_image_v', String(Date.now()));
+    return orderMailCleanUrl(url.href);
+  } catch (_) { return clean; }
 }
 function orderMailDefaultProductImageUrl() {
   return orderMailAssetUrl(process.env.ORDER_EMAIL_DEFAULT_PRODUCT_IMAGE_URL || '');
