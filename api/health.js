@@ -170,7 +170,7 @@ return Object.freeze({ normalizeIp, trustedClientIp });
 })();
 
 function diracSmtpHeaderImageUrlV332() {
-  const expected = diracRoleOriginV250('www') + '/headerstp.webp';
+  const expected = diracBaseOriginV250() + '/headerstp.webp';
   try {
     const url = new URL(expected);
     const base = diracBaseDomainV250();
@@ -11934,8 +11934,8 @@ function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, opt
           && ctx.currentStageV211 === 'device binding'
           && ctx.failedStageV211 === 'device binding'
           && ctx.failureReasonV211 === 'device_consistency_changed'
-          && ctx.action === 'customer_session_handoff_issue'
-          && ctx.method === 'POST'
+          && ((ctx.action === 'customer_session_handoff_issue' && ctx.method === 'POST')
+            || (ctx.action === 'domain_dashboard_me' && ctx.method === 'GET'))
           && ctx.classification === 'browser'
           && ctx.authentication === 'browser'
           && mirrorCapabilityV353.requestId === String(ctx.requestId || '')
@@ -18466,7 +18466,7 @@ function myOrdersNormalizeGenericOrder(row, items) {
 
 async function myOrdersFetchDomainOrders(owner, userEmail) {
   const errors = [];
-  const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,dns_method,target_platform,domain_name,total_price,currency,order_status,status,payment_status,created_at';
+  const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,dns_method,target_platform,domain_name,total_price,currency,order_status,payment_status,created_at';
   const rowsMap = new Map();
 
   async function add(path) {
@@ -31031,7 +31031,7 @@ function orderMailBuildNewOrderMessages(data) {
   return { customerSubject, ownerSubject, customerText, ownerText, customerHtml, ownerHtml };
 }
 function orderMailAssetBaseUrl() {
-  return String(process.env.ORDER_EMAIL_ASSET_BASE_URL || process.env.DOMAIN_SITE_URL || process.env.SITE_URL || globalThis.SITE_URL || diracRoleOriginV250('www')).trim().replace(/\/+$/, '');
+  return diracBaseOriginV250();
 }
 function orderMailAssetUrl(value) {
   const raw = String(value || '').trim();
@@ -31063,7 +31063,7 @@ function orderMailCatalogImagePath(productDocId, value) {
     fileName = raw.slice(raw.lastIndexOf('/') + 1);
   }
   if (!/^[A-Za-z0-9._-]+\.webp$/i.test(fileName)) return raw;
-  return folder + '/' + fileName;
+  return fileName;
 }
 function orderMailProductAssetUrl(productDocId, value) {
   const clean = orderMailAssetUrl(orderMailCatalogImagePath(productDocId, value));
@@ -58755,7 +58755,7 @@ function diracCentralBindOwnerScopedSessionRowsV197(ctx, path, options = {}, res
 
     const expectedSelect = table === 'orders'
       ? 'id,order_id,customer_id,customer_name,customer_email,customer_phone,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at'
-      : 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,dns_method,target_platform,domain_name,total_price,currency,order_status,status,payment_status,created_at';
+      : 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,dns_method,target_platform,domain_name,total_price,currency,order_status,payment_status,created_at';
     if (params.get('select') !== expectedSelect) return false;
 
     const customerFilter = String(params.get('customer_id') || '');
