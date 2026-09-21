@@ -302,6 +302,48 @@ function diracRequestPerformanceDatabaseStartV340(ctx, path, options) {
   } catch (_) { return null; }
 }
 
+// Sampled timings include guarded fetch/DNS/TLS/upstream wait, not SQL execution time.
+function diracRequestPerformanceTransportStartV340(ctx, path, method) {
+  try {
+    const record = ctx && ctx.req && DIRAC_REQUEST_PERFORMANCE_STATE_V340.requests.get(ctx.req);
+    if (!record || record.emitted) return null;
+    const classified = diracLoginFatalDatabaseRouteV324(path);
+    const route = ['auth:token', 'auth:user', 'auth:admin_user'].includes(classified)
+      ? classified
+      : classified.startsWith('table:') && DIRAC_REQUEST_PERFORMANCE_TABLES_V340.has(classified.slice(6))
+        ? classified
+        : classified.startsWith('rpc:') ? 'rpc' : 'other';
+    const rawMethod = String(method || 'GET').toUpperCase();
+    const safeMethod = ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(rawMethod) ? rawMethod : 'other';
+    const phase = ctx.executionPhaseV211 === 'handler' ? 'handler'
+      : ctx.executionPhaseV211 === 'guard' ? 'guard' : 'bootstrap';
+    const aggregate = record.database.get([phase, safeMethod, route].join('|')) || record.database.get('overflow');
+    if (!aggregate) return null;
+    return { record, aggregate, startedAt: Date.now(), headersAt: null, bodyCompleted: false, completed: false };
+  } catch (_) { return null; }
+}
+
+function diracRequestPerformanceTransportFinishV340(marker) {
+  try {
+    if (!marker || marker.completed || marker.record.emitted) return;
+    marker.completed = true;
+    const aggregate = marker.aggregate;
+    const now = Date.now();
+    const receivedHeaders = marker.headersAt !== null;
+    const fetchWait = Math.max(0, Math.min(86400000, (receivedHeaders ? marker.headersAt : now) - marker.startedAt));
+    const bodyRead = receivedHeaders ? Math.max(0, Math.min(86400000, now - marker.headersAt)) : 0;
+    aggregate.transport_calls = (aggregate.transport_calls || 0) + 1;
+    aggregate.transport_headers_received = (aggregate.transport_headers_received || 0) + (receivedHeaders ? 1 : 0);
+    aggregate.transport_body_completed = (aggregate.transport_body_completed || 0) + (marker.bodyCompleted ? 1 : 0);
+    aggregate.transport_failed_before_headers = (aggregate.transport_failed_before_headers || 0) + (receivedHeaders ? 0 : 1);
+    aggregate.transport_failed_during_body = (aggregate.transport_failed_during_body || 0) + (receivedHeaders && !marker.bodyCompleted ? 1 : 0);
+    aggregate.fetch_wait_sum_ms = (aggregate.fetch_wait_sum_ms || 0) + fetchWait;
+    aggregate.fetch_wait_max_ms = Math.max(aggregate.fetch_wait_max_ms || 0, fetchWait);
+    aggregate.body_read_sum_ms = (aggregate.body_read_sum_ms || 0) + bodyRead;
+    aggregate.body_read_max_ms = Math.max(aggregate.body_read_max_ms || 0, bodyRead);
+  } catch (_) {}
+}
+
 function diracRequestPerformanceDatabaseEndV340(marker, result, error) {
   try {
     if (!marker || marker.completed || marker.record.emitted) return;
@@ -8007,9 +8049,12 @@ async function supabaseFetch(path, options = {}) {
 
   let response;
   let text = '';
+  const transportTimingV340 = diracRequestPerformanceTransportStartV340(banContextV320, cleanPath, method);
   try {
     response = await fetch(targetOrigin + cleanPath, fetchOptions);
+    if (transportTimingV340) transportTimingV340.headersAt = Date.now();
     text = await diracReadResponseTextLimitedV210(response, 8 * 1024 * 1024);
+    if (transportTimingV340) transportTimingV340.bodyCompleted = true;
   } catch (error) {
     const failedResult = {
       ok: false,
@@ -8042,6 +8087,7 @@ async function supabaseFetch(path, options = {}) {
         diracCentralRecordSuppressedExceptionV221(signalCleanupErrorV231);
       }
     }
+    diracRequestPerformanceTransportFinishV340(transportTimingV340);
   }
 
   let data = null;
@@ -70122,16 +70168,38 @@ async function diracCentralBackendComplianceGateV230() {
     DIRAC_CENTRAL_BACKEND_DYNAMIC_GATE_PROMISE_V230 = diracCentralBackendGateWithDeadlineV231(async (gateSignalV231) => {
       return diracCentralRunInternalComplianceContextV230(async () => {
         const probe = crypto.randomBytes(24).toString('base64url');
-        gateStageV231 = 'atomic_consume_first';
-        const first = await supabaseFetch('/rest/v1/rpc/dirac_central_atomic_consume_v230', {
-          method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
-          body: { p_security_key: 's2s-central-v230-gate:' + probe, p_record_json: { type: 'v230_gate' }, p_expires_at: new Date(Date.now() + 120000).toISOString() }
-        });
-        gateStageV231 = 'atomic_consume_replay';
-        const second = await supabaseFetch('/rest/v1/rpc/dirac_central_atomic_consume_v230', {
-          method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
-          body: { p_security_key: 's2s-central-v230-gate:' + probe, p_record_json: { type: 'v230_gate' }, p_expires_at: new Date(Date.now() + 120000).toISOString() }
-        });
+        // Preserve consume -> replay ordering; independent probes still must all pass.
+        const [consumeResult, recordResult, rateResult, loggedResult] = await Promise.allSettled([
+          (async () => {
+            gateStageV231 = 'atomic_consume_first';
+            const first = await supabaseFetch('/rest/v1/rpc/dirac_central_atomic_consume_v230', {
+              method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
+              body: { p_security_key: 's2s-central-v230-gate:' + probe, p_record_json: { type: 'v230_gate' }, p_expires_at: new Date(Date.now() + 120000).toISOString() }
+            });
+            gateStageV231 = 'atomic_consume_replay';
+            const second = await supabaseFetch('/rest/v1/rpc/dirac_central_atomic_consume_v230', {
+              method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
+              body: { p_security_key: 's2s-central-v230-gate:' + probe, p_record_json: { type: 'v230_gate' }, p_expires_at: new Date(Date.now() + 120000).toISOString() }
+            });
+            gateStageV231 = 'post_replay_parallel_checks';
+            return { first, second };
+          })(),
+          supabaseFetch('/rest/v1/rpc/dirac_central_atomic_claim_record_v230', {
+            method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
+            body: { p_table_name: 'dirac_s2s_security', p_security_key: 's2s-central-v230-record-gate:' + probe, p_record_json: { type: 'v230_record_gate' }, p_expires_at: new Date(Date.now() + 120000).toISOString() }
+          }),
+          supabaseFetch('/rest/v1/rpc/dirac_central_atomic_rate_limit_v230', {
+            method: 'POST', auth: 'service', timeoutMs: 5000, signal: gateSignalV231,
+            body: { p_security_key: 's2s-central-v230-rate-gate:' + probe, p_limit: 2, p_window_seconds: 60, p_block_seconds: 60 }
+          }),
+          supabaseFetch('/rest/v1/rpc/dirac_central_security_log_v230', {
+            method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
+            body: { p_event_type: 'backend_compliance_probe', p_severity: 'info', p_request_id_hash: '', p_action_name: 'domain_health', p_reason_code: 'v230_gate', p_event_json: { probe_hash: diracCentralHashV146(probe) } }
+          })
+        ]);
+        // Wait for every probe result before propagating a probe failure.
+        if (consumeResult.status === 'rejected') throw consumeResult.reason;
+        const { first, second } = consumeResult.value;
         if (!first || first.ok !== true || first.data !== true || !second || second.ok !== true || second.data !== false) {
           try {
             const summarizeAtomicConsumeResultV232 = (result) => {
@@ -70163,21 +70231,12 @@ async function diracCentralBackendComplianceGateV230() {
           }
         }
         if (!first || first.ok !== true || first.data !== true || !second || second.ok !== true || second.data !== false) throw new Error('DIRAC_BACKEND_ATOMIC_CONSUME_GATE_FAILED');
-        gateStageV231 = 'post_replay_parallel_checks';
-        const [record, rate, logged] = await Promise.all([
-          supabaseFetch('/rest/v1/rpc/dirac_central_atomic_claim_record_v230', {
-            method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
-            body: { p_table_name: 'dirac_s2s_security', p_security_key: 's2s-central-v230-record-gate:' + probe, p_record_json: { type: 'v230_record_gate' }, p_expires_at: new Date(Date.now() + 120000).toISOString() }
-          }),
-          supabaseFetch('/rest/v1/rpc/dirac_central_atomic_rate_limit_v230', {
-            method: 'POST', auth: 'service', timeoutMs: 5000, signal: gateSignalV231,
-            body: { p_security_key: 's2s-central-v230-rate-gate:' + probe, p_limit: 2, p_window_seconds: 60, p_block_seconds: 60 }
-          }),
-          supabaseFetch('/rest/v1/rpc/dirac_central_security_log_v230', {
-            method: 'POST', auth: 'service', timeoutMs: 3000, signal: gateSignalV231,
-            body: { p_event_type: 'backend_compliance_probe', p_severity: 'info', p_request_id_hash: '', p_action_name: 'domain_health', p_reason_code: 'v230_gate', p_event_json: { probe_hash: diracCentralHashV146(probe) } }
-          })
-        ]);
+        if (recordResult.status === 'rejected') throw recordResult.reason;
+        if (rateResult.status === 'rejected') throw rateResult.reason;
+        if (loggedResult.status === 'rejected') throw loggedResult.reason;
+        const record = recordResult.value;
+        const rate = rateResult.value;
+        const logged = loggedResult.value;
         if (!record || record.ok !== true || record.data !== true) {
           gateStageV231 = 'atomic_record';
           throw new Error('DIRAC_BACKEND_ATOMIC_RECORD_GATE_FAILED');
