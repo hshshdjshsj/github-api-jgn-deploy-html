@@ -2943,6 +2943,31 @@ function securityResetUserMailConfigV352() {
   return resolvedMailConfigV404;
 }
 
+function securityResetExecutiveReportTextV384(value) {
+  const text = String(value || '');
+  const marker = 'LAPOR LANGSUNG KE DIREKTUR & FOUNDER';
+  if (text.includes(marker)) return text;
+  const block = [
+    marker,
+    'Jika Anda menemukan dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra PT Dirac Inovasi Nusantara, laporan dapat disampaikan langsung kepada Achmad Zaenuddin selaku Direktur & Founder.',
+    'Email: supportdirac@gmail.com',
+    'WhatsApp: +62 882-0092-57589',
+    'Jangan sertakan password, OTP, PIN, CVV, passkey, cookie, token, atau secret dalam laporan.'
+  ].join('\r\n');
+  return text + (text ? '\r\n\r\n' : '') + block;
+}
+
+function securityResetExecutiveReportHtmlV384(value) {
+  const html = String(value || '');
+  if (html.includes('data-dirac-executive-report="v380"')) return html;
+  const block = '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" data-dirac-executive-report="v380" style="width:100%;margin:20px 0 0;border-collapse:collapse"><tr><td align="center" style="padding:0 12px"><table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;max-width:600px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:16px;overflow:hidden;background:#10151e;background-color:#10151e"><tr><td style="padding:20px 22px;border-left:4px solid #9a741f;font-family:Arial,Helvetica,sans-serif;color:#f4f6f9"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#f0c86c">LAPOR LANGSUNG KE DIREKTUR &amp; FOUNDER</div><p style="margin:10px 0 16px;font-size:13px;line-height:1.65;color:#c5ccd6">Jika Anda menemukan dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra PT Dirac Inovasi Nusantara, laporan dapat disampaikan langsung kepada Achmad Zaenuddin selaku Direktur &amp; Founder.</p><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td valign="top" width="92" style="padding:8px 10px 8px 0;border-top:1px solid #2c3544;font-size:11px;line-height:1.45;font-weight:800;letter-spacing:.08em;color:#8f99a7">EMAIL</td><td valign="top" style="padding:8px 0;border-top:1px solid #2c3544;font-size:13px;line-height:1.45;font-weight:700;word-break:break-word"><a href="mailto:supportdirac@gmail.com" style="color:#75c7ff;text-decoration:underline">supportdirac@gmail.com</a></td></tr><tr><td valign="top" width="92" style="padding:8px 10px 8px 0;border-top:1px solid #2c3544;font-size:11px;line-height:1.45;font-weight:800;letter-spacing:.08em;color:#8f99a7">WHATSAPP</td><td valign="top" style="padding:8px 0;border-top:1px solid #2c3544;font-size:13px;line-height:1.45;font-weight:700"><a href="https://wa.me/62882009257589" style="color:#75c7ff;text-decoration:underline">+62 882-0092-57589</a></td></tr></table><p style="margin:14px 0 0;font-size:11px;line-height:1.55;color:#8f99a7">Jangan sertakan password, OTP, PIN, CVV, passkey, cookie, token, atau secret dalam laporan.</p></td></tr></table></td></tr></table>';
+  const bodyIndex = html.toLowerCase().lastIndexOf('</body>');
+  if (bodyIndex >= 0) return html.slice(0, bodyIndex) + block + html.slice(bodyIndex);
+  const htmlIndex = html.toLowerCase().lastIndexOf('</html>');
+  if (htmlIndex >= 0) return html.slice(0, htmlIndex) + block + html.slice(htmlIndex);
+  return html + block;
+}
+
 function securityResetProviderLimitedV352(provider, status, body) {
   const code = String(body && (body.code || body.type || body.error_code || body.error && (body.error.code || body.error.type)) || '').toLowerCase();
   if (Number(status || 0) === 429) return true;
@@ -2951,6 +2976,8 @@ function securityResetProviderLimitedV352(provider, status, body) {
 
 async function securityResetHttpMailV352(provider, config, record, subject, text, html, reference) {
   const target = provider === 'brevo' ? 'https://api.brevo.com/v3/smtp/email' : 'https://api.resend.com/emails';
+  const reportText = securityResetExecutiveReportTextV384(text);
+  const reportHtml = securityResetExecutiveReportHtmlV384(html);
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), 7000) : null;
   try {
@@ -2959,11 +2986,11 @@ async function securityResetHttpMailV352(provider, config, record, subject, text
     const outbound = provider === 'brevo' ? {
       method: 'POST', redirect: 'error', signal: controller ? controller.signal : undefined,
       headers: { 'api-key': config.brevoKey, 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ sender: { name: 'PT Dirac Inovasi Nusantara', email: config.brevoFrom }, to: [{ email: record.email }], subject, textContent: text, htmlContent: html, headers: { 'X-Dirac-Reference': reference } })
+      body: JSON.stringify({ sender: { name: 'PT Dirac Inovasi Nusantara', email: config.brevoFrom }, to: [{ email: record.email }], subject, textContent: reportText, htmlContent: reportHtml, headers: { 'X-Dirac-Reference': reference } })
     } : {
       method: 'POST', redirect: 'error', signal: controller ? controller.signal : undefined,
       headers: { Authorization: 'Bearer ' + config.resendKey, 'Content-Type': 'application/json', Accept: 'application/json', 'Idempotency-Key': ('dirac-password-' + reference).slice(0, 240) },
-      body: JSON.stringify({ from: 'PT Dirac Inovasi Nusantara <' + config.resendFrom + '>', to: [record.email], subject, text, html })
+      body: JSON.stringify({ from: 'PT Dirac Inovasi Nusantara <' + config.resendFrom + '>', to: [record.email], subject, text: reportText, html: reportHtml })
     };
     const capability = securityResetEgressCapabilityV361(target, outbound, 'mail');
     const response = await securityResetEgressFetchV361(target, outbound, capability);
@@ -2983,6 +3010,8 @@ function securityResetGmailQuotaV352(error) {
 
 async function securityResetGmailMailV352(account, record, subject, text, html, slot) {
   const context = diracCentralCurrentContextV149();
+  const reportText = securityResetExecutiveReportTextV384(text);
+  const reportHtml = securityResetExecutiveReportHtmlV384(html);
   const passwordChangeSmtp = Boolean(context && context.__diracPasswordChangeSmtpDispatchV365 === true
     && /^[a-f0-9]{64}$/.test(String(context.__diracPasswordChangeSmtpRecipientHashV365 || ''))
     && isValidAuthEmail(record && record.email)
@@ -2999,9 +3028,9 @@ async function securityResetGmailMailV352(account, record, subject, text, html, 
     'Subject: =?UTF-8?B?' + Buffer.from(subject, 'utf8').toString('base64') + '?=',
     'MIME-Version: 1.0', 'Content-Type: multipart/alternative; boundary="' + boundary + '"', '',
     '--' + boundary, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '',
-    securityResetBase64LinesV342(Buffer.from(text, 'utf8')), '--' + boundary,
+    securityResetBase64LinesV342(Buffer.from(reportText, 'utf8')), '--' + boundary,
     'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '',
-    securityResetBase64LinesV342(Buffer.from(html, 'utf8')), '--' + boundary + '--', ''
+    securityResetBase64LinesV342(Buffer.from(reportHtml, 'utf8')), '--' + boundary + '--', ''
   ].join('\r\n');
   let socket = null;
   try {

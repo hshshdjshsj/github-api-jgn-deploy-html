@@ -789,21 +789,21 @@ function diracUniversalBrowserOriginsV250() {
 
 function diracExecutiveEscalationTextV380() {
   return [
-    'LAPORAN LANGSUNG KE DIREKTUR UTAMA / FOUNDER',
-    'Untuk dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra PT Dirac Inovasi Nusantara, laporan dapat disampaikan langsung kepada Achmad Zaenuddin, Direktur Utama sekaligus Founder.',
+    'LAPOR LANGSUNG KE DIREKTUR & FOUNDER',
+    'Jika Anda menemukan dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra PT Dirac Inovasi Nusantara, laporan dapat disampaikan langsung kepada Achmad Zaenuddin selaku Direktur & Founder.',
     'Email: supportdirac@gmail.com',
     'WhatsApp: +62 882-0092-57589',
-    'Jangan mengirim password, OTP, PIN, CVV, passkey, cookie, token, atau secret dalam laporan.'
+    'Jangan sertakan password, OTP, PIN, CVV, passkey, cookie, token, atau secret dalam laporan.'
   ].join('\r\n');
 }
 
 function diracExecutiveEscalationHtmlV380() {
-  return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" data-dirac-executive-report="v380" style="width:100%;margin:18px 0 0;border-collapse:collapse"><tr><td style="padding:16px;border:1px solid #c8cfd6;background:#f7f8fa;color:#17202a;font-family:Arial,Helvetica,sans-serif"><div style="font-size:13px;line-height:1.4;font-weight:700">Laporan langsung ke Direktur Utama / Founder</div><p style="margin:8px 0 10px;font-size:12px;line-height:1.55">Untuk dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra PT Dirac Inovasi Nusantara, laporan dapat disampaikan langsung kepada Achmad Zaenuddin, Direktur Utama sekaligus Founder.</p><div style="font-size:12px;line-height:1.65"><strong>Email:</strong> <a href="mailto:supportdirac@gmail.com">supportdirac@gmail.com</a><br><strong>WhatsApp:</strong> <a href="https://wa.me/62882009257589">+62 882-0092-57589</a></div><p style="margin:10px 0 0;font-size:11px;line-height:1.5;color:#4b5563">Jangan mengirim password, OTP, PIN, CVV, passkey, cookie, token, atau secret dalam laporan.</p></td></tr></table>';
+  return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" data-dirac-executive-report="v380" style="width:100%;margin:20px 0 0;border-collapse:collapse"><tr><td align="center" style="padding:0 12px"><table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;max-width:600px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:16px;overflow:hidden;background:#10151e;background-color:#10151e"><tr><td style="padding:20px 22px;border-left:4px solid #9a741f;font-family:Arial,Helvetica,sans-serif;color:#f4f6f9"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#f0c86c">LAPOR LANGSUNG KE DIREKTUR &amp; FOUNDER</div><p style="margin:10px 0 16px;font-size:13px;line-height:1.65;color:#c5ccd6">Jika Anda menemukan dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra PT Dirac Inovasi Nusantara, laporan dapat disampaikan langsung kepada Achmad Zaenuddin selaku Direktur &amp; Founder.</p><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td valign="top" width="92" style="padding:8px 10px 8px 0;border-top:1px solid #2c3544;font-size:11px;line-height:1.45;font-weight:800;letter-spacing:.08em;color:#8f99a7">EMAIL</td><td valign="top" style="padding:8px 0;border-top:1px solid #2c3544;font-size:13px;line-height:1.45;font-weight:700;word-break:break-word"><a href="mailto:supportdirac@gmail.com" style="color:#75c7ff;text-decoration:underline">supportdirac@gmail.com</a></td></tr><tr><td valign="top" width="92" style="padding:8px 10px 8px 0;border-top:1px solid #2c3544;font-size:11px;line-height:1.45;font-weight:800;letter-spacing:.08em;color:#8f99a7">WHATSAPP</td><td valign="top" style="padding:8px 0;border-top:1px solid #2c3544;font-size:13px;line-height:1.45;font-weight:700"><a href="https://wa.me/62882009257589" style="color:#75c7ff;text-decoration:underline">+62 882-0092-57589</a></td></tr></table><p style="margin:14px 0 0;font-size:11px;line-height:1.55;color:#8f99a7">Jangan sertakan password, OTP, PIN, CVV, passkey, cookie, token, atau secret dalam laporan.</p></td></tr></table></td></tr></table>';
 }
 
 function diracExecutiveEscalationAppendTextV380(value) {
   const text = String(value || '');
-  const marker = 'LAPORAN LANGSUNG KE DIREKTUR UTAMA / FOUNDER';
+  const marker = 'LAPOR LANGSUNG KE DIREKTUR & FOUNDER';
   if (text.includes(marker)) return text;
   return text + (text ? '\r\n\r\n' : '') + diracExecutiveEscalationTextV380();
 }

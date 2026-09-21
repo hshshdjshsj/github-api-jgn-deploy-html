@@ -231,9 +231,7 @@ function projectResponse(action, view, payload, profile) {
       notify_password_change: overview.settings.notify_password_change === true,
       notify_new_device: overview.settings.notify_new_device === true,
       password_changed_at: overview.settings.password_changed_at || null,
-      last_security_check_at: overview.settings.last_security_check_at || null,
-      account_locked: overview.settings.account_locked === true,
-      locked_until: overview.settings.locked_until || null
+      last_security_check_at: overview.settings.last_security_check_at || null
     } : null;
     out.ticket_kind = 'account_security_request';
   }
