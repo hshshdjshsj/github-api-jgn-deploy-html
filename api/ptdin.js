@@ -149,9 +149,7 @@ function domainAnalytics(rows) {
     latest_order_at: stats.latest ? stats.latest.value : null
   };
 }
-function securityAnalytics(overview) {
-  const events = ownRows(overview.events, 120);
-  const tickets = ownRows(overview.account_requests, 120);
+function securityAnalytics(overview, events = ownRows(overview.events, 120), tickets = ownRows(overview.account_requests, 120)) {
   const counts = overview.counts && typeof overview.counts === 'object' ? overview.counts : {};
   const eventStats = events.reduce((out, row) => {
     if (cleanText(row.risk_level, 20).toLowerCase() === 'high') out.high_risk_count += 1;
@@ -191,16 +189,16 @@ function projectResponse(action, view, payload, profile) {
   } else if (action === 'my_orders') {
     out.view = view || 'invoice';
     const allOrders = ownRows(payload.orders, 120);
-    out.orders = allOrders.filter((order) => orderMatchesView(order, out.view));
+    out.orders = out.view === 'invoice' ? allOrders : allOrders.filter((order) => orderMatchesView(order, out.view));
     out.summary = orderSummary(out.orders);
     out.analytics = orderAnalytics(out.orders);
-    out.account_analytics = orderAnalytics(allOrders);
+    out.account_analytics = out.orders.length === allOrders.length ? { ...out.analytics } : orderAnalytics(allOrders);
     const latestOrder = allOrders[0] || null;
     out.profile_supplement = {
       phone: cleanText(latestOrder && latestOrder.customer_phone, 80),
       address: cleanText(latestOrder && (latestOrder.shipping_address || latestOrder.customer_address || latestOrder.address || latestOrder.alamat || latestOrder.delivery_address || latestOrder.recipient_address), 520),
       registered_at: cleanText(payload.user && payload.user.created_at, 64) || null,
-      customer_since: safeIsoEdge(allOrders, false)
+      customer_since: out.account_analytics.first_order_at
     };
     out.partial = Boolean(payload.diagnostics && (payload.diagnostics.generic_orders_ready === false || payload.diagnostics.domain_orders_ready === false));
     if (out.view === 'invoice') out.invoice_issuer = {
@@ -212,17 +210,20 @@ function projectResponse(action, view, payload, profile) {
     if (out.view === 'projects') out.project_progress_available = false;
     if (out.view === 'topup') out.balance_available = false;
   } else if (action === 'domain_orders') {
-    out.domains = JSON.parse(JSON.stringify(ownRows(payload.data, 120)));
-    out.data = ownRows(payload.data, 120);
+    const domains = ownRows(payload.data, 120);
+    out.domains = JSON.parse(JSON.stringify(domains));
+    out.data = domains;
     out.domain_summary = domainAnalytics(out.domains);
   } else if (action === 'customer_security_overview') {
     const overview = payload.overview && typeof payload.overview === 'object' ? payload.overview : {};
     out.view = view || 'notifications';
-    out.tickets = JSON.parse(JSON.stringify(ownRows(overview.account_requests, 120)));
-    out.notifications = JSON.parse(JSON.stringify(ownRows(overview.events, 120)));
+    const tickets = ownRows(overview.account_requests, 120);
+    const events = ownRows(overview.events, 120);
+    out.tickets = JSON.parse(JSON.stringify(tickets));
+    out.notifications = JSON.parse(JSON.stringify(events));
     out.partial = overview.partial === true || payload.security_data_ready === false;
     out.warnings = Array.isArray(overview.warnings) ? JSON.parse(JSON.stringify(overview.warnings.slice(0, 20))) : [];
-    out.security_summary = securityAnalytics(overview);
+    out.security_summary = securityAnalytics(overview, events, tickets);
     out.security_settings = overview.settings && typeof overview.settings === 'object' ? {
       email_active: overview.settings.email_active === true,
       two_factor_enabled: overview.settings.two_factor_enabled === true,
@@ -248,6 +249,7 @@ async function ptdinBusiness(req, res, operations) {
     return res.status(400).json({ ok: false, code: 'PTDIN_VIEW_INVALID', message: 'Pilihan halaman tidak valid.' });
   }
   const profile = action === 'domain_dashboard_me' && req.method === 'GET'
+    && new URL(String(req.headers && (req.headers.referer || req.headers.referrer) || '')).pathname === '/profil.html'
     ? await operations.readProfile()
     : null;
   // run is single-use and request-bound. It retains the existing account

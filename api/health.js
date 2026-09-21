@@ -2646,8 +2646,8 @@ function diracPersistentSecurityBanIdentityV363(record) {
   const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
   const direct = normalizeAuthEmail(source.identity_email || source.identityEmail || source.email
     || source.auth_email || source.user_email || source.customer_email || source.owner_email || '');
-  if (isValidAuthEmail(direct)) {
-    return Object.freeze({ email: direct, verified: source.identity_email_verified === true, source: 'record' });
+  if (isValidAuthEmail(direct) && source.identity_email_verified === true) {
+    return Object.freeze({ email: direct, verified: true, source: 'record' });
   }
   const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
   const authentication = ctx && ctx.authentication && typeof ctx.authentication === 'object' ? ctx.authentication : null;
@@ -2667,6 +2667,14 @@ function diracPersistentSecurityBanIdentityV363(record) {
   const deviceEmail = normalizeAuthEmail(deviceUser && deviceUser.email || '');
   if (isValidAuthEmail(deviceEmail)) {
     return Object.freeze({ email: deviceEmail, verified: true, source: 'verified_device_auth' });
+  }
+  const signedIdentity = ctx && ctx.identity;
+  const signedEmail = normalizeAuthEmail(signedIdentity && signedIdentity.verifiedAuthEmail || '');
+  if (customerSecurityLooksLikeUuid(signedIdentity && signedIdentity.verifiedAuthUserId) && isValidAuthEmail(signedEmail)) {
+    return Object.freeze({ email: signedEmail, verified: true, source: 'verified_signed_session' });
+  }
+  if (isValidAuthEmail(direct)) {
+    return Object.freeze({ email: direct, verified: false, source: 'record' });
   }
   const body = req && req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : null;
   const claimedEmail = normalizeAuthEmail(body && (body.email || body.identifier || body.customer_email || body.owner_email) || '');
@@ -54607,6 +54615,11 @@ function guardClassificationV202(ctx) {
 }
 async function guardRateLimitV202(ctx) {
   if (ctx.terminalResponse === 'disabled' || ctx.terminalBlockReason) return diracV202StageResult(true, { decision: 'not_applicable_by_policy' });
+  const layered = diracCentralLayeredRateGuardV221(ctx.req, ctx);
+  if (!layered.ok) {
+    ctx.rateLimitRetryAfterSecondsV280 = diracCentralRateRetryAfterSecondsV280(layered);
+    return diracV202StageResult(false, { reason: layered.reason, directCode: 'CENTRAL_RATE_LIMITED' });
+  }
   const result = await diracCentralDistributedRateLimitGuardV146(ctx.req, ctx);
   if (!result.ok) {
     if (diracCentralIsRateControlRejectionV280(result.reason)) {
@@ -54614,11 +54627,6 @@ async function guardRateLimitV202(ctx) {
       return diracV202StageResult(false, { reason: result.reason, directCode: 'CENTRAL_RATE_LIMITED' });
     }
     return diracV202StageResult(false, { reason: result.reason });
-  }
-  const layered = diracCentralLayeredRateGuardV221(ctx.req, ctx);
-  if (!layered.ok) {
-    ctx.rateLimitRetryAfterSecondsV280 = diracCentralRateRetryAfterSecondsV280(layered);
-    return diracV202StageResult(false, { reason: layered.reason, directCode: 'CENTRAL_RATE_LIMITED' });
   }
   return diracV202StageResult(true);
 }
@@ -57856,6 +57864,7 @@ const DIRAC_CENTRAL_ALLOWED_REFERER_PATHS_V146 = new Set([
   '/topup.html',
   '/keamanan.html',
   '/chat.html',
+  '/chat-admin.html',
   '/cekresi.html',
   '/detail-domain.html',
   '/detail-parfum.html',
@@ -59343,10 +59352,13 @@ async function diracCentralBuildIdentityV146(req) {
   // security attribution. A token may still count as session material for
   // conservative risk controls, but account identity requires verified data.
   let verifiedAuthUserId = '';
+  let verifiedAuthEmail = '';
   try {
     if (typeof readSignedDomainSessionUser === 'function') {
       const signed = await readSignedDomainSessionUser(cookies).catch(() => null);
       verifiedAuthUserId = String(signed && signed.id || '').trim();
+      const email = normalizeAuthEmail(signed && signed.email || '');
+      if (customerSecurityLooksLikeUuid(verifiedAuthUserId) && isValidAuthEmail(email)) verifiedAuthEmail = email;
     }
   } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
 
@@ -59359,6 +59371,7 @@ async function diracCentralBuildIdentityV146(req) {
     loggedIn,
     authUserId,
     verifiedAuthUserId,
+    verifiedAuthEmail,
     parts: { ip, ua, origin, deviceHint, sessionMaterial: sessionMaterial ? 'present' : '' }
   };
 }
@@ -60642,8 +60655,11 @@ async function diracCentralAtomicRateLimitV230({ key, limit, windowSeconds, bloc
       body: { p_security_key: cleanKey, p_limit: max, p_window_seconds: window, p_block_seconds: block }
     }).catch(() => null);
   }
-  const row = result && result.ok === true && Array.isArray(result.data) ? result.data[0] : null;
-  if (!row || typeof row.allowed !== 'boolean' || !Number.isFinite(Number(row.current_count))) {
+  const row = result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
+  if (!row || typeof row !== 'object' || Array.isArray(row) || typeof row.allowed !== 'boolean'
+      || !/^(?:0|[1-9][0-9]*)$/.test(String(row.current_count))
+      || !Number.isSafeInteger(Number(row.current_count))
+      || (row.allowed === true && Number(row.current_count) > max)) {
     return { ok: false, reason: 'distributed_rate_limit_atomic_storage_unavailable' };
   }
   return {
@@ -60669,7 +60685,31 @@ async function diracCentralSupportRateLimitV365(input) {
   return diracCentralRunInternalComplianceContextV230(() => diracCentralAtomicRateLimitV230({ key, limit, windowSeconds, blockSeconds }));
 }
 
+async function diracCentralAtomicRateScopeV404(scope, subject, action, windowSeconds, max) {
+  const profile = diracCentralRateProfileV221(action);
+  const sustained = await diracCentralAtomicRateLimitV230({
+    key: 's2s-central-rate-v230:' + diracCentralHashV146([scope + '-v404', subject, action].join('|')),
+    limit: Math.min(max, profile.sustained), windowSeconds, blockSeconds: windowSeconds
+  });
+  if (!sustained.ok) return sustained;
+  return diracCentralAtomicRateLimitV230({
+    key: 's2s-central-rate-v230:' + diracCentralHashV146([scope + '-burst-v404', subject, action].join('|')),
+    limit: Math.min(max, profile.burst), windowSeconds: 10, blockSeconds: 10
+  });
+}
+
 async function diracCentralAtomicRateSlotV228(ctx, action, windowMs, max) {
+  const identity = ctx && ctx.identity;
+  const network = diracCentralTransientNetworkBanKeyV372(identity && identity.parts && identity.parts.ip);
+  if (!network) return { ok: false, reason: 'distributed_rate_limit_network_invalid' };
+  const windowSeconds = Math.ceil(Number(windowMs || 60000) / 1000);
+  const networkRate = await diracCentralAtomicRateScopeV404('network', network, action, windowSeconds, max);
+  if (!networkRate.ok) return networkRate;
+  const account = String(identity && identity.verifiedAuthUserId || '').trim().toLowerCase();
+  if (customerSecurityLooksLikeUuid(account)) {
+    const accountRate = await diracCentralAtomicRateScopeV404('account', account, action, windowSeconds, max);
+    if (!accountRate.ok) return accountRate;
+  }
   return diracCentralAtomicRateLimitV230({
     key: 's2s-central-rate-v230:' + diracCentralHashV146([ctx.identity.key, action].join('|')),
     limit: max,
@@ -64889,7 +64929,10 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
     && String(reason || '') === 'device_consistency_changed'
     && ctx && ctx.classification === 'browser' && ctx.authentication === 'browser'
     && customerSecurityLooksLikeUuid(verifiedAuthUserIdV358);
-  if (accountBoundHtmlBanV358 || accountBoundDashboardDeviceBanV364) {
+  const accountBoundRateBanV404 = String(method || '').toUpperCase() !== 'OPTIONS'
+    && diracCentralIsRateControlRejectionV280(reason)
+    && customerSecurityLooksLikeUuid(verifiedAuthUserIdV358);
+  if (accountBoundHtmlBanV358 || accountBoundDashboardDeviceBanV364 || accountBoundRateBanV404) {
     const accountBanKeysV358 = diracCentralBanAccountKeysV357(verifiedAuthUserIdV358);
     if (accountBanKeysV358[0] && accountBanKeysV358[0].key) persistentKeys.push(accountBanKeysV358[0].key);
     if (accountBanKeysV358[1] && accountBanKeysV358[1].key) persistentKeys.push(accountBanKeysV358[1].key);
@@ -64911,7 +64954,7 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
     blocked_until_ms: blockedUntilMs,
     created_at: new Date(now).toISOString()
   };
-  if (accountBoundHtmlBanV358) record.account_bound_v358 = true;
+  if (accountBoundHtmlBanV358 || accountBoundRateBanV404) record.account_bound_v358 = true;
   // Report the effective persistence policy; the writer below promotes ban
   // records to the permanent sentinel without changing the requested lockout.
   const banPermanent = diracPersistentSecurityRecordIsPermanentV335(record, persistentKeys[0]);
@@ -65114,10 +65157,33 @@ async function diracCentralWritePersistentBanV146(req, res, action, method, thre
 
 const DIRAC_CENTRAL_BAN_AUTHORITY_V354 = 'dirac-central-ban-authority-v354';
 
+function diracCentralExternalBanIdentityV404(req) {
+  const networkKey = diracCentralTransientNetworkBanKeyV372(diracTrustedClientIpV357(req));
+  if (!networkKey) throw new Error('DIRAC_EXTERNAL_BAN_NETWORK_INVALID');
+  const candidates = readCookieTokenCandidates(parseCookies(req), DOMAIN_SIGNED_SESSION_COOKIE);
+  if (candidates.length > 8) throw new Error('DIRAC_EXTERNAL_BAN_COOKIE_COUNT_INVALID');
+  const signed = candidates.map(verifyDomainSessionCookieValue).filter((value) => value
+    && customerSecurityLooksLikeUuid(value.id) && isValidAuthEmail(normalizeAuthEmail(value.email)));
+  const account = signed[0] || null;
+  if (account && signed.some((value) => String(value.id).toLowerCase() !== String(account.id).toLowerCase()
+      || normalizeAuthEmail(value.email) !== normalizeAuthEmail(account.email))) {
+    throw new Error('DIRAC_EXTERNAL_BAN_ACCOUNT_AMBIGUOUS');
+  }
+  const keys = Array.from(new Map([
+    ...diracV107BuildKeys(req),
+    { type: 'network', key: networkKey },
+    ...diracCentralBanAccountKeysV357(account && account.id)
+  ].map((item) => [item.key, item])).values());
+  if (!keys.length || keys.length > 12 || keys.some((item) => !diracCentralBanAuthorityKeyV355(item.key))) {
+    throw new Error('DIRAC_EXTERNAL_BAN_KEYSET_INVALID');
+  }
+  return Object.freeze({ keys, email: account ? normalizeAuthEmail(account.email) : null });
+}
+
 async function diracCentralBanAuthorityCheckV354(req) {
   try {
-    const keys = typeof diracV107BuildKeys === 'function' ? diracV107BuildKeys(req || {}) : [];
-    const cleanKeys = keys.map((item) => String(item && item.key || '')).filter(Boolean).slice(0, 12);
+    const identity = diracCentralExternalBanIdentityV404(req);
+    const cleanKeys = identity.keys.map((item) => item.key);
     if (!cleanKeys.length) return Object.freeze({ ok: false, blocked: true, reason: 'central_ban_identity_unavailable' });
     const result = await diracCentralBanAuthorityDatabaseV355('read', cleanKeys).catch(() => null);
     if (!result || result.ok !== true || !Array.isArray(result.data)) return Object.freeze({ ok: false, blocked: true, reason: 'central_ban_store_unavailable' });
@@ -65145,16 +65211,16 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
     if (!Number.isSafeInteger(requestedTtl) || requestedTtl <= 0) return Object.freeze({ ok: false, reason: 'central_ban_ttl_invalid' });
     const ttlSeconds = Math.max(60, Math.min(10 * 365 * 24 * 60 * 60, requestedTtl));
     if (!/^[a-z0-9_:-]{3,96}$/.test(reason)) return Object.freeze({ ok: false, reason: 'central_ban_reason_invalid' });
-    const keys = typeof diracV107BuildKeys === 'function' ? diracV107BuildKeys(req || {}) : [];
-    const unique = Array.from(new Map(keys.map((item) => [String(item && item.key || ''), item])).values())
-      .filter((item) => item && item.key)
-      .slice(0, 12);
+    const identity = diracCentralExternalBanIdentityV404(req);
+    const unique = identity.keys;
     if (!unique.length) return Object.freeze({ ok: false, reason: 'central_ban_identity_unavailable' });
     const now = Date.now();
     const blockedUntilMs = DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
     const expiresAt = new Date(DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335).toISOString();
     const record = Object.freeze(diracPersistentSecurityDecorateBanRecordV363({
       type: 'central_external_ban_v354',
+      identity_email: identity.email,
+      identity_email_verified: Boolean(identity.email),
       patch: DIRAC_CENTRAL_BAN_AUTHORITY_V354,
       action: 'external_security_violation',
       method: String(req && req.method || 'GET').toUpperCase().slice(0, 12),
@@ -68852,7 +68918,7 @@ const __diracV202EgressGatewayDelegate = globalThis.fetch.bind(globalThis);
 const DIRAC_CENTRAL_BAN_AUTHORITY_DATABASE_V355 = 'dirac-central-ban-authority-database-v355';
 
 function diracCentralBanAuthorityKeyV355(value) {
-  return /^global-ban(?:-active)?:[a-z0-9_]{1,40}:[a-f0-9]{64}$/.test(String(value || '').trim());
+  return /^(?:global-ban(?:-active)?:[a-z0-9_]{1,40}:|central-ban-network-v372:)[a-f0-9]{64}$/.test(String(value || '').trim());
 }
 
 async function diracCentralBanAuthorityDatabaseV355(operation, payload) {
@@ -70334,7 +70400,8 @@ Object.defineProperty(module.exports, '__diracCentralCreateSupportEgressBrokerV3
   enumerable: false, writable: false, configurable: false
 });
 Object.defineProperty(module.exports, '__diracCentralSupportRateLimitV365', {
-  value: Object.freeze({ version: 'dirac-central-support-rate-authority-v365', take: diracCentralSupportRateLimitV365 }),
+  value: Object.freeze({ version: 'dirac-central-support-rate-authority-v365', take: diracCentralSupportRateLimitV365,
+    network: (req) => diracCentralTransientNetworkBanKeyV372(diracTrustedClientIpV357(req)) }),
   enumerable: false, writable: false, configurable: false
 });
 Object.defineProperty(module.exports, '__diracPasskeyServerDeviceBindingAuthorityV360', {
