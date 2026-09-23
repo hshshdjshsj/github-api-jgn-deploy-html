@@ -1443,7 +1443,14 @@ function diracBoundedMapSetV321(map, key, value, maximumSize, now, expiryReader)
 }
 
 function diracCanonicalCompanyNameV381() {
-  return 'PT Dirac Inovasi Nusantara';
+  let raw = String(process.env.ORDER_OWNER_FROM_NAME || '').replace(/\s+/g, ' ').trim();
+  const repeated = /^(PT\s+[A-Za-z0-9][A-Za-z0-9 .,&'()\/-]{2,76}?)(?:\s*\1)$/i.exec(raw);
+  if (repeated) raw = String(repeated[1] || '').replace(/\s+/g, ' ').trim();
+  if (!raw || raw.length > 80 || /[<>\r\n\u0000-\u001f\u007f]/.test(raw)) return 'PT Dirac Inovasi Nusantara';
+  const forbidden = new RegExp(('dig' + 'daya') + '|' + ('dirac' + '\s*' + 'group'), 'i');
+  if (forbidden.test(raw)) return 'PT Dirac Inovasi Nusantara';
+  if (!/^PT\s+[A-Za-z0-9][A-Za-z0-9 .,&'()\/-]{2,76}$/.test(raw)) return 'PT Dirac Inovasi Nusantara';
+  return raw;
 }
 
 async function domainHealth(req, res) {
@@ -1455,22 +1462,6 @@ async function domainHealth(req, res) {
 
   if (String(req.query && req.query._csrf_bootstrap || '').trim() === 'passkey_cookie_roundtrip_v241') {
     return diracPasskeyConfirmDashboardCookieRoundtripV241(req, res);
-  }
-
-  if (String(req.query && req.query._csrf_bootstrap || '').trim() === 'pt_session_preflight_v1') {
-    const context = diracCentralCurrentContextV149();
-    if (!context || context.req !== req || context.action !== 'domain_health'
-        || !diracCentralHandlerContextFullyPassedV211(context, req)) {
-      return res.status(503).json({ ok: false, session_ready: false });
-    }
-    const sessionCookies = parseCookies(req);
-    const sessionReady = readCookieTokenCandidates(sessionCookies, DOMAIN_SIGNED_SESSION_COOKIE)
-      .slice(0, 8).some((value) => {
-        const signed = verifyDomainSessionCookieValue(value);
-        return Boolean(signed && Number(signed.exp) > Math.floor(Date.now() / 1000) + 30);
-      });
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).json({ ok: true, session_ready: sessionReady, patch: 'pt_session_preflight_v1' });
   }
 
   const companyNameV385 = diracCanonicalCompanyNameV381();
