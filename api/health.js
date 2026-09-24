@@ -29609,6 +29609,14 @@ async function diracUniversalPesananDecorateOrders(orders) {
     const key = diracUniversalPesananOrderTxKey(copy);
     const tx = key ? txMap.get(key) : null;
     const canPay = gatewayConfigured && diracUniversalPesananOrderCanPay(copy);
+    const method = key ? txMap.get('method:' + key) : null;
+    if (copy.payment_status === 'paid' && method && copy.currency === method.currency
+        && midtransStrictMoneyV350(method.amount) !== null
+        && midtransStrictMoneyV350(method.amount) === midtransStrictMoneyV350(copy.total)
+        && (!copy.payment_method || /^(belum dipilih|tidak tersedia|-)$/i.test(String(copy.payment_method).trim()))) {
+      copy.payment_method = method.label;
+      copy.payment_method_source = 'verified_gateway';
+    }
 
     if (canPay && tx && midtransTrustedPaymentUrlV352(tx.payment_url)
         && midtransStrictMoneyV350(tx.amount) === midtransStrictMoneyV350(copy.total)) {
@@ -29688,7 +29696,7 @@ async function diracUniversalPesananFillTxMap(map, type, ids) {
     parentRows.push(...rows.map((row) => Object.freeze({ id: row.id, customer_id: row.customer_id, table: parentTable })));
   }
   const column = type === 'domain' ? 'domain_order_id' : 'order_id';
-  const select = 'id,customer_id,order_id,domain_order_id,gateway_name,gateway_reference,payment_status,amount,currency,payment_url,expired_at,created_at';
+  const select = 'id,customer_id,order_id,domain_order_id,gateway_name,gateway_reference,payment_status,amount,currency,payment_url,expired_at,created_at,metadata';
   const path = '/rest/v1/payment_transactions?select=' + encodeURIComponent(select)
     + '&' + column + '=in.(' + cleanIds.map(encodeURIComponent).join(',') + ')'
     + '&customer_id=eq.' + encodeURIComponent(parentOwner.customerIds[0])
@@ -29716,6 +29724,22 @@ async function diracUniversalPesananFillTxMap(map, type, ids) {
 
   const now = Date.now();
   result.data.forEach((tx) => {
+    // Display-only evidence is separate from reusable payment links.
+    const paidParent = tx && (type === 'domain' ? tx.domain_order_id : tx.order_id);
+    const metadata = tx && tx.metadata;
+    if (tx && tx.customer_id === parentOwner.customerIds[0] && paidParent && cleanIds.includes(String(paidParent))
+        && tx.gateway_name === 'midtrans' && tx.currency === 'IDR' && tx.payment_status === 'paid'
+        && metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        && metadata.midtrans_signature_verified === true && metadata.midtrans_authoritative_payment_status === 'paid'
+        && /^(settlement|capture)$/.test(String(metadata.midtrans_transaction_status || ''))
+        && Number.isFinite(Date.parse(String(metadata.midtrans_status_confirmed_at || '')))) {
+      const labels = { qris: 'QRIS', gopay: 'GoPay', shopeepay: 'ShopeePay', bank_transfer: 'Transfer bank / Virtual Account',
+        echannel: 'Mandiri e-Channel', credit_card: 'Kartu kredit/debit', cstore: 'Gerai ritel', akulaku: 'Akulaku', kredivo: 'Kredivo' };
+      const rawMethod = String(metadata.midtrans_payment_type || '').toLowerCase();
+      const methodKey = 'method:' + type + ':' + String(paidParent);
+      if (Object.prototype.hasOwnProperty.call(labels, rawMethod) && !map.has(methodKey))
+        map.set(methodKey, { label: labels[rawMethod], amount: tx.amount, currency: tx.currency });
+    }
     if (!tx || tx.customer_id !== parentOwner.customerIds[0] || !midtransTrustedPaymentUrlV352(tx.payment_url)
         || tx.gateway_name !== 'midtrans' || tx.currency !== 'IDR'
         || !['unpaid', 'pending', 'created'].includes(String(tx.payment_status || ''))) return;
@@ -40242,7 +40266,7 @@ async function diracBolaIdorV128ResolveKnownObjectOwners(objectIds, preferredTab
     }
     if (paymentContext && paymentContext.action === 'my_orders' && paymentContext.method === 'GET'
         && ((paymentProofs && paymentProofs.size) || (paymentPermit && String(paymentPermit.path || '').startsWith(
-          '/rest/v1/payment_transactions?select=' + encodeURIComponent('id,customer_id,order_id,domain_order_id,gateway_name,gateway_reference,payment_status,amount,currency,payment_url,expired_at,created_at') + '&')))) {
+          '/rest/v1/payment_transactions?select=' + encodeURIComponent('id,customer_id,order_id,domain_order_id,gateway_name,gateway_reference,payment_status,amount,currency,payment_url,expired_at,created_at,metadata') + '&')))) {
       throw Object.assign(new Error('ORDER_PARENT_OWNERSHIP_UNAVAILABLE'),
         { code: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE', statusCode: 503 });
     }
