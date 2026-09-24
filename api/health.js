@@ -29869,6 +29869,7 @@ async function diracUniversalPesananDecorateOrders(orders) {
       copy.payment_transaction_id = paid.transactionId;
       copy.payment_provider = 'midtrans';
       copy.payment_return_verified = true;
+      copy.payment_confirmed_at = paid.confirmedAt;
     }
     if (copy.payment_status === 'paid' && method && copy.currency === method.currency
         && midtransStrictMoneyV350(method.amount) !== null
@@ -29997,7 +29998,7 @@ async function diracUniversalPesananFillTxMap(map, type, ids) {
       if (!map.has(paidKey) && customerSecurityLooksLikeUuid(tx.id)
           && /^PAY-[A-Za-z0-9._:@-]{1,116}$/.test(String(tx.gateway_reference || '')))
         map.set(paidKey, { transactionId: tx.id, gatewayReference: tx.gateway_reference,
-          amount: tx.amount, currency: tx.currency });
+          amount: tx.amount, currency: tx.currency, confirmedAt: metadata.midtrans_status_confirmed_at });
       const labels = { qris: 'QRIS', gopay: 'GoPay', shopeepay: 'ShopeePay', bank_transfer: 'Transfer bank / Virtual Account',
         echannel: 'Mandiri e-Channel', credit_card: 'Kartu kredit/debit', cstore: 'Gerai ritel', akulaku: 'Akulaku', kredivo: 'Kredivo' };
       const rawMethod = String(metadata.midtrans_payment_type || '').toLowerCase();
@@ -61204,7 +61205,7 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
         || record.scope !== scope || !/^[A-Za-z0-9_-]{43}$/.test(String(record.file_id || '')) || !/^[a-f0-9]{32}$/.test(String(record.revision || ''))
         || Buffer.byteLength(JSON.stringify(record), 'utf8') > 4096) return false;
     if (key === sendKey || key === headKey || key === transportKey(record.file_id)) return Object.keys(record).sort().join(',') === 'created_at,file_id,next_allowed_at,revision,scope,version'
-      && Number.isSafeInteger(record.created_at) && record.next_allowed_at === record.created_at + 86400000;
+      && Number.isSafeInteger(record.created_at) && [86400000, 7 * 86400000].includes(record.next_allowed_at - record.created_at);
     if (key !== fileKey(record.file_id) || record.order_id !== proof.orderId || record.kind !== proof.kind
         || !/^[a-f0-9]{64}$/.test(String(record.file_sha256 || '')) || !['pending','accepted','failed','unknown'].includes(record.status)
         || !Number.isSafeInteger(record.created_at) || !Number.isSafeInteger(record.prepared_at) || record.prepared_at < record.created_at || record.expires_at !== record.created_at + 30 * 86400000) return false;
@@ -61241,7 +61242,8 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
     storageKey: () => { assertContext(); return crypto.createHmac('sha256', diracCentralRootSecretV146()).update('DIRAC_INVOICE_V440_STORAGE:' + proof.userId + ':' + proof.customerId).digest(); },
     claim: async (key, record, ttl) => {
       assertContext(); if (action !== 'invoice_email_send' || !recordAllowed(key, record)
-          || !((key === sendKey && ttl === 86400) || ((key === headKey || key === fileKey(record.file_id) || (key === transportKey(record.file_id) && knownFiles.has(fileKey(record.file_id)))) && ttl === 30 * 86400))) throw new Error('INVOICE_CLAIM_INVALID');
+          || ((key === sendKey || key === headKey || key === transportKey(record.file_id)) && record.next_allowed_at !== record.created_at + 7 * 86400000)
+          || !((key === sendKey && ttl === 7 * 86400) || ((key === headKey || key === fileKey(record.file_id) || (key === transportKey(record.file_id) && knownFiles.has(fileKey(record.file_id)))) && ttl === 30 * 86400))) throw new Error('INVOICE_CLAIM_INVALID');
       if (key === fileKey(record.file_id)) knownFiles.add(key);
       if (DIRAC_INVOICE_RPC_V440.has(req)) throw new Error('INVOICE_RPC_CONCURRENCY_INVALID');
       DIRAC_INVOICE_RPC_V440.set(req, Object.freeze({ ctx, req, operation: 'claim', path: '/rest/v1/rpc/dirac_central_atomic_claim_record_v230', key, digest: crypto.createHash('sha256').update(JSON.stringify(record)).digest('hex'), ttl, startedAt: Date.now(), expiresAt: Date.now() + 30000 }));
@@ -61250,6 +61252,7 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
     },
     replace: async (key, expectedRevision, record, ttl) => {
       assertContext(); if (action !== 'invoice_email_send' || !keyAllowed(key) || key === sendKey || key === transportKey(record.file_id) || !recordAllowed(key, record)
+          || (key === headKey && record.next_allowed_at !== record.created_at + 7 * 86400000)
           || expectedRevision === record.revision || !/^[a-f0-9]{32}$/.test(String(expectedRevision || '')) || ttl !== 30 * 86400) throw new Error('INVOICE_REPLACE_INVALID');
       if (!records.has(key)) { const result = await read(key); if (!result.ok || !result.found) return false; }
       const previous = records.get(key); if (!previous || previous.revision !== expectedRevision) return false;
