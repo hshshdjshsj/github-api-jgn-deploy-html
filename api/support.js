@@ -2467,12 +2467,6 @@ function supportCentralMfaPrecheckV146(ctx) {
 
 async function supportCentralDistributedRateV354(ctx) {
   const policyLimit = ctx.policy.principal === 'cron' ? 30 : ctx.policy.principal === 'public' ? 180 : 360;
-  const handler = DIRAC_SUPPORT_HEALTH_HANDLER_PROMISE_V354 && await DIRAC_SUPPORT_HEALTH_HANDLER_PROMISE_V354.catch(() => null);
-  const authority = handler && handler.__diracCentralSupportRateLimitV365;
-  const network = authority && typeof authority.network === 'function' ? authority.network(ctx.req) : '';
-  if (!/^central-ban-network-v372:[a-f0-9]{64}$/.test(String(network))) throw new PublicError(503, 'CENTRAL_RATE_GUARD_UNAVAILABLE', 'Identitas jaringan keamanan tidak tersedia.');
-  const networkKey = hmac(config().ipSecret, 'central-guard-network-v404|' + network + '|' + ctx.action, 'hex');
-  await supportCentralAtomicRateLimitV364('central_guard_network_v404', networkKey, policyLimit, 60, 60);
   const key = hmac(config().ipSecret, 'central-guard-rate-v354|' + ctx.fingerprint + '|' + ctx.action, 'hex');
   return supportCentralAtomicRateLimitV364('central_guard_rate_v354', key, policyLimit, 60, 60);
 }

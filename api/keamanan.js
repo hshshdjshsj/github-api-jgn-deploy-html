@@ -1263,6 +1263,7 @@ const SECURITY_SUPABASE_TARGETS_V334 = Object.freeze({
   legacy:['DOMAIN_SUPABASE_URL','DOMAIN_SUPABASE_ANON_KEY','DOMAIN_SUPABASE_SERVICE_ROLE_KEY'],
   security:['DIRAC_SECURITY_SUPABASE_URL','DIRAC_SECURITY_SUPABASE_ANON_KEY','DIRAC_SECURITY_SUPABASE_SERVICE_ROLE_KEY'],
   customerSecurity:['DIRAC_CUSTOMER_SECURITY_SUPABASE_URL','DIRAC_CUSTOMER_SECURITY_SUPABASE_ANON_KEY','DIRAC_CUSTOMER_SECURITY_SUPABASE_SERVICE_ROLE_KEY'],
+  paymentService:['DIRAC_PAYMENT_SERVICE_SUPABASE_URL','DIRAC_PAYMENT_SERVICE_SUPABASE_ANON_KEY','DIRAC_PAYMENT_SERVICE_SUPABASE_SERVICE_ROLE_KEY'],
   domain:['DIRAC_DOMAIN_SUPABASE_URL','DIRAC_DOMAIN_SUPABASE_ANON_KEY','DIRAC_DOMAIN_SUPABASE_SERVICE_ROLE_KEY']
 });
 function securityEnvTrueV334(name) { return /^(1|true|yes|on)$/i.test(String(process.env[name] || '').trim()); }
@@ -1271,6 +1272,7 @@ function securitySupabaseTargetV334(path) {
   if (path.startsWith('/rest/v1/dirac_s2s_security?security_key=eq.s2s-server-registry%3A') || path.startsWith('/rest/v1/dirac_s2s_security?security_key=eq.s2s-revocation%3A')) return 'security';
   if (path === '/rest/v1/rpc/dirac_passkey_record_assertion_v237' || path === '/rest/v1/rpc/dirac_passkey_create_pending_v237' || path === '/rest/v1/rpc/dirac_passkey_finalize_rotation_v237') return 'legacy';
   if (path.startsWith('/rest/v1/domain_passkeys')) return securityEnvTrueV334('DIRAC_ENABLE_MULTI_DB_ROUTER') || securityEnvTrueV334('DIRAC_MULTI_DB_ROUTER_ENABLED') ? 'domain' : 'legacy';
+  if (/^\/rest\/v1\/security_customer_events(?:\?|$)/.test(path)) return securityEnvTrueV334('DIRAC_ENABLE_MULTI_DB_ROUTER') || securityEnvTrueV334('DIRAC_MULTI_DB_ROUTER_ENABLED') ? 'paymentService' : 'legacy';
   if (/^\/rest\/v1\/security_customer_(auth_links|password_hashes|sessions|settings|events)/.test(path)) return securityEnvTrueV334('DIRAC_ENABLE_MULTI_DB_ROUTER') || securityEnvTrueV334('DIRAC_MULTI_DB_ROUTER_ENABLED') ? 'customerSecurity' : 'legacy';
   if (path.startsWith('/auth/v1/')) return 'legacy';
   throw resetError('SECURITY_RESET_DB_PATH_NOT_ALLOWED', 403);
@@ -2446,12 +2448,14 @@ function securityResetMailDiagnosticV340(req, stage, outcome, details) {
 }
 
 
-async function securityResetRememberCommittedMailV338(req, owner, state, grantId) {
+async function securityResetRememberCommittedMailV338(req, owner, state, grantId, authorizationMethod) {
+  if (!['webauthn_passkey', 'password_smtp'].includes(authorizationMethod)) throw resetError('PASSWORD_RESET_MAIL_METHOD_INVALID', 503);
   const now = Date.now();
   try { SECURITY_RESET_MAIL_DIAGNOSTICS_V340.set(req, Object.freeze({ correlationId: crypto.randomBytes(12).toString('hex'), traceId: diracResetDiagnosticTraceIdV335(req), startedAt: now })); } catch (_) {}
   securityResetMailDiagnosticV340(req, 'persist.begin', 'begin', {});
   const record = {
     type: 'password_reset_committed_v338',
+    authorization_method: authorizationMethod,
     commit_id: crypto.createHash('sha256').update('password-reset-mail-v338|' + String(grantId)).digest('hex'),
     auth_user_id: owner.authUserId, customer_id: owner.customerId, email: owner.email,
     passkey_id: String(state.passkey_id), security_epoch: Number(state.security_epoch),
@@ -2465,7 +2469,7 @@ async function securityResetRememberCommittedMailV338(req, owner, state, grantId
   try {
     record.mac = crypto.createHmac('sha512', key).update(JSON.stringify([
       record.type, record.commit_id, record.auth_user_id, record.customer_id, record.email,
-      record.passkey_id, record.security_epoch, record.committed_at_ms, record.expires_at_ms
+      record.passkey_id, record.security_epoch, record.committed_at_ms, record.expires_at_ms, record.authorization_method
     ])).digest('hex');
   } finally { key.fill(0); }
   const securityKey = 'password-reset-mail-v338:' + record.commit_id;
@@ -2490,6 +2494,7 @@ function securityResetValidateCommittedMailV342(record, commitId) {
       || !/^[a-f0-9]{64}$/.test(String(commitId || ''))
       || record.type !== 'password_reset_committed_v338'
       || record.commit_id !== commitId
+      || (record.authorization_method !== undefined && !['webauthn_passkey', 'password_smtp'].includes(record.authorization_method))
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(record.auth_user_id || ''))
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(record.customer_id || ''))
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(record.passkey_id || ''))
@@ -2510,7 +2515,8 @@ function securityResetValidateCommittedMailV342(record, commitId) {
   try {
     const expected = crypto.createHmac('sha512', key).update(JSON.stringify([
       record.type, record.commit_id, record.auth_user_id, record.customer_id, record.email,
-      record.passkey_id, record.security_epoch, record.committed_at_ms, record.expires_at_ms
+      record.passkey_id, record.security_epoch, record.committed_at_ms, record.expires_at_ms,
+      ...(record.authorization_method === undefined ? [] : [record.authorization_method])
     ])).digest('hex');
     if (!safeEqual(expected, record.mac)) return null;
   } finally { key.fill(0); }
@@ -3060,12 +3066,19 @@ async function securityResetSendCommittedPasswordMailV342(record, req) {
   try { timeText = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(record.committed_at_ms)) + ' WIB'; } catch (_) {}
   const subject = 'PT Dirac Inovasi Nusantara Security - Password Berhasil Diganti [' + reference + ']';
   const client = diracSecurityMailRequestContextV381(req);
+  const method = record.authorization_method === 'webauthn_passkey' ? 'WebAuthn Passkey'
+    : record.authorization_method === 'password_smtp' ? 'Kata sandi akun + kode SMTP' : 'Verifikasi akun';
+  const summary = record.authorization_method === 'webauthn_passkey'
+    ? 'Password akun Anda telah diganti setelah verifikasi WebAuthn Passkey, lalu perubahan dikomit oleh server.'
+    : record.authorization_method === 'password_smtp'
+      ? 'Password akun Anda telah diganti setelah verifikasi kata sandi akun saat ini dan kode SMTP satu kali, lalu perubahan dikomit oleh server.'
+      : 'Password akun Anda berhasil diganti dan perubahan telah dikonfirmasi oleh server.';
   const htmlInput = {
     preheader: 'Password akun PT Dirac Inovasi Nusantara berhasil diganti.', brandLabel: 'SECURE ACCOUNT SECURITY', eyebrow: 'PASSWORD SECURITY NOTICE',
     title: 'Password Berhasil\nDiganti', greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
-    summary: 'Password akun Anda telah diganti setelah verifikasi kata sandi akun saat ini dan kode SMTP satu kali, lalu perubahan dikomit oleh server.',
+    summary,
     statusLabel: 'STATUS PASSWORD', statusValue: 'PASSWORD BARU AKTIF', statusNote: 'Perubahan ini telah dikonfirmasi oleh server keamanan PT Dirac Inovasi Nusantara.',
-    detailsLabel: 'DETAIL PERUBAHAN', rows: [['AKTIVITAS','Perubahan password akun'],['METODE VERIFIKASI','Kata sandi akun + kode SMTP'],['WAKTU',timeText], ...diracSecurityMailClientRowsV381(client), ['REFERENSI',reference]],
+    detailsLabel: 'DETAIL PERUBAHAN', rows: [['AKTIVITAS','Perubahan password akun'],['METODE VERIFIKASI',method],['WAKTU',timeText], ...diracSecurityMailClientRowsV381(client), ['REFERENSI',reference]],
     actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN',
     warningTitle: 'PERIKSA JIKA BUKAN ANDA', warning: 'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi kanal resmi PT Dirac Inovasi Nusantara. Jangan bagikan password, OTP, token, cookie, kode keamanan, atau Passkey.',
     supportLead: 'Jika membutuhkan bantuan terkait keamanan password, gunakan kanal resmi PT Dirac Inovasi Nusantara berikut.'
@@ -3308,7 +3321,7 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
     ? { password_changed: true, sessions_revoked: true, login_required: true }
     : { password_changed: true, sessions_revoked: true, current_session_preserved: true, login_required: false };
   diracResetDiagnosticV335(req, 'commit.server', 'success', { auth_passkey_flow: authPasskeyFlow, password_changed: true, sessions_revoked: true, current_session_preserved: commitResult.current_session_preserved === true, login_required: commitResult.login_required === true });
-  try { await securityResetRememberCommittedMailV338(req, owner, state, grantId); }
+  try { await securityResetRememberCommittedMailV338(req, owner, state, grantId, authPasskeyFlow ? 'webauthn_passkey' : 'password_smtp'); }
   catch (error) { securityResetMailDiagnosticV340(req, 'persist.exception', 'error', { delivered: false, code: error && error.code, status: Number(error && (error.statusCode || error.status) || 0) }); diracResetDiagnosticV335(req, 'notification.password_changed.persist', 'error', { delivered: false }, error); }
   return Object.freeze(commitResult);
 }

@@ -246,6 +246,158 @@ function projectResponse(action, view, payload, profile) {
   return out;
 }
 
+// V430: the caller supplies only a frozen capability issued after the complete central guard.
+const INVOICE_FORMAT_V430 = 'DIRAC-INVOICE-1';
+const INVOICE_VERSION_V430 = 'dirac-invoice-v430';
+const INVOICE_ACTIONS_V430 = Object.freeze(['invoice_email_status', 'invoice_email_send', 'invoice_email_unlock']);
+const invoiceCryptoV430 = require('crypto');
+const invoiceZlibV430 = require('zlib');
+function invoiceErrorV430(code, status = 503) { return Object.assign(new Error(code), { code, status }); }
+function invoiceIsoV430(value) { return Number.isSafeInteger(value) ? new Date(value).toISOString() : null; }
+function invoiceHashV430(value) { return invoiceCryptoV430.createHash('sha256').update(value).digest('hex'); }
+function invoicePdfValidateV430(value) {
+  if (typeof value !== 'string' || value.length > 1398104 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) throw invoiceErrorV430('INVOICE_PDF_INVALID', 400);
+  const pdf = Buffer.from(value, 'base64');
+  if (!pdf.length || pdf.length > 1048576 || pdf.toString('base64') !== value) throw invoiceErrorV430('INVOICE_PDF_INVALID', 400);
+  let offset = 0; const offsets = [0];
+  function exact(text) { const bytes = Buffer.from(text, 'ascii'); if (!pdf.subarray(offset, offset + bytes.length).equals(bytes)) throw invoiceErrorV430('INVOICE_PDF_INVALID', 400); offset += bytes.length; }
+  function integer() { const match = /^[1-9][0-9]{0,6}/.exec(pdf.toString('ascii', offset, Math.min(offset + 8, pdf.length))); if (!match) throw invoiceErrorV430('INVOICE_PDF_INVALID', 400); offset += match[0].length; return Number(match[0]); }
+  function object(id, text) { offsets[id] = offset; exact(id + ' 0 obj\n' + text + '\nendobj\n'); }
+  exact('%PDF-1.4\n'); object(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  offsets[2] = offset; exact('2 0 obj\n<< /Type /Pages /Count '); const count = integer();
+  if (count < 1 || count > 20) throw invoiceErrorV430('INVOICE_PDF_PAGE_LIMIT', 400);
+  exact(' /Kids [' + Array.from({ length: count }, (_, index) => (3 + index * 3) + ' 0 R').join(' ') + '] >>\nendobj\n');
+  for (let index = 0; index < count; index += 1) {
+    const page = 3 + index * 3, content = page + 1, image = page + 2;
+    object(page, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /XObject << /Im0 ' + image + ' 0 R >> >> /Contents ' + content + ' 0 R >>');
+    const commands = 'q\n595.28 0 0 841.89 0 0 cm\n/Im0 Do\nQ\n';
+    object(content, '<< /Length ' + commands.length + ' >>\nstream\n' + commands + 'endstream');
+    offsets[image] = offset; exact(image + ' 0 obj\n<< /Type /XObject /Subtype /Image /Width 1240 /Height 1754 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length ');
+    const size = integer(); exact(' >>\nstream\n');
+    if (size > pdf.length - offset) throw invoiceErrorV430('INVOICE_PDF_INVALID', 400);
+    const compressed = pdf.subarray(offset, offset + size); let inflated;
+    try { inflated = invoiceZlibV430.inflateSync(compressed, { maxOutputLength: 1240 * 1754 * 3, info: true }); }
+    catch (_) { throw invoiceErrorV430('INVOICE_PDF_IMAGE_INVALID', 400); }
+    if (!inflated || inflated.buffer.length !== 1240 * 1754 * 3 || inflated.engine.bytesWritten !== size) throw invoiceErrorV430('INVOICE_PDF_IMAGE_INVALID', 400);
+    inflated.buffer.fill(0); offset += size; exact('\nendstream\nendobj\n');
+  }
+  const xref = offset, size = 3 + count * 3;
+  exact('xref\n0 ' + size + '\n0000000000 65535 f \n');
+  for (let id = 1; id < size; id += 1) exact(String(offsets[id]).padStart(10, '0') + ' 00000 n \n');
+  exact('trailer\n<< /Size ' + size + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n');
+  if (offset !== pdf.length) throw invoiceErrorV430('INVOICE_PDF_INVALID', 400);
+  return pdf;
+}
+function invoiceRandomCodeV430() {
+  for (let attempt = 0; attempt < 128; attempt += 1) {
+    const code = String(invoiceCryptoV430.randomInt(100000000)).padStart(8, '0');
+    if (/^(\d)\1{7}$/.test(code) || /^(\d{2})\1{3}$/.test(code) || /^(\d{4})\1$/.test(code)) continue;
+    const step = Number(code[1]) - Number(code[0]);
+    if (Math.abs(step) === 1 && Array.from(code).every((digit, index) => index === 0 || Number(digit) - Number(code[index - 1]) === step)) continue;
+    return code;
+  }
+  throw invoiceErrorV430('INVOICE_RANDOM_UNAVAILABLE');
+}
+function invoicePackSecretV430(secret, storageKey, aad) {
+  const iv = invoiceCryptoV430.randomBytes(12), cipher = invoiceCryptoV430.createCipheriv('aes-256-gcm', storageKey, iv);
+  cipher.setAAD(Buffer.from(aad, 'utf8'));
+  const data = Buffer.concat([cipher.update(JSON.stringify(secret), 'utf8'), cipher.final(), cipher.getAuthTag()]);
+  return { iv: iv.toString('base64url'), data: data.toString('base64url') };
+}
+function invoiceUnpackSecretV430(record, storageKey, aad) {
+  if (!record || !record.secret || !/^[A-Za-z0-9_-]{16}$/.test(String(record.secret.iv || '')) || !/^[A-Za-z0-9_-]{100,400}$/.test(String(record.secret.data || ''))) throw invoiceErrorV430('INVOICE_KEY_UNAVAILABLE');
+  try {
+    const data = Buffer.from(record.secret.data, 'base64url'), decipher = invoiceCryptoV430.createDecipheriv('aes-256-gcm', storageKey, Buffer.from(record.secret.iv, 'base64url'));
+    decipher.setAAD(Buffer.from(aad, 'utf8')); decipher.setAuthTag(data.subarray(-16));
+    const plain = Buffer.concat([decipher.update(data.subarray(0, -16)), decipher.final()]);
+    const secret = JSON.parse(plain.toString('utf8')); plain.fill(0);
+    if (Object.keys(secret).sort().join(',') !== 'code,dek' || !/^\d{8}$/.test(secret.code) || !/^[A-Za-z0-9_-]{43}$/.test(secret.dek)) throw new Error('invalid');
+    return secret;
+  } catch (_) { throw invoiceErrorV430('INVOICE_KEY_UNAVAILABLE'); }
+}
+async function invoiceBusinessV430(req, res, ops) {
+  if (!ops || !Object.isFrozen(ops) || ops.version !== INVOICE_VERSION_V430 || typeof ops.assertFullGuard !== 'function' || !INVOICE_ACTIONS_V430.includes(ops.action)) throw invoiceErrorV430('INVOICE_FULL_GUARD_REQUIRED', 403);
+  const identity = ops.identity, input = ops.body || {};
+  ops.assertFullGuard();
+  if (!identity || !Object.isFrozen(identity) || !/^[0-9a-f-]{36}$/.test(identity.customerId) || !/^[0-9a-f-]{36}$/.test(identity.userId) || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(identity.email)) throw invoiceErrorV430('INVOICE_OWNER_REQUIRED', 403);
+  const order = String(input.order_id || ''), kind = String(input.kind || '');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(order) || !['regular', 'domain'].includes(kind)) return res.status(400).json({ ok: false, code: 'INVOICE_SCOPE_INVALID' });
+  const scope = invoiceHashV430(JSON.stringify([identity.userId, identity.customerId, kind, order]));
+  const prefix = 's2s-invoice-v430:', rateKey = prefix + 'send:' + scope, headKey = prefix + 'latest:' + scope;
+  const fileKey = id => prefix + 'file:' + invoiceHashV430(scope + ':' + id);
+  const recordAad = (id, issuerOrigin = identity.origin) => [INVOICE_VERSION_V430, identity.userId, identity.customerId, issuerOrigin, kind, order, id].join(':');
+  let storageKey = null;
+  function secretOf(record) { if (!storageKey) storageKey = ops.storageKey(); return invoiceUnpackSecretV430(record, storageKey, recordAad(record.file_id, record.issuer_origin)); }
+  function validRecord(record, id) { return !!(record && record.version === INVOICE_VERSION_V430 && record.scope === scope && record.kind === kind && record.order_id === order && record.file_id === id && /^[A-Za-z0-9_-]{43}$/.test(id) && /^[a-f0-9]{64}$/.test(record.file_sha256) && ['pending', 'accepted', 'failed', 'unknown'].includes(record.status) && Number.isSafeInteger(record.created_at) && Number.isSafeInteger(record.expires_at) && record.expires_at > Date.now()); }
+  async function read(key) { const result = await ops.read(key); if (!result || result.ok !== true) throw invoiceErrorV430('INVOICE_STORAGE_UNAVAILABLE'); return result.found ? result.record : null; }
+  async function publish(status, body) { ops.assertFullGuard(); await ops.verifyOwner(); ops.assertFullGuard(); return res.status(status).json(body); }
+  async function statusResponse() {
+    const [claimed, latest] = await Promise.all([read(rateKey), read(headKey)]);
+    const pointer = claimed || latest, next = claimed && Number.isSafeInteger(claimed.next_allowed_at) ? claimed.next_allowed_at : null;
+    if (!pointer) return publish(200, { ok: true, available: false, status: 'idle', accepted: false, unlock_key: null, file_id: null, next_allowed_at: null, expires_at: null });
+    if (pointer.version !== INVOICE_VERSION_V430 || pointer.scope !== scope || !/^[A-Za-z0-9_-]{43}$/.test(String(pointer.file_id || ''))) throw invoiceErrorV430('INVOICE_RECORD_INVALID');
+    const record = await read(fileKey(pointer.file_id));
+    if (!record) return publish(200, { ok: true, available: false, status: 'unknown', accepted: false, unlock_key: null, file_id: pointer.file_id, next_allowed_at: invoiceIsoV430(next), expires_at: null });
+    if (!validRecord(record, pointer.file_id)) throw invoiceErrorV430('INVOICE_RECORD_INVALID');
+    const status = record.status === 'pending' && Date.now() - record.created_at > 120000 ? 'unknown' : record.status;
+    const key = status === 'failed' ? null : secretOf(record).code;
+    return publish(200, { ok: true, available: key !== null, status, accepted: status === 'accepted', unlock_key: key, file_id: record.file_id, next_allowed_at: invoiceIsoV430(next), expires_at: invoiceIsoV430(record.expires_at) });
+  }
+  try {
+    await ops.verifyOwner();
+    if (ops.action === 'invoice_email_status') return await statusResponse();
+    if (ops.action === 'invoice_email_unlock') {
+      const id = String(input.file_id || ''), code = String(input.code || ''), hash = String(input.file_sha256 || '');
+      if (!/^[A-Za-z0-9_-]{43}$/.test(id) || !/^\d{8}$/.test(code) || !/^[a-f0-9]{64}$/.test(hash)) return publish(400, { ok: false, code: 'INVOICE_UNLOCK_INVALID' });
+      if (await ops.takeRate(prefix + 'unlock:' + scope) !== true) return publish(429, { ok: false, code: 'INVOICE_UNLOCK_RATE_LIMITED' });
+      const record = await read(fileKey(id));
+      if (!validRecord(record, id) || record.status === 'failed' || record.file_sha256 !== hash) return publish(403, { ok: false, code: 'INVOICE_UNLOCK_INVALID' });
+      const secret = secretOf(record);
+      if (!invoiceCryptoV430.timingSafeEqual(Buffer.from(secret.code), Buffer.from(code))) return publish(403, { ok: false, code: 'INVOICE_UNLOCK_INVALID' });
+      return publish(200, { ok: true, decrypt_key: secret.dek, file_id: id, expires_at: invoiceIsoV430(record.expires_at) });
+    }
+    const pdf = invoicePdfValidateV430(input.pdf_base64), now = Date.now(), next = now + 86400000, expiry = now + 30 * 86400000;
+    const id = invoiceCryptoV430.randomBytes(32).toString('base64url');
+    const pointer = { version: INVOICE_VERSION_V430, scope, file_id: id, next_allowed_at: next, created_at: now, revision: invoiceCryptoV430.randomBytes(16).toString('hex') };
+    if (await ops.claim(rateKey, pointer, 86400) !== true) { pdf.fill(0); const existing = await read(rateKey); if (!existing || existing.version !== INVOICE_VERSION_V430 || existing.scope !== scope) throw invoiceErrorV430('INVOICE_STORAGE_UNAVAILABLE'); return publish(429, { ok: false, code: 'INVOICE_SEND_DAILY_LIMIT', next_allowed_at: invoiceIsoV430(existing.next_allowed_at) }); }
+    const dek = invoiceCryptoV430.randomBytes(32), iv = invoiceCryptoV430.randomBytes(12), code = invoiceRandomCodeV430();
+    let record, accepted = false, attempted = false;
+    try {
+      const cipher = invoiceCryptoV430.createCipheriv('aes-256-gcm', dek, iv);
+      cipher.setAAD(Buffer.from(INVOICE_FORMAT_V430 + ':' + id + ':' + kind + ':' + order, 'utf8'));
+      const ciphertext = Buffer.concat([cipher.update(pdf), cipher.final(), cipher.getAuthTag()]); pdf.fill(0);
+      const attachment = Buffer.from(JSON.stringify({ format: INVOICE_FORMAT_V430, file_id: id, order_id: order, kind, iv: iv.toString('base64url'), ciphertext: ciphertext.toString('base64url') }), 'utf8');
+      if (attachment.length > 1420000) throw invoiceErrorV430('INVOICE_ATTACHMENT_LIMIT', 400);
+      if (!storageKey) storageKey = ops.storageKey();
+      record = { version: INVOICE_VERSION_V430, scope, file_id: id, kind, order_id: order, issuer_origin: identity.origin, file_sha256: invoiceHashV430(attachment), status: 'pending', created_at: now, expires_at: expiry, revision: invoiceCryptoV430.randomBytes(16).toString('hex'), secret: invoicePackSecretV430({ dek: dek.toString('base64url'), code }, storageKey, recordAad(id)) };
+      if (await ops.claim(fileKey(id), record, 30 * 86400) !== true) throw invoiceErrorV430('INVOICE_STORAGE_UNAVAILABLE');
+      const previousHead = await read(headKey);
+      const headStored = previousHead ? await ops.replace(headKey, previousHead.revision, pointer, 30 * 86400) : await ops.claim(headKey, pointer, 30 * 86400);
+      if (headStored !== true) throw invoiceErrorV430('INVOICE_STORAGE_UNAVAILABLE');
+      await ops.verifyOwner(); ops.assertFullGuard(); attempted = true;
+      const sent = await ops.mail({ fileId: id, content: attachment });
+      accepted = !!(sent && sent.accepted === true && sent.ok === true);
+      const state = accepted ? 'accepted' : sent && sent.ambiguous === false ? 'failed' : 'unknown';
+      const replacement = { ...record, status: state, revision: invoiceCryptoV430.randomBytes(16).toString('hex') };
+      if (await ops.replace(fileKey(id), record.revision, replacement, 30 * 86400) !== true) return publish(503, { ok: false, code: 'INVOICE_SEND_STATUS_UNCONFIRMED', status: 'unknown', next_allowed_at: invoiceIsoV430(next) });
+      record = replacement;
+      if (!accepted) return publish(503, { ok: false, code: state === 'failed' ? 'INVOICE_SEND_FAILED' : 'INVOICE_SEND_STATUS_UNCONFIRMED', status: state, next_allowed_at: invoiceIsoV430(next) });
+      return publish(200, { ok: true, accepted: true, status: 'accepted', unlock_key: code, file_id: id, next_allowed_at: invoiceIsoV430(next), expires_at: invoiceIsoV430(expiry) });
+    } catch (error) {
+      if (record && record.status === 'pending') {
+        const failed = { ...record, status: attempted ? 'unknown' : 'failed', revision: invoiceCryptoV430.randomBytes(16).toString('hex') };
+        try { await ops.replace(fileKey(id), record.revision, failed, 30 * 86400); } catch (_) {}
+      }
+      if (attempted) return publish(503, { ok: false, code: 'INVOICE_SEND_STATUS_UNCONFIRMED', status: 'unknown', next_allowed_at: invoiceIsoV430(next) });
+      throw error;
+    } finally { pdf.fill(0); dek.fill(0); }
+  } catch (error) {
+    ops.assertFullGuard();
+    const allowed = ['INVOICE_PDF_INVALID', 'INVOICE_PDF_PAGE_LIMIT', 'INVOICE_PDF_IMAGE_INVALID', 'INVOICE_ATTACHMENT_LIMIT', 'INVOICE_STORAGE_UNAVAILABLE', 'INVOICE_KEY_UNAVAILABLE', 'INVOICE_RECORD_INVALID', 'INVOICE_RANDOM_UNAVAILABLE', 'INVOICE_OWNER_UNAVAILABLE'];
+    return res.status(allowed.includes(error && error.code) && error.status === 400 ? 400 : 503).json({ ok: false, code: allowed.includes(error && error.code) ? error.code : 'INVOICE_TEMPORARILY_UNAVAILABLE' });
+  } finally { if (storageKey) storageKey.fill(0); }
+}
+
 async function ptdinBusiness(req, res, operations) {
   if (!operations || !Object.isFrozen(operations) || typeof operations.run !== 'function'
       || typeof operations.readProfile !== 'function') throw new Error('PTDIN_FULL_GUARD_OPERATIONS_REQUIRED');
@@ -269,6 +421,7 @@ async function ptdinHandler(req, res) {
 }
 Object.defineProperty(ptdinHandler, 'config', { value: centralHandler.config, enumerable: true });
 Object.defineProperty(ptdinHandler, '__diracPtdinBusinessV402', { value: ptdinBusiness });
+Object.defineProperty(ptdinHandler, '__diracInvoiceBusinessV430', { value: invoiceBusinessV430 });
 Object.defineProperty(ptdinHandler, '__diracPtdinCentralContractsV403', { value: PTDIN_CENTRAL_CONTRACTS_V403 });
 Object.defineProperty(ptdinHandler, '__diracPtdinCentralGuardedBusinessV402', { value: true });
 Object.freeze(ptdinHandler);

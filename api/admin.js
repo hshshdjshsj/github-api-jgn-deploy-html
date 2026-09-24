@@ -15,6 +15,8 @@ const PASSKEY_FIELDS = ['credential', 'id', 'rawId', 'type', 'response', 'client
 const post = (fields, required = [], max = 16384) => Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, ...fields]), required: Object.freeze(required), maxBodyBytes: max, maxFieldBytes: max === 98304 ? 81920 : 4096, mutation: true, allowArrayItems: max === 98304 });
 const get = (fields = []) => Object.freeze({ methods: Object.freeze(['GET', 'HEAD']), allowed: Object.freeze(['action', '_csrf_boot', '_csrf_bootstrap', '_dirac_page_nonce_for', '_page_nonce_for', 'page_nonce_for', '_ts', '_t', '_', ...fields]), required: Object.freeze([]), maxBodyBytes: 1024, maxFieldBytes: 3000, mutation: false });
 const CONTRACTS = Object.freeze({
+  admin_entry: get(),
+  admin_login: post(['email', 'password'], ['email', 'password']),
   admin_status: get(),
   admin_email_start: post([]),
   admin_email_verify: post(['ticket', 'code'], ['ticket', 'code']),
@@ -246,7 +248,7 @@ async function execute(ops) {
   if (action === 'admin_logout') {
     const active = await session(ops, scope, false);
     if (active) await consume(ops, active);
-    ops.clearSession(); return { ok: true };
+    await ops.clearSession(); return { ok: true };
   }
   await session(ops, scope);
   const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_monitor: 'monitor' }[action];
