@@ -1101,7 +1101,7 @@ function setCors(req, res, options = {}) {
   );
   if (options.isDomainAction) {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    const exposedHeaders = ['X-Domain-Token-Refreshed', 'Retry-After', 'X-Dirac-Page-Nonce', ...(String(req && req.query && req.query.action || '').trim() === 'domain_health' ? ['X-Dirac-A2F-Ticket', 'X-Dirac-A2F-Signature', 'X-Dirac-A2F-Timestamp', 'X-Dirac-A2F-Nonce'] : [])];
+    const exposedHeaders = ['X-Domain-Token-Refreshed', 'Retry-After', 'X-Dirac-Page-Nonce', ...(String(req && req.query && req.query.action || '').trim() === 'domain_health' ? ['X-Dirac-Security-Report-Nonce', 'X-Dirac-A2F-Ticket', 'X-Dirac-A2F-Signature', 'X-Dirac-A2F-Timestamp', 'X-Dirac-A2F-Nonce'] : [])];
     const action = String(req && req.query && req.query.action || '').trim().toLowerCase();
     const nonceTarget = String(req && req.query && (
       req.query._dirac_page_nonce_for || req.query._page_nonce_for || req.query.page_nonce_for
@@ -17580,15 +17580,28 @@ async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, re
       return { ok: false, status: 400, message: 'Item parfum wajib diisi.' };
     }
 
+    let productIndexV442 = 0;
+    let productBatchV442 = [];
     for (const rawItem of checkoutItems) {
       const itemTitle = sessionOwnershipCheckoutCleanText(rawItem.product_title || rawItem.title || requestedProductTitle, 180);
       const itemQty = sessionOwnershipCheckoutPositiveInteger(rawItem.quantity || rawItem.qty || 1, 1, 999);
-      const productResult = await sessionOwnershipCheckoutFindProductForCheckout(rawItem, itemTitle);
+      // At most four independent guarded reads; settle every read before any
+      // validation failure returns. Product checks and writes remain ordered.
+      if (productIndexV442 % 4 === 0) {
+        productBatchV442 = await Promise.allSettled(checkoutItems.slice(productIndexV442, productIndexV442 + 4).map((item) =>
+          sessionOwnershipCheckoutFindProductForCheckout(item,
+            sessionOwnershipCheckoutCleanText(item.product_title || item.title || requestedProductTitle, 180))
+        ));
+      }
+      const productReadV442 = productBatchV442[productIndexV442 % 4];
+      productIndexV442 += 1;
+      if (productReadV442.status === 'rejected') throw productReadV442.reason;
+      const productResult = productReadV442.value;
 
       if (!productResult.ok || !productResult.product) {
         return {
           ok: false,
-          status: 409,
+          status: Number(productResult.status) >= 500 ? 503 : 409,
           message: productResult.message || `Produk parfum "${itemTitle}" tidak ditemukan di database products. Checkout dihentikan supaya nominal tidak bisa dipalsukan.`
         };
       }
@@ -20117,6 +20130,242 @@ async function midtransCreateDomainPaymentInvoice(order, orderItems, customer) {
   };
 }
 
+// V441: response may finish before mail, but the original guarded handler stays
+// active until the bounded continuation settles. No synthetic passport/context.
+const DIRAC_PAID_CONTINUATIONS_V441 = new WeakMap();
+const DIRAC_PAID_CONTINUATION_FETCH_V441 = new WeakMap();
+function diracInvoiceContinuationStateV441(req) {
+  const job = req && DIRAC_PAID_CONTINUATIONS_V441.get(req);
+  const ctx = diracCentralCurrentContextV149();
+  if (!job || job.active !== true || job.ctx !== ctx || ctx.req !== req || ctx.action !== 'midtrans_webhook' || ctx.method !== 'POST'
+      || ctx.classification !== 'server' || Date.now() >= job.expiresAt
+      || !diracCentralHandlerContextFullyPassedV211(ctx, req)
+      || DIRAC_MIDTRANS_WEBHOOK_CAPABILITIES_V350.get(ctx) !== job.cap
+      || DIRAC_MIDTRANS_WEBHOOK_STATES_V352.get(ctx) !== job.state
+      || job.cap.success !== true || job.cap.mappedStatus !== 'paid'
+      || crypto.createHash('sha256').update(JSON.stringify(req.__diracCentralParsedBodyV146)).digest('hex') !== job.cap.payloadHash) return null;
+  return job;
+}
+function diracInvoiceContinuationProofV441(req) {
+  const job = diracInvoiceContinuationStateV441(req);
+  return job && job.proof && job.recipient ? job.proof : null;
+}
+function diracInvoiceContinuationRecipientV441(req) {
+  const job = diracInvoiceContinuationStateV441(req);
+  return job && job.proof && job.recipient ? job.recipient : null;
+}
+function diracInvoiceContinuationDbDecisionV441(ctx, path, options, method) {
+  const marker = options && DIRAC_PAID_CONTINUATION_FETCH_V441.get(options);
+  if (!marker) return { relevant: false };
+  const job = ctx && diracInvoiceContinuationStateV441(ctx.req);
+  const ok = !!(job && job === marker.job && marker.ctx === ctx && marker.path === path && marker.method === method
+    && options.auth === 'service' && Date.now() < marker.expiresAt && diracInvoiceContinuationPathV441(job, path, options)
+    && marker.digest === diracAdminBusinessDigestV406(path, options));
+  return { relevant: true, ok, reason: 'paid_continuation_exact_operation_invalid_v441' };
+}
+function diracInvoiceContinuationAuthRouteV441(ctx, path, method, authMode) {
+  const job = ctx && diracInvoiceContinuationStateV441(ctx.req);
+  const active = job && job.providerRead;
+  return !!(active && authMode === 'service' && method === 'GET' && active.path === path
+    && path === '/auth/v1/admin/users/' + encodeURIComponent(job.providerUserId)
+    && diracInvoiceContinuationDbDecisionV441(ctx, path, active.options, method).ok === true);
+}
+function diracInvoiceContinuationPathV441(job, path, options) {
+  const method = String(options.method || '');
+  const optionKeys = Object.keys(options).sort().join(',');
+  const fields = 'auth_user_id,customer_id,email,link_status,disabled_at,revoked_at';
+  const linkPath = '/rest/v1/security_customer_auth_links?select=' + encodeURIComponent(fields)
+    + '&customer_id=eq.' + encodeURIComponent(job.cap.customerId)
+    + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&limit=2';
+  const ownerPath = '/rest/v1/dirac_s2s_security?select=security_key,record_json,expires_at&security_key=eq.' + encodeURIComponent(job.ownerKey) + '&limit=1';
+  if (method === 'GET' && optionKeys === 'auth,method' && options.auth === 'service') {
+    return path === linkPath || path === ownerPath
+      || (customerSecurityLooksLikeUuid(job.providerUserId) && path === '/auth/v1/admin/users/' + encodeURIComponent(job.providerUserId));
+  }
+  const body = options.body;
+  if (method === 'POST' && optionKeys === 'auth,body,method' && path === '/rest/v1/rpc/dirac_central_atomic_claim_record_v230') {
+    const expiry = Date.parse(String(body && body.p_expires_at || ''));
+    return !!(body && Object.keys(body).sort().join(',') === 'p_expires_at,p_record_json,p_security_key,p_table_name'
+      && body.p_table_name === DIRAC_S2S_SECURITY_TABLE
+      && (body.p_security_key === job.ownerKey || (body.p_security_key === job.ownerTransportKey && job.ownerClaimed && job.ownerRow))
+      && diracPaidOwnerRecordV441(job, body.p_record_json) && body.p_record_json.status === 'pending'
+      && Number.isFinite(expiry) && expiry === body.p_record_json.created_at + 100 * 365 * 86400000);
+  }
+  if (method === 'PATCH' && optionKeys === 'auth,body,method,prefer' && options.prefer === 'return=representation' && job.ownerClaimed && job.ownerRow) {
+    const previous = job.ownerRow;
+    const expected = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(job.ownerKey)
+      + '&expires_at=eq.' + encodeURIComponent(previous.expires_at) + '&select=security_key,expires_at';
+    return !!(path === expected && body && Object.keys(body).sort().join(',') === 'expires_at,record_json'
+      && diracPaidOwnerRecordV441(job, body.record_json) && body.record_json.created_at === previous.record_json.created_at
+      && body.record_json.revision !== previous.record_json.revision && ['accepted','failed','unknown'].includes(body.record_json.status)
+      && Date.parse(body.expires_at) === Date.parse(previous.expires_at) + 1);
+  }
+  return false;
+}
+async function diracInvoiceContinuationFetchV441(job, path, options) {
+  if (!job || diracInvoiceContinuationStateV441(job.req) !== job) throw new Error('PAID_CONTINUATION_GUARD_REQUIRED');
+  if (!diracInvoiceContinuationPathV441(job, path, options)) throw new Error('PAID_CONTINUATION_OPERATION_INVALID');
+  DIRAC_PAID_CONTINUATION_FETCH_V441.set(options, Object.freeze({ job, ctx: job.ctx, path, method: options.method,
+    expiresAt: job.expiresAt, digest: diracAdminBusinessDigestV406(path, options) }));
+  const providerRead = path === '/auth/v1/admin/users/' + encodeURIComponent(job.providerUserId || '');
+  if (providerRead) { if (job.providerRead) throw new Error('PAID_PROVIDER_READ_ALREADY_ACTIVE'); job.providerRead = Object.freeze({ path, options }); }
+  try {
+    const result = await supabaseFetch(path, options);
+    if (diracInvoiceContinuationStateV441(job.req) !== job) throw new Error('PAID_CONTINUATION_EXPIRED');
+    return result;
+  } finally { if (providerRead) job.providerRead = null; DIRAC_PAID_CONTINUATION_FETCH_V441.delete(options); }
+}
+async function diracInvoiceContinuationIdentityV441(job) {
+  const fields = 'auth_user_id,customer_id,email,link_status,disabled_at,revoked_at';
+  const path = '/rest/v1/security_customer_auth_links?select=' + encodeURIComponent(fields)
+    + '&customer_id=eq.' + encodeURIComponent(job.cap.customerId)
+    + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&limit=2';
+  const result = await diracInvoiceContinuationFetchV441(job, path, { method: 'GET', auth: 'service' });
+  const rows = result && result.ok === true && Array.isArray(result.data) ? result.data : [];
+  const row = rows.length === 1 ? rows[0] : null;
+  if (!row || row.customer_id !== job.cap.customerId || !customerSecurityLooksLikeUuid(row.auth_user_id)
+      || row.link_status !== 'active' || row.disabled_at || row.revoked_at || !isValidAuthEmail(normalizeAuthEmail(row.email))) {
+    throw new Error('PAID_CONTINUATION_ACTIVE_OWNER_REQUIRED');
+  }
+  job.providerUserId = row.auth_user_id;
+  const provider = await diracInvoiceContinuationFetchV441(job, '/auth/v1/admin/users/' + encodeURIComponent(row.auth_user_id), { method: 'GET', auth: 'service' });
+  const user = provider && provider.ok === true ? normalizeSupabaseAdminUser(provider.data) : null;
+  const email = user && adminSecurityVerifiedEmailV210(user, 'supabase');
+  const rawBan = user && user.banned_until;
+  const banTime = rawBan ? Date.parse(String(rawBan)) : 0;
+  if (!user || user.id !== row.auth_user_id || !email || email !== normalizeAuthEmail(row.email)
+      || user.deleted_at || user.disabled_at || user.disabled === true || user.is_disabled === true || user.is_anonymous === true
+      || (rawBan && (!Number.isFinite(banTime) || banTime > Date.now()))) throw new Error('PAID_CONTINUATION_VERIFIED_RECIPIENT_REQUIRED');
+  job.proof = Object.freeze({ req: job.req, ctx: job.ctx, userId: user.id, customerId: job.cap.customerId,
+    orderId: job.cap.parentId, kind: job.cap.parentType === 'd' ? 'domain' : 'regular' });
+  job.recipient = Object.freeze({ ctx: job.ctx, authUserId: user.id, customerId: job.cap.customerId, email });
+}
+function diracPaidOwnerRecordV441(job, record) {
+  return !!(record && typeof record === 'object' && !Array.isArray(record)
+    && Object.keys(record).sort().join(',') === 'created_at,revision,scope,status,updated_at,version'
+    && record.version === 'dirac-paid-owner-v441' && record.scope === job.ownerScope
+    && /^[a-f0-9]{32}$/.test(String(record.revision || '')) && ['pending','accepted','failed','unknown'].includes(record.status)
+    && Number.isSafeInteger(record.created_at) && record.created_at > 0 && Number.isSafeInteger(record.updated_at)
+    && record.updated_at >= record.created_at && record.updated_at <= Date.now() + 1000);
+}
+async function diracPaidOwnerClaimV441(job) {
+  const now = Date.now();
+  const record = { version: 'dirac-paid-owner-v441', scope: job.ownerScope, revision: crypto.randomBytes(16).toString('hex'), status: 'pending', created_at: now, updated_at: now };
+  const expiry = new Date(now + 100 * 365 * 86400000).toISOString();
+  const claim = await diracInvoiceContinuationFetchV441(job, '/rest/v1/rpc/dirac_central_atomic_claim_record_v230', {
+    method: 'POST', auth: 'service', body: { p_table_name: DIRAC_S2S_SECURITY_TABLE, p_security_key: job.ownerKey, p_record_json: record, p_expires_at: expiry }
+  });
+  if (!claim || claim.ok !== true || typeof claim.data !== 'boolean') throw new Error('PAID_OWNER_JOB_UNAVAILABLE');
+  const path = '/rest/v1/dirac_s2s_security?select=security_key,record_json,expires_at&security_key=eq.' + encodeURIComponent(job.ownerKey) + '&limit=1';
+  const check = await diracInvoiceContinuationFetchV441(job, path, { method: 'GET', auth: 'service' });
+  const rows = check && check.ok === true && Array.isArray(check.data) ? check.data : [];
+  const row = rows.length === 1 ? rows[0] : null;
+  if (!row || row.security_key !== job.ownerKey || !diracPaidOwnerRecordV441(job, row.record_json)
+      || !Number.isFinite(Date.parse(row.expires_at)) || Date.parse(row.expires_at) <= Date.now()) throw new Error('PAID_OWNER_JOB_UNVERIFIED');
+  if (claim.data === true && (row.record_json.revision !== record.revision || Date.parse(row.expires_at) !== Date.parse(expiry))) throw new Error('PAID_OWNER_JOB_CLAIM_MISMATCH');
+  job.ownerRow = row;
+  job.ownerClaimed = ['pending', 'failed'].includes(row.record_json.status);
+}
+async function diracPaidOwnerFinishV441(job, status) {
+  if (!job.ownerClaimed || !job.ownerRow || !['accepted','failed','unknown'].includes(status)) return false;
+  const previous = job.ownerRow, record = { ...previous.record_json, status, revision: crypto.randomBytes(16).toString('hex'), updated_at: Date.now() };
+  if (!diracPaidOwnerRecordV441(job, record)) return false;
+  const path = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(job.ownerKey)
+    + '&expires_at=eq.' + encodeURIComponent(previous.expires_at) + '&select=security_key,expires_at';
+  const expiresAt = new Date(Date.parse(previous.expires_at) + 1).toISOString();
+  const result = await diracInvoiceContinuationFetchV441(job, path, { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: { record_json: record, expires_at: expiresAt } });
+  return !!(result && result.ok === true && Array.isArray(result.data) && result.data.length === 1
+    && result.data[0].security_key === job.ownerKey && Date.parse(result.data[0].expires_at) === Date.parse(expiresAt));
+}
+async function diracPaidOwnerSendV441(job, input, timing) {
+  if (!job.ownerClaimed) return { sent: false, skipped: true, reason: 'owner_delivery_already_claimed' };
+  let started = false, transportClaimed = false, status = 'failed';
+  try {
+    if (!diracInvoiceContinuationProofV441(job.req)) throw new Error('PAID_OWNER_GUARD_REQUIRED');
+    const context = await orderMailBuildPaidInvoiceContextFromBackend(input.tx, 'midtrans', input.paidAt, input.paidOrder, null,
+      orderMailPaymentDescriptorV374('midtrans', input.paymentEvidence, input.webhookPayload));
+    if (!context || context.ok !== true) throw new Error('PAID_OWNER_DOCUMENT_UNAVAILABLE');
+    const config = orderMailSmtpConfig('owner');
+    if (!orderMailOwnerEnabled() || !config.configured || !config.recipients.length) throw new Error('PAID_OWNER_MAIL_NOT_CONFIGURED');
+    const messages = orderMailBuildNewOrderMessages(orderMailNormalizeOrderInput(context.mail));
+    const now = Date.now(), transportRecord = { version: 'dirac-paid-owner-v441', scope: job.ownerScope,
+      revision: crypto.randomBytes(16).toString('hex'), status: 'pending', created_at: now, updated_at: now };
+    const transport = await diracInvoiceContinuationFetchV441(job, '/rest/v1/rpc/dirac_central_atomic_claim_record_v230', {
+      method: 'POST', auth: 'service', body: { p_table_name: DIRAC_S2S_SECURITY_TABLE,
+        p_security_key: job.ownerTransportKey, p_record_json: transportRecord,
+        p_expires_at: new Date(now + 100 * 365 * 86400000).toISOString() }
+    });
+    if (!transport || transport.ok !== true || typeof transport.data !== 'boolean') throw new Error('PAID_OWNER_TRANSPORT_UNAVAILABLE');
+    if (transport.data !== true) return { sent: false, skipped: true, status: 'unknown', reason: 'owner_transport_already_claimed' };
+    transportClaimed = true;
+    started = true;
+    const result = await orderMailSendViaSmtpSafe(config, { to: config.recipients, subject: messages.ownerSubject,
+      text: messages.ownerText, html: messages.ownerHtml, fromName: config.fromName, fromEmail: config.fromEmail }, timing ? { timing, role: 'owner' } : null);
+    status = result && result.ok === true ? 'accepted' : 'unknown';
+    return { sent: status === 'accepted', status };
+  } catch (_) { status = started ? 'unknown' : 'failed'; return { sent: false, status }; }
+  finally { if (transportClaimed) await diracPaidOwnerFinishV441(job, status).catch(() => false); }
+}
+function diracPaidContinuationCreateV441(req, input) {
+  const ctx = diracCentralCurrentContextV149(), cap = ctx && DIRAC_MIDTRANS_WEBHOOK_CAPABILITIES_V350.get(ctx), state = ctx && DIRAC_MIDTRANS_WEBHOOK_STATES_V352.get(ctx);
+  if (!ctx || ctx.req !== req || !cap || !state || cap.success !== true || cap.mappedStatus !== 'paid'
+      || !diracCentralHandlerContextFullyPassedV211(ctx, req) || DIRAC_PAID_CONTINUATIONS_V441.has(req)) throw new Error('PAID_CONTINUATION_GUARD_REQUIRED');
+  const tx = input && input.transaction, order = input && input.order;
+  if (!tx || !order || tx.id !== cap.transactionId || tx.customer_id !== cap.customerId
+      || tx.gateway_reference !== cap.gatewayReference || tx.payment_status !== 'paid'
+      || tx.gateway_name !== 'midtrans' || tx.service_type !== cap.serviceType
+      || (cap.parentType === 'd' ? tx.domain_order_id !== cap.parentId || tx.order_id : tx.order_id !== cap.parentId || tx.domain_order_id)
+      || midtransStrictMoneyV350(tx.amount) !== cap.grossAmount || tx.currency !== cap.currency
+      || order.id !== cap.parentId || order.customer_id !== cap.customerId || order.payment_status !== 'paid'
+      || midtransStrictMoneyV350(cap.parentType === 'd' ? order.total_price : order.total) !== cap.grossAmount) throw new Error('PAID_CONTINUATION_COMMIT_REQUIRED');
+  const scope = crypto.createHash('sha256').update(JSON.stringify([cap.customerId, cap.transactionId, cap.parentType, cap.parentId])).digest('hex');
+  const job = { req, ctx, cap, state, active: true, expiresAt: cap.expiresAt, proof: null, recipient: null,
+    ownerScope: scope, ownerKey: 's2s-invoice-v441:owner:' + scope, ownerTransportKey: 's2s-invoice-v441:transport:' + scope, ownerClaimed: false, ownerRow: null, acknowledged: false };
+  DIRAC_PAID_CONTINUATIONS_V441.set(req, job);
+  if (!diracInvoiceContinuationStateV441(req)) { DIRAC_PAID_CONTINUATIONS_V441.delete(req); throw new Error('PAID_CONTINUATION_BINDING_INVALID'); }
+  return job;
+}
+async function diracMidtransPaidContinuationV441(req, res, input) {
+  let job = null, ownerTask = null, payload = null, responseCode = 503;
+  const reply = status => {
+    if (job && job.acknowledged) return;
+    if (res.headersSent || res.writableEnded) return;
+    const body = status === 200 ? { ok: true, provider: 'midtrans', payment_status: 'paid', order_updated: true,
+      gateway_reference: job.cap.gatewayReference, gateway_event_id: job.cap.gatewayEventId,
+      payment_transaction_id: job.cap.transactionId, order_mail_notification: { queued: true, delivery_confirmed: false } }
+      : { ok: false, code: 'PAID_INVOICE_PREPARATION_UNAVAILABLE', message: 'Pembayaran sudah tersimpan; persiapan invoice belum selesai.' };
+    res.status(status).json(body); if (job) job.acknowledged = status === 200;
+  };
+  try {
+    job = diracPaidContinuationCreateV441(req, input);
+    await diracInvoiceContinuationIdentityV441(job);
+    const dummy = { status(code) { responseCode = code; return this; }, json(value) { payload = value; return value; } };
+    const prepare = async () => {
+      if (job.acknowledged) return;
+      if (!diracInvoiceContinuationProofV441(req)) throw new Error('PAID_CONTINUATION_BINDING_INVALID');
+      await diracPaidOwnerClaimV441(job);
+      const finalized = await midtransFinalizeGatewayEventV350(job.cap.gatewayEventId, job.cap.customerId);
+      if (!finalized || finalized.ok !== true) throw new Error('PAID_EVENT_FINALIZE_UNAVAILABLE');
+      reply(200);
+      ownerTask = diracPaidOwnerSendV441(job, input.mail, input.timing);
+    };
+    const task = diracInvoiceRunPreparedV440(req, dummy, job.ctx, job.proof, job.recipient.email, prepare);
+    const tracked = diracUserSecurityKeepAliveV327(req, task);
+    await tracked.promise;
+    // A durable existing daily pointer is a delivery claim too: do not resend.
+    if (!job.acknowledged && payload && responseCode === 429 && payload.code === 'INVOICE_SEND_DAILY_LIMIT'
+        && payload.prepared === true && ['accepted', 'unknown'].includes(payload.delivery_status)) await prepare();
+    if (!job.acknowledged) reply(503);
+    if (ownerTask) await ownerTask;
+    return { handled: true, acknowledged: job.acknowledged };
+  } catch (error) {
+    if (ownerTask) await ownerTask.catch(() => null);
+    if (!job || !job.acknowledged) reply(503);
+    try { console.error('[dirac-paid-continuation-v441]', JSON.stringify({ code: job && job.acknowledged ? 'PAID_MAIL_CONTINUATION_INCOMPLETE' : 'PAID_MAIL_PREPARATION_UNAVAILABLE', payment_committed: true })); } catch (_) {}
+    return { handled: true, acknowledged: !!(job && job.acknowledged) };
+  } finally { if (job) { job.active = false; DIRAC_PAID_CONTINUATIONS_V441.delete(req); } }
+}
+
 async function midtransHandleWebhook(req, res) {
   const paidMailTimingV371 = diracPaidMailTimingCreateV371(req);
   if (!midtransPaymentIsConfigured()) {
@@ -20340,22 +20589,17 @@ async function midtransHandleWebhook(req, res) {
       : (orderAlreadyPaid && paidOrderPrefetchAfterBindingV376
         ? paidOrderPrefetchAfterBindingV376
         : null);
-    orderMailNotification = orderMailDeliveryRequiredV368
-      ? await diracPaidMailTimingRunV371(req, paidMailTimingV371, {
-        provider: 'midtrans',
-        tx,
-        webhookPayload: body,
-        paidAt: capabilityContextV350.capability.evidence.confirmed_at,
-        paidOrder: paidOrderForMailV372,
-        paidItems: orderMailItemsPrefetchV369,
-        paymentEvidence: capabilityContextV350.capability.evidence
-      })
-      : orderMailPaidWebhookSkipSummary('midtrans', processedDuplicateEventV368 ? 'duplicate_event_reconciled' : 'already_paid');
-    if (orderMailDeliveryRequiredV368 && (!orderMailNotification || orderMailNotification.ok !== true
-        || !orderMailNotification.customer || orderMailNotification.customer.sent !== true
-        || !orderMailNotification.owner || orderMailNotification.owner.sent !== true)) {
-      return res.status(503).json({ ok: false, message: 'Payment valid dan status order tersimpan, tetapi email paid invoice belum terkirim lengkap ke customer dan owner.', order_mail_notification: orderMailNotification });
+    if (orderMailDeliveryRequiredV368) {
+      return await diracMidtransPaidContinuationV441(req, res, {
+        transaction: txPatch.skipped === true ? tx : txPatch.data && txPatch.data[0],
+        order: orderAlreadyPaid ? ownerCheck.order : orderPatch.data && orderPatch.data[0],
+        timing: paidMailTimingV371,
+        mail: { provider: 'midtrans', tx, webhookPayload: body,
+          paidAt: capabilityContextV350.capability.evidence.confirmed_at, paidOrder: paidOrderForMailV372,
+          paymentEvidence: capabilityContextV350.capability.evidence }
+      });
     }
+    orderMailNotification = orderMailPaidWebhookSkipSummary('midtrans', processedDuplicateEventV368 ? 'duplicate_event_reconciled' : 'already_paid');
   } else if (mappedStatus === 'refunded') {
     orderPatch = await midtransPatchRelatedOrderRefundedV350(tx);
     if (!orderPatch.ok) {
@@ -20439,7 +20683,8 @@ async function midtransFetchPaymentTransaction(input) {
 
   const result = await supabaseFetch(path, {
     method: 'GET',
-    auth: 'service'
+    auth: 'service',
+    db: 'paymentService'
   });
 
   if (!result || result.ok !== true) {
@@ -33089,8 +33334,8 @@ function diracUltraRedactPayload(payload, depth = 0, parentKey = '') {
   if (typeof payload !== 'object') return payload;
   if (Array.isArray(payload)) return payload.map((item) => diracUltraRedactPayload(item, depth + 1, parentKey));
 
-  const preservedInvoiceV430 = diracInvoicePreserveResponseV430(payload);
-  if (preservedInvoiceV430) return preservedInvoiceV430;
+  const preservedInvoiceV440 = diracInvoicePreserveResponseV440(payload);
+  if (preservedInvoiceV440) return preservedInvoiceV440;
   const preservedAdminFactorV405 = diracAdminPreserveFactorResponseV405(payload);
   if (preservedAdminFactorV405) return preservedAdminFactorV405;
   const preservedRecoverySignedVaultV321 = diracUltraPreserveRecoverySignedVaultV321(payload, 'ultra');
@@ -39900,8 +40145,10 @@ async function diracBolaIdorV128InspectSupabaseAccess(path, options = {}) {
   if (!rawPath || !rawPath.startsWith('/rest/v1/')) return { ok: true };
 
   const table = diracBolaIdorV128ExtractRestTable(rawPath);
-  const invoiceDecisionV430 = diracInvoiceDbDecisionV430(diracCentralCurrentContextV149(), rawPath, options, String(options.method || 'GET').toUpperCase());
-  if (invoiceDecisionV430.relevant) return invoiceDecisionV430.ok ? { ok: true, guarded: 'invoice_exact_operation_v430' } : diracBolaIdorV128BuildBlockDecision(invoiceDecisionV430.reason, { source: 'supabase', table });
+  const invoiceDecisionV440 = diracInvoiceDbDecisionV440(diracCentralCurrentContextV149(), rawPath, options, String(options.method || 'GET').toUpperCase());
+  if (invoiceDecisionV440.relevant) return invoiceDecisionV440.ok ? { ok: true, guarded: 'invoice_exact_operation_v440' } : diracBolaIdorV128BuildBlockDecision(invoiceDecisionV440.reason, { source: 'supabase', table });
+  const paidContinuationV441 = diracInvoiceContinuationDbDecisionV441(diracCentralCurrentContextV149(), rawPath, options, String(options.method || 'GET').toUpperCase());
+  if (paidContinuationV441.relevant) return paidContinuationV441.ok ? { ok: true, guarded: 'paid_continuation_exact_operation_v441' } : diracBolaIdorV128BuildBlockDecision(paidContinuationV441.reason, { source: 'supabase', table });
   const adminDecisionV406 = diracAdminBusinessAccessDecisionV406(diracCentralCurrentContextV149(), rawPath, options, String(options.method || 'GET').toUpperCase());
   if (adminDecisionV406.relevant) return adminDecisionV406.ok
     ? { ok: true, guarded: 'admin_exact_operation_capability_v406' }
@@ -53109,18 +53356,17 @@ const DIRAC_INVOICE_MAIL_MAX_BYTES_V420 = 1420000;
 
 function diracInvoiceMailContextV420(req) {
   const ctx = diracCentralCurrentContextV149();
-  if (!ctx || ctx.req !== req || ctx.action !== 'invoice_email_send' || ctx.method !== 'POST'
-      || !diracCentralPtdinSourceV402(req, ctx.action)
-      || !diracCentralHandlerContextFullyPassedV211(ctx, req)) return null;
-  const owner = diracCentralOwnerFromStage26V217(ctx);
-  if (!owner || owner.ok !== true || owner.customerIds.length !== 1) return null;
-  return { ctx, owner };
+  if (!ctx || ctx.req !== req || ctx.method !== 'POST' || !diracInvoiceContextV440(ctx)
+      || diracInvoiceOperationV440(ctx) !== 'invoice_email_send' || !diracCentralHandlerContextFullyPassedV211(ctx, req)) return null;
+  const proof = diracInvoiceOwnerProofV440(req);
+  if (!proof || !Object.isFrozen(proof)) return null;
+  return { ctx, owner: { ok: true, authUserId: proof.userId, customerIds: [proof.customerId] } };
 }
 
 function diracInvoiceMailAuthorizeV420(req, ownerEmail, reference) {
   const binding = diracInvoiceMailContextV420(req);
   const email = diracSecurityMailEmailV327(ownerEmail);
-  const proof = typeof diracInvoiceRecipientProofV430 === 'function' ? diracInvoiceRecipientProofV430(req) : null;
+  const proof = typeof diracInvoiceRecipientProofV440 === 'function' ? diracInvoiceRecipientProofV440(req) : null;
   if (!binding || !proof || !Object.isFrozen(proof) || proof.ctx !== binding.ctx
       || proof.authUserId !== binding.owner.authUserId || proof.customerId !== binding.owner.customerIds[0]
       || proof.email !== email || !email || email !== ownerEmail || !/^[A-Za-z0-9_-]{43}$/.test(String(reference || ''))) {
@@ -53137,36 +53383,10 @@ function diracInvoiceMailAuthorizeV420(req, ownerEmail, reference) {
 function diracInvoiceMailBindingValidV420(binding) {
   if (!binding || binding.expiresAtMs <= Date.now()) return false;
   const current = diracInvoiceMailContextV420(binding.req);
-  const proof = typeof diracInvoiceRecipientProofV430 === 'function' ? diracInvoiceRecipientProofV430(binding.req) : null;
+  const proof = typeof diracInvoiceRecipientProofV440 === 'function' ? diracInvoiceRecipientProofV440(binding.req) : null;
   return Boolean(current && current.ctx === binding.ctx && proof === binding.proof
     && proof.email === binding.email && proof.authUserId === binding.authUserId && proof.customerId === binding.customerId
     && current.owner.authUserId === binding.authUserId && current.owner.customerIds[0] === binding.customerId);
-}
-
-function diracInvoiceZipCrc32V420(bytes) {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function diracInvoiceMailZipV420(content, reference) {
-  if (!Buffer.isBuffer(content) || !content.length || content.length > DIRAC_INVOICE_MAIL_MAX_BYTES_V420
-      || !/^[A-Za-z0-9_-]{43}$/.test(String(reference || ''))) throw new Error('INVOICE_MAIL_ATTACHMENT_INVALID');
-  const name = Buffer.from('invoice-' + reference + '.dirac', 'ascii');
-  const crc = diracInvoiceZipCrc32V420(content);
-  const local = Buffer.alloc(30), central = Buffer.alloc(46), end = Buffer.alloc(22);
-  local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(33, 12);
-  local.writeUInt32LE(crc, 14); local.writeUInt32LE(content.length, 18); local.writeUInt32LE(content.length, 22);
-  local.writeUInt16LE(name.length, 26);
-  central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(33, 14);
-  central.writeUInt32LE(crc, 16); central.writeUInt32LE(content.length, 20); central.writeUInt32LE(content.length, 24);
-  central.writeUInt16LE(name.length, 28);
-  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10);
-  end.writeUInt32LE(central.length + name.length, 12); end.writeUInt32LE(local.length + name.length + content.length, 16);
-  return Buffer.concat([local, name, content, central, name, end]);
 }
 
 function diracInvoiceMailAttachmentV420(message) {
@@ -53201,7 +53421,7 @@ function diracInvoiceMailMimeV420(message, account, replyTo) {
     '--' + alternative, 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '',
     diracSecurityAlertBase64LinesV320(diracExecutiveEscalationAppendHtmlV380(message.html)),
     '--' + alternative + '--', '', '--' + mixed,
-    'Content-Type: application/zip; name="' + attachment.filename + '"',
+    'Content-Type: application/pdf; name="' + attachment.filename + '"',
     'Content-Disposition: attachment; filename="' + attachment.filename + '"',
     'Content-Transfer-Encoding: base64', '', attachment.base64.match(/.{1,76}/g).join('\r\n'),
     '--' + mixed + '--', ''
@@ -53238,9 +53458,9 @@ async function diracInvoiceAttachmentSendV420(input, capability) {
   DIRAC_INVOICE_MAIL_CAPABILITIES_V420.delete(capability);
   const attachment = input && input.attachment;
   if (!input || input.to !== binding.email || input.reference !== binding.reference
-      || !attachment || attachment.filename !== 'invoice-' + binding.reference + '.dirac'
-      || attachment.contentType !== 'application/octet-stream' || !Buffer.isBuffer(attachment.content)
-      || !attachment.content.length || attachment.content.length > DIRAC_INVOICE_MAIL_MAX_BYTES_V420
+      || !attachment || attachment.filename !== 'invoice-' + binding.reference + '.pdf'
+      || attachment.contentType !== 'application/pdf' || !Buffer.isBuffer(attachment.content)
+      || attachment.content.subarray(0,9).toString('ascii') !== '%PDF-1.7\n' || attachment.content.length > DIRAC_INVOICE_MAIL_MAX_BYTES_V420
       || typeof input.subject !== 'string' || !input.subject || input.subject.length > 240
       || /[\u0000-\u001f\u007f]/.test(input.subject) || typeof input.text !== 'string' || !input.text
       || typeof input.html !== 'string' || !input.html) return rejected('INVOICE_MAIL_PAYLOAD_REJECTED');
@@ -53253,9 +53473,7 @@ async function diracInvoiceAttachmentSendV420(input, capability) {
   ]), 'utf8') > 96 * 1024) return rejected('INVOICE_MAIL_BODY_TOO_LARGE');
   const message = Object.freeze({ fromName: 'PT Dirac Inovasi Nusantara', recipients: Object.freeze([binding.email]),
     replyTo: config.replyTo, subject: input.subject, text: input.text, html: input.html, reference: binding.reference });
-  const zip = diracInvoiceMailZipV420(attachment.content, binding.reference);
-  const stored = { binding, filename: 'invoice-' + binding.reference + '.zip', base64: zip.toString('base64') };
-  zip.fill(0);
+  const stored = { binding, filename: 'invoice-' + binding.reference + '.pdf', base64: attachment.content.toString('base64') };
   DIRAC_INVOICE_MAIL_MESSAGES_V420.set(message, stored);
   let dispatched = false;
   try {
@@ -53281,7 +53499,6 @@ async function diracInvoiceAttachmentSendV420(input, capability) {
     stored.base64 = '';
   }
 }
-
 function diracSecurityMailProviderResultCodeV330(body) {
   const candidates = [
     body && body.code,
@@ -55294,7 +55511,7 @@ const DIRAC_CENTRAL_PREFLIGHT_GUARD_STAGES_V221 = Object.freeze([
 ]);
 
 const DIRAC_CENTRAL_HIGH_CONFIDENCE_THREATS_V221 = Object.freeze([
-  Object.freeze(['sql_injection', /\bunion\s+(?:all\s+)?select\b|(?:^|[\s'"`])(?:or|and)\s+(?:1|true)\s*=\s*(?:1|true)(?:$|[\s'"`])|['"`]\s*(?:or|and)\s+['"`]?\w+['"`]?\s*=\s*['"`]?\w+|;\s*(?:select|insert|update|delete|drop|alter|truncate|create|grant|revoke)\b|\b(?:information_schema|pg_catalog|sqlite_master|mysql\.user|sysobjects|syscolumns)\b|\b(?:sleep|pg_sleep|benchmark)\s*\(|\bwaitfor\s+delay\b|\bload_file\s*\(|\binto\s+outfile\b|\bxp_cmdshell\b|\b(?:extractvalue|updatexml)\s*\(|\bcopy\s+[\s\S]{0,160}\bto\s+program\b/i]),
+  Object.freeze(['sql_injection', /\bunion\s+(?:all\s+|distinct\s+)?select\b|(?:^|[\s'"`])(?:or|and)\s+(?:1|true)\s*=\s*(?:1|true)(?:$|[\s'"`])|['"`]\s*(?:or|and)\s+['"`]?\w+['"`]?\s*=\s*['"`]?\w+|;\s*(?:select|insert|update|delete|drop|alter|truncate|create|grant|revoke)\b|\b(?:information_schema|pg_catalog|sqlite_master|mysql\.user|sysobjects|syscolumns)\b|\b(?:sleep|pg_sleep|benchmark)\s*\(|\bwaitfor\s+delay\b|\bload_file\s*\(|\binto\s+outfile\b|\bxp_cmdshell\b|\b(?:extractvalue|updatexml)\s*\(|\bcopy\s+[\s\S]{0,160}\bto\s+program\b/i]),
   Object.freeze(['xss', /<\s*\/?\s*script\b|\bjavascript\s*:|\bvbscript\s*:|\bon(?:error|load|click|mouseover|focus|blur|submit|toggle|pointerenter|animationstart)\s*=|<\s*(?:svg|iframe|object|embed|meta|link|math)\b|\bsrcdoc\s*=|\bdata\s*:\s*text\/html\b|\bdocument\s*\.\s*cookie\b|\b(?:eval|settimeout|setinterval|function)\s*\(\s*(?:['"`]|unescape|atob)/i]),
   Object.freeze(['path_traversal_lfi_rfi', /(?:^|[\/\\])\.\.(?:[\/\\]|$)|%2e%2e(?:%2f|%5c)|%252e%252e(?:%252f|%255c)|\/etc\/(?:passwd|shadow)|\/proc\/self\/environ|\bboot\.ini\b|\bwin\.ini\b|\bWEB-INF\b|(?:php|zip|expect):\/\//i]),
   Object.freeze(['command_injection_rce', /(?:;|\|\||&&|`|\$\()\s*(?:whoami|id|uname|cat|ls|pwd|env|printenv|curl|wget|nc|ncat|netcat|bash|sh|cmd(?:\.exe)?|powershell|pwsh)\b|\b(?:shell_exec|passthru|proc_open|popen|system)\s*\(/i]),
@@ -56226,7 +56443,7 @@ function diracCentralRateProfileV221(action) {
   const clean = String(action || '');
   const legacy = Math.max(1, Number(diracCentralDistributedRateLimitMaxV146(clean) || 1));
   if (DIRAC_CENTRAL_ADMIN_ACTIONS_V146.has(clean)) return { burst: Math.min(4, legacy), sustained: Math.min(legacy, 10), concurrent: 2 };
-  if (diracInvoiceActionV430(clean)) return { burst: Math.min(4, legacy), sustained: Math.min(legacy, 10), concurrent: 2 };
+  if (diracInvoiceActionV440(clean)) return { burst: Math.min(4, legacy), sustained: Math.min(legacy, 10), concurrent: 2 };
   if (/login|register/.test(clean)) return { burst: Math.min(6, legacy), sustained: Math.min(legacy, 12), concurrent: 3 };
   if (/mfa|passkey|recovery|email_verify/.test(clean)) return { burst: Math.min(5, legacy), sustained: Math.min(legacy, 10), concurrent: 3 };
   if (/payment|checkout|order/.test(clean)) return { burst: Math.min(8, legacy), sustained: Math.min(legacy, 20), concurrent: 4 };
@@ -59567,8 +59784,8 @@ function diracCentralSanitizeOutputV146(value, depth) {
   if (typeof value === 'string') return diracCentralRedactOutputStringV228(value);
   if (Array.isArray(value)) return value.slice(0, 1000).map((item) => diracCentralSanitizeOutputV146(item, depth + 1));
   if (typeof value === 'object') {
-    const preservedInvoiceV430 = diracInvoicePreserveResponseV430(value);
-    if (preservedInvoiceV430) return preservedInvoiceV430;
+    const preservedInvoiceV440 = diracInvoicePreserveResponseV440(value);
+    if (preservedInvoiceV440) return preservedInvoiceV440;
     const preservedAdminFactorV405 = diracAdminPreserveFactorResponseV405(value);
     if (preservedAdminFactorV405) return preservedAdminFactorV405;
     const preservedRecoverySignedVaultV321 = diracUltraPreserveRecoverySignedVaultV321(value, 'central');
@@ -60804,7 +61021,7 @@ function diracCentralPtdinSourceV402(req, action) {
     return page.protocol === 'https:' && !page.port && !page.username && !page.password
       && page.origin.toLowerCase() === expectedOrigin && !page.search && !page.hash
       && DIRAC_PTDIN_SOURCE_PATHS_V402.includes(page.pathname)
-      && (!diracInvoiceActionV430(entry.action) || page.pathname === '/invoice.html');
+      && (!diracInvoiceActionV440(entry.action) || page.pathname === '/invoice.html');
   } catch (_) { return false; }
 }
 
@@ -60831,127 +61048,149 @@ async function diracCentralPtdinEntryV402(req, res) {
     return await module.exports(req, res);
   } finally {
     DIRAC_PTDIN_REQUESTS_V402.delete(req);
-    DIRAC_INVOICE_OWNERS_V430.delete(req); DIRAC_INVOICE_RESPONSES_V430.delete(req); DIRAC_INVOICE_RECIPIENTS_V430.delete(req);
+    DIRAC_INVOICE_OWNERS_V440.delete(req); DIRAC_INVOICE_RESPONSES_V440.delete(req); DIRAC_INVOICE_RECIPIENTS_V440.delete(req);
     req.url = originalUrl;
     if (hadOriginalUrl) req.originalUrl = originalOriginalUrl; else delete req.originalUrl;
   }
 }
 
-// V430 invoice operations use private request/DB capabilities after all central stages.
-const DIRAC_INVOICE_OWNERS_V430 = new WeakMap();
-const DIRAC_INVOICE_FETCH_V430 = new WeakMap();
-const DIRAC_INVOICE_RPC_V430 = new WeakMap();
-const DIRAC_INVOICE_RESPONSES_V430 = new WeakMap();
-const DIRAC_INVOICE_RECIPIENTS_V430 = new WeakMap();
-function diracInvoiceActionV430(action) { return ['invoice_email_status', 'invoice_email_send', 'invoice_email_unlock'].includes(String(action || '')); }
-function diracInvoiceSourceV430(req, action) {
-  if (!diracInvoiceActionV430(action) || !diracCentralPtdinSourceV402(req, action)) return false;
+// V440 invoice operations use private request/DB capabilities after all central stages.
+const DIRAC_INVOICE_OWNERS_V440 = new WeakMap();
+const DIRAC_INVOICE_FETCH_V440 = new WeakMap();
+const DIRAC_INVOICE_RPC_V440 = new WeakMap();
+const DIRAC_INVOICE_RESPONSES_V440 = new WeakMap();
+const DIRAC_INVOICE_RECIPIENTS_V440 = new WeakMap();
+const DIRAC_INVOICE_LIFECYCLES_V440 = new WeakMap();
+function diracInvoiceActionV440(action) { return ['invoice_email_status', 'invoice_email_send', 'invoice_email_unlock'].includes(String(action || '')); }
+function diracInvoiceSourceV440(req, action) {
+  if (!diracInvoiceActionV440(action) || !diracCentralPtdinSourceV402(req, action)) return false;
   try { return new URL(String(req.headers && (req.headers.referer || req.headers.referrer) || '')).pathname === '/invoice.html'; } catch (_) { return false; }
 }
-function diracInvoiceInputV430(ctx, source) {
-  if (!diracInvoiceActionV430(ctx && ctx.action)) return { ok: true };
+function diracInvoiceInputV440(ctx, source) {
+  if (!diracInvoiceActionV440(ctx && ctx.action)) return { ok: true };
   if (!source || typeof source !== 'object' || Array.isArray(source) || !customerSecurityLooksLikeUuid(source.order_id)
-      || typeof source.order_id !== 'string' || !['regular', 'domain'].includes(source.kind)) return { ok: false, reason: 'invoice_scope_contract_invalid_v430' };
-  if (ctx.action === 'invoice_email_send' && (typeof source.pdf_base64 !== 'string' || source.pdf_base64.length < 100
-      || source.pdf_base64.length > 1398104 || !/^[A-Za-z0-9+/]+={0,2}$/.test(source.pdf_base64))) return { ok: false, reason: 'invoice_pdf_contract_invalid_v430' };
+      || typeof source.order_id !== 'string' || !['regular', 'domain'].includes(source.kind)) return { ok: false, reason: 'invoice_scope_contract_invalid_v440' };
   if (ctx.action === 'invoice_email_unlock' && (typeof source.file_id !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(source.file_id)
       || typeof source.code !== 'string' || !/^[0-9]{8}$/.test(source.code) || typeof source.file_sha256 !== 'string'
-      || !/^[a-f0-9]{64}$/.test(source.file_sha256))) return { ok: false, reason: 'invoice_unlock_contract_invalid_v430' };
+      || !/^[a-f0-9]{64}$/.test(source.file_sha256))) return { ok: false, reason: 'invoice_retired_contract_invalid_v440' };
   return { ok: true };
 }
-async function diracInvoiceStage26V430(req, ctx, owner, ids) {
+async function diracInvoiceStage26V440(req, ctx, owner, ids) {
   const source = ctx.method === 'GET' ? req.query : ctx.body;
   let passport = false; try { passport = BigInt(ctx.passport || 0n) === 0x3ffffffn; } catch (_) { passport = false; }
   if (!passport || ctx.currentStageV211 !== 'IDOR/BOLA' || ctx.currentStageIndexV211 !== 26 || ctx.executionPhaseV211 !== 'guard'
-      || !diracInvoiceSourceV430(req, ctx.action) || !owner || owner.ok !== true || owner.customerIds.length !== 1
-      || !diracInvoiceInputV430(ctx, source).ok || ids.length !== 1 || ids[0].key !== 'order_id' || ids[0].value !== source.order_id) return { ok: false, reason: 'invoice_owner_scope_invalid_v430' };
+      || !diracInvoiceSourceV440(req, ctx.action) || !owner || owner.ok !== true || owner.customerIds.length !== 1
+      || !diracInvoiceInputV440(ctx, source).ok || ids.length !== 1 || ids[0].key !== 'order_id' || ids[0].value !== source.order_id) return { ok: false, reason: 'invoice_owner_scope_invalid_v440' };
   const rows = await diracCentralFetchOwnerRowsV194(source.kind === 'domain' ? 'domain_orders' : 'orders', [source.order_id], ['id']);
-  if (!Array.isArray(rows) || rows.length !== 1 || String(rows[0].id) !== source.order_id || String(rows[0].customer_id) !== owner.customerIds[0]) return { ok: false, reason: 'invoice_order_owner_mismatch_v430' };
-  DIRAC_INVOICE_OWNERS_V430.set(req, Object.freeze({ req, ctx, userId: owner.authUserId, customerId: owner.customerIds[0], orderId: source.order_id, kind: source.kind }));
+  if (!Array.isArray(rows) || rows.length !== 1 || String(rows[0].id) !== source.order_id || String(rows[0].customer_id) !== owner.customerIds[0]) return { ok: false, reason: 'invoice_order_owner_mismatch_v440' };
+  DIRAC_INVOICE_OWNERS_V440.set(req, Object.freeze({ req, ctx, userId: owner.authUserId, customerId: owner.customerIds[0], orderId: source.order_id, kind: source.kind }));
   ctx.__diracCentralOwnerBoundObjectValuesV194 = new Set([source.order_id]);
-  return { ok: true, guarded: 'invoice_exact_owned_order_v430' };
+  return { ok: true, guarded: 'invoice_exact_owned_order_v440' };
 }
-function diracInvoiceContextV430(ctx) {
-  const proof = ctx && ctx.req && DIRAC_INVOICE_OWNERS_V430.get(ctx.req);
-  const sealed = proof && diracCentralOwnerFromVerifiedContextV215(ctx.req, proof.userId);
-  return !!(proof && Object.isFrozen(proof) && proof.ctx === ctx && proof.req === ctx.req && sealed && sealed.ok === true
-    && sealed.customerIds.length === 1 && sealed.customerIds[0] === proof.customerId && sealed.authUserId === proof.userId
-    && diracCentralCurrentContextV149() === ctx && diracInvoiceSourceV430(ctx.req, ctx.action)
-    && diracCentralHandlerContextFullyPassedV211(ctx, ctx.req));
+function diracInvoiceOwnerProofV440(req) {
+  const browser = req && DIRAC_INVOICE_OWNERS_V440.get(req);
+  if (browser) return browser;
+  return typeof diracInvoiceContinuationProofV441 === 'function' ? diracInvoiceContinuationProofV441(req) : null;
 }
-function diracInvoiceRecipientProofV430(req) {
-  const ctx = diracCentralCurrentContextV149(), proof = req && DIRAC_INVOICE_RECIPIENTS_V430.get(req), owner = req && DIRAC_INVOICE_OWNERS_V430.get(req);
+function diracInvoiceContextV440(ctx) {
+  const lifecycle = ctx && ctx.req && DIRAC_INVOICE_LIFECYCLES_V440.get(ctx.req);
+  if (lifecycle && (lifecycle.ctx !== ctx || Date.now() >= lifecycle.expiresAt)) return false;
+  const proof = ctx && ctx.req && diracInvoiceOwnerProofV440(ctx.req);
+  if (!proof || !Object.isFrozen(proof) || proof.ctx !== ctx || proof.req !== ctx.req || diracCentralCurrentContextV149() !== ctx
+      || !diracCentralHandlerContextFullyPassedV211(ctx, ctx.req)) return false;
+  if (ctx.action === 'midtrans_webhook') return typeof diracInvoiceContinuationProofV441 === 'function' && diracInvoiceContinuationProofV441(ctx.req) === proof;
+  const sealed = diracCentralOwnerFromVerifiedContextV215(ctx.req, proof.userId);
+  return !!(sealed && sealed.ok === true && sealed.customerIds.length === 1 && sealed.customerIds[0] === proof.customerId
+    && sealed.authUserId === proof.userId && diracInvoiceSourceV440(ctx.req, ctx.action));
+}
+function diracInvoiceOperationV440(ctx) {
+  if (!diracInvoiceContextV440(ctx)) return '';
+  return ctx.action === 'midtrans_webhook' ? 'invoice_email_send' : ctx.action;
+}
+function diracInvoiceRecipientProofV440(req) {
+  const ctx = diracCentralCurrentContextV149(), owner = req && diracInvoiceOwnerProofV440(req);
+  const proof = req && (DIRAC_INVOICE_RECIPIENTS_V440.get(req)
+    || (typeof diracInvoiceContinuationRecipientV441 === 'function' ? diracInvoiceContinuationRecipientV441(req) : null));
   return proof && Object.isFrozen(proof) && proof.ctx === ctx && ctx.req === req && owner && proof.authUserId === owner.userId
-    && proof.customerId === owner.customerId && diracInvoiceContextV430(ctx) ? proof : null;
+    && proof.customerId === owner.customerId && diracInvoiceContextV440(ctx) ? proof : null;
 }
-function diracInvoiceDbDecisionV430(ctx, path, options, method) {
-  const marker = options && DIRAC_INVOICE_FETCH_V430.get(options), rpc = ctx && ctx.req && DIRAC_INVOICE_RPC_V430.get(ctx.req);
+function diracInvoiceDbDecisionV440(ctx, path, options, method) {
+  const marker = options && DIRAC_INVOICE_FETCH_V440.get(options), rpc = ctx && ctx.req && DIRAC_INVOICE_RPC_V440.get(ctx.req);
   const isRpc = rpc && path === rpc.path;
   if (!marker && !isRpc) return { relevant: false };
-  if (!diracInvoiceContextV430(ctx) || options.auth !== 'service') return { relevant: true, ok: false, reason: 'invoice_database_context_invalid_v430' };
+  if (!diracInvoiceContextV440(ctx) || options.auth !== 'service') return { relevant: true, ok: false, reason: 'invoice_database_context_invalid_v440' };
   if (marker) {
     return { relevant: true, ok: marker.ctx === ctx && marker.req === ctx.req && marker.path === path && marker.method === method
-      && Date.now() < marker.expiresAt && marker.digest === diracAdminBusinessDigestV406(path, options), reason: 'invoice_database_capability_invalid_v430' };
+      && Date.now() < marker.expiresAt && marker.digest === diracAdminBusinessDigestV406(path, options), reason: 'invoice_database_capability_invalid_v440' };
   }
   const body = options.body || {}, keys = Object.keys(body).sort().join(','); let ok = false;
   if (rpc.operation === 'claim') {
     const expiry = Date.parse(String(body.p_expires_at || ''));
-    ok = method === 'POST' && ctx.action === 'invoice_email_send' && keys === 'p_expires_at,p_record_json,p_security_key,p_table_name'
+    ok = method === 'POST' && diracInvoiceOperationV440(ctx) === 'invoice_email_send' && keys === 'p_expires_at,p_record_json,p_security_key,p_table_name'
       && body.p_table_name === DIRAC_S2S_SECURITY_TABLE && body.p_security_key === rpc.key
       && crypto.createHash('sha256').update(JSON.stringify(body.p_record_json)).digest('hex') === rpc.digest
       && Number.isFinite(expiry) && expiry >= rpc.startedAt + rpc.ttl * 1000 && expiry <= Date.now() + rpc.ttl * 1000 + 1000;
-  } else if (rpc.operation === 'rate') {
-    ok = method === 'POST' && ctx.action === 'invoice_email_unlock' && keys === 'p_block_seconds,p_limit,p_security_key,p_window_seconds'
-      && body.p_security_key === rpc.key && body.p_limit === 5 && body.p_window_seconds === 600 && body.p_block_seconds === 600;
   }
-  return { relevant: true, ok: !!(ok && rpc.ctx === ctx && rpc.req === ctx.req && Date.now() < rpc.expiresAt), reason: 'invoice_rpc_capability_invalid_v430' };
+  return { relevant: true, ok: !!(ok && rpc.ctx === ctx && rpc.req === ctx.req && Date.now() < rpc.expiresAt), reason: 'invoice_rpc_capability_invalid_v440' };
 }
-function diracInvoicePreserveResponseV430(payload) {
-  const ctx = diracCentralCurrentContextV149(), permit = ctx && ctx.req && DIRAC_INVOICE_RESPONSES_V430.get(ctx.req);
-  if (!permit || permit.action !== ctx.action || !diracInvoiceContextV430(ctx) || !payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+function diracInvoicePreserveResponseV440(payload) {
+  const ctx = diracCentralCurrentContextV149(), permit = ctx && ctx.req && DIRAC_INVOICE_RESPONSES_V440.get(ctx.req);
+  if (!permit || permit.action !== ctx.action || !diracInvoiceContextV440(ctx) || !payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const serialized = JSON.stringify(payload);
   if (Buffer.byteLength(serialized, 'utf8') > 2048 || crypto.createHash('sha256').update(serialized).digest('hex') !== permit.digest) return null;
   // The outer secure serializer still runs runtime ENV-secret detection first.
   return JSON.parse(serialized);
 }
-async function diracInvoiceDispatchV430(req, res, ctx) {
-  const ptdin = require('./ptdin.js'), proof = DIRAC_INVOICE_OWNERS_V430.get(req);
-  let active = true, mailUsed = false; const knownFiles = new Set(), records = new Map();
-  function assertContext() { if (!active || !diracInvoiceContextV430(ctx)) throw new Error('INVOICE_FULL_CENTRAL_GUARD_REQUIRED'); }
-  assertContext();
-  const cors = setCors(req, res, { isDomainAction: true });
+async function diracInvoiceDispatchV440(req, res, ctx) {
+  if (!diracInvoiceContextV440(ctx)) throw new Error('INVOICE_FULL_CENTRAL_GUARD_REQUIRED');
+  const proof = DIRAC_INVOICE_OWNERS_V440.get(req), cors = setCors(req, res, { isDomainAction: true });
   if (!cors.allowed) return res.status(403).json({ ok: false, code: 'INVOICE_ORIGIN_INVALID' });
   const user = await requireDomainUser(req, res);
   if (!user) return;
-  assertContext();
+  if (!diracInvoiceContextV440(ctx)) throw new Error('INVOICE_FULL_CENTRAL_GUARD_REQUIRED');
   const email = adminSecurityVerifiedEmailV210(user, 'supabase');
   if (!email || String(user.id || '') !== proof.userId) return res.status(403).json({ ok: false, code: 'INVOICE_VERIFIED_EMAIL_REQUIRED' });
-  if (!Object.isFrozen(ptdin) || typeof ptdin.__diracInvoiceBusinessV430 !== 'function') throw new Error('INVOICE_MODULE_INVALID');
-  const origin = 'https://pt.' + diracBaseDomainV250(), source = ctx.method === 'GET' ? req.query : ctx.body;
+  DIRAC_INVOICE_RECIPIENTS_V440.set(req, Object.freeze({ ctx, authUserId: proof.userId, customerId: proof.customerId, email }));
+  try { return await diracInvoiceRunPreparedV440(req, res, ctx, proof, email, null); }
+  finally { DIRAC_INVOICE_RECIPIENTS_V440.delete(req); }
+}
+async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepared) {
+  const ptdin = require('./ptdin.js');
+  let active = true, mailUsed = false; const expiresAt = Date.now() + 90000, knownFiles = new Set(), records = new Map();
+  function assertContext() {
+    const recipient = diracInvoiceRecipientProofV440(req);
+    if (!active || Date.now() >= expiresAt || !diracInvoiceContextV440(ctx) || diracInvoiceOwnerProofV440(req) !== proof || !recipient || recipient.email !== email) throw new Error('INVOICE_FULL_CENTRAL_GUARD_REQUIRED');
+  }
+  assertContext();
+  const continuation = ctx.action === 'midtrans_webhook', action = diracInvoiceOperationV440(ctx);
+  if ((continuation && typeof onPrepared !== 'function') || (!continuation && onPrepared !== null)) throw new Error('INVOICE_CONTINUATION_INVALID');
+  if (!Object.isFrozen(ptdin) || typeof ptdin.__diracInvoiceBusinessV440 !== 'function' || typeof ptdin.__diracInvoiceDocumentV440 !== 'function') throw new Error('INVOICE_MODULE_INVALID');
+  const origin = 'https://pt.' + diracBaseDomainV250();
+  const source = continuation ? Object.freeze({ order_id: proof.orderId, kind: proof.kind }) : ctx.method === 'GET' ? req.query : ctx.body;
   const scope = crypto.createHash('sha256').update(JSON.stringify([proof.userId, proof.customerId, proof.kind, proof.orderId])).digest('hex');
-  const prefix = 's2s-invoice-v430:', sendKey = prefix + 'send:' + scope, headKey = prefix + 'latest:' + scope, unlockKey = prefix + 'unlock:' + scope;
+  const prefix = 's2s-invoice-v440:', sendKey = prefix + 'send:' + scope, headKey = prefix + 'latest:' + scope;
   const fileKey = id => prefix + 'file:' + crypto.createHash('sha256').update(scope + ':' + id).digest('hex');
-  if (ctx.action === 'invoice_email_unlock') knownFiles.add(fileKey(source.file_id));
-  const keyAllowed = key => key === sendKey || key === headKey || knownFiles.has(key);
+  const transportKey = id => prefix + 'transport:' + crypto.createHash('sha256').update(scope + ':' + id).digest('hex');
+  const keyAllowed = key => key === sendKey || key === headKey || knownFiles.has(key) || (key.startsWith(prefix + 'transport:') && knownFiles.has(key.replace(prefix + 'transport:', prefix + 'file:')));
   const recordAllowed = (key, record) => {
-    if (!record || typeof record !== 'object' || Array.isArray(record) || record.version !== 'dirac-invoice-v430'
+    if (!record || typeof record !== 'object' || Array.isArray(record) || record.version !== 'dirac-invoice-v440'
         || record.scope !== scope || !/^[A-Za-z0-9_-]{43}$/.test(String(record.file_id || '')) || !/^[a-f0-9]{32}$/.test(String(record.revision || ''))
         || Buffer.byteLength(JSON.stringify(record), 'utf8') > 4096) return false;
-    if (key === sendKey || key === headKey) return Object.keys(record).sort().join(',') === 'created_at,file_id,next_allowed_at,revision,scope,version'
+    if (key === sendKey || key === headKey || key === transportKey(record.file_id)) return Object.keys(record).sort().join(',') === 'created_at,file_id,next_allowed_at,revision,scope,version'
       && Number.isSafeInteger(record.created_at) && record.next_allowed_at === record.created_at + 86400000;
     if (key !== fileKey(record.file_id) || record.order_id !== proof.orderId || record.kind !== proof.kind
         || !/^[a-f0-9]{64}$/.test(String(record.file_sha256 || '')) || !['pending','accepted','failed','unknown'].includes(record.status)
-        || !Number.isSafeInteger(record.created_at) || record.expires_at !== record.created_at + 30 * 86400000) return false;
+        || !Number.isSafeInteger(record.created_at) || !Number.isSafeInteger(record.prepared_at) || record.prepared_at < record.created_at || record.expires_at !== record.created_at + 30 * 86400000) return false;
     try { const issuer = new URL(record.issuer_origin); if (issuer.protocol !== 'https:' || issuer.origin !== record.issuer_origin || issuer.port || issuer.username || issuer.password) return false; } catch (_) { return false; }
-    return Object.keys(record).sort().join(',') === 'created_at,expires_at,file_id,file_sha256,issuer_origin,kind,order_id,revision,scope,secret,status,version'
+    return Object.keys(record).sort().join(',') === 'created_at,expires_at,file_id,file_sha256,issuer_origin,kind,order_id,prepared_at,revision,scope,secret,status,version'
       && record.secret && Object.keys(record.secret).sort().join(',') === 'data,iv'
-      && /^[A-Za-z0-9_-]{16}$/.test(String(record.secret.iv || '')) && /^[A-Za-z0-9_-]{100,400}$/.test(String(record.secret.data || ''));
+      && /^[A-Za-z0-9_-]{16}$/.test(String(record.secret.iv || '')) && /^[A-Za-z0-9_-]{40,120}$/.test(String(record.secret.data || ''));
   };
   async function db(path, options) {
     assertContext();
-    DIRAC_INVOICE_FETCH_V430.set(options, Object.freeze({ ctx, req, path, method: options.method, digest: diracAdminBusinessDigestV406(path, options), expiresAt: Date.now() + 30000 }));
+    DIRAC_INVOICE_FETCH_V440.set(options, Object.freeze({ ctx, req, path, method: options.method, digest: diracAdminBusinessDigestV406(path, options), expiresAt: Date.now() + 30000 }));
     try { const result = await supabaseFetch(path, options); assertContext(); return result; }
-    finally { DIRAC_INVOICE_FETCH_V430.delete(options); }
+    finally { DIRAC_INVOICE_FETCH_V440.delete(options); }
   }
   async function read(key) {
     assertContext(); if (!keyAllowed(key)) throw new Error('INVOICE_STORAGE_SCOPE_INVALID');
@@ -60967,31 +61206,23 @@ async function diracInvoiceDispatchV430(req, res, ctx) {
     knownFiles.add(fileKey(row.record_json.file_id));
     return { ok: true, found: true, record: row.record_json };
   }
-  async function verifyOwner() {
-    assertContext();
-    const path = '/rest/v1/' + (proof.kind === 'domain' ? 'domain_orders' : 'orders') + '?select=id,customer_id&id=eq.' + encodeURIComponent(proof.orderId)
-      + '&customer_id=eq.' + encodeURIComponent(proof.customerId) + '&limit=1';
-    const result = await db(path, { method: 'GET', auth: 'service' });
-    if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length !== 1 || result.data[0].id !== proof.orderId || result.data[0].customer_id !== proof.customerId) {
-      throw Object.assign(new Error('INVOICE_OWNER_UNAVAILABLE'), { code: 'INVOICE_OWNER_UNAVAILABLE', status: 503 });
-    }
-    assertContext(); return true;
-  }
+  async function verifyOwner() { assertContext(); await diracInvoicePaidDataV440(proof, db, false); assertContext(); return true; }
   const operations = Object.freeze({
-    version: 'dirac-invoice-v430', action: ctx.action, method: ctx.method, body: source,
-    identity: Object.freeze({ userId: proof.userId, customerId: proof.customerId, email, origin }), assertFullGuard: assertContext, verifyOwner, read,
-    storageKey: () => { assertContext(); return crypto.createHmac('sha256', diracCentralRootSecretV146()).update('DIRAC_INVOICE_V430_STORAGE:' + proof.userId + ':' + proof.customerId).digest(); },
+    version: 'dirac-invoice-v440', action, method: ctx.method, body: source,
+    identity: Object.freeze({ userId: proof.userId, customerId: proof.customerId, email, origin }), assertFullGuard: assertContext, verifyOwner, read, onPrepared,
+    document: async () => { assertContext(); const data = await diracInvoicePaidDataV440(proof, db, true); assertContext(); return ptdin.__diracInvoiceDocumentV440(data, { userId: proof.userId, customerId: proof.customerId, email, origin }, { nib: process.env.DIRAC_INVOICE_NIB, npwp: process.env.DIRAC_INVOICE_NPWP }); },
+    storageKey: () => { assertContext(); return crypto.createHmac('sha256', diracCentralRootSecretV146()).update('DIRAC_INVOICE_V440_STORAGE:' + proof.userId + ':' + proof.customerId).digest(); },
     claim: async (key, record, ttl) => {
-      assertContext(); if (ctx.action !== 'invoice_email_send' || !recordAllowed(key, record)
-          || !((key === sendKey && ttl === 86400) || ((key === headKey || key === fileKey(record.file_id)) && ttl === 30 * 86400))) throw new Error('INVOICE_CLAIM_INVALID');
+      assertContext(); if (action !== 'invoice_email_send' || !recordAllowed(key, record)
+          || !((key === sendKey && ttl === 86400) || ((key === headKey || key === fileKey(record.file_id) || (key === transportKey(record.file_id) && knownFiles.has(fileKey(record.file_id)))) && ttl === 30 * 86400))) throw new Error('INVOICE_CLAIM_INVALID');
       if (key === fileKey(record.file_id)) knownFiles.add(key);
-      if (DIRAC_INVOICE_RPC_V430.has(req)) throw new Error('INVOICE_RPC_CONCURRENCY_INVALID');
-      DIRAC_INVOICE_RPC_V430.set(req, Object.freeze({ ctx, req, operation: 'claim', path: '/rest/v1/rpc/dirac_central_atomic_claim_record_v230', key, digest: crypto.createHash('sha256').update(JSON.stringify(record)).digest('hex'), ttl, startedAt: Date.now(), expiresAt: Date.now() + 30000 }));
+      if (DIRAC_INVOICE_RPC_V440.has(req)) throw new Error('INVOICE_RPC_CONCURRENCY_INVALID');
+      DIRAC_INVOICE_RPC_V440.set(req, Object.freeze({ ctx, req, operation: 'claim', path: '/rest/v1/rpc/dirac_central_atomic_claim_record_v230', key, digest: crypto.createHash('sha256').update(JSON.stringify(record)).digest('hex'), ttl, startedAt: Date.now(), expiresAt: Date.now() + 30000 }));
       try { const result = await claimPersistentSecurityKeyOnceV194(key, record, ttl); assertContext(); return result === true; }
-      finally { DIRAC_INVOICE_RPC_V430.delete(req); }
+      finally { DIRAC_INVOICE_RPC_V440.delete(req); }
     },
     replace: async (key, expectedRevision, record, ttl) => {
-      assertContext(); if (ctx.action !== 'invoice_email_send' || !keyAllowed(key) || key === sendKey || !recordAllowed(key, record)
+      assertContext(); if (action !== 'invoice_email_send' || !keyAllowed(key) || key === sendKey || key === transportKey(record.file_id) || !recordAllowed(key, record)
           || expectedRevision === record.revision || !/^[a-f0-9]{32}$/.test(String(expectedRevision || '')) || ttl !== 30 * 86400) throw new Error('INVOICE_REPLACE_INVALID');
       if (!records.has(key)) { const result = await read(key); if (!result.ok || !result.found) return false; }
       const previous = records.get(key); if (!previous || previous.revision !== expectedRevision) return false;
@@ -61001,48 +61232,79 @@ async function diracInvoiceDispatchV430(req, res, ctx) {
       const ok = !!(result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 && result.data[0].security_key === key && Date.parse(result.data[0].expires_at) === Date.parse(expiresAt));
       if (ok) records.set(key, { revision: record.revision, expiresAt: result.data[0].expires_at }); return ok;
     },
-    takeRate: async (key) => {
-      assertContext(); if (ctx.action !== 'invoice_email_unlock' || key !== unlockKey || DIRAC_INVOICE_RPC_V430.has(req)) throw new Error('INVOICE_UNLOCK_RATE_SCOPE_INVALID');
-      DIRAC_INVOICE_RPC_V430.set(req, Object.freeze({ ctx, req, operation: 'rate', path: '/rest/v1/rpc/dirac_central_atomic_rate_limit_v230', key, expiresAt: Date.now() + 30000 }));
-      try { const result = await diracCentralAtomicRateLimitV230({ key, limit: 5, windowSeconds: 600, blockSeconds: 600 }); assertContext(); if (!result || (result.ok !== true && result.reason !== 'distributed_rate_limit')) throw Object.assign(new Error('INVOICE_STORAGE_UNAVAILABLE'), { code: 'INVOICE_STORAGE_UNAVAILABLE' }); return result.ok === true; }
-      finally { DIRAC_INVOICE_RPC_V430.delete(req); }
-    },
     mail: async (file) => {
-      assertContext(); if (mailUsed || ctx.action !== 'invoice_email_send' || !file || Object.keys(file).sort().join(',') !== 'content,fileId'
+      assertContext(); if (mailUsed || action !== 'invoice_email_send' || !file || Object.keys(file).sort().join(',') !== 'content,fileId'
           || !/^[A-Za-z0-9_-]{43}$/.test(String(file.fileId || '')) || !knownFiles.has(fileKey(file.fileId)) || !Buffer.isBuffer(file.content)
           || file.content.length < 100 || file.content.length > 1420000) throw new Error('INVOICE_MAIL_SCOPE_INVALID');
       mailUsed = true;
       await verifyOwner();
-      DIRAC_INVOICE_RECIPIENTS_V430.set(req, Object.freeze({ ctx, authUserId: proof.userId, customerId: proof.customerId, email }));
       const capability = diracInvoiceMailAuthorizeV420(req, email, file.fileId);
       const result = await diracInvoiceAttachmentSendV420({ to: email, subject: 'Invoice PT Dirac Inovasi Nusantara', reference: file.fileId,
-        text: 'ZIP invoice terenkripsi terlampir. Unggah ZIP pada halaman Invoice di akun Anda untuk melihat kunci dan membuka PDF. Kunci berlaku 30 hari sejak pembuatan. Referensi: ' + file.fileId,
-        html: '<p>ZIP invoice terenkripsi terlampir. Unggah ZIP pada halaman Invoice di akun Anda untuk melihat kunci dan membuka PDF.</p><p>Kunci berlaku 30 hari sejak pembuatan.</p><p>Referensi: ' + file.fileId + '</p>',
-        attachment: { filename: 'invoice-' + file.fileId + '.dirac', contentType: 'application/octet-stream', content: file.content } }, capability);
+        text: 'PDF invoice terenkripsi terlampir. Buka PDF langsung dengan pembaca PDF dan masukkan kata sandi 8 digit yang tersedia pada halaman Invoice akun Anda. Kunci dapat dilihat di akun selama 30 hari; kata sandi PDF tidak kedaluwarsa. Referensi: ' + file.fileId,
+        html: '<p>PDF invoice terenkripsi terlampir. Buka PDF langsung dengan pembaca PDF dan masukkan kata sandi 8 digit yang tersedia pada halaman Invoice akun Anda.</p><p>Kunci dapat dilihat di akun selama 30 hari; kata sandi PDF tidak kedaluwarsa.</p><p>Referensi: ' + file.fileId + '</p>',
+        attachment: { filename: 'invoice-' + file.fileId + '.pdf', contentType: 'application/pdf', content: file.content } }, capability);
       assertContext(); return result;
     }
   });
   const originalJson = res.json;
-  res.json = function diracInvoiceResponseV430(payload) {
+  if (!continuation) res.json = function diracInvoiceResponseV440(payload) {
     assertContext();
     if (payload && payload.ok === true) {
-      const shapes = { invoice_email_status: 'accepted,available,expires_at,file_id,next_allowed_at,ok,status,unlock_key', invoice_email_send: 'accepted,expires_at,file_id,next_allowed_at,ok,status,unlock_key', invoice_email_unlock: 'decrypt_key,expires_at,file_id,ok' };
+      const shapes = { invoice_email_status: 'accepted,available,expires_at,file_id,next_allowed_at,ok,status,unlock_key', invoice_email_send: 'accepted,expires_at,file_id,next_allowed_at,ok,status,unlock_key' };
       const validTime = value => value === null || (typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)));
       if (Object.keys(payload).sort().join(',') !== shapes[ctx.action] || !validTime(payload.expires_at)
-          || (ctx.action !== 'invoice_email_unlock' && (!validTime(payload.next_allowed_at) || typeof payload.accepted !== 'boolean' || !['idle','pending','accepted','failed','unknown'].includes(payload.status)))
+          || (!validTime(payload.next_allowed_at) || typeof payload.accepted !== 'boolean' || !['idle','pending','accepted','failed','unknown'].includes(payload.status))
           || (payload.file_id !== null && !/^[A-Za-z0-9_-]{43}$/.test(String(payload.file_id || '')))
           || (ctx.action === 'invoice_email_status' && typeof payload.available !== 'boolean')
-          || (ctx.action !== 'invoice_email_unlock' && payload.unlock_key !== null && !/^\d{8}$/.test(String(payload.unlock_key || '')))
-          || (ctx.action === 'invoice_email_unlock' && !/^[A-Za-z0-9_-]{43}$/.test(String(payload.decrypt_key || '')))) throw new Error('INVOICE_RESPONSE_CONTRACT_INVALID');
+          || (payload.unlock_key !== null && !/^\d{8}$/.test(String(payload.unlock_key || '')))) throw new Error('INVOICE_RESPONSE_CONTRACT_INVALID');
       const serialized = JSON.stringify(payload); if (Buffer.byteLength(serialized, 'utf8') > 2048) throw new Error('INVOICE_RESPONSE_CONTRACT_INVALID');
-      DIRAC_INVOICE_RESPONSES_V430.set(req, Object.freeze({ action: ctx.action, digest: crypto.createHash('sha256').update(serialized).digest('hex') }));
+      DIRAC_INVOICE_RESPONSES_V440.set(req, Object.freeze({ action: ctx.action, digest: crypto.createHash('sha256').update(serialized).digest('hex') }));
     }
     return originalJson.call(res, payload);
   };
-  try { return await ptdin.__diracInvoiceBusinessV430(req, res, operations); }
-  finally { res.json = originalJson; active = false; records.clear(); knownFiles.clear(); DIRAC_INVOICE_RESPONSES_V430.delete(req); DIRAC_INVOICE_RPC_V430.delete(req); DIRAC_INVOICE_RECIPIENTS_V430.delete(req); }
+  if (DIRAC_INVOICE_LIFECYCLES_V440.has(req)) throw new Error('INVOICE_CONTEXT_CONCURRENCY_INVALID');
+  DIRAC_INVOICE_LIFECYCLES_V440.set(req, Object.freeze({ ctx, expiresAt }));
+  try { return await ptdin.__diracInvoiceBusinessV440(req, res, operations); }
+  finally { res.json = originalJson; active = false; DIRAC_INVOICE_LIFECYCLES_V440.delete(req); records.clear(); knownFiles.clear(); DIRAC_INVOICE_RESPONSES_V440.delete(req); DIRAC_INVOICE_RPC_V440.delete(req); }
 }
 
+// Exact owned PAID facts are read afresh; browser-supplied amounts, status and recipients are never used.
+async function diracInvoicePaidDataV440(proof, db, includeItems = false) {
+  if (!proof || !customerSecurityLooksLikeUuid(proof.customerId) || !customerSecurityLooksLikeUuid(proof.orderId)
+      || !['regular','domain'].includes(proof.kind) || typeof db !== 'function') throw Object.assign(new Error('INVOICE_OWNER_UNAVAILABLE'), { code: 'INVOICE_OWNER_UNAVAILABLE' });
+  const domain = proof.kind === 'domain';
+  const fields = domain ? 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at'
+    : 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,total,payment_status,order_status,created_at';
+  const result = await db('/rest/v1/' + (domain ? 'domain_orders' : 'orders') + '?select=' + encodeURIComponent(fields)
+    + '&id=eq.' + encodeURIComponent(proof.orderId) + '&customer_id=eq.' + encodeURIComponent(proof.customerId) + '&limit=1', { method: 'GET', auth: 'service' });
+  if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length !== 1) throw Object.assign(new Error('INVOICE_OWNER_UNAVAILABLE'), { code: 'INVOICE_OWNER_UNAVAILABLE' });
+  const order = result.data[0], amount = midtransStrictMoneyV350(domain ? order.total_price : order.total);
+  if (!order || order.id !== proof.orderId || order.customer_id !== proof.customerId) throw Object.assign(new Error('INVOICE_OWNER_UNAVAILABLE'), { code: 'INVOICE_OWNER_UNAVAILABLE' });
+  if (order.payment_status !== 'paid' || amount === null || amount <= 0 || (domain && order.currency !== 'IDR')) throw Object.assign(new Error('INVOICE_PAID_REQUIRED'), { code: 'INVOICE_PAID_REQUIRED', status: 409 });
+  const txFields = 'id,customer_id,order_id,domain_order_id,gateway_name,gateway_reference,payment_status,amount,currency,metadata,created_at';
+  const txResult = await db('/rest/v1/payment_transactions?select=' + encodeURIComponent(txFields)
+    + '&' + (domain ? 'domain_order_id' : 'order_id') + '=eq.' + encodeURIComponent(proof.orderId)
+    + '&customer_id=eq.' + encodeURIComponent(proof.customerId) + '&payment_status=eq.paid&amount=eq.' + amount + '&order=created_at.desc&limit=8', { method: 'GET', auth: 'service' });
+  if (!txResult || txResult.ok !== true || !Array.isArray(txResult.data) || txResult.data.length > 8) throw Object.assign(new Error('INVOICE_PAID_EVIDENCE_UNAVAILABLE'), { code: 'INVOICE_PAID_EVIDENCE_UNAVAILABLE' });
+  const transaction = txResult.data.find(tx => {
+    const metadata = tx && tx.metadata;
+    return tx && customerSecurityLooksLikeUuid(tx.id) && tx.customer_id === proof.customerId && (domain ? tx.domain_order_id : tx.order_id) === proof.orderId
+      && !(domain ? tx.order_id : tx.domain_order_id) && tx.payment_status === 'paid' && tx.gateway_name === 'midtrans' && tx.currency === 'IDR'
+      && midtransStrictMoneyV350(tx.amount) === amount && metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+      && metadata.midtrans_signature_verified === true && metadata.midtrans_authoritative_payment_status === 'paid'
+      && /^(settlement|capture)$/.test(String(metadata.midtrans_transaction_status || ''))
+      && (metadata.midtrans_transaction_status !== 'capture' || String(metadata.midtrans_fraud_status || '').toLowerCase() === 'accept')
+      && Number.isFinite(Date.parse(String(metadata.midtrans_status_confirmed_at || '')));
+  });
+  if (!transaction) throw Object.assign(new Error('INVOICE_PAID_REQUIRED'), { code: 'INVOICE_PAID_REQUIRED', status: 409 });
+  if (!includeItems) return { order, transaction };
+  const itemFields = domain ? 'id,order_id,domain_name,years,register_price,subtotal' : 'id,order_id,product_title,quantity,unit_price';
+  const itemsResult = await db('/rest/v1/' + (domain ? 'domain_order_items' : 'order_items') + '?select=' + encodeURIComponent(itemFields)
+    + '&order_id=eq.' + encodeURIComponent(proof.orderId) + '&limit=251', { method: 'GET', auth: 'service' });
+  if (!itemsResult || itemsResult.ok !== true || !Array.isArray(itemsResult.data) || !itemsResult.data.length || itemsResult.data.length > 250
+      || itemsResult.data.some(item => !item || item.order_id !== proof.orderId)) throw Object.assign(new Error('INVOICE_DOCUMENT_INVALID'), { code: 'INVOICE_DOCUMENT_INVALID' });
+  return { order, transaction, items: itemsResult.data, kind: proof.kind };
+}
 async function diracCentralPtdinDispatchV402(req, res, ctx) {
   const entry = DIRAC_PTDIN_REQUESTS_V402.get(req);
   const assertContext = () => {
@@ -61055,7 +61317,7 @@ async function diracCentralPtdinDispatchV402(req, res, ctx) {
   };
   assertContext();
   if (req.method === 'OPTIONS') return __diracV202CompiledDispatcher(req, res);
-  if (diracInvoiceActionV430(ctx.action)) return diracInvoiceDispatchV430(req, res, ctx);
+  if (diracInvoiceActionV440(ctx.action)) return diracInvoiceDispatchV440(req, res, ctx);
   const ptdin = require('./ptdin.js');
   if (!Object.isFrozen(ptdin) || ptdin.__diracPtdinCentralGuardedBusinessV402 !== true
       || typeof ptdin.__diracPtdinBusinessV402 !== 'function') throw new Error('PTDIN_BUSINESS_MODULE_INVALID');
@@ -61114,7 +61376,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
     return role === 'auth' && diracCentralAdminSourceV405(req, clean) && contract && contract.methods.includes(expectedMethod)
       ? { ok: true } : { ok: false, reason: 'admin_source_action_contract_invalid_v405' };
   }
-  if (diracInvoiceActionV430(clean) && !(req && DIRAC_PTDIN_REQUESTS_V402.has(req))) return { ok: false, reason: 'invoice_private_pt_entry_required_v430' };
+  if (diracInvoiceActionV440(clean) && !(req && DIRAC_PTDIN_REQUESTS_V402.has(req))) return { ok: false, reason: 'invoice_private_pt_entry_required_v440' };
   if (req && DIRAC_PTDIN_REQUESTS_V402.has(req)) {
     const contract = diracCentralContractForActionV146(clean);
     const method = String(req.method || '').toUpperCase();
@@ -61466,7 +61728,14 @@ async function diracCentralPageNonceGuardV146(req, res, ctx) {
     return { ok:true, source:'exact_recovery_link_signed_nonce_v251' };
   }
   if ((ctx.method === 'GET' || ctx.method === 'HEAD') && ctx.classification !== 'server') {
-    diracCentralIssuePageNonceV146(req, res, diracCentralPageNonceIssueTargetV146(req, ctx));
+    const target = diracCentralPageNonceIssueTargetV146(req, ctx);
+    const nonce = diracCentralIssuePageNonceV146(req, res, target);
+    if (ctx.action === 'domain_health') {
+      // A second action-bound proof on the existing bootstrap avoids a report-time round trip.
+      // Ordinary action nonce, signature checks, origin/session binding and single use are unchanged.
+      const reportNonce = target === 'security_report' ? nonce : diracCentralIssuePageNonceV146(req, { setHeader() {} }, 'security_report');
+      if (reportNonce) res.setHeader('X-Dirac-Security-Report-Nonce', reportNonce);
+    }
   }
   if (!diracCentralNeedsCsrfNonceV146(ctx)) return { ok: true };
   const headers = req && req.headers || {};
@@ -62255,7 +62524,7 @@ function diracCentralContractGuardV146(req, ctx) {
     return { ok: false, reason: 'ptdin_contract_enum_invalid' };
   }
   if (ctx.method === 'GET' && contract.mutation) return { ok: false, reason: 'mutation_get_rejected' };
-  if (diracInvoiceActionV430(ctx.action)) return diracInvoiceInputV430(ctx, source);
+  if (diracInvoiceActionV440(ctx.action)) return diracInvoiceInputV440(ctx, source);
   return { ok: true };
 }
 
@@ -62570,7 +62839,7 @@ async function diracCentralIdorBolaGuardV146(req, ctx) {
       ctx.__diracCentralCheckoutOwnerAuthUserIdV196 = ctx.__diracCentralVerifiedOwnerAuthUserIdV217;
     }
   }
-  if (diracInvoiceActionV430(ctx.action)) return diracInvoiceStage26V430(req, ctx, owner, ids);
+  if (diracInvoiceActionV440(ctx.action)) return diracInvoiceStage26V440(req, ctx, owner, ids);
   const allowedCustomers = new Set(owner.customerIds.map(String));
   const requestedCustomer = ids.filter((item) => item.key === 'customer_id').map((item) => item.value).filter(diracCentralLooksLikeUuidV146);
   if (requestedCustomer.some((id) => !allowedCustomers.has(id))) return { ok: false, reason: 'idor_customer_id_mismatch' };
@@ -63300,8 +63569,10 @@ async function diracCentralInspectServiceRoleAccessV146(path, options = {}) {
   const requestedTableV212 = diracCentralExtractRestTableV146(path);
   const table = requestedTableV212;
   const method = requestedMethodV212;
-  const invoiceDecisionV430 = diracInvoiceDbDecisionV430(ctx, path, options, method);
-  if (invoiceDecisionV430.relevant) return invoiceDecisionV430.ok ? { ok: true, guarded: 'invoice_exact_operation_v430' } : { block: true, reason: invoiceDecisionV430.reason, status: 403 };
+  const invoiceDecisionV440 = diracInvoiceDbDecisionV440(ctx, path, options, method);
+  if (invoiceDecisionV440.relevant) return invoiceDecisionV440.ok ? { ok: true, guarded: 'invoice_exact_operation_v440' } : { block: true, reason: invoiceDecisionV440.reason, status: 403 };
+  const paidContinuationV441 = diracInvoiceContinuationDbDecisionV441(ctx, path, options, method);
+  if (paidContinuationV441.relevant) return paidContinuationV441.ok ? { ok: true, guarded: 'paid_continuation_exact_operation_v441' } : { block: true, reason: paidContinuationV441.reason, status: 403 };
   const adminDecisionV406 = diracAdminBusinessAccessDecisionV406(ctx, path, options, method);
   if (adminDecisionV406.relevant) return adminDecisionV406.ok
     ? { ok: true, guarded: 'admin_exact_operation_capability_v406' }
@@ -64498,6 +64769,7 @@ function diracCentralDatabasePathPolicyV230(ctx, path, options) {
   if (url.origin !== 'https://dirac-database.invalid' || /%(?:2f|5c|00|0d|0a)/i.test(url.pathname)) return { ok: false, reason: 'database_route_canonical_invalid' };
   const allowed = diracCentralDatabaseRpcRouteAllowedV230(action, url, method, authMode)
     || diracCentralDatabaseAuthRouteAllowedV230(ctx, action, url, method, authMode)
+    || diracInvoiceContinuationAuthRouteV441(ctx, cleanPath, method, authMode)
     || diracCentralDatabaseRestRouteAllowedV230(action, url, method, authMode);
   return allowed
     ? { ok: true, action, authMode, method, canonicalPath: url.pathname + url.search }
@@ -66914,7 +67186,7 @@ function diracCentralContractForActionV146(action) {
     domain_checkout: { ...postOnly, required: ['domain'] },
     checkout_order: { ...postOnly, allowed: commonPost.concat(['service_type', 'product_title', 'total', 'payment_method', 'customer_address', 'customer_note', 'source', 'shipping_mode', 'product_id', 'title', 'qty', 'client_price', 'client_subtotal']) },
     invoice_email_status: { methods: ['GET'], allowed: ['order_id', 'kind'], required: ['order_id', 'kind'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: false },
-    invoice_email_send: { methods: ['POST'], allowed: ['order_id', 'kind', 'pdf_base64'], required: ['order_id', 'kind', 'pdf_base64'], maxBodyBytes: 1400000, maxFieldBytes: 1398104, mutation: true },
+    invoice_email_send: { methods: ['POST'], allowed: ['order_id', 'kind'], required: ['order_id', 'kind'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: true },
     invoice_email_unlock: { methods: ['POST'], allowed: ['order_id', 'kind', 'file_id', 'code', 'file_sha256'], required: ['order_id', 'kind', 'file_id', 'code', 'file_sha256'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: true },
     create_payment: postOnly,
     customer_security_revoke_session: { ...postOnly, required: ['session_id'] },
@@ -66990,8 +67262,8 @@ function diracCentralProtectedFieldV146(key) {
 
 function diracCentralSensitiveKeyV146(key) {
   if (/^(pdf_base64|code|decrypt_key|unlock_key)$/i.test(String(key || ''))) {
-    const invoiceContextV430 = diracCentralCurrentContextV149();
-    if (invoiceContextV430 && diracInvoiceActionV430(invoiceContextV430.action)) return true;
+    const invoiceContextV440 = diracCentralCurrentContextV149();
+    if (invoiceContextV440 && diracInvoiceActionV440(invoiceContextV440.action)) return true;
   }
   if (/^(code|ticket)$/i.test(String(key || ''))) {
     const ctx = diracCentralCurrentContextV149();
