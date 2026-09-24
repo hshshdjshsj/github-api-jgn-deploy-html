@@ -29861,6 +29861,15 @@ async function diracUniversalPesananDecorateOrders(orders) {
     const tx = key ? txMap.get(key) : null;
     const canPay = gatewayConfigured && diracUniversalPesananOrderCanPay(copy);
     const method = key ? txMap.get('method:' + key) : null;
+    const paid = key ? txMap.get('paid:' + key) : null;
+    if (copy.payment_status === 'paid' && paid && copy.currency === paid.currency
+        && midtransStrictMoneyV350(paid.amount) !== null
+        && midtransStrictMoneyV350(paid.amount) === midtransStrictMoneyV350(copy.total)) {
+      copy.gateway_reference = paid.gatewayReference;
+      copy.payment_transaction_id = paid.transactionId;
+      copy.payment_provider = 'midtrans';
+      copy.payment_return_verified = true;
+    }
     if (copy.payment_status === 'paid' && method && copy.currency === method.currency
         && midtransStrictMoneyV350(method.amount) !== null
         && midtransStrictMoneyV350(method.amount) === midtransStrictMoneyV350(copy.total)
@@ -29984,6 +29993,11 @@ async function diracUniversalPesananFillTxMap(map, type, ids) {
         && metadata.midtrans_signature_verified === true && metadata.midtrans_authoritative_payment_status === 'paid'
         && /^(settlement|capture)$/.test(String(metadata.midtrans_transaction_status || ''))
         && Number.isFinite(Date.parse(String(metadata.midtrans_status_confirmed_at || '')))) {
+      const paidKey = 'paid:' + type + ':' + String(paidParent);
+      if (!map.has(paidKey) && customerSecurityLooksLikeUuid(tx.id)
+          && /^PAY-[A-Za-z0-9._:@-]{1,116}$/.test(String(tx.gateway_reference || '')))
+        map.set(paidKey, { transactionId: tx.id, gatewayReference: tx.gateway_reference,
+          amount: tx.amount, currency: tx.currency });
       const labels = { qris: 'QRIS', gopay: 'GoPay', shopeepay: 'ShopeePay', bank_transfer: 'Transfer bank / Virtual Account',
         echannel: 'Mandiri e-Channel', credit_card: 'Kartu kredit/debit', cstore: 'Gerai ritel', akulaku: 'Akulaku', kredivo: 'Kredivo' };
       const rawMethod = String(metadata.midtrans_payment_type || '').toLowerCase();
@@ -61148,8 +61162,21 @@ async function diracInvoiceDispatchV440(req, res, ctx) {
   const user = await requireDomainUser(req, res);
   if (!user) return;
   if (!diracInvoiceContextV440(ctx)) throw new Error('INVOICE_FULL_CENTRAL_GUARD_REQUIRED');
-  const email = adminSecurityVerifiedEmailV210(user, 'supabase');
-  if (!email || String(user.id || '') !== proof.userId) return res.status(403).json({ ok: false, code: 'INVOICE_VERIFIED_EMAIL_REQUIRED' });
+  let recipientUser = user;
+  if (user.dirac_signed_identity === 'dirac-passkey-strict-signed-bootstrap-v309') {
+    if (String(user.id || '') !== proof.userId || String(user.customer_id || '') !== proof.customerId) return res.status(403).json({ ok: false, code: 'INVOICE_VERIFIED_EMAIL_REQUIRED' });
+    const provider = await diracPasskeyLookupSupabaseUserBySignedIdV307(proof.userId);
+    if (!diracInvoiceContextV440(ctx)) throw new Error('INVOICE_FULL_CENTRAL_GUARD_REQUIRED');
+    if (!provider || provider.ok !== true || !provider.user) return res.status(503).json({ ok: false, code: 'INVOICE_RECIPIENT_UNAVAILABLE' });
+    recipientUser = provider.user;
+  }
+  const email = adminSecurityVerifiedEmailV210(recipientUser, 'supabase');
+  const rawBan = recipientUser && recipientUser.banned_until;
+  const banTime = rawBan ? Date.parse(String(rawBan)) : 0;
+  if (!email || String(recipientUser.id || '') !== proof.userId || String(user.id || '') !== proof.userId
+      || email !== normalizeAuthEmail(user.email || '') || recipientUser.deleted_at || recipientUser.disabled_at
+      || recipientUser.disabled === true || recipientUser.is_disabled === true || recipientUser.is_anonymous === true
+      || (rawBan && (!Number.isFinite(banTime) || banTime > Date.now()))) return res.status(403).json({ ok: false, code: 'INVOICE_VERIFIED_EMAIL_REQUIRED' });
   DIRAC_INVOICE_RECIPIENTS_V440.set(req, Object.freeze({ ctx, authUserId: proof.userId, customerId: proof.customerId, email }));
   try { return await diracInvoiceRunPreparedV440(req, res, ctx, proof, email, null); }
   finally { DIRAC_INVOICE_RECIPIENTS_V440.delete(req); }
@@ -61239,9 +61266,23 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
       mailUsed = true;
       await verifyOwner();
       const capability = diracInvoiceMailAuthorizeV420(req, email, file.fileId);
+      const mailInput = {
+        preheader: 'Invoice PDF untuk pembayaran Anda yang telah terverifikasi tersedia dalam lampiran.',
+        brandLabel: 'SECURE PAYMENT', eyebrow: 'INVOICE PEMBAYARAN', title: 'Invoice Anda\nTerlampir',
+        greeting: 'Yth. Pelanggan PT Dirac Inovasi Nusantara,',
+        summary: 'Terima kasih. Pembayaran Anda telah terverifikasi. Invoice PDF berpassword tersedia dalam lampiran email ini.',
+        statusLabel: 'STATUS PEMBAYARAN', statusValue: 'LUNAS / PAID',
+        statusNote: 'Buka lampiran melalui pembaca PDF, lalu masukkan kata sandi 8 digit dari halaman Invoice akun Anda.',
+        detailsLabel: 'RINCIAN INVOICE',
+        rows: [['REFERENSI INVOICE', file.fileId], ['LAMPIRAN', 'Invoice PDF berpassword'], ['KATA SANDI', 'Lihat di halaman Invoice akun Anda']],
+        actionUrl: origin + '/invoice.html', actionText: 'LIHAT KATA SANDI INVOICE',
+        warningTitle: 'JAGA KERAHASIAAN INVOICE',
+        warning: 'Kata sandi tidak disertakan dalam email. Anda dapat melihatnya di akun selama 30 hari sejak invoice disiapkan. Kata sandi PDF tetap berlaku. Jangan bagikan file atau kata sandi kepada pihak lain.',
+        supportLead: 'Butuh bantuan membuka lampiran atau memeriksa invoice? Hubungi kanal resmi PT Dirac Inovasi Nusantara berikut.'
+      };
       const result = await diracInvoiceAttachmentSendV420({ to: email, subject: 'Invoice PT Dirac Inovasi Nusantara', reference: file.fileId,
-        text: 'PDF invoice terenkripsi terlampir. Buka PDF langsung dengan pembaca PDF dan masukkan kata sandi 8 digit yang tersedia pada halaman Invoice akun Anda. Kunci dapat dilihat di akun selama 30 hari; kata sandi PDF tidak kedaluwarsa. Referensi: ' + file.fileId,
-        html: '<p>PDF invoice terenkripsi terlampir. Buka PDF langsung dengan pembaca PDF dan masukkan kata sandi 8 digit yang tersedia pada halaman Invoice akun Anda.</p><p>Kunci dapat dilihat di akun selama 30 hari; kata sandi PDF tidak kedaluwarsa.</p><p>Referensi: ' + file.fileId + '</p>',
+        text: diracSecurityMailTextV327(mailInput),
+        html: diracSecurityCorporateEmailHtmlV327(mailInput),
         attachment: { filename: 'invoice-' + file.fileId + '.pdf', contentType: 'application/pdf', content: file.content } }, capability);
       assertContext(); return result;
     }
@@ -61316,6 +61357,10 @@ async function diracCentralPtdinDispatchV402(req, res, ctx) {
     }
   };
   assertContext();
+  if (req.method === 'OPTIONS' && diracInvoiceActionV440(ctx.action)) {
+    const cors = setCors(req, res, { isDomainAction: true });
+    return res.status(cors.allowed && ctx.preflightValidatedV221 === true ? 200 : 403).end();
+  }
   if (req.method === 'OPTIONS') return __diracV202CompiledDispatcher(req, res);
   if (diracInvoiceActionV440(ctx.action)) return diracInvoiceDispatchV440(req, res, ctx);
   const ptdin = require('./ptdin.js');
