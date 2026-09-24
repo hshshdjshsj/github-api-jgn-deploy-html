@@ -206,7 +206,14 @@ function projectResponse(action, view, payload, profile) {
       nib: invoiceLegalIdentifier(process.env.DIRAC_INVOICE_NIB, 13, 13),
       npwp: invoiceLegalIdentifier(process.env.DIRAC_INVOICE_NPWP, 15, 16)
     };
-    if (out.view === 'shipment') out.tracking_available = false;
+    if (out.view === 'shipment') {
+      out.shipment_data_ready = out.orders.every(order => order.shipment_data_ready !== false);
+      out.tracking_available = out.orders.some(order => order.shipment_data_ready === true
+        && order.shipment && typeof order.shipment === 'object' && !Array.isArray(order.shipment)
+        && /^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(String(order.shipment.tracking_number || ''))
+        && Number.isSafeInteger(order.shipment.revision) && order.shipment.revision > 0);
+      out.partial = out.partial || !out.shipment_data_ready;
+    }
     if (out.view === 'projects') out.project_progress_available = false;
     if (out.view === 'topup') out.balance_available = false;
   } else if (action === 'domain_orders') {

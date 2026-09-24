@@ -12077,7 +12077,8 @@ function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, opt
           || params.get('select') !== select || params.get('limit') !== '2'
           || !/^eq\.customer-access-block-v325:event:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(params.get('security_key') || ''))) return false;
       return operation === 'create_verify'
-        || String(ctx.action || '') === 'admin_security_unblock_user';
+        || String(ctx.action || '') === 'admin_security_unblock_user'
+        || (ctx.action === 'admin_unban' && diracAdminBusinessAuthorizedV405(ctx, 'unban'));
     }
 
     if (operation === 'event_list') {
@@ -12141,7 +12142,8 @@ function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, opt
     }
 
     if (operation === 'revoke') {
-      if (String(method || '').toUpperCase() !== 'PATCH' || String(ctx.action || '') !== 'admin_security_unblock_user'
+      if (String(method || '').toUpperCase() !== 'PATCH' || !(String(ctx.action || '') === 'admin_security_unblock_user'
+          || (ctx.action === 'admin_unban' && diracAdminBusinessAuthorizedV405(ctx, 'unban'))) 
           || !exactOptionKeys(['auth', 'body', 'method', 'prefer'])
           || options.prefer !== 'return=representation'
           || !exactQueryKeys(['blocked_until_ms', 'security_key', 'select'])
@@ -12699,8 +12701,10 @@ async function customerSecurityCheckAccessBlock(req, action) {
   if (memUntil && memUntil <= now) CUSTOMER_SECURITY_ACCESS_BLOCK_MEMORY.delete(memKey);
 
   try {
-    const ipResult = await customerSecurityReadPersistentAccessBlocksV325('ip', identity.ip_hash, now);
-    const deviceResult = await customerSecurityReadPersistentAccessBlocksV325('device', identity.device_hash, now);
+    const [ipResult, deviceResult] = await Promise.all([
+      customerSecurityReadPersistentAccessBlocksV325('ip', identity.ip_hash, now),
+      customerSecurityReadPersistentAccessBlocksV325('device', identity.device_hash, now)
+    ]);
     if (!ipResult || ipResult.ok !== true || !deviceResult || deviceResult.ok !== true) {
       return { blocked: false, unavailable: true, source: 'database' };
     }
@@ -18453,6 +18457,7 @@ async function myOrdersFetchGenericOrders(owner, userEmail) {
   }
 
   const orderRows = Array.from(orderMap.values());
+  diracCustomerShipmentRegisterParentsV406('regular', orderRows);
   const itemMap = await myOrdersFetchOrderItems(
     orderRows.map((row) => row.id),
     owner && Array.isArray(owner.customerIds) ? owner.customerIds : []
@@ -18576,6 +18581,7 @@ async function myOrdersFetchDomainOrders(owner, userEmail) {
   }
 
   const rows = Array.from(rowsMap.values());
+  diracCustomerShipmentRegisterParentsV406('domain', rows);
   const itemMap = await myOrdersFetchDomainOrderItems(
     rows.map((row) => row.id),
     owner && Array.isArray(owner.customerIds) ? owner.customerIds : []
@@ -29558,13 +29564,15 @@ async function diracUniversalPesananReadOrders(req, res) {
     });
   }
 
-  const genericOrders = await myOrdersFetchGenericOrders(owner, userEmail);
-  const domainOrders = await myOrdersFetchDomainOrders(owner, userEmail);
+  const [genericOrders, domainOrders] = await Promise.all([
+    myOrdersFetchGenericOrders(owner, userEmail),
+    myOrdersFetchDomainOrders(owner, userEmail)
+  ]);
   const allOrders = [...genericOrders.orders, ...domainOrders.orders]
     .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
     .slice(0, 120);
 
-  const decoratedOrders = await diracUniversalPesananDecorateOrders(allOrders);
+  const decoratedOrders = await diracCustomerShipmentProjectV406(req, await diracUniversalPesananDecorateOrders(allOrders));
   const summary = myOrdersBuildSummary(decoratedOrders);
   const gatewayConfigured = diracUniversalPesananGatewayConfigured();
 
@@ -33083,6 +33091,8 @@ function diracUltraRedactPayload(payload, depth = 0, parentKey = '') {
   if (typeof payload !== 'object') return payload;
   if (Array.isArray(payload)) return payload.map((item) => diracUltraRedactPayload(item, depth + 1, parentKey));
 
+  const preservedAdminFactorV405 = diracAdminPreserveFactorResponseV405(payload);
+  if (preservedAdminFactorV405) return preservedAdminFactorV405;
   const preservedRecoverySignedVaultV321 = diracUltraPreserveRecoverySignedVaultV321(payload, 'ultra');
   if (preservedRecoverySignedVaultV321) return preservedRecoverySignedVaultV321;
 
@@ -39890,6 +39900,10 @@ async function diracBolaIdorV128InspectSupabaseAccess(path, options = {}) {
   if (!rawPath || !rawPath.startsWith('/rest/v1/')) return { ok: true };
 
   const table = diracBolaIdorV128ExtractRestTable(rawPath);
+  const adminDecisionV406 = diracAdminBusinessAccessDecisionV406(diracCentralCurrentContextV149(), rawPath, options, String(options.method || 'GET').toUpperCase());
+  if (adminDecisionV406.relevant) return adminDecisionV406.ok
+    ? { ok: true, guarded: 'admin_exact_operation_capability_v406' }
+    : diracBolaIdorV128BuildBlockDecision(adminDecisionV406.reason, { source: 'supabase', table });
   if (!diracBolaIdorV128IsOwnedTable(table)) return { ok: true };
 
   const method = String(options.method || 'GET').toUpperCase();
@@ -54780,7 +54794,10 @@ async function guardDeviceBindingV202(ctx) {
       ? 'device_credential_rotated_after_verified_bootstrap'
       : undefined;
   return credential && credential.ok ? diracV202StageResult(true, decision)
-    : diracV202StageResult(false, { reason: credential && credential.reason || 'device_credential_guard_failed' });
+    : diracV202StageResult(false, { reason: credential && credential.reason || 'device_credential_guard_failed',
+      ...(credential && (credential.reason === 'device_bootstrap_authentication_failed'
+        || credential.reason === 'device_credential_verified_expired')
+        ? { directCode: 'SESSION_AUTHENTICATION_REQUIRED' } : {}) });
 }
 async function guardAdminAuthenticationV202(ctx) {
   if (ctx.preflightValidatedV221 === true) return diracCentralPreflightStageResultV221(ctx, 'admin_authentication');
@@ -55211,7 +55228,7 @@ function diracCentralClassifyFailureV221(reason, stage, directCode) {
   const value = String(reason || directCode || '').toLowerCase();
   let failureClass = 'confirmed_security_violation';
   let severity = 'high';
-  if (/mfa_required|authentication_required|login_required|reauth|required_login|auth_state|session_(?:missing|invalid|changed)|credential_(?:missing|invalid)|browser_(?:unsupported|incompatible)|webauthn_(?:unsupported|unavailable)/.test(value)) {
+  if (value === 'device_bootstrap_authentication_failed' || value === 'device_credential_verified_expired' || /mfa_required|authentication_required|login_required|reauth|required_login|auth_state|session_(?:missing|invalid|changed)|credential_(?:missing|invalid)|browser_(?:unsupported|incompatible)|webauthn_(?:unsupported|unavailable)/.test(value)) {
     failureClass = 'authentication_state';
     severity = 'info';
   } else if (/expired/.test(value)) {
@@ -56014,6 +56031,7 @@ function diracCentralRateBucketV221(key, windowMs, max) {
 function diracCentralRateProfileV221(action) {
   const clean = String(action || '');
   const legacy = Math.max(1, Number(diracCentralDistributedRateLimitMaxV146(clean) || 1));
+  if (DIRAC_CENTRAL_ADMIN_ACTIONS_V146.has(clean)) return { burst: Math.min(4, legacy), sustained: Math.min(legacy, 10), concurrent: 2 };
   if (/login|register/.test(clean)) return { burst: Math.min(6, legacy), sustained: Math.min(legacy, 12), concurrent: 3 };
   if (/mfa|passkey|recovery|email_verify/.test(clean)) return { burst: Math.min(5, legacy), sustained: Math.min(legacy, 10), concurrent: 3 };
   if (/payment|checkout|order/.test(clean)) return { burst: Math.min(8, legacy), sustained: Math.min(legacy, 20), concurrent: 4 };
@@ -56407,7 +56425,7 @@ function diracCentralVerifyDeviceTokenV221(req, token) {
   const expiresAt = Number(payload && payload.exp || 0);
   if (!payload || payload.typ !== DIRAC_CENTRAL_HARDENING_V221
       || !Number.isSafeInteger(issuedAt) || !Number.isSafeInteger(expiresAt)
-      || issuedAt > now + 60 * 1000 || expiresAt <= now
+      || issuedAt <= 0 || expiresAt <= 0 || issuedAt > now + 60 * 1000
       || expiresAt - issuedAt <= 0 || expiresAt - issuedAt > 24 * 60 * 60 * 1000 + 60 * 1000
       || !/^[A-Za-z0-9_-]{16,160}$/.test(String(payload.jti || ''))) {
     return { ok: false, reason: 'device_credential_expired' };
@@ -56427,14 +56445,19 @@ function diracCentralVerifyDeviceTokenV221(req, token) {
     if (!session || !(typeof safeEqual === 'function' ? safeEqual(String(payload.session), session) : String(payload.session) === session)) {
       return { ok: false, reason: 'device_credential_session_mismatch' };
     }
-    return { ok: true, payload };
+    return expiresAt <= now
+      ? { ok: false, reason: 'device_credential_verified_expired' }
+      : { ok: true, payload };
   }
 
   const legacyHashes = diracCentralLegacyDeviceSessionHashesV222(req);
   const legacyMatch = legacyHashes.some((hash) => typeof safeEqual === 'function'
     ? safeEqual(String(payload.session), String(hash))
     : String(payload.session) === String(hash));
-  if (legacyMatch) return { ok: true, payload, upgrade: true };
+  if (legacyMatch) return expiresAt <= now
+    ? { ok: false, reason: 'device_credential_verified_expired' }
+    : { ok: true, payload, upgrade: true };
+  if (expiresAt <= now) return { ok: false, reason: 'device_credential_expired' };
 
   const stableSession = diracCentralDeviceStableSessionBindingV222(req);
   if (!stableSession) return { ok: false, reason: 'device_credential_session_mismatch' };
@@ -56938,6 +56961,7 @@ async function diracCentralDeviceCredentialGuardV221(req, res, ctx) {
   const action = String(ctx && ctx.action || '');
   const deviceCredentialRequired = DIRAC_CENTRAL_USER_DATA_ACTIONS_V146.has(action)
     || /^domain_dashboard|^customer_security|^admin_security/.test(action)
+    || DIRAC_CENTRAL_ADMIN_ACTIONS_V146.has(action)
     || DIRAC_CENTRAL_DEVICE_BOOTSTRAP_ACTIONS_V224.has(action);
   if (!deviceCredentialRequired) return { ok: true };
   const boundSessionCookie = diracCentralVerifyDeviceSessionCookieV223(req);
@@ -57935,6 +57959,7 @@ const DIRAC_CENTRAL_ALLOWED_REFERER_PATHS_V146 = new Set([
   '/keamanan.html',
   '/chat.html',
   '/chat-admin.html',
+  '/admin.html',
   '/cekresi.html',
   '/detail-domain.html',
   '/detail-parfum.html',
@@ -58095,6 +58120,11 @@ const DIRAC_CENTRAL_ADMIN_ACTIONS_V146 = new Set([
   'admin_security_blocks',
   'admin_security_unblock_user'
 ]);
+// Explicit new admin actions retain the same central admin classification.
+for (const action of require('./admin.js').__diracAdminActionsV405) {
+  DIRAC_CENTRAL_ACTIVE_ACTIONS_V146.add(action);
+  DIRAC_CENTRAL_ADMIN_ACTIONS_V146.add(action);
+}
 const DIRAC_CENTRAL_SENSITIVE_ACTIONS_V146 = new Set([
   'domain_logout',
   'domain_checkout',
@@ -59340,6 +59370,8 @@ function diracCentralSanitizeOutputV146(value, depth) {
   if (typeof value === 'string') return diracCentralRedactOutputStringV228(value);
   if (Array.isArray(value)) return value.slice(0, 1000).map((item) => diracCentralSanitizeOutputV146(item, depth + 1));
   if (typeof value === 'object') {
+    const preservedAdminFactorV405 = diracAdminPreserveFactorResponseV405(value);
+    if (preservedAdminFactorV405) return preservedAdminFactorV405;
     const preservedRecoverySignedVaultV321 = diracUltraPreserveRecoverySignedVaultV321(value, 'central');
     if (preservedRecoverySignedVaultV321) return preservedRecoverySignedVaultV321;
     const preservedRecoveryWorkerResponseV321 = diracUltraPreserveRecoveryWorkerResponseV321(value, 'central');
@@ -59652,6 +59684,737 @@ const DIRAC_PTDIN_SOURCE_PATHS_V402 = Object.freeze([
   '/tiket-bantuan.html', '/topup.html', '/domain.html'
 ]);
 
+// Insert before diracCentralPtdinSourceV402. Not a standalone deployment file.
+const DIRAC_ADMIN_REQUESTS_V405 = new WeakMap();
+const DIRAC_ADMIN_BUSINESS_CAPABILITIES_V405 = new WeakMap();
+const DIRAC_ADMIN_FACTOR_RESPONSES_V405 = new WeakMap();
+const DIRAC_ADMIN_OWNER_EMAIL_V405 = 'dinzganteng888999@gmail.com';
+function diracAdminModuleV405() {
+  const admin = require('./admin.js');
+  if (!Object.isFrozen(admin) || admin.__diracAdminEmailV405 !== DIRAC_ADMIN_OWNER_EMAIL_V405
+      || admin.__diracAdminVersionV405 !== 'dirac-admin-v405'
+      || !Object.isFrozen(admin.__diracAdminActionsV405) || !Object.isFrozen(admin.__diracAdminContractsV405)
+      || typeof admin.__diracAdminBusinessV405 !== 'function') throw new Error('ADMIN_MODULE_INVALID_V405');
+  return admin;
+}
+function diracCentralAdminSourceV405(req, action) {
+  const entry = req && DIRAC_ADMIN_REQUESTS_V405.get(req);
+  if (!entry || entry.req !== req || entry.action !== String(action || '') || entry.method !== String(req.method || '').toUpperCase()) return false;
+  try {
+    if (!diracAdminModuleV405().__diracAdminActionsV405.includes(entry.action)) return false;
+    const expected = 'https://pt.' + diracBaseDomainV250(), headers = req.headers || {};
+    if (String(headers.origin || '').trim().toLowerCase() !== expected) return false;
+    const page = new URL(String(headers.referer || headers.referrer || ''));
+    return page.origin === expected && page.pathname === '/admin.html' && !page.port && !page.username && !page.password && !page.search && !page.hash;
+  } catch (_) { return false; }
+}
+async function diracCentralAdminEntryV405(req, res) {
+  const raw = String(req && req.url || ''), split = raw.indexOf('?'), path = split < 0 ? raw : raw.slice(0, split);
+  if (path !== '/api/admin' || raw.length > 8192 || /[\u0000-\u0020\u007f]/.test(raw) || DIRAC_ADMIN_REQUESTS_V405.has(req)) {
+    res.statusCode = 400; res.setHeader('Content-Type', 'application/json; charset=utf-8'); res.setHeader('Cache-Control', 'no-store');
+    return res.end(JSON.stringify({ ok: false, code: 'ADMIN_REQUEST_INVALID' }));
+  }
+  const query = new URLSearchParams(split < 0 ? '' : raw.slice(split + 1));
+  const action = query.getAll('action').length === 1 ? String(query.get('action') || '') : '';
+  const oldUrl = req.url, hadOriginal = Object.prototype.hasOwnProperty.call(req, 'originalUrl'), oldOriginal = req.originalUrl;
+  DIRAC_ADMIN_REQUESTS_V405.set(req, Object.freeze({ req, action, method: String(req.method || '').toUpperCase() }));
+  try { req.url = '/api/health' + (split < 0 ? '' : raw.slice(split)); req.originalUrl = req.url; return await module.exports(req, res); }
+  finally { DIRAC_ADMIN_REQUESTS_V405.delete(req); DIRAC_ADMIN_BUSINESS_CAPABILITIES_V405.delete(req); DIRAC_ADMIN_FACTOR_RESPONSES_V405.delete(req); req.url = oldUrl; if (hadOriginal) req.originalUrl = oldOriginal; else delete req.originalUrl; }
+}
+function diracAdminPreserveFactorResponseV405(payload) {
+  const ctx = diracCentralCurrentContextV149();
+  const permit = ctx && ctx.req && DIRAC_ADMIN_FACTOR_RESPONSES_V405.get(ctx.req);
+  if (!permit || !payload || typeof payload !== 'object' || Array.isArray(payload) || ctx.action !== permit.action
+      || ctx.method !== 'POST' || !diracCentralAdminSourceV405(ctx.req, ctx.action)
+      || !diracCentralHandlerContextFullyPassedV211(ctx, ctx.req)) return null;
+  const serialized = JSON.stringify(payload);
+  if (Buffer.byteLength(serialized, 'utf8') > 8192 || crypto.createHash('sha256').update(serialized).digest('hex') !== permit.digest) return null;
+  // A private, exact response permit preserves only fresh challenge material
+  // produced by this request, including its one-time TOTP enrollment secret.
+  // Runtime-environment secret detection still runs in the central serializer.
+  return JSON.parse(serialized);
+}
+function diracAdminBusinessAuthorizedV405(ctx, operation) {
+  const capability = ctx && ctx.req && DIRAC_ADMIN_BUSINESS_CAPABILITIES_V405.get(ctx.req);
+  return !!(capability && capability.ctx === ctx && capability.req === ctx.req && capability.active === true
+    && (!operation || capability.operation === operation) && capability.admin.email === DIRAC_ADMIN_OWNER_EMAIL_V405
+    && capability.admin.active === true && ['owner', 'super_admin', 'security_admin'].includes(capability.admin.role)
+    && diracCentralCurrentContextV149() === ctx && diracCentralAdminSourceV405(ctx.req, ctx.action)
+    && diracCentralHandlerContextFullyPassedV211(ctx, ctx.req));
+}
+function diracAdminOwnershipDecisionV405(req, ctx) {
+  if (!req || !DIRAC_ADMIN_REQUESTS_V405.has(req)) return null;
+  const admin = ctx && ctx.__diracAdminOwnerV405;
+  const prefix = ctx && ctx.stageTraceV211;
+  let passport = false; try { passport = BigInt(ctx && ctx.passport || 0n) === 0x3ffffffn; } catch (_) { passport = false; }
+  if (!ctx || ctx.req !== req || ctx.classification !== 'admin' || ctx.executionPhaseV211 !== 'guard'
+      || ctx.currentStageV211 !== 'IDOR/BOLA' || Number(ctx.currentStageIndexV211) !== 26 || !passport
+      || !Array.isArray(prefix) || prefix.length !== 26 || prefix.some((stage, index) => !stage || Number(stage.index) !== index || stage.result !== 'passed')
+      || !admin || admin.email !== DIRAC_ADMIN_OWNER_EMAIL_V405 || admin.active !== true
+      || !['owner', 'super_admin', 'security_admin'].includes(admin.role)
+      || !diracCentralAdminSourceV405(req, ctx.action)) return { ok: false, reason: 'admin_owner_scope_invalid_v405' };
+  const ids = diracCentralCollectIdsV146(req, ctx.body);
+  const shipment = ['admin_shipment_update', 'admin_shipment_cancel'].includes(ctx.action);
+  if (shipment) {
+    const body = ctx.body || {};
+    if (!['regular', 'domain'].includes(body.kind) || !customerSecurityLooksLikeUuid(body.order_id)
+        || ids.length !== 1 || ids[0].key !== 'order_id' || ids[0].value !== body.order_id) return { ok: false, reason: 'admin_order_scope_invalid_v405' };
+  } else if (ids.length !== 0) return { ok: false, reason: 'admin_unexpected_owner_identifier_v405' };
+  // This is an explicit administrator scope, after the actual admin-role/MFA
+  // checkpoints. The separate triple-factor proof is required before any data
+  // query, and exact request-bound capabilities constrain each DB operation.
+  return { ok: true, guarded: 'admin_fixed_owner_scope_v405' };
+}
+async function diracCentralAdminDispatchV405(req, res, ctx) {
+  const entry = DIRAC_ADMIN_REQUESTS_V405.get(req), moduleAdmin = diracAdminModuleV405();
+  let active = true;
+  const assertContext = () => {
+    if (!active || !entry || DIRAC_ADMIN_REQUESTS_V405.get(req) !== entry || ctx.req !== req || ctx.action !== entry.action || ctx.method !== entry.method
+        || diracCentralCurrentContextV149() !== ctx || !diracCentralAdminSourceV405(req, ctx.action)
+        || !diracCentralHandlerContextFullyPassedV211(ctx, req)) throw new Error('ADMIN_FULL_CENTRAL_GUARD_REQUIRED');
+  };
+  assertContext();
+  const cors = setCors(req, res, { isDomainAction: true });
+  if (!cors.allowed) return res.status(403).json({ ok: false, code: 'ADMIN_ORIGIN_INVALID' });
+  if (req.method === 'OPTIONS') return ctx.preflightValidatedV221 === true ? res.status(204).end() : res.status(403).end();
+  const admin = ctx.__diracAdminOwnerV405;
+  if (!admin || admin.email !== DIRAC_ADMIN_OWNER_EMAIL_V405 || admin.active !== true
+      || !['owner', 'super_admin', 'security_admin'].includes(admin.role)) throw new Error('ADMIN_FIXED_OWNER_REQUIRED');
+  const origin = 'https://pt.' + diracBaseDomainV250();
+  const binding = crypto.createHmac('sha256', diracCentralRootSecretV146())
+    .update(JSON.stringify(['dirac-admin-v405', admin.user_id, origin, diracCentralRequestSessionHashV146(req), String(ctx.deviceId || ''), String(ctx.identity && ctx.identity.deviceKey || '')])).digest('hex');
+  const identity = Object.freeze({ email: admin.email, userId: admin.user_id, active: admin.active, role: admin.role, origin, binding });
+  const records = new Map();
+  const keyAllowed = (key) => typeof key === 'string' && /^s2s-admin-v405:(?:ticket:[a-f0-9]{64}(?::used)?|enrollment:[a-f0-9]{64}|totp-used:[a-f0-9]{64}|rate:[a-f0-9]{64})$/.test(key);
+  const cookieName = '__Host-dirac_admin_v405';
+  const options = Object.freeze({
+    version: 'dirac-admin-v405', action: ctx.action, method: ctx.method, identity,
+    body: ctx.method === 'GET' || ctx.method === 'HEAD' ? (req.query || {}) : (ctx.body || {}),
+    assertFullGuard: assertContext,
+    deriveKey: (purpose) => { assertContext(); if (purpose !== 'totp-storage') throw new Error('ADMIN_KEY_PURPOSE_INVALID'); return crypto.createHmac('sha256', diracCentralRootSecretV146()).update('DIRAC_ADMIN_V405_TOTP_STORAGE:' + admin.user_id).digest(); },
+    read: async (key) => {
+      assertContext(); if (!keyAllowed(key)) throw new Error('ADMIN_STORAGE_KEY_INVALID');
+      const path = '/rest/v1/dirac_s2s_security?select=security_key,record_json,expires_at&security_key=eq.' + encodeURIComponent(key) + '&limit=1';
+      const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+      assertContext();
+      if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > 1) return { ok: false };
+      if (!result.data.length) return { ok: true, found: false };
+      const row = result.data[0], expires = Date.parse(String(row && row.expires_at || ''));
+      if (!row || row.security_key !== key || !Number.isFinite(expires) || !row.record_json || typeof row.record_json !== 'object' || Array.isArray(row.record_json)) return { ok: false };
+      if (expires <= Date.now()) return { ok: true, found: false };
+      records.set(key, { revision: row.record_json.revision, expiresAt: row.expires_at });
+      return { ok: true, found: true, record: row.record_json };
+    },
+    claim: async (key, record, ttl) => {
+      assertContext(); if (!keyAllowed(key) || !record || record.version !== 'dirac-admin-v405' || !Number.isSafeInteger(ttl) || ttl < 60 || ttl > 100 * 365 * 86400) throw new Error('ADMIN_STORAGE_CLAIM_INVALID');
+      const result = await claimPersistentSecurityKeyOnceV194(key, record, ttl); assertContext(); return result === true;
+    },
+    replace: async (key, expectedRevision, record, ttl) => {
+      assertContext(); const previous = records.get(key);
+      if (!keyAllowed(key) || !key.startsWith('s2s-admin-v405:enrollment:') || !previous || previous.revision !== expectedRevision
+          || !record || record.version !== 'dirac-admin-v405' || record.revision === expectedRevision || !Number.isSafeInteger(ttl) || ttl !== 100 * 365 * 86400) throw new Error('ADMIN_STORAGE_COMPARE_INVALID');
+      const expiresAt = new Date(Math.max(Date.now() + ttl * 1000, Date.parse(previous.expiresAt) + 1)).toISOString();
+      const path = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(key) + '&expires_at=eq.' + encodeURIComponent(previous.expiresAt) + '&select=security_key,expires_at';
+      const result = await supabaseFetch(path, { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: { record_json: record, expires_at: expiresAt } });
+      assertContext(); return !!(result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 && result.data[0].security_key === key && result.data[0].expires_at && Date.parse(result.data[0].expires_at) === Date.parse(expiresAt));
+    },
+    takeRate: async (key, limit, seconds) => {
+      assertContext(); if (!keyAllowed(key) || !key.startsWith('s2s-admin-v405:rate:') || !Number.isInteger(limit) || limit < 1 || limit > 5 || ![60, 600, 3600].includes(seconds)) throw new Error('ADMIN_RATE_CONTRACT_INVALID');
+      const result = await diracCentralAtomicRateLimitV230({ key, limit, windowSeconds: seconds, blockSeconds: seconds }); assertContext(); return !!(result && result.ok === true);
+    },
+    mail: async (message) => {
+      assertContext(); if (ctx.action !== 'admin_email_start' || !message || message.to !== DIRAC_ADMIN_OWNER_EMAIL_V405 || !/^[0-9]{768}$/.test(message.code) || !/^[a-f0-9]{24}$/.test(message.reference)) throw new Error('ADMIN_MAIL_CONTRACT_INVALID');
+      const config = diracSecurityAlertConfigV320();
+      if (!config) return { ok: false };
+      const event = { kind: 'admin_a2f', email: DIRAC_ADMIN_OWNER_EMAIL_V405, reference: message.reference, subject: 'Verifikasi administrator DIRAC [' + message.reference + ']',
+        text: 'Kode administrator satu kali, berlaku 10 menit. Jangan bagikan kode ini.\n\n' + message.code,
+        html: '<p>Kode administrator satu kali, berlaku 10 menit. Jangan bagikan kode ini.</p><p style="word-break:break-all;font-family:monospace">' + message.code + '</p>' };
+      const result = await diracUserSecuritySendSmtpV327(event, { smtpHost: config.host, smtpPort: config.port, smtpUser: config.user, smtpAppPassword: config.appPassword, timeoutMs: config.timeoutMs, replyTo: config.fromEmail });
+      assertContext(); return { ok: !!(result && result.ok === true) };
+    },
+    verifyRegistration: ({ credential, clientData, rpId }) => {
+      assertContext(); if (ctx.action !== 'admin_passkey_verify' || rpId !== new URL(origin).hostname) throw new Error('ADMIN_PASSKEY_SCOPE_INVALID');
+      return diracPasskeyA2FValidateRegistrationResponse({ credential, response: credential.response, clientData, payload: { rpId }, req });
+    },
+    verifyAssertion: ({ credential, clientData, rpId, passkey }) => {
+      assertContext(); if (ctx.action !== 'admin_passkey_verify' || rpId !== new URL(origin).hostname) throw new Error('ADMIN_PASSKEY_SCOPE_INVALID');
+      const row = { sign_count: passkey.signCount, credential_json: { webauthn: { public_key_jwk: passkey.publicKeyJwk, backup_eligible: passkey.backupEligible } } };
+      return diracPasskeyA2FValidateAuthenticationResponse({ row, response: credential.response, clientData, payload: { rpId }, req });
+    },
+    readSession: () => { assertContext(); const values = readCookieTokenCandidates(parseCookies(req), cookieName); return values.length === 1 ? values[0] : ''; },
+    setSession: (token, seconds) => { assertContext(); if (ctx.action !== 'admin_totp_verify' || !/^[A-Za-z0-9_-]{43}$/.test(token) || seconds !== 600) throw new Error('ADMIN_SESSION_PUBLICATION_INVALID'); appendSetCookie(res, cookieName + '=' + token + '; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=600'); },
+    clearSession: () => { assertContext(); if (ctx.action !== 'admin_logout') throw new Error('ADMIN_SESSION_CLEAR_INVALID'); appendSetCookie(res, cookieName + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); },
+    business: async (operation, body) => {
+      assertContext();
+      const expected = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_monitor: 'monitor' }[ctx.action];
+      if (operation !== expected || DIRAC_ADMIN_BUSINESS_CAPABILITIES_V405.has(req)) throw new Error('ADMIN_BUSINESS_CONTRACT_INVALID');
+      const capability = Object.freeze({ req, ctx, admin, operation, active: true });
+      DIRAC_ADMIN_BUSINESS_CAPABILITIES_V405.set(req, capability);
+      try { return await diracAdminBusinessOperationV406(ctx, operation, body); }
+      finally { DIRAC_ADMIN_BUSINESS_CAPABILITIES_V405.delete(req); }
+    }
+  });
+  const originalJson = res.json;
+  res.json = function diracAdminFactorJsonV405(payload) {
+    assertContext();
+    const shapes = {
+      admin_email_start: 'digits,email,expires_in,ok,stage,ticket',
+      admin_email_verify: 'ok,stage,ticket',
+      admin_passkey_start: 'mode,ok,publicKey,stage,ticket',
+      admin_passkey_verify: 'enrollment,ok,period,stage,ticket'
+    };
+    if (payload && payload.ok === true && Object.prototype.hasOwnProperty.call(shapes, ctx.action)) {
+      const serialized = JSON.stringify(payload);
+      if (Object.keys(payload).sort().join(',') !== shapes[ctx.action] || !/^[A-Za-z0-9_-]{43}$/.test(String(payload.ticket || ''))
+          || Buffer.byteLength(serialized, 'utf8') > 8192) throw new Error('ADMIN_FACTOR_RESPONSE_INVALID');
+      DIRAC_ADMIN_FACTOR_RESPONSES_V405.set(req, Object.freeze({ action: ctx.action, digest: crypto.createHash('sha256').update(serialized).digest('hex') }));
+    }
+    return originalJson.call(res, payload);
+  };
+  try { return await moduleAdmin.__diracAdminBusinessV405(req, res, options); }
+  finally { res.json = originalJson; active = false; records.clear(); DIRAC_ADMIN_FACTOR_RESPONSES_V405.delete(req); }
+}
+
+/* Insert inside health.js before runtime freeze. All DB calls remain in health.js.
+ * Required integration: private DIRAC_ADMIN_BUSINESS_CAPABILITIES_V405 WeakMap
+ * proves the existing admin role plus all three factors, bound to this request.
+ * The exact operation decision must run in central service-role gate and V128
+ * inspector. It grants no unmarked operation and changes no customer predicate.
+ */
+const DIRAC_ADMIN_BUSINESS_FETCH_V406 = new WeakMap();
+const DIRAC_CUSTOMER_SHIPMENT_PARENTS_V406 = new WeakMap();
+const DIRAC_ADMIN_SHIPMENT_PREFIX_V406 = 's2s-admin-shipment-v406:';
+const DIRAC_ADMIN_SHIPMENT_SELECT_V406 = 'security_key,record_json,blocked_until_ms,expires_at,updated_at';
+const DIRAC_ADMIN_ORDER_SELECT_V406 = Object.freeze({
+  regular: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
+  domain: 'id,customer_id,customer_name,customer_email,customer_whatsapp,domain_name,total_price,currency,payment_status,order_status,created_at'
+});
+const DIRAC_ADMIN_BUSINESS_ACTIONS_V406 = new Set(['admin_orders', 'admin_shipment_update', 'admin_shipment_cancel', 'admin_blocks', 'admin_unban', 'admin_monitor']);
+
+function diracAdminBusinessErrorV406(code, status = 503) {
+  return Object.assign(new Error(code), { code, statusCode: status, status });
+}
+
+function diracAdminBusinessFullyAuthorizedV406(ctx) {
+  if (!ctx || !ctx.req || ctx.classification !== 'admin'
+      || !DIRAC_ADMIN_BUSINESS_ACTIONS_V406.has(ctx.action)
+      || diracCentralCurrentContextV149() !== ctx
+      || diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) !== true) return null;
+  const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_monitor: 'monitor' }[ctx.action];
+  if (diracAdminBusinessAuthorizedV405(ctx, operation) !== true) return null;
+  const capability = DIRAC_ADMIN_BUSINESS_CAPABILITIES_V405.get(ctx.req);
+  const proof = capability && capability.admin;
+  return capability && capability.ctx === ctx && Object.isFrozen(capability)
+    && capability.operation === operation && proof && Object.isFrozen(proof)
+    && proof.email === 'dinzganteng888999@gmail.com' && proof.active === true
+    && ['owner', 'super_admin', 'security_admin'].includes(proof.role)
+    && customerSecurityLooksLikeUuid(proof.user_id) ? proof : null;
+}
+
+function diracAdminBusinessDigestV406(path, options) {
+  return crypto.createHash('sha512').update(JSON.stringify({
+    path, method: options.method, auth: options.auth,
+    prefer: options.prefer || '', body: options.body === undefined ? null : options.body
+  })).digest('hex');
+}
+
+function diracAdminShipmentKeyV406(kind, id) {
+  if (!Object.prototype.hasOwnProperty.call(DIRAC_ADMIN_ORDER_SELECT_V406, kind)
+      || !customerSecurityLooksLikeUuid(id)) throw diracAdminBusinessErrorV406('ADMIN_ORDER_ID_INVALID', 400);
+  return DIRAC_ADMIN_SHIPMENT_PREFIX_V406 + kind + ':' + String(id).toLowerCase();
+}
+
+function diracAdminShipmentTimestampV407(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?(?:Z|\+00:00)$/.exec(value);
+  if (!match) return null;
+  const wholeMilliseconds = Date.parse(match[1] + 'Z');
+  if (!Number.isFinite(wholeMilliseconds)
+      || new Date(wholeMilliseconds).toISOString().slice(0, 19) !== match[1]) return null;
+  // Compare UTC instants at PostgreSQL's microsecond precision. The original
+  // database string remains untouched for the optimistic update predicate.
+  return BigInt(wholeMilliseconds) * 1000n + BigInt((match[2] || '').padEnd(6, '0'));
+}
+
+function diracAdminBusinessPathV406(operation, input) {
+  const value = input || {};
+  if (operation === 'blocks') {
+    return Number.isSafeInteger(value.offset) && value.offset >= 0 && value.offset <= 50000
+      ? '/rest/v1/dirac_persistent_bans?select=security_key,record_json,blocked_until_ms,expires_at'
+        + '&blocked_until_ms=gt.0&order=security_key.asc&limit=41&offset=' + value.offset : '';
+  }
+  if (operation === 'monitor') {
+    return '/rest/v1/security_customer_events?select=id,event_type,status,risk_level,description,created_at'
+      + '&order=created_at.desc&limit=20';
+  }
+  if (operation === 'orders' || operation === 'order') {
+    const kind = value.kind;
+    if (!Object.prototype.hasOwnProperty.call(DIRAC_ADMIN_ORDER_SELECT_V406, kind)) return '';
+    const table = kind === 'domain' ? 'domain_orders' : 'orders';
+    const base = '/rest/v1/' + table + '?select=' + encodeURIComponent(DIRAC_ADMIN_ORDER_SELECT_V406[kind]);
+    if (operation === 'order') {
+      return customerSecurityLooksLikeUuid(value.id)
+        ? base + '&id=eq.' + encodeURIComponent(value.id) + '&limit=2' : '';
+    }
+    return Number.isSafeInteger(value.offset) && value.offset >= 0 && value.offset <= 50000
+      ? base + '&order=created_at.desc,id.desc&limit=41&offset=' + value.offset : '';
+  }
+  const keys = value.keys;
+  if (!Array.isArray(keys) || !keys.length || keys.length > 80 || new Set(keys).size !== keys.length
+      || keys.some(key => !/^s2s-admin-shipment-v406:(regular|domain):[a-f0-9-]{36}$/.test(key)
+        || !customerSecurityLooksLikeUuid(key.split(':')[2]))) return '';
+  const base = '/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(DIRAC_ADMIN_SHIPMENT_SELECT_V406);
+  if (operation === 'shipments') {
+    return base + '&security_key=in.(' + keys.map(encodeURIComponent).join(',') + ')&limit=' + keys.length;
+  }
+  if (keys.length !== 1) return '';
+  if (operation === 'shipment_create') return base;
+  if (operation === 'shipment_replace' && diracAdminShipmentTimestampV407(value.updatedAt) !== null) {
+    return base + '&security_key=eq.' + encodeURIComponent(keys[0])
+      + '&updated_at=eq.' + encodeURIComponent(value.updatedAt);
+  }
+  return '';
+}
+
+function diracAdminBusinessAccessDecisionV406(ctx, path, options, method) {
+  const marker = options && DIRAC_ADMIN_BUSINESS_FETCH_V406.get(options);
+  if (!marker) return { relevant: false, ok: false };
+  if (marker.operation === 'customer_shipments') return diracCustomerShipmentAccessDecisionV406(ctx, path, options, method, marker);
+  const proof = diracAdminBusinessFullyAuthorizedV406(ctx);
+  let ok = false;
+  try {
+    const expectedPath = diracAdminBusinessPathV406(marker.operation, marker.input);
+    const expectedMethod = marker.operation === 'shipment_create' ? 'POST'
+      : marker.operation === 'shipment_replace' ? 'PATCH' : 'GET';
+    const read = expectedMethod === 'GET';
+    const exactOptions = Object.keys(options).sort().join(',') === (read ? 'auth,method' : 'auth,body,method,prefer');
+    const allowedAction = ctx && ((ctx.action === 'admin_orders' && ['orders', 'shipments'].includes(marker.operation))
+      || (['admin_shipment_update', 'admin_shipment_cancel'].includes(ctx.action) && ['order', 'shipments', 'shipment_create', 'shipment_replace'].includes(marker.operation))
+      || (ctx.action === 'admin_blocks' && marker.operation === 'blocks')
+      || (ctx.action === 'admin_monitor' && marker.operation === 'monitor'));
+    const writeRow = read ? null : (expectedMethod === 'POST' ? Array.isArray(options.body) && options.body.length === 1 && options.body[0] : options.body);
+    const writeValue = writeRow && diracAdminValidateShipmentRowV406(writeRow, marker.input.keys[0]);
+    const writeAllowed = read || Boolean(writeValue && writeValue.updated_by === proof.user_id
+      && Object.keys(writeRow).sort().join(',') === 'blocked_until_ms,expires_at,record_json,security_key,updated_at'
+      && (ctx.action === 'admin_shipment_cancel' ? writeValue.state === 'cancelled' : writeValue.state === 'active'));
+    ok = Boolean(proof && marker.ctx === ctx && marker.req === ctx.req
+      && marker.requestId === String(ctx.requestId || '') && marker.action === ctx.action
+      && marker.expiresAtMs > Date.now() && allowedAction && writeAllowed && expectedPath && path === expectedPath
+      && marker.path === path && exactOptions && options.auth === 'service'
+      && options.method === expectedMethod && method === expectedMethod
+      && safeEqual(marker.digest, diracAdminBusinessDigestV406(path, options))
+      && (read || options.prefer === 'return=representation'));
+  } catch (_) { ok = false; }
+  return { relevant: true, ok, reason: ok ? '' : 'admin_business_exact_contract_rejected_v406' };
+}
+
+async function diracAdminBusinessFetchV406(operation, input, row) {
+  const ctx = diracCentralCurrentContextV149();
+  if (!diracAdminBusinessFullyAuthorizedV406(ctx)) throw diracAdminBusinessErrorV406('ADMIN_THREE_FACTORS_REQUIRED', 403);
+  const path = diracAdminBusinessPathV406(operation, input);
+  if (!path) throw diracAdminBusinessErrorV406('ADMIN_OPERATION_INVALID', 400);
+  const options = operation === 'shipment_create'
+    ? { method: 'POST', auth: 'service', prefer: 'return=representation', body: [row] }
+    : operation === 'shipment_replace'
+      ? { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: row }
+      : { method: 'GET', auth: 'service' };
+  const marker = Object.freeze({ operation, input: Object.freeze({ ...input }), ctx, req: ctx.req,
+    path, action: ctx.action, requestId: String(ctx.requestId || ''),
+    digest: diracAdminBusinessDigestV406(path, options), expiresAtMs: Date.now() + 30000 });
+  DIRAC_ADMIN_BUSINESS_FETCH_V406.set(options, marker);
+  try {
+    const result = await supabaseFetch(path, options);
+    if (!result || result.ok !== true || !Array.isArray(result.data)) {
+      throw diracAdminBusinessErrorV406(result && result.status === 409 ? 'ADMIN_VERSION_CONFLICT' : 'ADMIN_DATA_UNAVAILABLE', result && result.status === 409 ? 409 : 503);
+    }
+    return result.data;
+  } finally { DIRAC_ADMIN_BUSINESS_FETCH_V406.delete(options); }
+}
+
+function diracAdminBusinessTextV406(value, maximum, required = false) {
+  if (typeof value !== 'string' || value.length > maximum || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(value)
+      || (required && !value.trim())) throw diracAdminBusinessErrorV406('ADMIN_SHIPMENT_TEXT_INVALID', 400);
+  return value.trim();
+}
+
+function diracAdminValidateShipmentRowV406(row, key) {
+  if (!row || typeof row !== 'object' || Array.isArray(row) || row.security_key !== key
+      || Number(row.blocked_until_ms) !== 0 || diracAdminShipmentTimestampV407(row.updated_at) === null
+      || !Number.isFinite(Date.parse(row.expires_at))
+      || Date.parse(row.expires_at) <= Date.now()) return null;
+  const value = row.record_json;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || value.schema !== 'dirac.admin_shipment.v406'
+      || !['active', 'cancelled'].includes(value.state)
+      || !customerSecurityLooksLikeUuid(value.customer_id)
+      || !customerSecurityLooksLikeUuid(value.updated_by)
+      || !Number.isSafeInteger(value.revision) || value.revision < 1
+      || !['prepared', 'shipped', 'in_transit', 'delivered', 'cancelled'].includes(value.status)
+      || (value.state === 'cancelled') !== (value.status === 'cancelled')
+      || diracAdminShipmentTimestampV407(value.updated_at) === null
+      || diracAdminShipmentTimestampV407(value.updated_at) !== diracAdminShipmentTimestampV407(row.updated_at)
+      || !Array.isArray(value.events) || value.events.length < 1 || value.events.length > 50) return null;
+  try {
+    if (diracAdminShipmentKeyV406(value.order_kind, value.order_id) !== key) return null;
+    if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(value.tracking_number)) return null;
+    diracAdminBusinessTextV406(value.courier, 80, true);
+    diracAdminBusinessTextV406(value.location, 160);
+    diracAdminBusinessTextV406(value.origin, 600);
+    diracAdminBusinessTextV406(value.destination, 600);
+    if (value.estimated_delivery !== '' && (!/^\d{4}-\d{2}-\d{2}$/.test(value.estimated_delivery)
+        || !Number.isFinite(Date.parse(value.estimated_delivery)))) return null;
+    for (const event of value.events) {
+      if (!event || typeof event !== 'object' || Array.isArray(event)
+          || !Number.isFinite(Date.parse(event.timestamp)) || typeof event.status !== 'string') return null;
+      diracAdminBusinessTextV406(event.description, 300, true);
+      diracAdminBusinessTextV406(event.location, 160);
+    }
+  } catch (_) { return null; }
+  return value;
+}
+
+function diracAdminShipmentPublicV406(value) {
+  return value ? { tracking_number: value.tracking_number, courier: value.courier,
+    state: value.state, status: value.status, location: value.location, origin: value.origin,
+    destination: value.destination, estimated_delivery: value.estimated_delivery,
+    updated_at: value.updated_at, revision: value.revision,
+    events: value.events.map(event => ({ timestamp: event.timestamp, status: event.status,
+      description: event.description, location: event.location })) } : null;
+}
+
+function diracAdminOrderPublicV406(row, kind) {
+  if (!row || !customerSecurityLooksLikeUuid(row.id) || !customerSecurityLooksLikeUuid(row.customer_id)) {
+    throw diracAdminBusinessErrorV406('ADMIN_ORDER_RECORD_INVALID');
+  }
+  return { id: row.id, kind, order_id: String(row.order_id || (kind === 'domain' ? 'DOM-' + row.id.slice(0, 8).toUpperCase() : row.id)),
+    customer_id: row.customer_id, customer_name: String(row.customer_name || '').slice(0, 160),
+    customer_email: String(row.customer_email || '').slice(0, 254),
+    customer_phone: String(row.customer_phone || row.customer_whatsapp || '').slice(0, 40),
+    shipping_address: String(row.shipping_address || '').slice(0, 600),
+    service_type: kind === 'domain' ? 'domain' : String(row.service_type || '').slice(0, 60),
+    domain_name: String(row.domain_name || '').slice(0, 254),
+    total: Number(row.total === undefined ? row.total_price : row.total),
+    currency: String(row.currency || 'IDR').slice(0, 8),
+    payment_method: String(row.payment_method || '').slice(0, 80),
+    payment_status: String(row.payment_status || '').slice(0, 40),
+    order_status: String(row.order_status || '').slice(0, 40), created_at: row.created_at };
+}
+
+async function diracAdminReadOrdersV406(req, res) {
+  const kind = String(req.query && req.query.kind || 'regular');
+  const offsetRaw = String(req.query && req.query.offset || '0');
+  if (!Object.prototype.hasOwnProperty.call(DIRAC_ADMIN_ORDER_SELECT_V406, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw)
+      || Number(offsetRaw) > 50000) return res.status(400).json({ ok: false, code: 'ADMIN_PAGE_INVALID' });
+  const rows = await diracAdminBusinessFetchV406('orders', { kind, offset: Number(offsetRaw) });
+  if (rows.length > 41) throw diracAdminBusinessErrorV406('ADMIN_PAGE_TOO_LARGE');
+  const orders = rows.slice(0, 40).map(row => diracAdminOrderPublicV406(row, kind));
+  const keys = orders.map(row => diracAdminShipmentKeyV406(kind, row.id));
+  const shipments = keys.length ? await diracAdminBusinessFetchV406('shipments', { keys }) : [];
+  if (shipments.length > keys.length) throw diracAdminBusinessErrorV406('ADMIN_SHIPMENT_RECORD_INVALID');
+  const shipmentMap = new Map();
+  for (const row of shipments) {
+    if (!keys.includes(row && row.security_key) || shipmentMap.has(row.security_key)) throw diracAdminBusinessErrorV406('ADMIN_SHIPMENT_RECORD_INVALID');
+    const value = diracAdminValidateShipmentRowV406(row, row.security_key);
+    const order = orders.find(item => item.id === (value && value.order_id));
+    if (!value || !order || order.customer_id !== value.customer_id) throw diracAdminBusinessErrorV406('ADMIN_SHIPMENT_OWNER_MISMATCH');
+    shipmentMap.set(row.security_key, value);
+  }
+  return res.status(200).json({ ok: true, kind, offset: Number(offsetRaw), has_more: rows.length === 41,
+    orders: orders.map(row => ({ ...row, shipment: diracAdminShipmentPublicV406(shipmentMap.get(diracAdminShipmentKeyV406(kind, row.id))) })),
+    time: new Date().toISOString() });
+}
+
+async function diracAdminSaveShipmentV406(req, res, cancel) {
+  const body = await diracAdminBusinessBodyV406(req);
+  const allowed = cancel ? ['kind', 'order_id', 'expected_revision', 'description']
+    : ['kind', 'order_id', 'expected_revision', 'tracking_number', 'courier', 'status', 'location', 'origin', 'destination', 'estimated_delivery', 'description'];
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some(key => !allowed.includes(key))) throw diracAdminBusinessErrorV406('ADMIN_SHIPMENT_FIELDS_INVALID', 400);
+  const kind = String(body.kind || '');
+  const id = String(body.order_id || '');
+  const key = diracAdminShipmentKeyV406(kind, id);
+  const revision = body.expected_revision;
+  if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER) throw diracAdminBusinessErrorV406('ADMIN_REVISION_INVALID', 400);
+  const orders = await diracAdminBusinessFetchV406('order', { kind, id });
+  if (orders.length !== 1 || orders[0].id !== id) throw diracAdminBusinessErrorV406('ADMIN_ORDER_NOT_FOUND', 404);
+  const order = diracAdminOrderPublicV406(orders[0], kind);
+  const currentRows = await diracAdminBusinessFetchV406('shipments', { keys: [key] });
+  if (currentRows.length > 1) throw diracAdminBusinessErrorV406('ADMIN_SHIPMENT_RECORD_INVALID');
+  const current = currentRows.length ? diracAdminValidateShipmentRowV406(currentRows[0], key) : null;
+  if (currentRows.length && (!current || current.customer_id !== order.customer_id)) throw diracAdminBusinessErrorV406('ADMIN_SHIPMENT_OWNER_MISMATCH');
+  if (revision !== (current ? current.revision : 0)) throw diracAdminBusinessErrorV406('ADMIN_VERSION_CONFLICT', 409);
+  if (cancel && (!current || current.state === 'cancelled')) throw diracAdminBusinessErrorV406('ADMIN_SHIPMENT_NOT_ACTIVE', 409);
+  const description = diracAdminBusinessTextV406(body.description || (cancel ? 'Resi dibatalkan oleh admin.' : 'Informasi pengiriman diperbarui oleh admin.'), 300, true);
+  const status = cancel ? 'cancelled' : String(body.status || '');
+  if (!['prepared', 'shipped', 'in_transit', 'delivered', 'cancelled'].includes(status) || (!cancel && status === 'cancelled')) throw diracAdminBusinessErrorV406('ADMIN_SHIPMENT_STATUS_INVALID', 400);
+  const tracking = cancel ? current.tracking_number : String(body.tracking_number || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(tracking)) throw diracAdminBusinessErrorV406('ADMIN_TRACKING_NUMBER_INVALID', 400);
+  const now = Math.max(Date.now(), current ? Date.parse(current.updated_at) + 1 : 0);
+  const timestamp = new Date(now).toISOString();
+  const auth = diracAdminBusinessFullyAuthorizedV406(diracCentralCurrentContextV149());
+  if (!auth) throw diracAdminBusinessErrorV406('ADMIN_THREE_FACTORS_REQUIRED', 403);
+  const value = { schema: 'dirac.admin_shipment.v406', order_kind: kind, order_id: id,
+    customer_id: order.customer_id, revision: revision + 1, state: cancel ? 'cancelled' : 'active',
+    tracking_number: tracking, courier: cancel ? current.courier : diracAdminBusinessTextV406(body.courier, 80, true),
+    status, location: cancel ? current.location : diracAdminBusinessTextV406(body.location || '', 160),
+    origin: cancel ? current.origin : diracAdminBusinessTextV406(body.origin || '', 600),
+    destination: cancel ? current.destination : diracAdminBusinessTextV406(body.destination || order.shipping_address || '', 600),
+    estimated_delivery: cancel ? current.estimated_delivery : String(body.estimated_delivery || ''),
+    events: (current ? current.events : []).slice(-49), updated_at: timestamp, updated_by: auth.user_id };
+  value.events.push({ timestamp, status, description, location: value.location });
+  const row = { security_key: key, record_json: value, blocked_until_ms: 0,
+    expires_at: new Date(now + 100 * 365 * 24 * 60 * 60 * 1000).toISOString(), updated_at: timestamp };
+  if (!diracAdminValidateShipmentRowV406(row, key)) throw diracAdminBusinessErrorV406('ADMIN_SHIPMENT_RECORD_INVALID', 400);
+  const written = await diracAdminBusinessFetchV406(current ? 'shipment_replace' : 'shipment_create',
+    { keys: [key], updatedAt: currentRows[0] && currentRows[0].updated_at }, row);
+  if (written.length !== 1) throw diracAdminBusinessErrorV406('ADMIN_VERSION_CONFLICT', 409);
+  const confirmed = diracAdminValidateShipmentRowV406(written[0], key);
+  if (!confirmed || diracS2SStableJsonV206(confirmed) !== diracS2SStableJsonV206(value)) throw diracAdminBusinessErrorV406('ADMIN_SHIPMENT_WRITE_UNVERIFIED');
+  return res.status(200).json({ ok: true, shipment: diracAdminShipmentPublicV406(confirmed) });
+}
+
+async function diracAdminBusinessOperationV406(ctx, operation, body) {
+  if (!diracAdminBusinessFullyAuthorizedV406(ctx)
+      || !diracAdminBusinessAuthorizedV405(ctx, operation)) {
+    throw diracAdminBusinessErrorV406('ADMIN_THREE_FACTORS_REQUIRED', 403);
+  }
+  let status = 200, payload;
+  const response = { status(value) { status = value; return this; }, json(value) { payload = value; return value; } };
+  const req = ctx.req;
+  if (operation === 'orders') await diracAdminReadOrdersV406(req, response);
+  else if (operation === 'blocks') await diracAdminReadBlocksV406(req, response);
+  else if (operation === 'unban') await diracAdminUnbanV406(req, response);
+  else if (operation === 'monitor') await diracAdminMonitorV406(req, response);
+  else if (operation === 'shipment_update' || operation === 'shipment_cancel') await diracAdminSaveShipmentV406(req, response, operation === 'shipment_cancel');
+  else throw diracAdminBusinessErrorV406('ADMIN_OPERATION_INVALID', 400);
+  if (status !== 200) throw diracAdminBusinessErrorV406(String(payload && payload.code || 'ADMIN_OPERATION_REJECTED'), status);
+  if (!payload || payload.ok !== true) throw diracAdminBusinessErrorV406('ADMIN_OPERATION_UNVERIFIED');
+  return payload;
+}
+
+async function diracAdminReadBlocksV406(req, res) {
+  const rawOffset = String(req.query && req.query.offset || '0');
+  if (!/^(0|[1-9][0-9]{0,4})$/.test(rawOffset) || Number(rawOffset) > 50000) {
+    return res.status(400).json({ ok: false, code: 'ADMIN_PAGE_INVALID' });
+  }
+  const rows = await diracAdminBusinessFetchV406('blocks', { offset: Number(rawOffset) });
+  if (rows.length > 41) throw diracAdminBusinessErrorV406('ADMIN_PAGE_TOO_LARGE');
+  const blocks = [];
+  const seen = new Set();
+  for (const row of rows.slice(0, 40)) {
+    const key = row && row.security_key;
+    const record = row && row.record_json;
+    if (typeof key !== 'string' || !record || typeof record !== 'object' || Array.isArray(record)
+        || !diracPersistentSecurityRecordIsBanV363(record, key)) continue;
+    const canonical = record.schema === 'dirac.customer_access_block'
+      ? customerSecurityValidatePersistentAccessBlockRowV325(row) : null;
+    const id = canonical ? canonical.block_id : crypto.createHash('sha256').update(key).digest('hex');
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const identity = canonical ? record.metadata || {} : record;
+    const email = normalizeAuthEmail(identity.identity_email || identity.identityEmail || identity.email || '');
+    const active = canonical ? canonical.state === 'active' && canonical.blocked_until_ms > Date.now()
+      : diracPersistentSecurityRecordIsPermanentV335(record, key) || Number(row.blocked_until_ms) > Date.now();
+    if (!active) continue;
+    const mirrored = canonical && /^(central_guard_|wrong_password_rate_limit_)/.test(canonical.reason);
+    blocks.push({ id, customer_email: isValidAuthEmail(email) ? email : '',
+      email_verified: identity.identity_email_verified === true,
+      family: canonical ? 'customer_access' : String(record.type || record.event_type || 'persistent').slice(0, 80),
+      reason: String(record.reason || record.ban_reason || record.reason_code || '').slice(0, 300),
+      created_at: canonical ? new Date(canonical.created_at_ms).toISOString()
+        : String(record.created_at || record.createdAt || '').slice(0, 48),
+      active: true, can_unban: Boolean(canonical && !mirrored),
+      review_note: canonical && !mirrored ? 'Membuka catatan akses ini; blokir lain tetap diperiksa.'
+        : 'Blokir ini terkait otoritas guard asal. Membuka salinan akses saja tidak memulihkan akses akun.' });
+  }
+  return res.status(200).json({ ok: true, blocks, offset: Number(rawOffset), has_more: rows.length === 41,
+    time: new Date().toISOString() });
+}
+
+async function diracAdminUnbanV406(req, res) {
+  const body = await diracAdminBusinessBodyV406(req);
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).sort().join(',') !== 'block_id'
+      || !customerSecurityLooksLikeUuid(body.block_id)) {
+    return res.status(400).json({ ok: false, code: 'ADMIN_BLOCK_ID_INVALID' });
+  }
+  // V325 exact contracts must additionally accept admin_unban only with this
+  // request-bound capability. Its full row, storage-key, and revocation checks stay.
+  const found = await customerSecurityReadPersistentAccessBlockEventV325(body.block_id);
+  if (!found || !found.ok) throw diracAdminBusinessErrorV406('ADMIN_BLOCK_STORE_UNAVAILABLE');
+  if (!found.found) return res.status(404).json({ ok: false, code: 'ADMIN_BLOCK_NOT_FOUND' });
+  if (/^(central_guard_|wrong_password_rate_limit_)/.test(String(found.row && found.row.reason || ''))) {
+    return res.status(409).json({ ok: false, code: 'ADMIN_ORIGINAL_BAN_AUTHORITY_REQUIRED' });
+  }
+  const admin = diracAdminBusinessFullyAuthorizedV406(diracCentralCurrentContextV149());
+  if (!admin) throw diracAdminBusinessErrorV406('ADMIN_THREE_FACTORS_REQUIRED', 403);
+  const revoked = await customerSecurityRevokePersistentAccessBlockEventV325(found.row, admin);
+  if (!revoked || !revoked.ok) throw diracAdminBusinessErrorV406('ADMIN_BLOCK_REVOCATION_UNVERIFIED');
+  return res.status(200).json({ ok: true, affected_rows: revoked.affected, time: new Date().toISOString() });
+}
+
+async function diracAdminBusinessBodyV406(req) {
+  const input = await readBody(req);
+  const ctx = diracCentralCurrentContextV149();
+  if (!diracAdminBusinessFullyAuthorizedV406(ctx) || ctx.req !== req
+      || !input || typeof input !== 'object' || Array.isArray(input)
+      || (Object.prototype.hasOwnProperty.call(input, 'action') && input.action !== ctx.action)) {
+    throw diracAdminBusinessErrorV406('ADMIN_BODY_INVALID', 400);
+  }
+  const body = { ...input };
+  delete body.action;
+  for (const key of ['csrf', 'nonce', 'idempotency_key']) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) {
+      if (typeof body[key] !== 'string' || !body[key] || body[key].length > 4096) {
+        throw diracAdminBusinessErrorV406('ADMIN_PROOF_FORMAT_INVALID', 400);
+      }
+      delete body[key];
+    }
+  }
+  return body;
+}
+
+function diracCustomerShipmentRequestedV406(req) {
+  try {
+    if (!req || String(req.method || '').toUpperCase() !== 'GET'
+        || String(req.query && req.query.type || '').trim().toLowerCase() !== 'shipment'
+        || diracCentralPtdinSourceV402(req, 'my_orders') !== true) return false;
+    const page = new URL(String(req.headers && (req.headers.referer || req.headers.referrer) || ''));
+    return page.pathname === '/cekresi.html' && !page.search && !page.hash;
+  } catch (_) { return false; }
+}
+
+function diracCustomerShipmentOwnerV406(req) {
+  const ctx = diracCentralCurrentContextV149();
+  if (!ctx || ctx.req !== req || ctx.action !== 'my_orders' || ctx.method !== 'GET'
+      || !diracCustomerShipmentRequestedV406(req)
+      || diracCentralHandlerContextFullyPassedV211(ctx, req) !== true) return null;
+  const owner = diracCentralOwnerFromVerifiedContextV215(req);
+  return owner && owner.ok === true && owner.customerIds.length === 1
+    && customerSecurityLooksLikeUuid(owner.customerIds[0]) ? owner : null;
+}
+
+function diracCustomerShipmentRegisterParentsV406(kind, rows) {
+  const ctx = diracCentralCurrentContextV149();
+  if (!ctx || !diracCustomerShipmentRequestedV406(ctx.req)) return;
+  const owner = ctx && diracCustomerShipmentOwnerV406(ctx.req);
+  if (!owner || !Array.isArray(rows) || rows.length > 80
+      || !['regular', 'domain'].includes(kind)) throw diracAdminBusinessErrorV406('SHIPMENT_PARENT_SCOPE_INVALID');
+  const parentMap = DIRAC_CUSTOMER_SHIPMENT_PARENTS_V406.get(ctx.req) || new Map();
+  for (const row of rows) {
+    if (!row || !customerSecurityLooksLikeUuid(row.id) || row.customer_id !== owner.customerIds[0]) {
+      throw diracAdminBusinessErrorV406('SHIPMENT_PARENT_OWNER_MISMATCH');
+    }
+    const key = diracAdminShipmentKeyV406(kind, row.id);
+    parentMap.set(key, Object.freeze({ key, kind, id: row.id, customerId: row.customer_id }));
+  }
+  if (parentMap.size > 160) throw diracAdminBusinessErrorV406('SHIPMENT_PARENT_LIMIT_INVALID');
+  DIRAC_CUSTOMER_SHIPMENT_PARENTS_V406.set(ctx.req, parentMap);
+}
+
+function diracCustomerShipmentAccessDecisionV406(ctx, path, options, method, marker) {
+  const owner = ctx && diracCustomerShipmentOwnerV406(ctx.req);
+  const parents = ctx && ctx.req && DIRAC_CUSTOMER_SHIPMENT_PARENTS_V406.get(ctx.req);
+  let ok = false;
+  try {
+    const keys = marker.keys;
+    ok = Boolean(owner && parents && marker.ctx === ctx && marker.req === ctx.req
+      && marker.requestId === String(ctx.requestId || '') && marker.expiresAtMs > Date.now()
+      && Array.isArray(keys) && Object.isFrozen(keys) && keys.length > 0 && keys.length <= 40
+      && new Set(keys).size === keys.length
+      && keys.every(key => parents.has(key) && Object.isFrozen(parents.get(key))
+        && parents.get(key).customerId === owner.customerIds[0])
+      && options.method === 'GET' && method === 'GET' && options.auth === 'service'
+      && Object.keys(options).sort().join(',') === 'auth,method'
+      && path === diracAdminBusinessPathV406('shipments', { keys }) && marker.path === path
+      && safeEqual(marker.digest, diracAdminBusinessDigestV406(path, options)));
+  } catch (_) { ok = false; }
+  return { relevant: true, ok, reason: ok ? '' : 'customer_shipment_exact_owner_contract_rejected_v406' };
+}
+
+async function diracCustomerShipmentReadBatchV406(ctx, keys) {
+  const path = diracAdminBusinessPathV406('shipments', { keys });
+  const options = { method: 'GET', auth: 'service' };
+  const marker = Object.freeze({ operation: 'customer_shipments', keys: Object.freeze(keys.slice()),
+    ctx, req: ctx.req, requestId: String(ctx.requestId || ''), path,
+    digest: diracAdminBusinessDigestV406(path, options), expiresAtMs: Date.now() + 30000 });
+  if (!diracCustomerShipmentAccessDecisionV406(ctx, path, options, 'GET', marker).ok) {
+    throw diracAdminBusinessErrorV406('SHIPMENT_PARENT_SCOPE_INVALID');
+  }
+  DIRAC_ADMIN_BUSINESS_FETCH_V406.set(options, marker);
+  try {
+    const result = await supabaseFetch(path, options);
+    if (!result || result.ok !== true) {
+      const diagnostic = String(result && (result.error || result.data && (result.data.code || result.data.error)) || '');
+      const transient = !result || [408, 429, 500, 502, 503, 504].includes(Number(result.status))
+        && !/GUARD|SECURITY|INVARIANT|OWNER|FORBIDDEN|DENIED|BLOCKED|CONTRACT|PERMIT/i.test(diagnostic);
+      throw diracAdminBusinessErrorV406(transient ? 'SHIPMENT_DATA_TEMPORARILY_UNAVAILABLE' : 'SHIPMENT_DATA_UNAVAILABLE');
+    }
+    if (!Array.isArray(result.data) || result.data.length > keys.length) {
+      throw diracAdminBusinessErrorV406('SHIPMENT_DATA_UNAVAILABLE');
+    }
+    return result.data;
+  } finally { DIRAC_ADMIN_BUSINESS_FETCH_V406.delete(options); }
+}
+
+async function diracCustomerShipmentProjectV406(req, orders) {
+  if (!diracCustomerShipmentRequestedV406(req)) return orders;
+  const owner = diracCustomerShipmentOwnerV406(req);
+  const ctx = diracCentralCurrentContextV149();
+  const parents = DIRAC_CUSTOMER_SHIPMENT_PARENTS_V406.get(req);
+  if (!owner || !Array.isArray(orders) || orders.length > 120) throw diracAdminBusinessErrorV406('SHIPMENT_PARENT_SCOPE_INVALID');
+  if (!orders.length) return orders;
+  if (orders.some(order => !order || !['standard_order', 'domain_order'].includes(order.type))) {
+    throw diracAdminBusinessErrorV406('SHIPMENT_ORDER_KIND_INVALID');
+  }
+  const keys = orders.map(order => diracAdminShipmentKeyV406(order.type === 'domain_order' ? 'domain' : 'regular', order.id));
+  if (!parents || new Set(keys).size !== keys.length || keys.some(key => !parents.has(key))) {
+    throw diracAdminBusinessErrorV406('SHIPMENT_PARENT_SCOPE_INVALID');
+  }
+  const batches = [keys.slice(0, 40), keys.slice(40, 80), keys.slice(80, 120)].filter(batch => batch.length);
+  const outcomes = await Promise.allSettled(batches.map(batch => diracCustomerShipmentReadBatchV406(ctx, batch)));
+  const rejected = outcomes.filter(outcome => outcome.status === 'rejected');
+  const invariant = rejected.find(outcome => !outcome.reason || outcome.reason.code !== 'SHIPMENT_DATA_TEMPORARILY_UNAVAILABLE');
+  if (invariant) throw invariant.reason;
+  if (rejected.length) return orders.map(order => ({ ...order, shipment_data_ready: false }));
+  const results = outcomes.map(outcome => outcome.value);
+  const shipments = new Map();
+  for (const row of results.flat()) {
+    const key = row && row.security_key;
+    const parent = parents.get(key);
+    const value = parent && diracAdminValidateShipmentRowV406(row, key);
+    if (!keys.includes(key) || shipments.has(key) || !value
+        || value.customer_id !== owner.customerIds[0] || value.customer_id !== parent.customerId
+        || value.order_id !== parent.id || value.order_kind !== parent.kind) {
+      throw diracAdminBusinessErrorV406('SHIPMENT_RECORD_OWNER_MISMATCH');
+    }
+    shipments.set(key, value);
+  }
+  return orders.map((order, index) => ({ ...order, shipment_data_ready: true,
+    shipment: diracAdminShipmentPublicV406(shipments.get(keys[index])) }));
+}
+
+async function diracAdminMonitorV406(req, res) {
+  let rows = [];
+  let eventsReady = false;
+  try { rows = await diracAdminBusinessFetchV406('monitor', {}); eventsReady = rows.length <= 20; }
+  catch (_) { eventsReady = false; }
+  const selfTest = typeof DIRAC_CENTRAL_SELF_TEST_V221 === 'object' ? DIRAC_CENTRAL_SELF_TEST_V221 : null;
+  const staticGate = typeof DIRAC_CENTRAL_BACKEND_STATIC_GATE_V230 === 'object' ? DIRAC_CENTRAL_BACKEND_STATIC_GATE_V230 : null;
+  const memory = process.memoryUsage();
+  return res.status(200).json({ ok: true, time: new Date().toISOString(),
+    guard: { self_test_ok: Boolean(selfTest && selfTest.ok === true),
+      static_gate_ok: Boolean(staticGate && staticGate.ok === true),
+      scope: 'Instance backend yang menangani permintaan ini.' },
+    runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss,
+      heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal },
+    events_ready: eventsReady,
+    events: eventsReady ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100),
+      status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40),
+      description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [] });
+}
+
+
 function diracCentralPtdinSourceV402(req, action) {
   const entry = req && DIRAC_PTDIN_REQUESTS_V402.get(req);
   if (!entry || entry.req !== req || entry.action !== String(action || '')
@@ -59764,6 +60527,13 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
   const clean = String(action || '').trim().toLowerCase();
   if (!clean) return { ok: false, reason: 'deployment_role_action_empty' };
   const role = diracAppRoleV250();
+  if ((req && DIRAC_ADMIN_REQUESTS_V405.has(req)) || diracAdminModuleV405().__diracAdminActionsV405.includes(clean)) {
+    const contract = diracCentralContractForActionV146(clean);
+    const method = String(req && req.method || '').toUpperCase();
+    const expectedMethod = method === 'OPTIONS' ? String(req.headers && req.headers['access-control-request-method'] || '').toUpperCase() : method;
+    return role === 'auth' && diracCentralAdminSourceV405(req, clean) && contract && contract.methods.includes(expectedMethod)
+      ? { ok: true } : { ok: false, reason: 'admin_source_action_contract_invalid_v405' };
+  }
   if (req && DIRAC_PTDIN_REQUESTS_V402.has(req)) {
     const contract = diracCentralContractForActionV146(clean);
     const method = String(req.method || '').toUpperCase();
@@ -60611,7 +61381,8 @@ function diracCentralDeviceConsistencySignedReconcileV325(req, sessionKey, curre
 }
 
 function diracCentralDeviceConsistencyGuardV146(req, ctx) {
-  if (!DIRAC_CENTRAL_USER_DATA_ACTIONS_V146.has(ctx.action) && !/^domain_dashboard|^customer_security|^admin_security/.test(ctx.action)) return { ok: true };
+  if (!DIRAC_CENTRAL_USER_DATA_ACTIONS_V146.has(ctx.action) && !/^domain_dashboard|^customer_security|^admin_security/.test(ctx.action)
+      && !DIRAC_CENTRAL_ADMIN_ACTIONS_V146.has(ctx.action)) return { ok: true };
   const sessionKey = diracCentralRequestSessionHashV146(req);
   if (!sessionKey) return { ok: false, reason: 'device_session_hash_missing' };
   const headers = req && req.headers || {};
@@ -60668,6 +61439,11 @@ async function diracCentralAdminAuthGuardV146(req, res, ctx) {
       const fake = diracCentralFakeResponseV146();
       const admin = await requireAdminSecuritySupabaseOwner(req, fake, { action: ctx.action }).catch(() => null);
       if (!admin) return { ok: false, reason: 'admin_auth_invalid' };
+      if (DIRAC_ADMIN_REQUESTS_V405.has(req)) {
+        if (!diracCentralAdminSourceV405(req, ctx.action) || admin.email !== DIRAC_ADMIN_OWNER_EMAIL_V405 || admin.active !== true
+            || !['owner', 'super_admin', 'security_admin'].includes(admin.role)) return { ok: false, reason: 'admin_fixed_owner_required_v405' };
+        ctx.__diracAdminOwnerV405 = Object.freeze({ email: admin.email, user_id: admin.user_id, role: admin.role, active: admin.active });
+      }
       return { ok: true };
     }
   } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
@@ -61151,6 +61927,8 @@ async function diracCentralRecoveryWorkerIdorGuardV146(req, ctx) {
 }
 
 async function diracCentralIdorBolaGuardV146(req, ctx) {
+  const adminScopeV405 = diracAdminOwnershipDecisionV405(req, ctx);
+  if (adminScopeV405) return adminScopeV405;
   if (ctx && ctx.classification === 'server' && ctx.action === 'security_report') return { ok: true, guarded: 'server_to_server_signed_security_evidence' };
   if (ctx && ctx.classification === 'server' && ctx.action === 'midtrans_webhook') return { ok: true, guarded: 'server_to_server_signed_webhook' };
   if (ctx && ctx.classification === 'server' && ctx.action === DIRAC_RECOVERY_WORKER_ACTION) {
@@ -61936,6 +62714,10 @@ async function diracCentralInspectServiceRoleAccessV146(path, options = {}) {
   const requestedTableV212 = diracCentralExtractRestTableV146(path);
   const table = requestedTableV212;
   const method = requestedMethodV212;
+  const adminDecisionV406 = diracAdminBusinessAccessDecisionV406(ctx, path, options, method);
+  if (adminDecisionV406.relevant) return adminDecisionV406.ok
+    ? { ok: true, guarded: 'admin_exact_operation_capability_v406' }
+    : { block: true, reason: adminDecisionV406.reason, status: 403 };
   const midtransCapabilityDecisionV350 = diracCentralMidtransWebhookServiceRoleDecisionV350(ctx, table, path, options, method);
   if (midtransCapabilityDecisionV350.relevant === true) {
     if (midtransCapabilityDecisionV350.ok === true) {
@@ -65446,6 +66228,8 @@ function diracCentralStableMfaReadGateV146(req, res, ctx) {
 
 function diracCentralContractForActionV146(action) {
   const clean = String(action || '');
+  const adminContractV405 = diracAdminModuleV405().__diracAdminContractsV405;
+  if (Object.prototype.hasOwnProperty.call(adminContractV405, clean)) return adminContractV405[clean];
   const commonGet = ['action', '_csrf_boot', '_csrf_a2f', '_csrf_login_final', '_csrf_probe', '_dirac_page_nonce_for', '_page_nonce_for', 'page_nonce_for', '_dirac_a2f_body_hash', '_ts', '_t', '_', 'domain', 'limit', 'type', 'include_expired', 'order_id', 'order_code', 'domain_order_id', 'payment_id', 'transaction_id', 'invoice_id', 'gateway_reference', 'session_id', 'recovery_code_id', 'credential_id', 'project_id', 'document_id', 'item_id', 'email', 'slug'];
   const commonPost = ['action', 'email', 'password', 'fullName', 'full_name', 'name', 'phone', 'domain', 'domain_name', 'quantity', 'items', 'order_id', 'order_code', 'domain_order_id', 'payment_id', 'transaction_id', 'invoice_id', 'gateway_reference', 'session_id', 'recovery_code', 'recovery_code_id', 'credential_id', 'user_id', 'challenge', 'response', 'setupToken', 'mfaSetupToken', 'code', 'reason', 'csrf', 'nonce', 'idempotency_key'];
   const getOnly = { methods: ['GET', 'HEAD'], allowed: commonGet, required: [], maxBodyBytes: 1024, maxFieldBytes: 3000, mutation: false };
@@ -65609,6 +66393,10 @@ function diracCentralProtectedFieldV146(key) {
 }
 
 function diracCentralSensitiveKeyV146(key) {
+  if (/^(code|ticket)$/i.test(String(key || ''))) {
+    const ctx = diracCentralCurrentContextV149();
+    if (ctx && ctx.req && DIRAC_ADMIN_REQUESTS_V405.has(ctx.req)) return true;
+  }
   return /password|token|hash|otp|secret|cookie|authorization|payment[_-]?key|signature|credential|clientdata|attestation|assertion|csrf|hmac/i.test(String(key || ''));
 }
 
@@ -68625,8 +69413,10 @@ async function diracSessionHandoffIssueV250(req, res, ctx) {
     access.customerId, sourceSession.sessionId, securityEpoch, authMaterial.sessionTokenHash
   );
   if (!sourceSessionBound) return res.status(401).json({ ok: false, code: 'HANDOFF_SOURCE_AUTH_SESSION_BINDING_INVALID' });
-  const localRegistry = await diracS2SRegistryEntryV206(sourceRole);
-  const targetRegistry = await diracS2SRegistryEntryV206(targetRole);
+  const [localRegistry, targetRegistry] = await Promise.all([
+    diracS2SRegistryEntryV206(sourceRole),
+    diracS2SRegistryEntryV206(targetRole)
+  ]);
   if (!localRegistry || localRegistry.ok !== true || !localRegistry.found || !targetRegistry || targetRegistry.ok !== true || !targetRegistry.found) {
     return res.status(503).json({ ok: false, code: 'HANDOFF_S2S_REGISTRY_UNAVAILABLE' });
   }
@@ -70007,6 +70797,7 @@ async function diracV202Dispatcher(req, res) {
     error.code = 'DIRAC_V202_DISPATCH_BEFORE_FULL_CENTRAL_GUARD';
     throw error;
   }
+  if (DIRAC_ADMIN_REQUESTS_V405.has(req)) return diracCentralAdminDispatchV405(req, res, ctx);
   if (DIRAC_PTDIN_REQUESTS_V402.has(req)) return diracCentralPtdinDispatchV402(req, res, ctx);
   return __diracV202CompiledDispatcher(req, res);
 }
@@ -70467,6 +71258,7 @@ if (__diracRecoveryRoleV250) {
     || !DIRAC_CENTRAL_DISABLED_ACTIONS_V146.has(DIRAC_RECOVERY_WORKER_ACTION)) {
   throw new Error('DIRAC_NON_RECOVERY_ROLE_PROXY_ONLY_INVARIANT_FAILED_V250');
 }
+Object.defineProperty(module.exports, '__diracCentralAdminEntryV405', { value: diracCentralAdminEntryV405, enumerable: false, writable: false, configurable: false });
 Object.defineProperty(module.exports, '__diracCentralPtdinEntryV402', { value: diracCentralPtdinEntryV402, enumerable: false, writable: false, configurable: false });
 Object.defineProperty(module.exports, '__diracRecoveryRoleAwareV250', { value: true, enumerable: false });
 Object.defineProperty(module.exports, '__diracPasswordResetMailNotifyCommittedV338', { value: diracPasswordResetMailNotifyCommittedV338, enumerable: false, writable: false, configurable: false });
