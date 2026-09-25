@@ -20321,7 +20321,7 @@ function diracPaidContinuationCreateV441(req, input) {
       || midtransStrictMoneyV350(cap.parentType === 'd' ? order.total_price : order.total) !== cap.grossAmount) throw new Error('PAID_CONTINUATION_COMMIT_REQUIRED');
   const scope = crypto.createHash('sha256').update(JSON.stringify([cap.customerId, cap.transactionId, cap.parentType, cap.parentId])).digest('hex');
   const job = { req, ctx, cap, state, active: true, expiresAt: cap.expiresAt, proof: null, recipient: null,
-    ownerScope: scope, ownerKey: 's2s-invoice-v441:owner:' + scope, ownerTransportKey: 's2s-invoice-v441:transport:' + scope, ownerClaimed: false, ownerRow: null, acknowledged: false, reconcileOnly: input.reconcileOnly === true };
+    ownerScope: scope, ownerKey: 's2s-invoice-v441:owner:' + scope, ownerTransportKey: 's2s-invoice-v441:transport:' + scope, ownerClaimed: false, ownerRow: null, acknowledged: false, reconcileOnly: input.reconcileOnly === true, timing: input.timing };
   DIRAC_PAID_CONTINUATIONS_V441.set(req, job);
   if (!diracInvoiceContinuationStateV441(req)) { DIRAC_PAID_CONTINUATIONS_V441.delete(req); throw new Error('PAID_CONTINUATION_BINDING_INVALID'); }
   return job;
@@ -20387,7 +20387,11 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
         customer: { sent: !!(payload && responseCode === 200 && payload.accepted === true) }, owner: { sent: !!(ownerResult && ownerResult.sent === true) } });
       try { console.info('[dirac-paid-continuation-v441]', JSON.stringify({ event: 'automatic_invoice_result',
         phase, runtime_attached: attached, event_finalized: eventFinalized, payment_committed: !!job,
-        customer_status: customerStatus, owner_status: ownerStatus, inbox_delivery_confirmed: false })); } catch (_) {}
+        customer_status: customerStatus, owner_status: ownerStatus,
+        customer_new_send: !!(payload && responseCode === 200 && payload.accepted === true),
+        customer_previously_accepted: customerStatus === 'accepted' && responseCode === 429,
+        owner_new_send: !!(ownerResult && ownerResult.sent === true),
+        inbox_delivery_confirmed: false })); } catch (_) {}
       if (job) { job.active = false; DIRAC_PAID_CONTINUATIONS_V441.delete(req); }
     }
   });
@@ -20593,23 +20597,43 @@ async function midtransHandleWebhook(req, res) {
 
   const paymentAlreadyMatched = paymentAlreadyMatchedEarlyV372;
   const orderAlreadyPaid = orderAlreadyPaidEarlyV373;
-  const orderMailDeliveryRequiredV368 = Boolean(success && (retryPendingMailEventV368 || (!effectiveDuplicateEventV351 && !paymentAlreadyMatched && !orderAlreadyPaid)));
+  // Payment state is not a delivery receipt. The existing per-invoice and
+  // per-recipient transport claims still decide whether a new send is safe.
+  const orderMailDeliveryRequiredV368 = Boolean(success && !processedDuplicateEventV368);
   const orderMailItemsPrefetchV369 = null;
 
   const txPatch = await midtransPatchPaymentTransaction(tx, mappedStatus, body, success);
   if (!txPatch.ok) {
+    try { console.warn('[dirac-paid-commit]', JSON.stringify({ stage: 'payment_transaction', status: Number(txPatch.status || 500), code: /^[A-Z0-9_]{1,48}$/.test(String(txPatch.data && txPatch.data.code || '')) ? txPatch.data.code : '' })); } catch (_) {}
     return res.status(txPatch.status || 500).json({ ok: false, message: 'Gagal update payment transaction dari webhook Midtrans.' });
   }
 
+  let committedOrderV442 = ownerCheck.order;
   let orderPatch = { ok: true, skipped: true };
   let orderMailNotification = orderMailPaidWebhookSkipSummary('midtrans', 'not_paid_status');
   if (success) {
-    orderPatch = orderAlreadyPaid
+    // A database trigger may commit the parent when the transaction is paid.
+    // Read that exact owned parent once; never overwrite its fulfilment state
+    // using the pre-transaction snapshot, and never infer payment from the UI.
+    if (!orderAlreadyPaid) {
+      const freshOwnerV442 = await midtransVerifyTransactionOwnerAndAmount(tx, grossAmount);
+      const freshOrderV442 = freshOwnerV442 && freshOwnerV442.order;
+      if (!freshOwnerV442 || freshOwnerV442.ok !== true || !freshOrderV442
+          || freshOrderV442.id !== binding.parentId || freshOrderV442.customer_id !== bindingCustomerId
+          || midtransStrictMoneyV350(binding.parentType === 'd' ? freshOrderV442.total_price : freshOrderV442.total) !== grossAmount) {
+        try { console.warn('[dirac-paid-commit]', JSON.stringify({ stage: 'parent_recheck', status: Number(freshOwnerV442 && freshOwnerV442.status || 409), code: 'PAID_PARENT_RECHECK_FAILED' })); } catch (_) {}
+        return res.status(503).json({ ok: false, message: 'Payment valid, tetapi status order terbaru belum dapat diverifikasi.' });
+      }
+      committedOrderV442 = freshOrderV442;
+    }
+    orderPatch = midtransOrderAlreadyPaid(committedOrderV442)
       ? { ok: true, skipped: true, reason: 'order_already_paid' }
       : await midtransPatchRelatedOrderPaid(tx, body);
     if (!orderPatch.ok) {
+      try { console.warn('[dirac-paid-commit]', JSON.stringify({ stage: 'parent_update', status: Number(orderPatch.status || 500), code: /^[A-Z0-9_]{1,48}$/.test(String(orderPatch.data && orderPatch.data.code || '')) ? orderPatch.data.code : '' })); } catch (_) {}
       return res.status(orderPatch.status || 500).json({ ok: false, message: 'Payment valid, tetapi gagal update status order.' });
     }
+    if (!orderPatch.skipped) committedOrderV442 = orderPatch.data && orderPatch.data[0];
     diracPaidMailTimingMarkV371(paidMailTimingV371, 'order_paid');
     const paidOrderPrefetchAfterBindingV376 = orderAlreadyPaid && orderMailPaidOrderPrefetchAfterBindingV376
       ? await orderMailPaidOrderPrefetchAfterBindingV376
@@ -20623,7 +20647,7 @@ async function midtransHandleWebhook(req, res) {
       return await diracMidtransPaidContinuationV441(req, res, {
         reconcileOnly: !orderMailDeliveryRequiredV368,
         transaction: txPatch.skipped === true ? tx : txPatch.data && txPatch.data[0],
-        order: orderAlreadyPaid ? ownerCheck.order : orderPatch.data && orderPatch.data[0],
+        order: committedOrderV442,
         timing: paidMailTimingV371,
         mail: { provider: 'midtrans', tx, webhookPayload: body,
           paidAt: capabilityContextV350.capability.evidence.confirmed_at, paidOrder: paidOrderForMailV372,
@@ -61352,7 +61376,12 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
         text: diracSecurityMailTextV327(mailInput),
         html: diracSecurityCorporateEmailHtmlV327(mailInput),
         attachment: { filename: 'invoice-' + file.fileId + '.pdf', contentType: 'application/pdf', content: file.content } }, capability);
-      assertContext(); return result;
+      assertContext();
+      if (continuation && result && result.ok === true && result.accepted === true) {
+        const job = DIRAC_PAID_CONTINUATIONS_V441.get(req);
+        if (job && job.active && job.ctx === ctx) diracPaidMailTimingProviderAcceptedV371({ timing: job.timing, role: 'customer' }, result.provider);
+      }
+      return result;
     }
   });
   const originalJson = res.json;
