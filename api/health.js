@@ -20130,8 +20130,8 @@ async function midtransCreateDomainPaymentInvoice(order, orderItems, customer) {
   };
 }
 
-// V441: response may finish before mail, but the original guarded handler stays
-// active until the bounded continuation settles. No synthetic passport/context.
+// V441: acknowledge early only when the entire bounded customer/owner task is
+// registered with the runtime. Keep the original guard alive; no synthetic context.
 const DIRAC_PAID_CONTINUATIONS_V441 = new WeakMap();
 const DIRAC_PAID_CONTINUATION_FETCH_V441 = new WeakMap();
 function diracInvoiceContinuationStateV441(req) {
@@ -20252,7 +20252,7 @@ async function diracPaidOwnerClaimV441(job) {
   const now = Date.now();
   const record = { version: 'dirac-paid-owner-v441', scope: job.ownerScope, revision: crypto.randomBytes(16).toString('hex'), status: 'pending', created_at: now, updated_at: now };
   const expiry = new Date(now + 100 * 365 * 86400000).toISOString();
-  const claim = await diracInvoiceContinuationFetchV441(job, '/rest/v1/rpc/dirac_central_atomic_claim_record_v230', {
+  const claim = job.reconcileOnly === true ? { ok: true, data: false } : await diracInvoiceContinuationFetchV441(job, '/rest/v1/rpc/dirac_central_atomic_claim_record_v230', {
     method: 'POST', auth: 'service', body: { p_table_name: DIRAC_S2S_SECURITY_TABLE, p_security_key: job.ownerKey, p_record_json: record, p_expires_at: expiry }
   });
   if (!claim || claim.ok !== true || typeof claim.data !== 'boolean') throw new Error('PAID_OWNER_JOB_UNAVAILABLE');
@@ -20260,6 +20260,7 @@ async function diracPaidOwnerClaimV441(job) {
   const check = await diracInvoiceContinuationFetchV441(job, path, { method: 'GET', auth: 'service' });
   const rows = check && check.ok === true && Array.isArray(check.data) ? check.data : [];
   const row = rows.length === 1 ? rows[0] : null;
+  if (job.reconcileOnly === true && check && check.ok === true && Array.isArray(check.data) && rows.length === 0) return;
   if (!row || row.security_key !== job.ownerKey || !diracPaidOwnerRecordV441(job, row.record_json)
       || !Number.isFinite(Date.parse(row.expires_at)) || Date.parse(row.expires_at) <= Date.now()) throw new Error('PAID_OWNER_JOB_UNVERIFIED');
   if (claim.data === true && (row.record_json.revision !== record.revision || Date.parse(row.expires_at) !== Date.parse(expiry))) throw new Error('PAID_OWNER_JOB_CLAIM_MISMATCH');
@@ -20278,7 +20279,7 @@ async function diracPaidOwnerFinishV441(job, status) {
     && result.data[0].security_key === job.ownerKey && Date.parse(result.data[0].expires_at) === Date.parse(expiresAt));
 }
 async function diracPaidOwnerSendV441(job, input, timing) {
-  if (!job.ownerClaimed) return { sent: false, skipped: true, reason: 'owner_delivery_already_claimed' };
+  if (!job.ownerClaimed) return { sent: false, skipped: true, status: job.ownerRow ? job.ownerRow.record_json.status : 'idle', reason: 'owner_delivery_already_claimed' };
   let started = false, transportClaimed = false, status = 'failed';
   try {
     if (!diracInvoiceContinuationProofV441(job.req)) throw new Error('PAID_OWNER_GUARD_REQUIRED');
@@ -20320,50 +20321,79 @@ function diracPaidContinuationCreateV441(req, input) {
       || midtransStrictMoneyV350(cap.parentType === 'd' ? order.total_price : order.total) !== cap.grossAmount) throw new Error('PAID_CONTINUATION_COMMIT_REQUIRED');
   const scope = crypto.createHash('sha256').update(JSON.stringify([cap.customerId, cap.transactionId, cap.parentType, cap.parentId])).digest('hex');
   const job = { req, ctx, cap, state, active: true, expiresAt: cap.expiresAt, proof: null, recipient: null,
-    ownerScope: scope, ownerKey: 's2s-invoice-v441:owner:' + scope, ownerTransportKey: 's2s-invoice-v441:transport:' + scope, ownerClaimed: false, ownerRow: null, acknowledged: false };
+    ownerScope: scope, ownerKey: 's2s-invoice-v441:owner:' + scope, ownerTransportKey: 's2s-invoice-v441:transport:' + scope, ownerClaimed: false, ownerRow: null, acknowledged: false, reconcileOnly: input.reconcileOnly === true };
   DIRAC_PAID_CONTINUATIONS_V441.set(req, job);
   if (!diracInvoiceContinuationStateV441(req)) { DIRAC_PAID_CONTINUATIONS_V441.delete(req); throw new Error('PAID_CONTINUATION_BINDING_INVALID'); }
   return job;
 }
 async function diracMidtransPaidContinuationV441(req, res, input) {
-  let job = null, ownerTask = null, payload = null, responseCode = 503;
+  let job = null, ownerResult = null, payload = null, responseCode = 503;
+  let attached = false, prepared = false, settled = false, eventFinalized = false, customerResolved = false;
+  let customerStatus = 'pending', ownerStatus = 'pending', phase = 'identity';
   const reply = status => {
     if (job && job.acknowledged) return;
     if (res.headersSent || res.writableEnded) return;
     const body = status === 200 ? { ok: true, provider: 'midtrans', payment_status: 'paid', order_updated: true,
       gateway_reference: job.cap.gatewayReference, gateway_event_id: job.cap.gatewayEventId,
-      payment_transaction_id: job.cap.transactionId, order_mail_notification: { queued: true, delivery_confirmed: false } }
-      : { ok: false, code: 'PAID_INVOICE_PREPARATION_UNAVAILABLE', message: 'Pembayaran sudah tersimpan; persiapan invoice belum selesai.' };
+      payment_transaction_id: job.cap.transactionId, order_mail_notification: { queued: !settled, delivery_confirmed: false,
+        customer: { status: customerStatus, accepted: customerStatus === 'accepted' },
+        owner: { status: ownerStatus, accepted: ownerStatus === 'accepted' } } }
+      : { ok: false, code: 'PAID_INVOICE_PREPARATION_UNAVAILABLE', message: 'Pembayaran sudah tersimpan; pengiriman invoice belum terkonfirmasi.' };
     res.status(status).json(body); if (job) job.acknowledged = status === 200;
   };
-  try {
-    job = diracPaidContinuationCreateV441(req, input);
-    await diracInvoiceContinuationIdentityV441(job);
-    const dummy = { status(code) { responseCode = code; return this; }, json(value) { payload = value; return value; } };
-    const prepare = async () => {
-      if (job.acknowledged) return;
-      if (!diracInvoiceContinuationProofV441(req)) throw new Error('PAID_CONTINUATION_BINDING_INVALID');
+  // Register before starting work. The promise includes BOTH recipients,
+  // durable completion and cleanup; without runtime support, reply only at the end.
+  const work = Promise.resolve().then(async () => {
+    try {
+      job = diracPaidContinuationCreateV441(req, input);
+      await diracInvoiceContinuationIdentityV441(job);
+      phase = 'owner_claim';
       await diracPaidOwnerClaimV441(job);
-      const finalized = await midtransFinalizeGatewayEventV350(job.cap.gatewayEventId, job.cap.customerId);
-      if (!finalized || finalized.ok !== true) throw new Error('PAID_EVENT_FINALIZE_UNAVAILABLE');
-      reply(200);
-      ownerTask = diracPaidOwnerSendV441(job, input.mail, input.timing);
-    };
-    const task = diracInvoiceRunPreparedV440(req, dummy, job.ctx, job.proof, job.recipient.email, prepare);
-    const tracked = diracUserSecurityKeepAliveV327(req, task);
-    await tracked.promise;
-    // A durable existing daily pointer is a delivery claim too: do not resend.
-    if (!job.acknowledged && payload && responseCode === 429 && payload.code === 'INVOICE_SEND_DAILY_LIMIT'
-        && payload.prepared === true && ['accepted', 'unknown'].includes(payload.delivery_status)) await prepare();
-    if (!job.acknowledged) reply(503);
-    if (ownerTask) await ownerTask;
-    return { handled: true, acknowledged: job.acknowledged };
-  } catch (error) {
-    if (ownerTask) await ownerTask.catch(() => null);
-    if (!job || !job.acknowledged) reply(503);
-    try { console.error('[dirac-paid-continuation-v441]', JSON.stringify({ code: job && job.acknowledged ? 'PAID_MAIL_CONTINUATION_INCOMPLETE' : 'PAID_MAIL_PREPARATION_UNAVAILABLE', payment_committed: true })); } catch (_) {}
-    return { handled: true, acknowledged: !!(job && job.acknowledged) };
-  } finally { if (job) { job.active = false; DIRAC_PAID_CONTINUATIONS_V441.delete(req); } }
+      const dummy = { status(code) { responseCode = code; return this; }, json(value) { payload = value; return value; } };
+      const prepare = async () => {
+        if (prepared) return;
+        if (!diracInvoiceContinuationProofV441(req)) throw new Error('PAID_CONTINUATION_BINDING_INVALID');
+        prepared = true;
+        if (attached) reply(200);
+      };
+      phase = 'customer';
+      diracPaidMailTimingMarkV371(input.timing, 'mail_start');
+      try { await diracInvoiceRunPreparedV440(req, dummy, job.ctx, job.proof, job.recipient.email, prepare); customerResolved = !!payload; }
+      catch (_) { payload = { ok: false, status: 'unknown' }; }
+      customerStatus = payload && payload.ok === true && payload.accepted === true ? 'accepted'
+        : payload && ['idle','pending','accepted','failed','unknown'].includes(payload.delivery_status || payload.status)
+          ? (payload.delivery_status || payload.status) : 'failed';
+      // No shared request-scoped RPC overlap: owner starts after customer cleanup.
+      // A PDF/preparation failure must not silently suppress the owner's receipt.
+      phase = 'owner';
+      ownerResult = await diracPaidOwnerSendV441(job, input.mail, input.timing);
+      ownerStatus = ownerResult && ['idle','pending','accepted','failed','unknown'].includes(ownerResult.status) ? ownerResult.status : 'failed';
+      settled = true;
+      const terminal = status => status === 'accepted' || status === 'unknown' || (job.reconcileOnly && status === 'idle');
+      if (customerResolved && terminal(customerStatus) && terminal(ownerStatus)) {
+        phase = 'finalize';
+        const finalized = await midtransFinalizeGatewayEventV350(job.cap.gatewayEventId, job.cap.customerId);
+        if (!finalized || finalized.ok !== true) throw new Error('PAID_EVENT_FINALIZE_UNAVAILABLE');
+        eventFinalized = true;
+      }
+      reply(eventFinalized ? 200 : 503);
+      return { handled: true, acknowledged: job.acknowledged };
+    } catch (_) {
+      if (!job || !job.acknowledged) reply(503);
+      return { handled: true, acknowledged: !!(job && job.acknowledged) };
+    } finally {
+      diracPaidMailTimingMarkV371(input.timing, 'mail_complete');
+      diracPaidMailTimingEmitV371(req, input.timing, { ok: customerStatus === 'accepted' && ownerStatus === 'accepted',
+        customer: { sent: !!(payload && responseCode === 200 && payload.accepted === true) }, owner: { sent: !!(ownerResult && ownerResult.sent === true) } });
+      try { console.info('[dirac-paid-continuation-v441]', JSON.stringify({ event: 'automatic_invoice_result',
+        phase, runtime_attached: attached, event_finalized: eventFinalized, payment_committed: !!job,
+        customer_status: customerStatus, owner_status: ownerStatus, inbox_delivery_confirmed: false })); } catch (_) {}
+      if (job) { job.active = false; DIRAC_PAID_CONTINUATIONS_V441.delete(req); }
+    }
+  });
+  const tracked = diracUserSecurityKeepAliveV327(req, work);
+  attached = tracked.attached === true;
+  return await tracked.promise;
 }
 
 async function midtransHandleWebhook(req, res) {
@@ -20589,8 +20619,9 @@ async function midtransHandleWebhook(req, res) {
       : (orderAlreadyPaid && paidOrderPrefetchAfterBindingV376
         ? paidOrderPrefetchAfterBindingV376
         : null);
-    if (orderMailDeliveryRequiredV368) {
+    if (orderMailDeliveryRequiredV368 || processedDuplicateEventV368) {
       return await diracMidtransPaidContinuationV441(req, res, {
+        reconcileOnly: !orderMailDeliveryRequiredV368,
         transaction: txPatch.skipped === true ? tx : txPatch.data && txPatch.data[0],
         order: orderAlreadyPaid ? ownerCheck.order : orderPatch.data && orderPatch.data[0],
         timing: paidMailTimingV371,
@@ -61257,6 +61288,7 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
   const operations = Object.freeze({
     version: 'dirac-invoice-v440', action, method: ctx.method, body: source,
     identity: Object.freeze({ userId: proof.userId, customerId: proof.customerId, email, origin }), assertFullGuard: assertContext, verifyOwner, read, onPrepared,
+    reconcileOnly: continuation && diracInvoiceContinuationStateV441(req).reconcileOnly === true,
     document: async () => { assertContext(); const data = await diracInvoicePaidDataV440(proof, db, true); assertContext(); return ptdin.__diracInvoiceDocumentV440(data, { userId: proof.userId, customerId: proof.customerId, email, origin }, { nib: process.env.DIRAC_INVOICE_NIB, npwp: process.env.DIRAC_INVOICE_NPWP }); },
     storageKey: () => { assertContext(); return crypto.createHmac('sha256', diracCentralRootSecretV146()).update('DIRAC_INVOICE_V440_STORAGE:' + proof.userId + ':' + proof.customerId).digest(); },
     claim: async (key, record, ttl) => {

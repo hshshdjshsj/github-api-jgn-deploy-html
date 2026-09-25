@@ -338,7 +338,9 @@ async function invoiceBusinessV440(req, res, ops) {
     await ops.verifyOwner();
     if (ops.action === 'invoice_email_status') return await statusResponse();
     const priorClaim = await read(rateKey), latest = priorClaim ? null : await read(headKey);
-    const prior = priorClaim || (nextSend(latest) !== null ? latest : null), held = prior ? await heldClaim(prior) : null;
+    const reconcileOnly = typeof ops.onPrepared === 'function' && ops.reconcileOnly === true;
+    const prior = priorClaim || (reconcileOnly || nextSend(latest) !== null ? latest : null), held = prior ? await heldClaim(prior) : null;
+    if (reconcileOnly && !held) return publish(200, { ok: true, skipped: true, status: 'idle', code: 'INVOICE_RECONCILIATION_RECORD_MISSING' });
     const manualFailedRetry = !!(held && held.transport && held.record.status === 'failed' && typeof ops.onPrepared !== 'function');
     if (held && ((held.transport && !manualFailedRetry) || ['accepted','unknown'].includes(held.record.status) || (held.record.status === 'pending' && Date.now() - held.record.prepared_at < 120000) || (manualFailedRetry && Date.now() - held.record.prepared_at < failedRetryDelay))) return await limited(held);
     const reuse = held && !manualFailedRetry ? held : null;
