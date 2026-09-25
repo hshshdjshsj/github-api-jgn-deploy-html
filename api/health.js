@@ -37959,7 +37959,26 @@ function diracCsrfRequestBinding(req) {
       ? readCookieTokenCandidates(cookies, DOMAIN_SIGNED_SESSION_COOKIE)
       : [cookies[DOMAIN_SIGNED_SESSION_COOKIE]].filter(Boolean);
     for (const value of values) {
-      const payload = verifyDomainSessionCookieValue(value);
+      let payload = verifyDomainSessionCookieValue(value);
+      if (!payload) {
+        // Binding metadata is not authentication. Retain the signed identity at
+        // expiry so an unchanged cookie cannot invalidate an in-flight CSRF proof.
+        // Authentication still uses verifyDomainSessionCookieValue unchanged.
+        const decoded = diracCsrfDecodeToken(value, getDomainSignedSessionSecret());
+        const signed = decoded && decoded.payload;
+        const now = Math.floor(Date.now() / 1000);
+        const iat = Number(signed && signed.iat || 0);
+        const exp = Number(signed && signed.exp || 0);
+        const id = String(signed && (signed.uid || signed.id) || '').trim();
+        const email = normalizeAuthEmail(signed && signed.email || '');
+        if (signed && signed.typ === DOMAIN_SIGNED_SESSION_TYPE
+            && Number.isSafeInteger(iat) && iat > 0 && iat <= now + 60
+            && Number.isSafeInteger(exp) && exp <= now && exp > iat
+            && exp - iat <= 8 * 60 * 60 && id && email
+            && (signed.sid === undefined || normalizeDomainSignedSessionId(signed.sid))) {
+          payload = { id, email };
+        }
+      }
       if (payload && payload.id && payload.email) {
         signedUser = payload;
         break;
