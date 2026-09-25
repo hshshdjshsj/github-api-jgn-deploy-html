@@ -20178,25 +20178,30 @@ function diracInvoiceContinuationPathV441(job, path, options) {
     + '&customer_id=eq.' + encodeURIComponent(job.cap.customerId)
     + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&limit=2';
   const ownerPath = '/rest/v1/dirac_s2s_security?select=security_key,record_json,expires_at&security_key=eq.' + encodeURIComponent(job.ownerKey) + '&limit=1';
+  const customer = job.customerReceipt;
+  const customerPath = customer && diracInvoiceContinuationProofV441(job.req)
+    ? '/rest/v1/dirac_s2s_security?select=security_key,record_json,expires_at&security_key=eq.' + encodeURIComponent(customer.ownerKey) + '&limit=1' : '';
   if (method === 'GET' && optionKeys === 'auth,method' && options.auth === 'service') {
-    return path === linkPath || path === ownerPath
+    return path === linkPath || path === ownerPath || (customerPath && path === customerPath)
       || (customerSecurityLooksLikeUuid(job.providerUserId) && path === '/auth/v1/admin/users/' + encodeURIComponent(job.providerUserId));
   }
   const body = options.body;
+  const lane = customer && customerPath && ((body && (body.p_security_key === customer.ownerKey || body.p_security_key === customer.ownerTransportKey))
+    || path.startsWith('/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(customer.ownerKey) + '&')) ? customer : job;
   if (method === 'POST' && optionKeys === 'auth,body,method' && path === '/rest/v1/rpc/dirac_central_atomic_claim_record_v230') {
     const expiry = Date.parse(String(body && body.p_expires_at || ''));
     return !!(body && Object.keys(body).sort().join(',') === 'p_expires_at,p_record_json,p_security_key,p_table_name'
       && body.p_table_name === DIRAC_S2S_SECURITY_TABLE
-      && (body.p_security_key === job.ownerKey || (body.p_security_key === job.ownerTransportKey && job.ownerClaimed && job.ownerRow))
-      && diracPaidOwnerRecordV441(job, body.p_record_json) && body.p_record_json.status === 'pending'
+      && (body.p_security_key === lane.ownerKey || (body.p_security_key === lane.ownerTransportKey && lane.ownerClaimed && lane.ownerRow))
+      && diracPaidOwnerRecordV441(lane, body.p_record_json) && body.p_record_json.status === 'pending'
       && Number.isFinite(expiry) && expiry === body.p_record_json.created_at + 100 * 365 * 86400000);
   }
-  if (method === 'PATCH' && optionKeys === 'auth,body,method,prefer' && options.prefer === 'return=representation' && job.ownerClaimed && job.ownerRow) {
-    const previous = job.ownerRow;
-    const expected = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(job.ownerKey)
+  if (method === 'PATCH' && optionKeys === 'auth,body,method,prefer' && options.prefer === 'return=representation' && lane.ownerClaimed && lane.ownerRow) {
+    const previous = lane.ownerRow;
+    const expected = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(lane.ownerKey)
       + '&expires_at=eq.' + encodeURIComponent(previous.expires_at) + '&select=security_key,expires_at';
     return !!(path === expected && body && Object.keys(body).sort().join(',') === 'expires_at,record_json'
-      && diracPaidOwnerRecordV441(job, body.record_json) && body.record_json.created_at === previous.record_json.created_at
+      && diracPaidOwnerRecordV441(lane, body.record_json) && body.record_json.created_at === previous.record_json.created_at
       && body.record_json.revision !== previous.record_json.revision && ['accepted','failed','unknown'].includes(body.record_json.status)
       && Date.parse(body.expires_at) === Date.parse(previous.expires_at) + 1);
   }
@@ -20243,69 +20248,82 @@ async function diracInvoiceContinuationIdentityV441(job) {
 function diracPaidOwnerRecordV441(job, record) {
   return !!(record && typeof record === 'object' && !Array.isArray(record)
     && Object.keys(record).sort().join(',') === 'created_at,revision,scope,status,updated_at,version'
-    && record.version === 'dirac-paid-owner-v441' && record.scope === job.ownerScope
+    && record.version === (job.recordVersion || 'dirac-paid-owner-v441') && record.scope === job.ownerScope
     && /^[a-f0-9]{32}$/.test(String(record.revision || '')) && ['pending','accepted','failed','unknown'].includes(record.status)
     && Number.isSafeInteger(record.created_at) && record.created_at > 0 && Number.isSafeInteger(record.updated_at)
     && record.updated_at >= record.created_at && record.updated_at <= Date.now() + 1000);
 }
-async function diracPaidOwnerClaimV441(job) {
+function diracPaidReceiptLaneV443(job, role) {
+  if (!job || !['owner', 'customer'].includes(role) || diracInvoiceContinuationStateV441(job.req) !== job) throw new Error('PAID_RECEIPT_GUARD_REQUIRED');
+  if (role === 'owner') return job;
+  if (!job.customerReceipt || !diracInvoiceContinuationProofV441(job.req) || !diracInvoiceContinuationRecipientV441(job.req)) throw new Error('PAID_RECEIPT_RECIPIENT_REQUIRED');
+  return job.customerReceipt;
+}
+async function diracPaidOwnerClaimV441(job, role = 'owner') {
+  const lane = diracPaidReceiptLaneV443(job, role);
   const now = Date.now();
-  const record = { version: 'dirac-paid-owner-v441', scope: job.ownerScope, revision: crypto.randomBytes(16).toString('hex'), status: 'pending', created_at: now, updated_at: now };
+  const record = { version: lane.recordVersion || 'dirac-paid-owner-v441', scope: lane.ownerScope, revision: crypto.randomBytes(16).toString('hex'), status: 'pending', created_at: now, updated_at: now };
   const expiry = new Date(now + 100 * 365 * 86400000).toISOString();
   const claim = job.reconcileOnly === true ? { ok: true, data: false } : await diracInvoiceContinuationFetchV441(job, '/rest/v1/rpc/dirac_central_atomic_claim_record_v230', {
-    method: 'POST', auth: 'service', body: { p_table_name: DIRAC_S2S_SECURITY_TABLE, p_security_key: job.ownerKey, p_record_json: record, p_expires_at: expiry }
+    method: 'POST', auth: 'service', body: { p_table_name: DIRAC_S2S_SECURITY_TABLE, p_security_key: lane.ownerKey, p_record_json: record, p_expires_at: expiry }
   });
   if (!claim || claim.ok !== true || typeof claim.data !== 'boolean') throw new Error('PAID_OWNER_JOB_UNAVAILABLE');
-  const path = '/rest/v1/dirac_s2s_security?select=security_key,record_json,expires_at&security_key=eq.' + encodeURIComponent(job.ownerKey) + '&limit=1';
+  const path = '/rest/v1/dirac_s2s_security?select=security_key,record_json,expires_at&security_key=eq.' + encodeURIComponent(lane.ownerKey) + '&limit=1';
   const check = await diracInvoiceContinuationFetchV441(job, path, { method: 'GET', auth: 'service' });
   const rows = check && check.ok === true && Array.isArray(check.data) ? check.data : [];
   const row = rows.length === 1 ? rows[0] : null;
   if (job.reconcileOnly === true && check && check.ok === true && Array.isArray(check.data) && rows.length === 0) return;
-  if (!row || row.security_key !== job.ownerKey || !diracPaidOwnerRecordV441(job, row.record_json)
+  if (!row || row.security_key !== lane.ownerKey || !diracPaidOwnerRecordV441(lane, row.record_json)
       || !Number.isFinite(Date.parse(row.expires_at)) || Date.parse(row.expires_at) <= Date.now()) throw new Error('PAID_OWNER_JOB_UNVERIFIED');
   if (claim.data === true && (row.record_json.revision !== record.revision || Date.parse(row.expires_at) !== Date.parse(expiry))) throw new Error('PAID_OWNER_JOB_CLAIM_MISMATCH');
-  job.ownerRow = row;
-  job.ownerClaimed = ['pending', 'failed'].includes(row.record_json.status);
+  lane.ownerRow = row;
+  lane.ownerClaimed = ['pending', 'failed'].includes(row.record_json.status);
 }
-async function diracPaidOwnerFinishV441(job, status) {
-  if (!job.ownerClaimed || !job.ownerRow || !['accepted','failed','unknown'].includes(status)) return false;
-  const previous = job.ownerRow, record = { ...previous.record_json, status, revision: crypto.randomBytes(16).toString('hex'), updated_at: Date.now() };
-  if (!diracPaidOwnerRecordV441(job, record)) return false;
-  const path = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(job.ownerKey)
+async function diracPaidOwnerFinishV441(job, status, role = 'owner') {
+  const lane = diracPaidReceiptLaneV443(job, role);
+  if (!lane.ownerClaimed || !lane.ownerRow || !['accepted','failed','unknown'].includes(status)) return false;
+  const previous = lane.ownerRow, record = { ...previous.record_json, status, revision: crypto.randomBytes(16).toString('hex'), updated_at: Date.now() };
+  if (!diracPaidOwnerRecordV441(lane, record)) return false;
+  const path = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(lane.ownerKey)
     + '&expires_at=eq.' + encodeURIComponent(previous.expires_at) + '&select=security_key,expires_at';
   const expiresAt = new Date(Date.parse(previous.expires_at) + 1).toISOString();
   const result = await diracInvoiceContinuationFetchV441(job, path, { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: { record_json: record, expires_at: expiresAt } });
   return !!(result && result.ok === true && Array.isArray(result.data) && result.data.length === 1
-    && result.data[0].security_key === job.ownerKey && Date.parse(result.data[0].expires_at) === Date.parse(expiresAt));
+    && result.data[0].security_key === lane.ownerKey && Date.parse(result.data[0].expires_at) === Date.parse(expiresAt));
 }
-async function diracPaidOwnerSendV441(job, input, timing) {
-  if (!job.ownerClaimed) return { sent: false, skipped: true, status: job.ownerRow ? job.ownerRow.record_json.status : 'idle', reason: 'owner_delivery_already_claimed' };
+async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
+  const lane = diracPaidReceiptLaneV443(job, role);
+  if (!lane.ownerClaimed) return { sent: false, skipped: true, status: lane.ownerRow ? lane.ownerRow.record_json.status : 'idle', reason: role + '_delivery_already_claimed' };
   let started = false, transportClaimed = false, status = 'failed';
   try {
     if (!diracInvoiceContinuationProofV441(job.req)) throw new Error('PAID_OWNER_GUARD_REQUIRED');
     const context = await orderMailBuildPaidInvoiceContextFromBackend(input.tx, 'midtrans', input.paidAt, input.paidOrder, null,
       orderMailPaymentDescriptorV374('midtrans', input.paymentEvidence, input.webhookPayload));
     if (!context || context.ok !== true) throw new Error('PAID_OWNER_DOCUMENT_UNAVAILABLE');
-    const config = orderMailSmtpConfig('owner');
-    if (!orderMailOwnerEnabled() || !config.configured || !config.recipients.length) throw new Error('PAID_OWNER_MAIL_NOT_CONFIGURED');
-    const messages = orderMailBuildNewOrderMessages(orderMailNormalizeOrderInput(context.mail));
-    const now = Date.now(), transportRecord = { version: 'dirac-paid-owner-v441', scope: job.ownerScope,
+    const config = orderMailSmtpConfig(role);
+    const recipients = role === 'customer' ? [job.recipient.email] : config.recipients;
+    if (!(role === 'customer' ? orderMailCustomerEnabled() : orderMailOwnerEnabled()) || !config.configured || !recipients.length) throw new Error('PAID_OWNER_MAIL_NOT_CONFIGURED');
+    const mail = role === 'customer' ? { ...context.mail, customer: { ...context.mail.customer, email: job.recipient.email } } : context.mail;
+    const messages = orderMailBuildNewOrderMessages(orderMailNormalizeOrderInput(mail));
+    const now = Date.now(), transportRecord = { version: lane.recordVersion || 'dirac-paid-owner-v441', scope: lane.ownerScope,
       revision: crypto.randomBytes(16).toString('hex'), status: 'pending', created_at: now, updated_at: now };
     const transport = await diracInvoiceContinuationFetchV441(job, '/rest/v1/rpc/dirac_central_atomic_claim_record_v230', {
       method: 'POST', auth: 'service', body: { p_table_name: DIRAC_S2S_SECURITY_TABLE,
-        p_security_key: job.ownerTransportKey, p_record_json: transportRecord,
+        p_security_key: lane.ownerTransportKey, p_record_json: transportRecord,
         p_expires_at: new Date(now + 100 * 365 * 86400000).toISOString() }
     });
     if (!transport || transport.ok !== true || typeof transport.data !== 'boolean') throw new Error('PAID_OWNER_TRANSPORT_UNAVAILABLE');
-    if (transport.data !== true) return { sent: false, skipped: true, status: 'unknown', reason: 'owner_transport_already_claimed' };
+    if (transport.data !== true) return { sent: false, skipped: true, status: 'unknown', reason: role + '_transport_already_claimed' };
     transportClaimed = true;
+    // Recipient and payment capability must still be valid immediately before transport.
+    diracPaidReceiptLaneV443(job, role);
     started = true;
-    const result = await orderMailSendViaSmtpSafe(config, { to: config.recipients, subject: messages.ownerSubject,
-      text: messages.ownerText, html: messages.ownerHtml, fromName: config.fromName, fromEmail: config.fromEmail }, timing ? { timing, role: 'owner' } : null);
+    const result = await orderMailSendViaSmtpSafe(config, { to: recipients, subject: messages[role + 'Subject'],
+      text: messages[role + 'Text'], html: messages[role + 'Html'], fromName: config.fromName, fromEmail: config.fromEmail }, timing ? { timing, role } : null);
     status = result && result.ok === true ? 'accepted' : 'unknown';
     return { sent: status === 'accepted', status };
   } catch (_) { status = started ? 'unknown' : 'failed'; return { sent: false, status }; }
-  finally { if (transportClaimed) await diracPaidOwnerFinishV441(job, status).catch(() => false); }
+  finally { if (transportClaimed) await diracPaidOwnerFinishV441(job, status, role).catch(() => false); }
 }
 function diracPaidContinuationCreateV441(req, input) {
   const ctx = diracCentralCurrentContextV149(), cap = ctx && DIRAC_MIDTRANS_WEBHOOK_CAPABILITIES_V350.get(ctx), state = ctx && DIRAC_MIDTRANS_WEBHOOK_STATES_V352.get(ctx);
@@ -20322,13 +20340,15 @@ function diracPaidContinuationCreateV441(req, input) {
   const scope = crypto.createHash('sha256').update(JSON.stringify([cap.customerId, cap.transactionId, cap.parentType, cap.parentId])).digest('hex');
   const job = { req, ctx, cap, state, active: true, expiresAt: cap.expiresAt, proof: null, recipient: null,
     ownerScope: scope, ownerKey: 's2s-invoice-v441:owner:' + scope, ownerTransportKey: 's2s-invoice-v441:transport:' + scope, ownerClaimed: false, ownerRow: null, acknowledged: false, reconcileOnly: input.reconcileOnly === true, timing: input.timing };
+  job.customerReceipt = { recordVersion: 'dirac-paid-customer-v443', ownerScope: scope,
+    ownerKey: 's2s-invoice-v443:customer:' + scope, ownerTransportKey: 's2s-invoice-v443:customer-transport:' + scope, ownerClaimed: false, ownerRow: null };
   DIRAC_PAID_CONTINUATIONS_V441.set(req, job);
   if (!diracInvoiceContinuationStateV441(req)) { DIRAC_PAID_CONTINUATIONS_V441.delete(req); throw new Error('PAID_CONTINUATION_BINDING_INVALID'); }
   return job;
 }
 async function diracMidtransPaidContinuationV441(req, res, input) {
-  let job = null, ownerResult = null, payload = null, responseCode = 503;
-  let attached = false, prepared = false, settled = false, eventFinalized = false, customerResolved = false;
+  let job = null, ownerResult = null, customerResult = null;
+  let attached = false, settled = false, eventFinalized = false, customerResolved = false;
   let customerStatus = 'pending', ownerStatus = 'pending', phase = 'identity';
   const reply = status => {
     if (job && job.acknowledged) return;
@@ -20347,26 +20367,28 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
     try {
       job = diracPaidContinuationCreateV441(req, input);
       await diracInvoiceContinuationIdentityV441(job);
-      phase = 'owner_claim';
-      await diracPaidOwnerClaimV441(job);
-      const dummy = { status(code) { responseCode = code; return this; }, json(value) { payload = value; return value; } };
-      const prepare = async () => {
-        if (prepared) return;
-        if (!diracInvoiceContinuationProofV441(req)) throw new Error('PAID_CONTINUATION_BINDING_INVALID');
-        prepared = true;
-        if (attached) reply(200);
-      };
+      phase = 'receipt_claims';
+      let customerClaimReady = false, ownerClaimReady = false;
+      try { await diracPaidOwnerClaimV441(job, 'customer'); customerClaimReady = true; } catch (_) {}
+      try { await diracPaidOwnerClaimV441(job); ownerClaimReady = true; } catch (_) {}
+      // Only acknowledge early when both receipt claims are durable and the
+      // complete task is already registered with the runtime.
+      if (attached && customerClaimReady && ownerClaimReady) reply(200);
       phase = 'customer';
       diracPaidMailTimingMarkV371(input.timing, 'mail_start');
-      try { await diracInvoiceRunPreparedV440(req, dummy, job.ctx, job.proof, job.recipient.email, prepare); customerResolved = !!payload; }
-      catch (_) { payload = { ok: false, status: 'unknown' }; }
-      customerStatus = payload && payload.ok === true && payload.accepted === true ? 'accepted'
-        : payload && ['idle','pending','accepted','failed','unknown'].includes(payload.delivery_status || payload.status)
-          ? (payload.delivery_status || payload.status) : 'failed';
-      // No shared request-scoped RPC overlap: owner starts after customer cleanup.
-      // A PDF/preparation failure must not silently suppress the owner's receipt.
+      try {
+        if (!customerClaimReady) throw new Error('PAID_CUSTOMER_CLAIM_UNAVAILABLE');
+        customerResult = await diracPaidOwnerSendV441(job, input.mail, input.timing, 'customer');
+        customerResolved = true;
+      } catch (_) { customerResult = { sent: false, status: 'failed' }; }
+      customerStatus = customerResult && ['idle','pending','accepted','failed','unknown'].includes(customerResult.status) ? customerResult.status : 'failed';
+      // Automatic receipts never call the manual PDF preparation/cooldown path.
+      // Failure in either recipient does not suppress the other recipient.
       phase = 'owner';
-      ownerResult = await diracPaidOwnerSendV441(job, input.mail, input.timing);
+      try {
+        if (!ownerClaimReady) throw new Error('PAID_OWNER_CLAIM_UNAVAILABLE');
+        ownerResult = await diracPaidOwnerSendV441(job, input.mail, input.timing);
+      } catch (_) { ownerResult = { sent: false, status: 'failed' }; }
       ownerStatus = ownerResult && ['idle','pending','accepted','failed','unknown'].includes(ownerResult.status) ? ownerResult.status : 'failed';
       settled = true;
       const terminal = status => status === 'accepted' || status === 'unknown' || (job.reconcileOnly && status === 'idle');
@@ -20384,12 +20406,12 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
     } finally {
       diracPaidMailTimingMarkV371(input.timing, 'mail_complete');
       diracPaidMailTimingEmitV371(req, input.timing, { ok: customerStatus === 'accepted' && ownerStatus === 'accepted',
-        customer: { sent: !!(payload && responseCode === 200 && payload.accepted === true) }, owner: { sent: !!(ownerResult && ownerResult.sent === true) } });
+        customer: { sent: !!(customerResult && customerResult.sent === true) }, owner: { sent: !!(ownerResult && ownerResult.sent === true) } });
       try { console.info('[dirac-paid-continuation-v441]', JSON.stringify({ event: 'automatic_invoice_result',
         phase, runtime_attached: attached, event_finalized: eventFinalized, payment_committed: !!job,
         customer_status: customerStatus, owner_status: ownerStatus,
-        customer_new_send: !!(payload && responseCode === 200 && payload.accepted === true),
-        customer_previously_accepted: customerStatus === 'accepted' && responseCode === 429,
+        customer_new_send: !!(customerResult && customerResult.sent === true),
+        customer_previously_accepted: customerStatus === 'accepted' && !!(customerResult && customerResult.skipped === true),
         owner_new_send: !!(ownerResult && ownerResult.sent === true),
         inbox_delivery_confirmed: false })); } catch (_) {}
       if (job) { job.active = false; DIRAC_PAID_CONTINUATIONS_V441.delete(req); }
@@ -52238,7 +52260,7 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
           </table>
           <div class="gmail-blend-screen"><div class="gmail-blend-difference"><p style="margin:0;font-size:12px;line-height:1.65;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tim PT Dirac Inovasi Nusantara tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui WhatsApp, Instagram, telepon, maupun balasan email.</p></div></div>
         </td></tr>
-        ${input.invoiceEmail === true ? `<tr><td class="dirac-footer-pad" bgcolor="#e8f1fa" style="padding:24px 26px;border-top:1px solid #9cb5cf;background-color:#e8f1fa;color:#18324f"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#e8f1fa" style="width:100%;border-collapse:collapse;background-color:#e8f1fa;color:#18324f"><tr><td style="padding:0;font-family:Arial,Helvetica,sans-serif"><div style="font-size:18px;line-height:1.4;font-weight:700;color:#18324f">PT Dirac Inovasi Nusantara</div><div style="margin-top:8px;font-size:12px;line-height:1.5;font-weight:700;color:#284b70">TRANSAKSI &bull; PRIVASI &bull; KEAMANAN</div><p style="margin:14px 0 0;font-size:13px;line-height:1.65;color:#284b70">Invoice PDF dikirim otomatis untuk pesanan Anda. Kata sandi hanya tersedia di halaman Invoice akun. Jangan bagikan file atau kata sandi kepada pihak lain.</p></td></tr></table></td></tr>` : `<tr><td class="dirac-footer-pad" bgcolor="#b9dcff" style="padding:24px 26px 26px;border-top:1px solid #79aee5;background:#b9dcff;background-color:#b9dcff;background-image:linear-gradient(#b9dcff,#b9dcff)"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10213a" style="width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24466c;border-radius:16px;overflow:hidden;box-shadow:0 10px 24px rgba(14,42,72,.18);background:#10213a;background-color:#10213a;background-image:linear-gradient(#10213a,#10213a)"><tr><td style="padding:22px 24px 23px;border-left:4px solid #27a2bd"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:18px;line-height:1.3;font-weight:800;letter-spacing:.14em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">PT Dirac Inovasi Nusantara</div><div style="margin-top:7px;font-size:11px;line-height:1.5;font-weight:700;letter-spacing:.13em;color:#d9e8ff!important;-webkit-text-fill-color:#d9e8ff!important;mso-color-alt:#d9e8ff">RECOVERY &bull; PRIVACY &bull; SECURITY</div><div style="margin-top:14px;font-size:13px;line-height:1.55;color:#d7e7f8!important;-webkit-text-fill-color:#d7e7f8!important;mso-color-alt:#d7e7f8">Secure Recovery &middot; Protected Delivery</div><p style="margin:17px 0 0;font-size:11px;line-height:1.65;color:#bfd0e3!important;-webkit-text-fill-color:#bfd0e3!important;mso-color-alt:#bfd0e3">Email ini dibuat otomatis oleh sistem PT Dirac Inovasi Nusantara. Mohon tidak membalas dan jangan meneruskan material keamanan kepada pihak lain.</p></div></div></td></tr></table></td></tr>`}
+        ${input.invoiceEmail === true ? `<tr><td class="dirac-footer-pad" bgcolor="#e8f1fa" style="padding:24px 26px;border-top:1px solid #9cb5cf;background-color:#e8f1fa;color:#18324f"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#e8f1fa" style="width:100%;border-collapse:collapse;background-color:#e8f1fa;color:#18324f"><tr><td style="padding:0;font-family:Arial,Helvetica,sans-serif"><div style="font-size:18px;line-height:1.4;font-weight:700;color:#18324f">PT Dirac Inovasi Nusantara</div><div style="margin-top:8px;font-size:12px;line-height:1.5;font-weight:700;color:#284b70">TRANSAKSI &bull; PRIVASI &bull; KEAMANAN</div><p style="margin:14px 0 0;font-size:13px;line-height:1.65;color:#284b70">Invoice PDF ini dikirim atas permintaan Anda dari halaman Invoice. Kata sandi hanya tersedia di halaman Invoice akun. Jangan bagikan file atau kata sandi kepada pihak lain.</p></td></tr></table></td></tr>` : `<tr><td class="dirac-footer-pad" bgcolor="#b9dcff" style="padding:24px 26px 26px;border-top:1px solid #79aee5;background:#b9dcff;background-color:#b9dcff;background-image:linear-gradient(#b9dcff,#b9dcff)"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10213a" style="width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24466c;border-radius:16px;overflow:hidden;box-shadow:0 10px 24px rgba(14,42,72,.18);background:#10213a;background-color:#10213a;background-image:linear-gradient(#10213a,#10213a)"><tr><td style="padding:22px 24px 23px;border-left:4px solid #27a2bd"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:18px;line-height:1.3;font-weight:800;letter-spacing:.14em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">PT Dirac Inovasi Nusantara</div><div style="margin-top:7px;font-size:11px;line-height:1.5;font-weight:700;letter-spacing:.13em;color:#d9e8ff!important;-webkit-text-fill-color:#d9e8ff!important;mso-color-alt:#d9e8ff">RECOVERY &bull; PRIVACY &bull; SECURITY</div><div style="margin-top:14px;font-size:13px;line-height:1.55;color:#d7e7f8!important;-webkit-text-fill-color:#d7e7f8!important;mso-color-alt:#d7e7f8">Secure Recovery &middot; Protected Delivery</div><p style="margin:17px 0 0;font-size:11px;line-height:1.65;color:#bfd0e3!important;-webkit-text-fill-color:#bfd0e3!important;mso-color-alt:#bfd0e3">Email ini dibuat otomatis oleh sistem PT Dirac Inovasi Nusantara. Mohon tidak membalas dan jangan meneruskan material keamanan kepada pihak lain.</p></div></div></td></tr></table></td></tr>`}
         <tr><td style="padding:0;line-height:0;font-size:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="50%" height="4" bgcolor="#5276e8" style="height:4px;line-height:4px;font-size:0;background:#5276e8;background-color:#5276e8">&nbsp;</td><td width="30%" height="4" bgcolor="#148ba4" style="height:4px;line-height:4px;font-size:0;background:#148ba4;background-color:#148ba4">&nbsp;</td><td width="20%" height="4" bgcolor="#9a741f" style="height:4px;line-height:4px;font-size:0;background:#9a741f;background-color:#9a741f">&nbsp;</td></tr></table></td></tr>
       </table>
     </td></tr>
@@ -54552,7 +54574,7 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
   const customerInput = {
     preheader: paid ? 'Pembayaran pesanan Anda telah diterima dan diverifikasi.' : 'Pesanan Anda telah diterima PT Dirac Inovasi Nusantara.',
     brandLabel: 'SECURE PAYMENT', eyebrow: paid ? 'PAYMENT CONFIRMED' : 'ORDER CONFIRMATION',
-    title: paid ? 'Pembayaran\nBerhasil' : 'Pesanan\nDiterima',
+    title: paid ? 'Pembayaran\nDiterima' : 'Pesanan\nDiterima',
     greeting: 'Yth. ' + customerName + ',',
     summary: paid ? 'Pembayaran Anda telah berhasil diterima dan diverifikasi. Email ini memuat data pembayaran, penerima, alamat pengiriman, catatan, dan rincian item yang tercatat pada backend.' : 'Pesanan Anda telah diterima. Email ini memuat data penerima, alamat pengiriman, catatan, dan rincian item yang tercatat pada backend.',
     statusLabel: 'STATUS PEMBAYARAN', statusValue: paid ? 'LUNAS / PAID' : 'MENUNGGU PEMBAYARAN',
@@ -61279,7 +61301,7 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
         || record.scope !== scope || !/^[A-Za-z0-9_-]{43}$/.test(String(record.file_id || '')) || !/^[a-f0-9]{32}$/.test(String(record.revision || ''))
         || Buffer.byteLength(JSON.stringify(record), 'utf8') > 4096) return false;
     if (key === sendKey || key === headKey || key === transportKey(record.file_id)) return Object.keys(record).sort().join(',') === 'created_at,file_id,next_allowed_at,revision,scope,version'
-      && Number.isSafeInteger(record.created_at) && [86400000, 7 * 86400000].includes(record.next_allowed_at - record.created_at);
+      && Number.isSafeInteger(record.created_at) && [86400000, 7 * 86400000, 14 * 86400000].includes(record.next_allowed_at - record.created_at);
     if (key !== fileKey(record.file_id) || record.order_id !== proof.orderId || record.kind !== proof.kind
         || !/^[a-f0-9]{64}$/.test(String(record.file_sha256 || '')) || !['pending','accepted','failed','unknown'].includes(record.status)
         || !Number.isSafeInteger(record.created_at) || !Number.isSafeInteger(record.prepared_at) || record.prepared_at < record.created_at || record.expires_at !== record.created_at + 30 * 86400000) return false;
@@ -61317,8 +61339,8 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
     storageKey: () => { assertContext(); return crypto.createHmac('sha256', diracCentralRootSecretV146()).update('DIRAC_INVOICE_V440_STORAGE:' + proof.userId + ':' + proof.customerId).digest(); },
     claim: async (key, record, ttl) => {
       assertContext(); if (action !== 'invoice_email_send' || !recordAllowed(key, record)
-          || ((key === sendKey || key === headKey || key === transportKey(record.file_id)) && record.next_allowed_at !== record.created_at + 7 * 86400000)
-          || !((key === sendKey && ttl === 7 * 86400) || ((key === headKey || key === fileKey(record.file_id) || (key === transportKey(record.file_id) && knownFiles.has(fileKey(record.file_id)))) && ttl === 30 * 86400))) throw new Error('INVOICE_CLAIM_INVALID');
+          || ((key === sendKey || key === headKey || key === transportKey(record.file_id)) && record.next_allowed_at !== record.created_at + 14 * 86400000)
+          || !((key === sendKey && ttl === 14 * 86400) || ((key === headKey || key === fileKey(record.file_id) || (key === transportKey(record.file_id) && knownFiles.has(fileKey(record.file_id)))) && ttl === 30 * 86400))) throw new Error('INVOICE_CLAIM_INVALID');
       if (key === fileKey(record.file_id)) knownFiles.add(key);
       if (DIRAC_INVOICE_RPC_V440.has(req)) throw new Error('INVOICE_RPC_CONCURRENCY_INVALID');
       DIRAC_INVOICE_RPC_V440.set(req, Object.freeze({ ctx, req, operation: 'claim', path: '/rest/v1/rpc/dirac_central_atomic_claim_record_v230', key, digest: crypto.createHash('sha256').update(JSON.stringify(record)).digest('hex'), ttl, startedAt: Date.now(), expiresAt: Date.now() + 30000 }));
@@ -61327,22 +61349,24 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
     },
     replace: async (key, expectedRevision, record, ttl) => {
       assertContext(); if (action !== 'invoice_email_send' || !keyAllowed(key) || key === transportKey(record.file_id) || !recordAllowed(key, record)
-          || ((key === sendKey || key === headKey) && record.next_allowed_at !== record.created_at + 7 * 86400000)
-          || expectedRevision === record.revision || !/^[a-f0-9]{32}$/.test(String(expectedRevision || '')) || (key === sendKey ? continuation || ttl !== 7 * 86400 : ttl !== 30 * 86400)) throw new Error('INVOICE_REPLACE_INVALID');
+          || ((key === sendKey || key === headKey) && record.next_allowed_at !== record.created_at + 14 * 86400000)
+          || expectedRevision === record.revision || !/^[a-f0-9]{32}$/.test(String(expectedRevision || '')) || (key === sendKey ? continuation || ttl !== 14 * 86400 : ttl !== 30 * 86400)) throw new Error('INVOICE_REPLACE_INVALID');
       if (!records.has(key)) { const result = await read(key); if (!result.ok || !result.found) return false; }
       const previous = records.get(key); if (!previous || previous.revision !== expectedRevision) return false;
       if (key === sendKey) {
-        // Only the owner may retry a confirmed rejection after a bounded pause.
-        // Accepted/ambiguous attempts and every old transport marker stay immutable.
+        // Only this invoice's verified owner may renew after fourteen days,
+        // or retry a confirmed rejection. Prior file/transport markers stay immutable.
         const prior = previous.record;
         if (!prior || prior.file_id === record.file_id || !knownFiles.has(fileKey(record.file_id))) throw new Error('INVOICE_RETRY_INVALID');
         const oldFile = await read(fileKey(prior.file_id)), oldTransport = await read(transportKey(prior.file_id)), newFile = await read(fileKey(record.file_id));
         assertContext();
-        if (!oldFile.ok || !oldFile.found || oldFile.record.status !== 'failed' || Date.now() - oldFile.record.prepared_at < 120000
-            || !oldTransport.ok || !oldTransport.found || oldTransport.record.file_id !== prior.file_id
+        const renewal = Number.isSafeInteger(prior.created_at) && record.created_at >= prior.created_at + 14 * 86400000;
+        const failedRetry = oldFile.ok && oldFile.found && oldFile.record.status === 'failed'
+          && oldTransport.ok && oldTransport.found && oldTransport.record.file_id === prior.file_id
+          && record.created_at >= oldFile.record.prepared_at + 120000;
+        if (!oldFile.ok || !oldFile.found || !oldTransport.ok || (!renewal && !failedRetry)
             || !newFile.ok || !newFile.found || newFile.record.status !== 'pending' || newFile.record.created_at !== record.created_at
-            || record.created_at < oldFile.record.prepared_at + 120000 || record.created_at > Date.now()
-            || Date.now() - record.created_at > 90000) throw new Error('INVOICE_RETRY_INVALID');
+            || record.created_at > Date.now() || Date.now() - record.created_at > 90000) throw new Error('INVOICE_RETRY_INVALID');
       }
       const expiresAt = new Date(Math.max(Date.now() + ttl * 1000, Date.parse(previous.expiresAt) + 1)).toISOString();
       const path = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(key) + '&expires_at=eq.' + encodeURIComponent(previous.expiresAt) + '&select=security_key,expires_at';
@@ -61388,9 +61412,10 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
   if (!continuation) res.json = function diracInvoiceResponseV440(payload) {
     assertContext();
     if (payload && payload.ok === true) {
-      const shapes = { invoice_email_status: 'accepted,available,expires_at,file_id,next_allowed_at,ok,status,unlock_key', invoice_email_send: 'accepted,expires_at,file_id,next_allowed_at,ok,status,unlock_key' };
+      const shapes = { invoice_email_status: 'accepted,available,expires_at,file_id,next_allowed_at,ok,server_now_at,status,unlock_key', invoice_email_send: 'accepted,expires_at,file_id,next_allowed_at,ok,server_now_at,status,unlock_key' };
       const validTime = value => value === null || (typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)));
       if (Object.keys(payload).sort().join(',') !== shapes[ctx.action] || !validTime(payload.expires_at)
+          || payload.server_now_at === null || !validTime(payload.server_now_at)
           || (!validTime(payload.next_allowed_at) || typeof payload.accepted !== 'boolean' || !['idle','pending','accepted','failed','unknown'].includes(payload.status))
           || (payload.file_id !== null && !/^[A-Za-z0-9_-]{43}$/.test(String(payload.file_id || '')))
           || (ctx.action === 'invoice_email_status' && typeof payload.available !== 'boolean')

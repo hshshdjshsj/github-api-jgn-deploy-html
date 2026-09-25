@@ -294,14 +294,14 @@ async function invoiceBusinessV440(req, res, ops) {
   const prefix = 's2s-invoice-v440:', rateKey = prefix + 'send:' + scope, headKey = prefix + 'latest:' + scope;
   const fileKey = id => prefix + 'file:' + invoiceHashV440(scope + ':' + id);
   const transportKey = id => prefix + 'transport:' + invoiceHashV440(scope + ':' + id);
-  const sendInterval = 7 * 86400000, failedRetryDelay = 120000;
+  const sendInterval = 14 * 86400000, failedRetryDelay = 120000;
   const nextSend = pointer => pointer && Number.isSafeInteger(pointer.created_at) && pointer.created_at + sendInterval > Date.now() ? pointer.created_at + sendInterval : null;
   const recordAad = (id, issuerOrigin = identity.origin) => [INVOICE_VERSION_V440, identity.userId, identity.customerId, issuerOrigin, kind, order, id].join(':');
   let storageKey = null;
   function secretOf(record) { if (!storageKey) storageKey = ops.storageKey(); return invoiceUnpackSecretV440(record, storageKey, recordAad(record.file_id, record.issuer_origin)); }
   function validRecord(record, id) { return !!(record && record.version === INVOICE_VERSION_V440 && record.scope === scope && record.kind === kind && record.order_id === order && record.file_id === id && /^[A-Za-z0-9_-]{43}$/.test(id) && /^[a-f0-9]{64}$/.test(record.file_sha256) && ['pending', 'accepted', 'failed', 'unknown'].includes(record.status) && Number.isSafeInteger(record.created_at) && Number.isSafeInteger(record.prepared_at) && record.prepared_at >= record.created_at && Number.isSafeInteger(record.expires_at) && record.expires_at > Date.now()); }
   async function read(key) { const result = await ops.read(key); if (!result || result.ok !== true) throw invoiceErrorV440('INVOICE_STORAGE_UNAVAILABLE'); return result.found ? result.record : null; }
-  async function publish(status, body) { ops.assertFullGuard(); await ops.verifyOwner(); ops.assertFullGuard(); return res.status(status).json(body); }
+  async function publish(status, body) { ops.assertFullGuard(); await ops.verifyOwner(); ops.assertFullGuard(); return res.status(status).json({ ...body, server_now_at: invoiceIsoV440(Date.now()) }); }
   async function statusResponse() {
     const [claimed, latest] = await Promise.all([read(rateKey), read(headKey)]);
     const pointer = claimed || latest; let next = nextSend(pointer);
@@ -342,8 +342,9 @@ async function invoiceBusinessV440(req, res, ops) {
     const prior = priorClaim || (reconcileOnly || nextSend(latest) !== null ? latest : null), held = prior ? await heldClaim(prior) : null;
     if (reconcileOnly && !held) return publish(200, { ok: true, skipped: true, status: 'idle', code: 'INVOICE_RECONCILIATION_RECORD_MISSING' });
     const manualFailedRetry = !!(held && held.transport && held.record.status === 'failed' && typeof ops.onPrepared !== 'function');
-    if (held && ((held.transport && !manualFailedRetry) || ['accepted','unknown'].includes(held.record.status) || (held.record.status === 'pending' && Date.now() - held.record.prepared_at < 120000) || (manualFailedRetry && Date.now() - held.record.prepared_at < failedRetryDelay))) return await limited(held);
-    const reuse = held && !manualFailedRetry ? held : null;
+    const manualWindowRenewal = !!(held && typeof ops.onPrepared !== 'function' && Date.now() >= held.record.created_at + sendInterval);
+    if (held && !manualWindowRenewal && ((held.transport && !manualFailedRetry) || ['accepted','unknown'].includes(held.record.status) || (held.record.status === 'pending' && Date.now() - held.record.prepared_at < 120000) || (manualFailedRetry && Date.now() - held.record.prepared_at < failedRetryDelay))) return await limited(held);
+    const reuse = held && !manualFailedRetry && !manualWindowRenewal ? held : null;
     const document = await ops.document();
     if (!document || document.id !== order || document.eligible !== true) throw invoiceErrorV440('INVOICE_PAID_REQUIRED', 409);
     const now = reuse ? reuse.record.created_at : Date.now(), next = reuse ? reuse.claimed.next_allowed_at : now + sendInterval, expiry = now + 30 * 86400000;
@@ -364,7 +365,7 @@ async function invoiceBusinessV440(req, res, ops) {
       } else {
         record = { version: INVOICE_VERSION_V440, scope, file_id: id, kind, order_id: order, issuer_origin: identity.origin, file_sha256: invoiceHashV440(attachment), status: 'pending', created_at: now, prepared_at: Date.now(), expires_at: expiry, revision: invoiceCryptoV440.randomBytes(16).toString('hex'), secret: invoicePackSecretV440({ code }, storageKey, recordAad(id)) };
         if (await ops.claim(fileKey(id), record, 30 * 86400) !== true) throw invoiceErrorV440('INVOICE_STORAGE_UNAVAILABLE');
-        const claimed = manualFailedRetry ? await ops.replace(rateKey, held.claimed.revision, pointer, 7 * 86400) : await ops.claim(rateKey, pointer, 7 * 86400);
+        const claimed = priorClaim && (manualFailedRetry || manualWindowRenewal) ? await ops.replace(rateKey, held.claimed.revision, pointer, 14 * 86400) : await ops.claim(rateKey, pointer, 14 * 86400);
         if (claimed !== true) return await limited(await heldClaim(await read(rateKey)));
       }
       const previousHead = await read(headKey);
