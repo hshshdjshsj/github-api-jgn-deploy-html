@@ -61249,7 +61249,7 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
     if (!row || row.security_key !== key || !Number.isFinite(expiry)) return { ok: false };
     if (expiry <= Date.now()) return { ok: true, found: false };
     if (!recordAllowed(key, row.record_json)) return { ok: false };
-    records.set(key, { revision: row.record_json.revision, expiresAt: row.expires_at });
+    records.set(key, { revision: row.record_json.revision, expiresAt: row.expires_at, record: row.record_json });
     knownFiles.add(fileKey(row.record_json.file_id));
     return { ok: true, found: true, record: row.record_json };
   }
@@ -61270,16 +61270,29 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
       finally { DIRAC_INVOICE_RPC_V440.delete(req); }
     },
     replace: async (key, expectedRevision, record, ttl) => {
-      assertContext(); if (action !== 'invoice_email_send' || !keyAllowed(key) || key === sendKey || key === transportKey(record.file_id) || !recordAllowed(key, record)
-          || (key === headKey && record.next_allowed_at !== record.created_at + 7 * 86400000)
-          || expectedRevision === record.revision || !/^[a-f0-9]{32}$/.test(String(expectedRevision || '')) || ttl !== 30 * 86400) throw new Error('INVOICE_REPLACE_INVALID');
+      assertContext(); if (action !== 'invoice_email_send' || !keyAllowed(key) || key === transportKey(record.file_id) || !recordAllowed(key, record)
+          || ((key === sendKey || key === headKey) && record.next_allowed_at !== record.created_at + 7 * 86400000)
+          || expectedRevision === record.revision || !/^[a-f0-9]{32}$/.test(String(expectedRevision || '')) || (key === sendKey ? continuation || ttl !== 7 * 86400 : ttl !== 30 * 86400)) throw new Error('INVOICE_REPLACE_INVALID');
       if (!records.has(key)) { const result = await read(key); if (!result.ok || !result.found) return false; }
       const previous = records.get(key); if (!previous || previous.revision !== expectedRevision) return false;
+      if (key === sendKey) {
+        // Only the owner may retry a confirmed rejection after a bounded pause.
+        // Accepted/ambiguous attempts and every old transport marker stay immutable.
+        const prior = previous.record;
+        if (!prior || prior.file_id === record.file_id || !knownFiles.has(fileKey(record.file_id))) throw new Error('INVOICE_RETRY_INVALID');
+        const oldFile = await read(fileKey(prior.file_id)), oldTransport = await read(transportKey(prior.file_id)), newFile = await read(fileKey(record.file_id));
+        assertContext();
+        if (!oldFile.ok || !oldFile.found || oldFile.record.status !== 'failed' || Date.now() - oldFile.record.prepared_at < 120000
+            || !oldTransport.ok || !oldTransport.found || oldTransport.record.file_id !== prior.file_id
+            || !newFile.ok || !newFile.found || newFile.record.status !== 'pending' || newFile.record.created_at !== record.created_at
+            || record.created_at < oldFile.record.prepared_at + 120000 || record.created_at > Date.now()
+            || Date.now() - record.created_at > 90000) throw new Error('INVOICE_RETRY_INVALID');
+      }
       const expiresAt = new Date(Math.max(Date.now() + ttl * 1000, Date.parse(previous.expiresAt) + 1)).toISOString();
       const path = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(key) + '&expires_at=eq.' + encodeURIComponent(previous.expiresAt) + '&select=security_key,expires_at';
       const result = await db(path, { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: { record_json: record, expires_at: expiresAt } });
       const ok = !!(result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 && result.data[0].security_key === key && Date.parse(result.data[0].expires_at) === Date.parse(expiresAt));
-      if (ok) records.set(key, { revision: record.revision, expiresAt: result.data[0].expires_at }); return ok;
+      if (ok) records.set(key, { revision: record.revision, expiresAt: result.data[0].expires_at, record }); return ok;
     },
     mail: async (file) => {
       assertContext(); if (mailUsed || action !== 'invoice_email_send' || !file || Object.keys(file).sort().join(',') !== 'content,fileId'

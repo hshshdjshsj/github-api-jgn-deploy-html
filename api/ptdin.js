@@ -294,7 +294,7 @@ async function invoiceBusinessV440(req, res, ops) {
   const prefix = 's2s-invoice-v440:', rateKey = prefix + 'send:' + scope, headKey = prefix + 'latest:' + scope;
   const fileKey = id => prefix + 'file:' + invoiceHashV440(scope + ':' + id);
   const transportKey = id => prefix + 'transport:' + invoiceHashV440(scope + ':' + id);
-  const sendInterval = 7 * 86400000;
+  const sendInterval = 7 * 86400000, failedRetryDelay = 120000;
   const nextSend = pointer => pointer && Number.isSafeInteger(pointer.created_at) && pointer.created_at + sendInterval > Date.now() ? pointer.created_at + sendInterval : null;
   const recordAad = (id, issuerOrigin = identity.origin) => [INVOICE_VERSION_V440, identity.userId, identity.customerId, issuerOrigin, kind, order, id].join(':');
   let storageKey = null;
@@ -312,7 +312,7 @@ async function invoiceBusinessV440(req, res, ops) {
     if (!validRecord(record, pointer.file_id)) throw invoiceErrorV440('INVOICE_RECORD_INVALID');
     const transport = await read(transportKey(record.file_id));
     if (transport && (transport.version !== INVOICE_VERSION_V440 || transport.scope !== scope || transport.file_id !== record.file_id)) throw invoiceErrorV440('INVOICE_RECORD_INVALID');
-    if (!transport && record.status === 'failed') next = null;
+    if (record.status === 'failed') next = transport && record.prepared_at + failedRetryDelay > Date.now() ? record.prepared_at + failedRetryDelay : null;
     if (!transport && record.status === 'pending') next = record.prepared_at + 120000 > Date.now() ? record.prepared_at + 120000 : null;
     const status = record.status === 'pending' && Date.now() - record.prepared_at > 120000 ? 'unknown' : record.status;
     const key = status === 'failed' ? null : secretOf(record).code;
@@ -328,8 +328,10 @@ async function invoiceBusinessV440(req, res, ops) {
     return { claimed: { ...claimed, next_allowed_at: record.created_at + sendInterval }, record, transport, state };
   }
   async function limited(held) {
-    return publish(429, { ok: false, code: 'INVOICE_SEND_DAILY_LIMIT', prepared: true, delivery_status: held.state,
-      next_allowed_at: invoiceIsoV440(held.claimed.next_allowed_at) });
+    const next = held.state === 'failed' ? held.record.prepared_at + failedRetryDelay : held.state === 'pending' && !held.transport ? held.record.prepared_at + 120000 : held.claimed.next_allowed_at;
+    try { console.info('[dirac-invoice-delivery]', JSON.stringify({ event: 'send_blocked_existing_claim', scope: scope.slice(0, 16), kind, status: held.state, new_send: false })); } catch (_) {}
+    return publish(429, { ok: false, code: 'INVOICE_SEND_DAILY_LIMIT', prepared: true, delivery_status: held.state, status: held.state,
+      next_allowed_at: invoiceIsoV440(next) });
   }
   try {
     if (ops.action === 'invoice_email_unlock') return res.status(410).json({ ok: false, code: 'INVOICE_FORMAT_RETIRED' });
@@ -337,28 +339,31 @@ async function invoiceBusinessV440(req, res, ops) {
     if (ops.action === 'invoice_email_status') return await statusResponse();
     const priorClaim = await read(rateKey), latest = priorClaim ? null : await read(headKey);
     const prior = priorClaim || (nextSend(latest) !== null ? latest : null), held = prior ? await heldClaim(prior) : null;
-    if (held && (held.transport || ['accepted','unknown'].includes(held.record.status) || (held.record.status === 'pending' && Date.now() - held.record.prepared_at < 120000))) return await limited(held);
+    const manualFailedRetry = !!(held && held.transport && held.record.status === 'failed' && typeof ops.onPrepared !== 'function');
+    if (held && ((held.transport && !manualFailedRetry) || ['accepted','unknown'].includes(held.record.status) || (held.record.status === 'pending' && Date.now() - held.record.prepared_at < 120000) || (manualFailedRetry && Date.now() - held.record.prepared_at < failedRetryDelay))) return await limited(held);
+    const reuse = held && !manualFailedRetry ? held : null;
     const document = await ops.document();
     if (!document || document.id !== order || document.eligible !== true) throw invoiceErrorV440('INVOICE_PAID_REQUIRED', 409);
-    const now = held ? held.record.created_at : Date.now(), next = held ? held.claimed.next_allowed_at : now + sendInterval, expiry = now + 30 * 86400000;
-    const id = held ? held.record.file_id : invoiceCryptoV440.randomBytes(32).toString('base64url');
-    const pointer = held ? held.claimed : { version: INVOICE_VERSION_V440, scope, file_id: id, next_allowed_at: next, created_at: now, revision: invoiceCryptoV440.randomBytes(16).toString('hex') };
-    const code = held ? secretOf(held.record).code : invoiceRandomCodeV440();
-    let record = held ? held.record : null, attachment, accepted = false, attempted = false;
+    const now = reuse ? reuse.record.created_at : Date.now(), next = reuse ? reuse.claimed.next_allowed_at : now + sendInterval, expiry = now + 30 * 86400000;
+    const id = reuse ? reuse.record.file_id : invoiceCryptoV440.randomBytes(32).toString('base64url');
+    const pointer = reuse ? reuse.claimed : { version: INVOICE_VERSION_V440, scope, file_id: id, next_allowed_at: next, created_at: now, revision: invoiceCryptoV440.randomBytes(16).toString('hex') };
+    const code = reuse ? secretOf(reuse.record).code : invoiceRandomCodeV440();
+    let record = reuse ? reuse.record : null, attachment, accepted = false, attempted = false;
     try {
       attachment = invoicePdfEncryptV440(invoicePdfObjectsV440(document), code);
       if (!Buffer.isBuffer(attachment) || attachment.subarray(0,9).toString('ascii') !== '%PDF-1.7\n') throw invoiceErrorV440('INVOICE_PDF_INVALID');
       if (attachment.length > 1420000) throw invoiceErrorV440('INVOICE_ATTACHMENT_LIMIT', 400);
       if (!storageKey) storageKey = ops.storageKey();
       if (!Buffer.isBuffer(storageKey) || storageKey.length !== 32) throw invoiceErrorV440('INVOICE_KEY_UNAVAILABLE');
-      if (held) {
+      if (reuse) {
         const replacement = { ...record, file_sha256: invoiceHashV440(attachment), status: 'pending', prepared_at: Date.now(), revision: invoiceCryptoV440.randomBytes(16).toString('hex') };
         if (await ops.replace(fileKey(id), record.revision, replacement, 30 * 86400) !== true) throw invoiceErrorV440('INVOICE_STORAGE_UNAVAILABLE');
         record = replacement;
       } else {
         record = { version: INVOICE_VERSION_V440, scope, file_id: id, kind, order_id: order, issuer_origin: identity.origin, file_sha256: invoiceHashV440(attachment), status: 'pending', created_at: now, prepared_at: Date.now(), expires_at: expiry, revision: invoiceCryptoV440.randomBytes(16).toString('hex'), secret: invoicePackSecretV440({ code }, storageKey, recordAad(id)) };
         if (await ops.claim(fileKey(id), record, 30 * 86400) !== true) throw invoiceErrorV440('INVOICE_STORAGE_UNAVAILABLE');
-        if (await ops.claim(rateKey, pointer, 7 * 86400) !== true) return await limited(await heldClaim(await read(rateKey)));
+        const claimed = manualFailedRetry ? await ops.replace(rateKey, held.claimed.revision, pointer, 7 * 86400) : await ops.claim(rateKey, pointer, 7 * 86400);
+        if (claimed !== true) return await limited(await heldClaim(await read(rateKey)));
       }
       const previousHead = await read(headKey);
       const headStored = previousHead ? (previousHead.file_id === id || await ops.replace(headKey, previousHead.revision, { ...pointer, revision: invoiceCryptoV440.randomBytes(16).toString('hex') }, 30 * 86400)) : await ops.claim(headKey, pointer, 30 * 86400);
@@ -371,10 +376,11 @@ async function invoiceBusinessV440(req, res, ops) {
       const sent = await ops.mail({ fileId: id, content: attachment });
       accepted = !!(sent && sent.accepted === true && sent.ok === true);
       const state = accepted ? 'accepted' : sent && sent.ambiguous === false ? 'failed' : 'unknown';
+      try { console.info('[dirac-invoice-delivery]', JSON.stringify({ event: 'provider_result', scope: scope.slice(0, 16), kind, source: typeof ops.onPrepared === 'function' ? 'payment_webhook' : 'invoice_page', status: state, provider: ['gmail_smtp','brevo','resend','internal'].includes(sent && sent.provider) ? sent.provider : 'unknown', provider_status: Number(sent && sent.status) || 0, code: /^INVOICE_MAIL_[A-Z_]{1,60}$/.test(String(sent && sent.code || '')) ? sent.code : 'INVOICE_MAIL_RESULT', inbox_delivery_confirmed: false })); } catch (_) {}
       const replacement = { ...record, status: state, revision: invoiceCryptoV440.randomBytes(16).toString('hex') };
       if (await ops.replace(fileKey(id), record.revision, replacement, 30 * 86400) !== true) return publish(503, { ok: false, code: 'INVOICE_SEND_STATUS_UNCONFIRMED', status: 'unknown', next_allowed_at: invoiceIsoV440(next) });
       record = replacement;
-      if (!accepted) return publish(503, { ok: false, code: state === 'failed' ? 'INVOICE_SEND_FAILED' : 'INVOICE_SEND_STATUS_UNCONFIRMED', status: state, next_allowed_at: invoiceIsoV440(next) });
+      if (!accepted) return publish(503, { ok: false, code: state === 'failed' ? 'INVOICE_SEND_FAILED' : 'INVOICE_SEND_STATUS_UNCONFIRMED', status: state, next_allowed_at: invoiceIsoV440(state === 'failed' ? record.prepared_at + failedRetryDelay : next) });
       return publish(200, { ok: true, accepted: true, status: 'accepted', unlock_key: code, file_id: id, next_allowed_at: invoiceIsoV440(next), expires_at: invoiceIsoV440(expiry) });
     } catch (error) {
       if (record && record.status === 'pending') {
