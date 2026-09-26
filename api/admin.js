@@ -20,6 +20,7 @@ const FACTOR_SECONDS = 600;
 const PASSWORD_SECONDS = 1200;
 const SESSION_SECONDS = 600;
 const ENROLLMENT_SECONDS = 100 * 365 * 24 * 60 * 60;
+const PENDING_ENROLLMENT_SECONDS = 24 * 60 * 60;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const COMMON_PROOF = ['csrf', 'nonce', 'idempotency_key'];
 const PASSKEY_FIELDS = ['credential', 'id', 'rawId', 'type', 'response', 'clientDataJSON', 'attestationObject', 'authenticatorData', 'signature', 'userHandle', 'clientExtensionResults', 'credProps', 'rk', 'transports', 'authenticatorAttachment'];
@@ -522,8 +523,9 @@ function configKey(scope) { return PREFIX + 'enrollment:' + digest(scope.owner +
 async function stored(ops, key) { ops.assertFullGuard(); const result = await ops.read(key); ops.assertFullGuard(); if (!result || result.ok !== true) fail('ADMIN_STORE_UNAVAILABLE', 503); return result.found === true ? result.record : null; }
 async function config(ops, scope) {
   const value = await stored(ops, configKey(scope)); if (!value) return null;
-  if (value.version !== VERSION || value.owner !== scope.owner || value.origin !== scope.origin || !exactToken(value.revision) || !value.passkey || !exactToken(value.userHandle) || !Number.isSafeInteger(value.passkey.signCount) || value.passkey.signCount < 0 || typeof value.totp !== 'string') fail('ADMIN_ENROLLMENT_INVALID', 503);
-  return value;
+  const enrollmentState = value.enrollmentState === undefined ? 'active' : value.enrollmentState;
+  if (value.version !== VERSION || value.owner !== scope.owner || value.origin !== scope.origin || !exactToken(value.revision) || !value.passkey || !exactToken(value.userHandle) || !Number.isSafeInteger(value.passkey.signCount) || value.passkey.signCount < 0 || typeof value.totp !== 'string' || !['active', 'pending_totp'].includes(enrollmentState)) fail('ADMIN_ENROLLMENT_INVALID', 503);
+  return value.enrollmentState === enrollmentState ? value : { ...value, enrollmentState };
 }
 async function issue(ops, scope, stage, values = {}, seconds = FACTOR_SECONDS) {
   const token = randomToken(), now = Date.now(); const record = { version: VERSION, owner: scope.owner, binding: scope.binding, origin: scope.origin, stage, ...values, expiresAt: now + seconds * 1000 };
@@ -593,28 +595,35 @@ async function execute(ops) {
   }
   if (action === 'admin_passkey_verify') {
     const entry = await ticket(ops, scope, body.ticket, 'passkey'); await throttle(ops, scope, 'passkey-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
-    const proof = entry.value, credential = body.credential, clientData = validateClientData(credential, proof, scope); let enrolled = await config(ops, scope), passkey;
+    const proof = entry.value, credential = body.credential, clientData = validateClientData(credential, proof, scope); let enrolled = await config(ops, scope), passkey, provisioning = null;
     if (proof.mode === 'registration') {
       if (enrolled) fail('ADMIN_ALREADY_ENROLLED', 409); const verified = await ops.verifyRegistration({ credential, clientData, rpId: scope.rpId });
       if (!verified || verified.ok !== true || verified.credentialId !== credential.id || !verified.publicKeyJwk) fail('ADMIN_PASSKEY_INVALID', 403); passkey = { credentialId: verified.credentialId, publicKeyJwk: verified.publicKeyJwk, signCount: verified.signCount, backupEligible: verified.backupEligible };
+      const secret = crypto.randomBytes(32);
+      try {
+        const encrypted = seal(ops, secret, configKey(scope)), manualKey = base32(secret), label = 'DIRAC ' + scope.rpId + ':' + ADMIN_EMAIL;
+        provisioning = { secret: manualKey, uri: 'otpauth://totp/' + encodeURIComponent(label) + '?secret=' + manualKey + '&issuer=' + encodeURIComponent('DIRAC ' + scope.rpId) + '&algorithm=SHA1&digits=6&period=30' };
+        const pending = { version: VERSION, owner: scope.owner, origin: scope.origin, enrollmentState: 'pending_totp', revision: randomToken(), passkey, userHandle: proof.userHandle, totp: encrypted, createdAt: Date.now() };
+        if (await ops.claim(configKey(scope), pending, PENDING_ENROLLMENT_SECONDS) !== true) fail('ADMIN_ALREADY_ENROLLED', 409); enrolled = pending;
+      } finally { secret.fill(0); }
     } else {
       if (!enrolled || proof.revision !== enrolled.revision || credential.id !== enrolled.passkey.credentialId) fail('ADMIN_PASSKEY_STATE_CHANGED', 409); const handle = credential.response.userHandle;
       if (handle !== null && handle !== undefined && handle !== '' && handle !== enrolled.userHandle) fail('ADMIN_PASSKEY_USER_MISMATCH', 403); const verified = await ops.verifyAssertion({ credential, clientData, rpId: scope.rpId, passkey: enrolled.passkey });
       if (!verified || verified.ok !== true) fail('ADMIN_PASSKEY_INVALID', 403); passkey = { ...enrolled.passkey, signCount: verified.signCount }; const next = { ...enrolled, passkey, revision: randomToken() };
-      if (await ops.replace(configKey(scope), enrolled.revision, next, ENROLLMENT_SECONDS) !== true) fail('ADMIN_PASSKEY_STATE_CHANGED', 409); enrolled = next;
+      if (await ops.replace(configKey(scope), enrolled.revision, next, next.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS) !== true) fail('ADMIN_PASSKEY_STATE_CHANGED', 409); enrolled = next;
+      if (enrolled.enrollmentState === 'pending_totp') { const secret = open(ops, enrolled.totp, configKey(scope)); try { const manualKey = base32(secret), label = 'DIRAC ' + scope.rpId + ':' + ADMIN_EMAIL; provisioning = { secret: manualKey, uri: 'otpauth://totp/' + encodeURIComponent(label) + '?secret=' + manualKey + '&issuer=' + encodeURIComponent('DIRAC ' + scope.rpId) + '&algorithm=SHA1&digits=6&period=30' }; } finally { secret.fill(0); } }
     }
-    await consume(ops, entry); let provisioning = null, encrypted = enrolled ? enrolled.totp : null;
-    if (!enrolled) { const secret = crypto.randomBytes(32); try { encrypted = seal(ops, secret, configKey(scope)); const manualKey = base32(secret), label = 'DIRAC ' + scope.rpId + ':' + ADMIN_EMAIL; provisioning = { secret: manualKey, uri: 'otpauth://totp/' + encodeURIComponent(label) + '?secret=' + manualKey + '&issuer=' + encodeURIComponent('DIRAC ' + scope.rpId) + '&algorithm=SHA1&digits=6&period=30' }; } finally { secret.fill(0); } }
-    const token = await issue(ops, scope, 'totp', { enroll: !enrolled, passkey: enrolled ? null : passkey, userHandle: proof.userHandle, totp: encrypted, revision: enrolled ? enrolled.revision : null }); return { ok: true, ticket: token, stage: 'totp', enrollment: provisioning, period: 30 };
+    await consume(ops, entry); const pending = enrolled.enrollmentState === 'pending_totp';
+    const token = await issue(ops, scope, 'totp', { enroll: pending, totp: enrolled.totp, revision: enrolled.revision }); return { ok: true, ticket: token, stage: 'totp', enrollment: pending ? provisioning : null, period: 30 };
   }
   if (action === 'admin_totp_verify') {
     const entry = await ticket(ops, scope, body.ticket, 'totp'); await throttle(ops, scope, 'totp-verify', 5, FACTOR_SECONDS);
     if (typeof body.code !== 'string' || !/^[0-9]{6}$/.test(body.code)) fail('ADMIN_TOTP_INVALID', 401); const proof = entry.value, enrolled = await config(ops, scope);
-    if (proof.enroll ? !!enrolled : (!enrolled || enrolled.revision !== proof.revision || enrolled.totp !== proof.totp)) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409);
+    if (!enrolled || enrolled.revision !== proof.revision || enrolled.totp !== proof.totp || (proof.enroll ? enrolled.enrollmentState !== 'pending_totp' : enrolled.enrollmentState !== 'active')) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409);
     const secret = open(ops, proof.totp, configKey(scope)); let accepted = null;
     try { const current = Math.floor(Date.now() / 30000), match = [current, current - 1, current + 1].find(counter => safeEqual(totp(secret, counter), body.code)); accepted = Number.isSafeInteger(match) ? match : null; } finally { secret.fill(0); }
     if (accepted === null) fail('ADMIN_TOTP_INVALID', 401); if (await ops.claim(PREFIX + 'totp-used:' + digest(scope.owner + ':' + scope.origin + ':' + proof.totp + ':' + accepted), { version: VERSION }, 120) !== true) fail('ADMIN_TOTP_ALREADY_USED', 409); await consume(ops, entry);
-    if (proof.enroll) { const value = { version: VERSION, owner: scope.owner, origin: scope.origin, revision: randomToken(), passkey: proof.passkey, userHandle: proof.userHandle, totp: proof.totp, createdAt: Date.now() }; if (await ops.claim(configKey(scope), value, ENROLLMENT_SECONDS) !== true) fail('ADMIN_ALREADY_ENROLLED', 409); }
+    if (proof.enroll) { const active = { ...enrolled, enrollmentState: 'active', revision: randomToken(), activatedAt: Date.now() }; if (await ops.replace(configKey(scope), enrolled.revision, active, ENROLLMENT_SECONDS) !== true) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409); }
     const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); return { ok: true, stage: 'complete', authenticated: true, expires_in: SESSION_SECONDS };
   }
   if (action === 'admin_logout') { const active = await session(ops, scope, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
@@ -730,7 +739,7 @@ async function business(operation, body) { if (operation === 'orders') return bu
 
 function allowedAdminKey(key) { return typeof key === 'string' && /^s2s-admin-v405:(?:ticket:[a-f0-9]{64}(?::used)?|enrollment:[a-f0-9]{64}|totp-used:[a-f0-9]{64}|rate:[a-f0-9]{64})$/.test(key); }
 async function replaceEnrollment(records, key, expectedRevision, record, ttl) {
-  const previous = records.get(key); if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'enrollment:') || !previous || previous.revision !== expectedRevision || !record || record.version !== VERSION || record.revision === expectedRevision || ttl !== ENROLLMENT_SECONDS) fail('ADMIN_STORAGE_COMPARE_INVALID', 503);
+  const previous = records.get(key), expectedTtl = record && record.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS; if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'enrollment:') || !previous || previous.revision !== expectedRevision || !record || record.version !== VERSION || record.revision === expectedRevision || ttl !== expectedTtl) fail('ADMIN_STORAGE_COMPARE_INVALID', 503);
   const expiresAt = new Date(Math.max(Date.now() + ttl * 1000, Date.parse(previous.expiresAt) + 1)).toISOString(), path = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(key) + '&expires_at=eq.' + encodeURIComponent(previous.expiresAt) + '&select=security_key,expires_at'; const result = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { record_json: record, expires_at: expiresAt } }, 'security'); return !!(result.ok && Array.isArray(result.data) && result.data.length === 1 && result.data[0].security_key === key && Date.parse(result.data[0].expires_at) === Date.parse(expiresAt));
 }
 function buildOps(req, res, state) {
