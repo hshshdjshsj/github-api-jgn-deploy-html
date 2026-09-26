@@ -759,7 +759,7 @@ function buildOps(req, res, state) {
 }
 
 function setCommonHeaders(res, origin) {
-  res.setHeader('Cache-Control', 'no-store, max-age=0'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0'); res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'same-origin'); res.setHeader('Vary', 'Origin'); res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Access-Control-Allow-Credentials', 'true'); res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, max-age=0'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0'); res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'same-origin'); res.setHeader('Vary', 'Origin'); res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Access-Control-Allow-Credentials', 'true'); res.setHeader('Access-Control-Expose-Headers', 'X-Dirac-CSRF-Token, X-Dirac-Page-Nonce'); res.setHeader('Content-Type', 'application/json; charset=utf-8');
 }
 function queryObject(query) { const out = {}; query.forEach((value, key) => { if (Object.prototype.hasOwnProperty.call(out, key)) fail('ADMIN_QUERY_DUPLICATE', 400); out[key] = value; }); return out; }
 async function readJsonBody(req, maximum) {
