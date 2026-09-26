@@ -1,21 +1,33 @@
 'use strict';
 
-// This module has no database, SMTP or HTTP escape hatch. Every operation is
-// supplied by the live health.js dispatcher after its complete central guard.
+// Standalone administrator endpoint. The browser page is handled entirely by this module.
 const crypto = require('node:crypto');
+const tls = require('node:tls');
+
 const ADMIN_EMAIL = 'dinzganteng888999@gmail.com';
 const VERSION = 'dirac-admin-v405';
 const PREFIX = 's2s-admin-v405:';
+const PASSWORD_VERSION = 'dirac-admin-password-v411';
+const PASSWORD_PREFIX = 's2s-admin-v411:password:';
+const PAGE_NONCE_PREFIX = 's2s-admin-v411:page-nonce:';
+const SECURITY_REPORT_PREFIX = 's2s-admin-v411:security-report:';
+const SECURITY_BLOCK_PREFIX = 's2s-admin-v411:security-block:';
+const SECURITY_BLOCK_SECONDS = 86400;
+const PASSWORD_COOKIE = '__Host-dirac_admin_password_v411';
+const SESSION_COOKIE = '__Host-dirac_admin_v405';
 const EMAIL_DIGITS = 768;
 const FACTOR_SECONDS = 600;
+const PASSWORD_SECONDS = 1200;
 const SESSION_SECONDS = 600;
 const ENROLLMENT_SECONDS = 100 * 365 * 24 * 60 * 60;
+const MAX_RESPONSE_BYTES = 1024 * 1024;
 const COMMON_PROOF = ['csrf', 'nonce', 'idempotency_key'];
 const PASSKEY_FIELDS = ['credential', 'id', 'rawId', 'type', 'response', 'clientDataJSON', 'attestationObject', 'authenticatorData', 'signature', 'userHandle', 'clientExtensionResults', 'credProps', 'rk', 'transports', 'authenticatorAttachment'];
 const post = (fields, required = [], max = 16384) => Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, ...fields]), required: Object.freeze(required), maxBodyBytes: max, maxFieldBytes: max === 98304 ? 81920 : 4096, mutation: true, allowArrayItems: max === 98304 });
 const get = (fields = []) => Object.freeze({ methods: Object.freeze(['GET', 'HEAD']), allowed: Object.freeze(['action', '_csrf_boot', '_csrf_bootstrap', '_dirac_page_nonce_for', '_page_nonce_for', 'page_nonce_for', '_ts', '_t', '_', ...fields]), required: Object.freeze([]), maxBodyBytes: 1024, maxFieldBytes: 3000, mutation: false });
 const CONTRACTS = Object.freeze({
   admin_entry: get(),
+  admin_security_report: post(['reason', 'type', 'page', 'event', 'evidence', 'version'], ['reason', 'type', 'page', 'event', 'evidence', 'version'], 32768),
   admin_login: post(['email', 'password'], ['email', 'password']),
   admin_status: get(),
   admin_email_start: post([]),
@@ -32,12 +44,56 @@ const CONTRACTS = Object.freeze({
   admin_monitor: get()
 });
 const ACTIONS = Object.freeze(Object.keys(CONTRACTS));
+const ORDER_SELECT = Object.freeze({
+  regular: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
+  domain: 'id,customer_id,customer_name,customer_email,customer_whatsapp,domain_name,total_price,currency,payment_status,order_status,created_at'
+});
+const SHIPMENT_PREFIX = 's2s-admin-shipment-v406:';
+const SHIPMENT_SELECT = 'security_key,record_json,blocked_until_ms,expires_at,updated_at';
+const ACCESS_BLOCK_SELECT = 'security_key,record_json,blocked_until_ms,expires_at';
+const ACCESS_BLOCK_RECORD_KEYS = Object.freeze(['action', 'block_id', 'blocked_until_ms', 'created_at_ms', 'customer_id', 'device_hash', 'fail_count', 'ip_hash', 'metadata', 'reason', 'revocation', 'schema', 'state', 'storage_keys', 'updated_at_ms', 'version'].sort());
+const ALLOWED_RESPONSE_STATUSES = new Set([400, 401, 403, 404, 405, 409, 413, 415, 429, 503]);
 
-function fail(code, status = 400) { throw Object.assign(new Error(code), { code, status }); }
+function fail(code, status = 400) { throw Object.assign(new Error(code), { code, status, statusCode: status }); }
 function digest(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
+function digest512(value) { return crypto.createHash('sha512').update(String(value)).digest('hex'); }
 function randomToken() { return crypto.randomBytes(32).toString('base64url'); }
 function exactToken(value) { return typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value); }
 function safeEqual(a, b) { const aa = Buffer.from(String(a)), bb = Buffer.from(String(b)); return aa.length === bb.length && crypto.timingSafeEqual(aa, bb); }
+function isUuid(value) { return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(value || '').trim().toLowerCase()); }
+function isEmail(value) { return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(String(value || '').trim().toLowerCase()); }
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(stableJson).join(',') + ']';
+  return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + stableJson(value[key])).join(',') + '}';
+}
+function syntheticAdminUuid() {
+  const source = digest('dirac-admin-audit-id:' + ADMIN_EMAIL).slice(0, 32).split('');
+  source[12] = '4'; source[16] = '8';
+  const hex = source.join('');
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+}
+const ADMIN_USER_ID = syntheticAdminUuid();
+
+function isProduction() { return String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production'; }
+function rootSecret() {
+  const secret = String(process.env.DIRAC_SECURITY_ROOT_SECRET || '').trim();
+  const minimum = isProduction() ? 3000 : 32;
+  if (Buffer.byteLength(secret, 'utf8') < minimum) fail('ADMIN_SECRET_UNAVAILABLE', 503);
+  return secret;
+}
+function deriveSecret(scope) { return crypto.createHmac('sha512', rootSecret()).update('dirac-derived-secret-v146:' + String(scope || 'default').slice(0, 120)).digest(); }
+function adminSecretState() {
+  const secret = String(process.env.AI_ADMIN_SECRET || '');
+  if (!secret) return { configured: false, secret: '' };
+  if (Buffer.byteLength(secret, 'utf8') < 32 || /[\u0000\r\n]/.test(secret)) return { configured: false, secret: '' };
+  return { configured: true, secret };
+}
+function secretBinding(secret) {
+  const key = deriveSecret('admin-secret-binding-v411');
+  try { return crypto.createHmac('sha256', key).update(digest(secret)).digest('hex'); }
+  finally { key.fill(0); }
+}
 function base32(buffer) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'; let bits = 0, value = 0, out = '';
   for (const byte of buffer) { value = (value << 8) | byte; bits += 8; while (bits >= 5) { out += alphabet[(value >>> (bits -= 5)) & 31]; } }
@@ -68,215 +124,707 @@ function open(ops, value, context) {
   const key = encryptionKey(ops);
   try {
     if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)) fail('ADMIN_STATE_INVALID', 503);
-    const parts = value.split('.').map(v => Buffer.from(v, 'base64url'));
+    const parts = value.split('.').map(v => decodeB64url(v, 64));
     if (parts[0].length !== 12 || parts[1].length !== 32 || parts[2].length !== 16) fail('ADMIN_STATE_INVALID', 503);
     const decipher = crypto.createDecipheriv('aes-256-gcm', key, parts[0]);
     decipher.setAAD(Buffer.from(VERSION + ':' + context)); decipher.setAuthTag(parts[2]);
     return Buffer.concat([decipher.update(parts[1]), decipher.final()]);
-  } finally { key.fill(0); }
+  } catch (error) { if (error && error.code === 'ADMIN_SECRET_UNAVAILABLE') throw error; fail('ADMIN_STATE_INVALID', 503); }
+  finally { key.fill(0); }
 }
+
+function cleanHost(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw || /[\u0000-\u0020\u007f/@\\]/.test(raw)) return '';
+  try { const url = new URL('https://' + raw); return url.username || url.password || url.pathname !== '/' || url.search || url.hash ? '' : url.host; }
+  catch (_) { return ''; }
+}
+function loopbackHost(hostname) { return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'; }
+function requestHost(req) {
+  const headers = req && req.headers || {}, forwardedRaw = String(headers['x-forwarded-host'] || ''), directRaw = String(headers.host || '');
+  const forwarded = forwardedRaw ? cleanHost(forwardedRaw) : '', direct = directRaw ? cleanHost(directRaw) : '';
+  if ((forwardedRaw && !forwarded) || (directRaw && !direct) || (forwarded && direct && forwarded !== direct)) return '';
+  return forwarded || direct;
+}
+function sourceOrigin(req) {
+  const raw = String(req.headers && req.headers.origin || '').trim();
+  let origin;
+  try { origin = new URL(raw); } catch (_) { fail('ADMIN_ORIGIN_INVALID', 403); }
+  if (origin.username || origin.password || origin.search || origin.hash || origin.pathname !== '/') fail('ADMIN_ORIGIN_INVALID', 403);
+  const host = requestHost(req); if (!host) fail('ADMIN_ORIGIN_INVALID', 403);
+  const requestName = new URL('https://' + host).hostname.toLowerCase();
+  const sourceName = origin.hostname.toLowerCase();
+  if (loopbackHost(requestName) && loopbackHost(sourceName)) {
+    if (!['http:', 'https:'].includes(origin.protocol)) fail('ADMIN_ORIGIN_INVALID', 403);
+  } else {
+    if (origin.protocol !== 'https:' || origin.port || !requestName.startsWith('api.') || sourceName !== 'pt.' + requestName.slice(4)) fail('ADMIN_ORIGIN_INVALID', 403);
+  }
+  return origin.origin;
+}
+function validateReferer(req, origin, allowPreflight = false) {
+  const raw = String(req.headers && (req.headers.referer || req.headers.referrer) || '').trim();
+  if (!raw && allowPreflight) return true;
+  let ref; try { ref = new URL(raw); } catch (_) { fail('ADMIN_REFERER_INVALID', 403); }
+  if (ref.origin !== origin || ref.pathname !== '/admin.html' || ref.search || ref.hash || ref.username || ref.password) fail('ADMIN_REFERER_INVALID', 403);
+  return true;
+}
+function deviceFingerprint(req, origin) {
+  const h = req.headers || {};
+  const values = [origin, String(h['user-agent'] || ''), String(h['sec-ch-ua'] || ''), String(h['sec-ch-ua-platform'] || ''), String(h['accept-language'] || '')];
+  if (values.some(value => value.length > 2048 || /[\u0000\r\n]/.test(value))) fail('ADMIN_CLIENT_HEADERS_INVALID', 400);
+  return digest(values.join('\0'));
+}
+function requestIp(req) {
+  const value = String(req.headers && (req.headers['x-forwarded-for'] || req.headers['x-real-ip']) || '').split(',')[0].trim();
+  return value && value.length <= 80 && !/[\u0000\r\n]/.test(value) ? value : 'unknown';
+}
+function parseCookies(req) {
+  const raw = String(req.headers && req.headers.cookie || '');
+  if (!raw || raw.length > 16384 || /[\u0000\r\n]/.test(raw)) return new Map();
+  return raw.split(';').reduce((map, item) => {
+    const index = item.indexOf('='); if (index <= 0) return map;
+    const name = item.slice(0, index).trim(), value = item.slice(index + 1).trim();
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/.test(name)) return map;
+    if (map.has(name)) { map.set(name, null); return map; }
+    map.set(name, value); return map;
+  }, new Map());
+}
+function appendCookie(res, value) {
+  const current = res.getHeader && res.getHeader('Set-Cookie');
+  const list = current ? (Array.isArray(current) ? current.slice() : [String(current)]) : [];
+  list.push(value); res.setHeader('Set-Cookie', list);
+}
+function cookieToken(req, name) { const value = parseCookies(req).get(name) || ''; return exactToken(value) ? value : ''; }
+
+function securityCredentials() {
+  const url = String(process.env.DIRAC_SECURITY_SUPABASE_URL || '').trim().replace(/\/+$/, '');
+  const anon = String(process.env.DIRAC_SECURITY_SUPABASE_ANON_KEY || '').trim();
+  const service = String(process.env.DIRAC_SECURITY_SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  if (!url || !anon || !service) fail('ADMIN_SECURITY_DATABASE_UNAVAILABLE', 503);
+  validateSupabaseOrigin(url); return { url, anon, service };
+}
+function multiDbEnabled() { return /^(?:1|true|yes|on)$/i.test(String(process.env.DIRAC_ENABLE_MULTI_DB_ROUTER || process.env.DIRAC_MULTI_DB_ROUTER_ENABLED || '').trim()); }
+function businessTarget(table) {
+  const map = { domain_orders: 'DOMAIN', orders: 'COMMERCE', security_customer_events: 'PAYMENT_SERVICE' };
+  if (!multiDbEnabled() || !map[table]) return legacyCredentials();
+  const prefix = 'DIRAC_' + map[table] + '_SUPABASE_';
+  const url = String(process.env[prefix + 'URL'] || '').trim().replace(/\/+$/, '');
+  const anon = String(process.env[prefix + 'ANON_KEY'] || '').trim();
+  const service = String(process.env[prefix + 'SERVICE_ROLE_KEY'] || '').trim();
+  if (url && anon && service) { validateSupabaseOrigin(url); return { url, anon, service }; }
+  if (/^(?:1|true|yes|on)$/i.test(String(process.env.DIRAC_MULTI_DB_STRICT || '').trim())) fail('ADMIN_DATA_UNAVAILABLE', 503);
+  return legacyCredentials();
+}
+function legacyCredentials() {
+  const url = String(process.env.DOMAIN_SUPABASE_URL || '').trim().replace(/\/+$/, '');
+  const anon = String(process.env.DOMAIN_SUPABASE_ANON_KEY || '').trim();
+  const service = String(process.env.DOMAIN_SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  if (!url || !anon || !service) fail('ADMIN_DATA_UNAVAILABLE', 503);
+  validateSupabaseOrigin(url); return { url, anon, service };
+}
+function validateSupabaseOrigin(value) {
+  let url; try { url = new URL(value); } catch (_) { fail('ADMIN_DATABASE_CONFIGURATION_INVALID', 503); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || (url.port && url.port !== '443') || url.pathname !== '/') fail('ADMIN_DATABASE_CONFIGURATION_INVALID', 503);
+}
+function tableFromPath(path) {
+  const match = /^\/rest\/v1\/([^?\/]+)/.exec(String(path || ''));
+  if (!match || match[1] === 'rpc') return '';
+  try { return decodeURIComponent(match[1]); } catch (_) { return ''; }
+}
+async function dbFetch(path, options = {}, target = '') {
+  const cleanPath = String(path || '');
+  const method = String(options.method || 'GET').toUpperCase();
+  if (!cleanPath.startsWith('/rest/v1/') || cleanPath.startsWith('//') || cleanPath.includes('\\') || /[\r\n\0]/.test(cleanPath) || !['GET', 'POST', 'PATCH'].includes(method)) fail('ADMIN_DATABASE_REQUEST_INVALID', 503);
+  let creds;
+  if (target === 'security' || cleanPath.startsWith('/rest/v1/rpc/') || ['dirac_s2s_security', 'dirac_persistent_bans'].includes(tableFromPath(cleanPath))) creds = securityCredentials();
+  else creds = businessTarget(tableFromPath(cleanPath));
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const headers = { apikey: creds.service, Authorization: 'Bearer ' + creds.service, Accept: 'application/json' };
+    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+    if (options.prefer) headers.Prefer = options.prefer;
+    const response = await fetch(creds.url + cleanPath, { method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), redirect: 'error', signal: controller.signal });
+    const raw = await response.text();
+    if (Buffer.byteLength(raw, 'utf8') > MAX_RESPONSE_BYTES) fail('ADMIN_DATABASE_RESPONSE_INVALID', 503);
+    let data = null; if (raw) { try { data = JSON.parse(raw); } catch (_) { fail('ADMIN_DATABASE_RESPONSE_INVALID', 503); } }
+    return { ok: response.ok, status: response.status, data };
+  } catch (error) {
+    if (error && /^ADMIN_/.test(String(error.code || ''))) throw error;
+    return { ok: false, status: 0, data: null };
+  } finally { clearTimeout(timer); }
+}
+async function securityRead(key) {
+  if (!/^[A-Za-z0-9:._-]{1,500}$/.test(String(key || ''))) fail('ADMIN_STORAGE_KEY_INVALID', 503);
+  const result = await dbFetch('/rest/v1/dirac_s2s_security?select=security_key,record_json,expires_at&security_key=eq.' + encodeURIComponent(key) + '&limit=1', { method: 'GET' }, 'security');
+  if (!result.ok || !Array.isArray(result.data) || result.data.length > 1) return { ok: false };
+  if (!result.data.length) return { ok: true, found: false };
+  const row = result.data[0], expires = Date.parse(String(row && row.expires_at || ''));
+  if (!row || row.security_key !== key || !Number.isFinite(expires) || !row.record_json || typeof row.record_json !== 'object' || Array.isArray(row.record_json)) return { ok: false };
+  return expires <= Date.now() ? { ok: true, found: false } : { ok: true, found: true, record: row.record_json, expiresAt: row.expires_at };
+}
+async function securityClaim(key, record, ttl) {
+  if (!/^[A-Za-z0-9:._-]{1,500}$/.test(String(key || '')) || !record || typeof record !== 'object' || Array.isArray(record) || !Number.isSafeInteger(ttl) || ttl < 60 || ttl > ENROLLMENT_SECONDS) fail('ADMIN_STORAGE_CLAIM_INVALID', 503);
+  const result = await dbFetch('/rest/v1/rpc/dirac_central_atomic_claim_record_v230', { method: 'POST', body: { p_table_name: 'dirac_s2s_security', p_security_key: key, p_record_json: record, p_expires_at: new Date(Date.now() + ttl * 1000).toISOString() } }, 'security');
+  return !!(result.ok && result.data === true);
+}
+async function atomicRate(key, limit, seconds) {
+  if (!/^[A-Za-z0-9:._-]{1,500}$/.test(String(key || '')) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(seconds) || seconds < 1 || seconds > 86400) fail('ADMIN_RATE_CONTRACT_INVALID', 503);
+  const result = await dbFetch('/rest/v1/rpc/dirac_central_atomic_rate_limit_v230', { method: 'POST', body: { p_security_key: key, p_limit: limit, p_window_seconds: seconds, p_block_seconds: seconds } }, 'security');
+  const row = result.ok && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
+  if (!row || typeof row.allowed !== 'boolean') fail('ADMIN_RATE_STORE_UNAVAILABLE', 503);
+  return row.allowed === true;
+}
+
+function passwordProofKey(token) { return PASSWORD_PREFIX + digest(token); }
+function pageNonceKey(token) { return PAGE_NONCE_PREFIX + digest(token); }
+function scopeBinding(origin, device, secret) {
+  const key = deriveSecret('admin-request-binding-v411');
+  try { return crypto.createHmac('sha256', key).update([ADMIN_USER_ID, ADMIN_EMAIL, origin, device, secretBinding(secret)].join('\0')).digest('hex'); }
+  finally { key.fill(0); }
+}
+async function publishPasswordProof(req, res, origin, device, secret) {
+  const token = randomToken(), now = Date.now();
+  const record = { version: PASSWORD_VERSION, userId: ADMIN_USER_ID, email: ADMIN_EMAIL, origin, device, secretBinding: secretBinding(secret), createdAt: now, expiresAt: now + PASSWORD_SECONDS * 1000 };
+  if (await securityClaim(passwordProofKey(token), record, PASSWORD_SECONDS) !== true) fail('ADMIN_PROOF_STORE_UNAVAILABLE', 503);
+  appendCookie(res, PASSWORD_COOKIE + '=' + token + '; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=' + PASSWORD_SECONDS);
+  appendCookie(res, SESSION_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0');
+  return record;
+}
+async function verifyPasswordProof(req, origin, device, factorFresh) {
+  const secretState = adminSecretState(); if (!secretState.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503);
+  const token = cookieToken(req, PASSWORD_COOKIE); if (!token) fail('ADMIN_PASSWORD_REQUIRED', 401);
+  const key = passwordProofKey(token), [entry, used] = await Promise.all([securityRead(key), securityRead(key + ':used')]);
+  if (!entry.ok || !entry.found || !used.ok || used.found) fail('ADMIN_PASSWORD_REQUIRED', 401);
+  const proof = entry.record, now = Date.now();
+  if (!proof || proof.version !== PASSWORD_VERSION || proof.userId !== ADMIN_USER_ID || proof.email !== ADMIN_EMAIL || proof.origin !== origin || proof.device !== device || proof.secretBinding !== secretBinding(secretState.secret)
+      || !Number.isSafeInteger(proof.createdAt) || !Number.isSafeInteger(proof.expiresAt) || proof.createdAt > now || proof.expiresAt !== proof.createdAt + PASSWORD_SECONDS * 1000 || proof.expiresAt <= now || (factorFresh && now - proof.createdAt >= FACTOR_SECONDS * 1000)) fail('ADMIN_PASSWORD_REQUIRED', 401);
+  return { token, key, proof };
+}
+async function revokePasswordProof(authority) {
+  if (!authority || !authority.key || !authority.proof) return false;
+  const ttl = Math.max(60, Math.ceil((authority.proof.expiresAt - Date.now()) / 1000));
+  if (await securityClaim(authority.key + ':used', { version: PASSWORD_VERSION, usedAt: Date.now() }, ttl)) return true;
+  const existing = await securityRead(authority.key + ':used'); return !!(existing.ok && existing.found && existing.record.version === PASSWORD_VERSION);
+}
+
+function nonceSigningKey() { return deriveSecret('admin-page-nonce-v411'); }
+function issuePageNonce(action, origin, device) {
+  const csrf = crypto.randomBytes(32).toString('base64url'), now = Date.now();
+  const payload = { v: 411, a: action, o: digest(origin), d: device, c: digest(csrf), i: now, e: now + 120000, r: randomToken() };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url'), key = nonceSigningKey();
+  try { return { csrf, nonce: encoded + '.' + crypto.createHmac('sha256', key).update(encoded).digest('base64url') }; }
+  finally { key.fill(0); }
+}
+async function verifyPageNonce(req, action, origin, device) {
+  const csrfA = String(req.headers && req.headers['x-csrf-token'] || ''), csrfB = String(req.headers && req.headers['x-dirac-csrf-token'] || ''), token = String(req.headers && req.headers['x-dirac-page-nonce'] || '');
+  if (!/^[A-Za-z0-9_-]{43}$/.test(csrfA) || csrfA !== csrfB || token.length > 4096 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(token)) fail('ADMIN_PROOF_INVALID', 403);
+  const dot = token.lastIndexOf('.'), encoded = token.slice(0, dot), signature = token.slice(dot + 1), key = nonceSigningKey();
+  let expected; try { expected = crypto.createHmac('sha256', key).update(encoded).digest('base64url'); } finally { key.fill(0); }
+  if (!safeEqual(signature, expected)) fail('ADMIN_PROOF_INVALID', 403);
+  let payload; try { payload = JSON.parse(decodeB64url(encoded, 3072).toString('utf8')); } catch (_) { fail('ADMIN_PROOF_INVALID', 403); }
+  const now = Date.now();
+  if (!payload || Object.keys(payload).sort().join(',') !== 'a,c,d,e,i,o,r,v' || payload.v !== 411 || payload.a !== action || payload.o !== digest(origin) || payload.d !== device || payload.c !== digest(csrfA)
+      || !Number.isSafeInteger(payload.i) || !Number.isSafeInteger(payload.e) || payload.i > now || payload.e !== payload.i + 120000 || payload.e <= now || !exactToken(payload.r)) fail('ADMIN_PROOF_INVALID', 403);
+  if (await securityClaim(pageNonceKey(token), { version: VERSION, action, usedAt: now }, 180) !== true) fail('ADMIN_PROOF_REPLAYED', 409);
+  return true;
+}
+
+function securityBlockKey(origin, device) { return SECURITY_BLOCK_PREFIX + digest(String(origin) + '\0' + String(device)); }
+function validSecurityBlock(record, origin, device) {
+  return !!(record && record.version === VERSION && record.schema === 'dirac.admin_security_block.v411' && record.reason === 'html_detected_attack'
+    && record.originHash === digest(origin) && record.device === device && Number.isSafeInteger(record.createdAt) && Number.isSafeInteger(record.blockedUntil)
+    && record.blockedUntil === record.createdAt + SECURITY_BLOCK_SECONDS * 1000 && record.blockedUntil > Date.now());
+}
+async function activeSecurityBlock(origin, device) {
+  const result = await securityRead(securityBlockKey(origin, device));
+  if (!result.ok) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
+  if (!result.found) return null;
+  if (!validSecurityBlock(result.record, origin, device)) fail('ADMIN_SECURITY_STATE_INVALID', 503);
+  return result.record;
+}
+function validateSecurityReport(body) {
+  if (!body || body.reason !== 'html_detected_attack' || body.page !== 'admin.html' || body.version !== 'dirac-html-shell-v1') fail('ADMIN_SECURITY_REPORT_INVALID', 400);
+  const type = String(body.type || ''), event = String(body.event || ''), evidence = String(body.evidence || '');
+  if (!['url_guard', 'input_guard'].includes(type) || !['forbidden_html_url_suffix', 'high_confidence_input_violation'].includes(event)) fail('ADMIN_SECURITY_REPORT_INVALID', 400);
+  const match = /^family=([a-z0-9_-]{1,64});field=([a-z0-9_-]{1,64});source=html_boundary(?:;sample=([\s\S]{1,768}))?$/.exec(evidence);
+  if (!match || (type === 'url_guard') !== (event === 'forbidden_html_url_suffix') || (type === 'url_guard') !== (match[1] === 'forbidden_html_suffix')) fail('ADMIN_SECURITY_REPORT_INVALID', 400);
+  return Object.freeze({ type, event, family: match[1], field: match[2], evidenceHash: digest512(evidence) });
+}
+async function persistSecurityReport(origin, device, report) {
+  const now = Date.now(), blockedUntil = now + SECURITY_BLOCK_SECONDS * 1000;
+  const blockRecord = { version: VERSION, schema: 'dirac.admin_security_block.v411', reason: 'html_detected_attack', originHash: digest(origin), device, createdAt: now, blockedUntil };
+  const blockKey = securityBlockKey(origin, device), claimed = await securityClaim(blockKey, blockRecord, SECURITY_BLOCK_SECONDS);
+  if (!claimed) {
+    const existing = await securityRead(blockKey);
+    if (!existing.ok || !existing.found || !validSecurityBlock(existing.record, origin, device)) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
+  }
+  const reportKey = SECURITY_REPORT_PREFIX + digest(randomToken()), reportRecord = { version: VERSION, schema: 'dirac.admin_security_report.v411', reason: 'html_detected_attack', type: report.type, event: report.event, family: report.family, field: report.field, evidenceHash: report.evidenceHash, originHash: digest(origin), device, createdAt: now };
+  if (await securityClaim(reportKey, reportRecord, SECURITY_BLOCK_SECONDS) !== true) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
+  return { blockedUntil };
+}
+
+function decodeB64url(value, maximum, minimum = 0) {
+  if (typeof value !== 'string' || !value || !/^[A-Za-z0-9_-]+$/.test(value) || value.length > Math.ceil(maximum * 4 / 3) + 4) fail('ADMIN_ENCODING_INVALID', 400);
+  let bytes; try { bytes = Buffer.from(value, 'base64url'); } catch (_) { fail('ADMIN_ENCODING_INVALID', 400); }
+  if (bytes.length < minimum || bytes.length > maximum || bytes.toString('base64url') !== value) fail('ADMIN_ENCODING_INVALID', 400);
+  return bytes;
+}
+function readCbor(buffer, start = 0, depth = 0) {
+  if (!Buffer.isBuffer(buffer) || depth > 12 || start < 0 || start >= buffer.length) fail('ADMIN_PASSKEY_CBOR_INVALID', 400);
+  let offset = start;
+  const first = buffer[offset++], major = first >>> 5, add = first & 31;
+  function length() {
+    if (add < 24) return add;
+    if (add === 24) { if (offset + 1 > buffer.length) fail('ADMIN_PASSKEY_CBOR_INVALID', 400); return buffer[offset++]; }
+    if (add === 25) { if (offset + 2 > buffer.length) fail('ADMIN_PASSKEY_CBOR_INVALID', 400); const v = buffer.readUInt16BE(offset); offset += 2; return v; }
+    if (add === 26) { if (offset + 4 > buffer.length) fail('ADMIN_PASSKEY_CBOR_INVALID', 400); const v = buffer.readUInt32BE(offset); offset += 4; return v; }
+    if (add === 27) { if (offset + 8 > buffer.length) fail('ADMIN_PASSKEY_CBOR_INVALID', 400); const v = buffer.readBigUInt64BE(offset); offset += 8; if (v > BigInt(Number.MAX_SAFE_INTEGER)) fail('ADMIN_PASSKEY_CBOR_INVALID', 400); return Number(v); }
+    fail('ADMIN_PASSKEY_CBOR_INVALID', 400);
+  }
+  if (major === 0 || major === 1) { const n = length(); return { value: major === 0 ? n : -1 - n, offset }; }
+  if (major === 2 || major === 3) { const n = length(); if (n > 131072 || offset + n > buffer.length) fail('ADMIN_PASSKEY_CBOR_INVALID', 400); const part = buffer.subarray(offset, offset + n); offset += n; return { value: major === 2 ? Buffer.from(part) : part.toString('utf8'), offset }; }
+  if (major === 4) {
+    const n = length(); if (n > 128) fail('ADMIN_PASSKEY_CBOR_INVALID', 400); const out = [];
+    const readArrayItem = remaining => { if (!remaining) return; const item = readCbor(buffer, offset, depth + 1); out.push(item.value); offset = item.offset; readArrayItem(remaining - 1); };
+    readArrayItem(n); return { value: out, offset };
+  }
+  if (major === 5) {
+    const n = length(); if (n > 128) fail('ADMIN_PASSKEY_CBOR_INVALID', 400); const out = new Map();
+    const readMapItem = remaining => { if (!remaining) return; const key = readCbor(buffer, offset, depth + 1); offset = key.offset; const item = readCbor(buffer, offset, depth + 1); offset = item.offset; if (out.has(key.value)) fail('ADMIN_PASSKEY_CBOR_INVALID', 400); out.set(key.value, item.value); readMapItem(remaining - 1); };
+    readMapItem(n); return { value: out, offset };
+  }
+  if (major === 6) { length(); return readCbor(buffer, offset, depth + 1); }
+  if (major === 7) { if (add === 20) return { value: false, offset }; if (add === 21) return { value: true, offset }; if (add === 22) return { value: null, offset }; fail('ADMIN_PASSKEY_CBOR_INVALID', 400); }
+  fail('ADMIN_PASSKEY_CBOR_INVALID', 400);
+}
+function coseToJwk(map) {
+  if (!(map instanceof Map)) fail('ADMIN_PASSKEY_KEY_INVALID', 400);
+  const kty = map.get(1), alg = map.get(3);
+  let jwk;
+  if (kty === 2 && alg === -7 && map.get(-1) === 1) {
+    const x = map.get(-2), y = map.get(-3);
+    if (!Buffer.isBuffer(x) || x.length !== 32 || !Buffer.isBuffer(y) || y.length !== 32) fail('ADMIN_PASSKEY_KEY_INVALID', 400);
+    jwk = { kty: 'EC', crv: 'P-256', x: x.toString('base64url'), y: y.toString('base64url'), alg: 'ES256', ext: true, key_ops: ['verify'] };
+  } else if (kty === 3 && alg === -257) {
+    const n = map.get(-1), e = map.get(-2);
+    if (!Buffer.isBuffer(n) || n.length < 64 || n.length > 1024 || !Buffer.isBuffer(e) || e.length < 1 || e.length > 8) fail('ADMIN_PASSKEY_KEY_INVALID', 400);
+    jwk = { kty: 'RSA', n: n.toString('base64url'), e: e.toString('base64url'), alg: 'RS256', ext: true, key_ops: ['verify'] };
+  } else fail('ADMIN_PASSKEY_ALGORITHM_INVALID', 403);
+  try { crypto.createPublicKey({ key: jwk, format: 'jwk' }); } catch (_) { fail('ADMIN_PASSKEY_KEY_INVALID', 400); }
+  return jwk;
+}
+function parseAuthData(bytes, rpId, registration) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 37 || bytes.length > 8192) fail('ADMIN_PASSKEY_AUTHDATA_INVALID', 400);
+  const expectedRp = crypto.createHash('sha256').update(rpId).digest();
+  if (!crypto.timingSafeEqual(bytes.subarray(0, 32), expectedRp)) fail('ADMIN_PASSKEY_RPID_MISMATCH', 403);
+  const flags = bytes[32], signCount = bytes.readUInt32BE(33);
+  if ((flags & 0x01) === 0 || (flags & 0x04) === 0 || ((flags & 0x10) && !(flags & 0x08))) fail('ADMIN_PASSKEY_UV_REQUIRED', 403);
+  const result = { flags, signCount, backupEligible: !!(flags & 0x08), backupState: !!(flags & 0x10), credentialId: '', publicKeyJwk: null };
+  let offset = 37;
+  if (registration) {
+    if ((flags & 0x40) === 0 || bytes.length < offset + 18) fail('ADMIN_PASSKEY_ATTESTED_DATA_REQUIRED', 403);
+    offset += 16; const idLength = bytes.readUInt16BE(offset); offset += 2;
+    if (idLength < 16 || idLength > 1024 || offset + idLength > bytes.length) fail('ADMIN_PASSKEY_CREDENTIAL_INVALID', 400);
+    result.credentialId = bytes.subarray(offset, offset + idLength).toString('base64url'); offset += idLength;
+    const decoded = readCbor(bytes, offset); result.publicKeyJwk = coseToJwk(decoded.value); offset = decoded.offset;
+  } else if (flags & 0x40) fail('ADMIN_PASSKEY_AUTHDATA_INVALID', 400);
+  if (flags & 0x80) { const extension = readCbor(bytes, offset); offset = extension.offset; }
+  if (offset !== bytes.length) fail('ADMIN_PASSKEY_AUTHDATA_INVALID', 400);
+  return result;
+}
+function verifyRegistration({ credential, rpId }) {
+  const attestationBytes = decodeB64url(credential.response.attestationObject, 98304, 1);
+  const decoded = readCbor(attestationBytes, 0); if (decoded.offset !== attestationBytes.length || !(decoded.value instanceof Map)) fail('ADMIN_PASSKEY_ATTESTATION_INVALID', 400);
+  const object = decoded.value, fmt = object.get('fmt'), authData = object.get('authData'), attStmt = object.get('attStmt');
+  if (fmt !== 'none' || !(attStmt instanceof Map) || attStmt.size !== 0 || !Buffer.isBuffer(authData)) fail('ADMIN_PASSKEY_ATTESTATION_INVALID', 403);
+  const parsed = parseAuthData(authData, rpId, true);
+  if (parsed.credentialId !== credential.id) fail('ADMIN_PASSKEY_CREDENTIAL_MISMATCH', 403);
+  return { ok: true, credentialId: parsed.credentialId, publicKeyJwk: parsed.publicKeyJwk, signCount: parsed.signCount, backupEligible: parsed.backupEligible };
+}
+function verifyAssertion({ credential, rpId, passkey }) {
+  const authData = decodeB64url(credential.response.authenticatorData, 8192, 37), signature = decodeB64url(credential.response.signature, 8192, 8);
+  const parsed = parseAuthData(authData, rpId, false);
+  if (parsed.backupEligible !== !!passkey.backupEligible) fail('ADMIN_PASSKEY_BACKUP_STATE_INVALID', 403);
+  const client = decodeB64url(credential.response.clientDataJSON, 8192, 1), signed = Buffer.concat([authData, crypto.createHash('sha256').update(client).digest()]);
+  let key; try { key = crypto.createPublicKey({ key: passkey.publicKeyJwk, format: 'jwk' }); } catch (_) { fail('ADMIN_PASSKEY_KEY_INVALID', 503); }
+  let ok = false; try { ok = crypto.verify('sha256', signed, key, signature); } catch (_) { ok = false; }
+  if (!ok) fail('ADMIN_PASSKEY_SIGNATURE_INVALID', 403);
+  const previous = Number(passkey.signCount || 0), current = parsed.signCount;
+  if (previous > 0 && current > 0 && current <= previous) fail('ADMIN_PASSKEY_COUNTER_REPLAY', 409);
+  return { ok: true, signCount: current };
+}
+
+function smtpConfig() {
+  if (String(process.env.DIRAC_SECURITY_ALERT_ENABLED || '').trim().toLowerCase() !== 'true') return null;
+  const host = String(process.env.DIRAC_SECURITY_ALERT_SMTP_HOST || '').trim().toLowerCase();
+  const port = Number(process.env.DIRAC_SECURITY_ALERT_SMTP_PORT || 0), secure = String(process.env.DIRAC_SECURITY_ALERT_SMTP_SECURE || '').trim().toLowerCase() === 'true';
+  const user = String(process.env.DIRAC_SECURITY_ALERT_SMTP_USER || '').trim().toLowerCase(), password = String(process.env.DIRAC_SECURITY_ALERT_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
+  if (host !== 'smtp.gmail.com' || port !== 465 || !secure || !isEmail(user) || !/^[A-Za-z0-9]{16,128}$/.test(password)) return null;
+  return { host, port, user, password, timeout: Math.max(3000, Math.min(15000, Number(process.env.DIRAC_SECURITY_ALERT_TIMEOUT_MS || 12000) || 12000)) };
+}
+function smtpReader(socket) {
+  let buffer = '', closed = false, pending = null;
+  const onData = chunk => { buffer += chunk.toString('utf8'); if (buffer.length > 65536) { if (pending) pending.reject(Object.assign(new Error('SMTP_RESPONSE_TOO_LARGE'), { code: 'SMTP_RESPONSE_TOO_LARGE' })); pending = null; socket.destroy(); return; } drain(); };
+  const onError = error => { if (pending) pending.reject(error); pending = null; };
+  const onClose = () => { closed = true; if (pending) pending.reject(Object.assign(new Error('SMTP_CLOSED'), { code: 'SMTP_CLOSED' })); pending = null; };
+  function drain() {
+    if (!pending) return;
+    const lines = buffer.split('\r\n'); if (lines.length < 2) return;
+    let used = 0, code = 0, done = false;
+    lines.slice(0, -1).some(line => { used += Buffer.byteLength(line, 'utf8') + 2; const match = /^(\d{3})([ -])/.exec(line); if (!match) return false; code = Number(match[1]); done = match[2] === ' '; return done; });
+    if (!done) return;
+    buffer = buffer.slice(used); const active = pending; pending = null; active.resolve(code);
+  }
+  socket.on('data', onData); socket.on('error', onError); socket.on('close', onClose);
+  return { read(timeout) { if (closed || pending) return Promise.reject(Object.assign(new Error('SMTP_STATE_INVALID'), { code: 'SMTP_STATE_INVALID' })); return new Promise((resolve, reject) => { let timer; pending = { resolve: code => { clearTimeout(timer); resolve(code); }, reject: error => { clearTimeout(timer); reject(error); } }; timer = setTimeout(() => { const active = pending; pending = null; if (active) active.reject(Object.assign(new Error('SMTP_TIMEOUT'), { code: 'SMTP_TIMEOUT' })); socket.destroy(); }, timeout); drain(); }); }, close() { socket.off('data', onData); socket.off('error', onError); socket.off('close', onClose); pending = null; } };
+}
+async function smtpCommand(socket, reader, command, expected, timeout) {
+  if (command !== null) socket.write(command + '\r\n');
+  const code = await reader.read(timeout), allowed = Array.isArray(expected) ? expected : [expected];
+  if (!allowed.includes(code)) throw Object.assign(new Error('SMTP_REJECTED'), { code: 'SMTP_REJECTED', smtpCode: code });
+}
+function dotStuff(value) { return String(value || '').replace(/^\./gm, '..'); }
+function mimeMessage(config, message) {
+  const boundary = 'dirac-admin-' + crypto.randomBytes(16).toString('hex');
+  const subject = 'Verifikasi administrator DIRAC [' + message.reference + ']';
+  const text = 'Kode administrator satu kali, berlaku 10 menit. Jangan bagikan kode ini.\n\n' + message.code;
+  const html = '<p>Kode administrator satu kali, berlaku 10 menit. Jangan bagikan kode ini.</p><p style="word-break:break-all;font-family:monospace">' + message.code + '</p>';
+  const b64 = value => Buffer.from(value, 'utf8').toString('base64').match(/.{1,76}/g).join('\r\n');
+  return ['From: PT Dirac Inovasi Nusantara <' + config.user + '>', 'To: ' + ADMIN_EMAIL, 'Subject: =?UTF-8?B?' + Buffer.from(subject).toString('base64') + '?=', 'Date: ' + new Date().toUTCString(), 'Auto-Submitted: auto-generated', 'MIME-Version: 1.0', 'Content-Type: multipart/alternative; boundary="' + boundary + '"', '', '--' + boundary, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64(text), '--' + boundary, 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64(html), '--' + boundary + '--', ''].join('\r\n');
+}
+async function sendAdminMail(message) {
+  const config = smtpConfig(); if (!config) return { ok: false };
+  let socket = null, reader = null, auth = null;
+  try {
+    socket = tls.connect({ host: config.host, port: config.port, servername: config.host, rejectUnauthorized: true });
+    await new Promise((resolve, reject) => { const timer = setTimeout(() => { socket.destroy(); reject(Object.assign(new Error('SMTP_TIMEOUT'), { code: 'SMTP_TIMEOUT' })); }, config.timeout); socket.once('secureConnect', () => { clearTimeout(timer); resolve(); }); socket.once('error', error => { clearTimeout(timer); reject(error); }); });
+    reader = smtpReader(socket); await smtpCommand(socket, reader, null, 220, config.timeout);
+    const ehlo = message && message.origin ? new URL(message.origin).hostname : 'localhost'; await smtpCommand(socket, reader, 'EHLO ' + ehlo, 250, config.timeout);
+    auth = Buffer.from('\0' + config.user + '\0' + config.password, 'utf8'); await smtpCommand(socket, reader, 'AUTH PLAIN ' + auth.toString('base64'), 235, config.timeout);
+    await smtpCommand(socket, reader, 'MAIL FROM:<' + config.user + '>', 250, config.timeout); await smtpCommand(socket, reader, 'RCPT TO:<' + ADMIN_EMAIL + '>', [250, 251], config.timeout); await smtpCommand(socket, reader, 'DATA', 354, config.timeout); await smtpCommand(socket, reader, dotStuff(mimeMessage(config, message)) + '\r\n.', 250, config.timeout);
+    try { socket.write('QUIT\r\n'); } catch (_) {} return { ok: true };
+  } catch (_) { return { ok: false }; }
+  finally { if (auth) auth.fill(0); if (reader) reader.close(); try { if (socket) socket.destroy(); } catch (_) {} }
+}
+
 function checkOperations(ops) {
-  if (!ops || !Object.isFrozen(ops) || ops.version !== VERSION || typeof ops.assertFullGuard !== 'function') fail('ADMIN_FULL_CENTRAL_GUARD_REQUIRED', 503);
+  if (!ops || !Object.isFrozen(ops) || ops.version !== VERSION || typeof ops.assertFullGuard !== 'function') fail('ADMIN_FULL_GUARD_REQUIRED', 503);
   ops.assertFullGuard();
   const identity = ops.identity;
-  if (!identity || !Object.isFrozen(identity) || identity.email !== ADMIN_EMAIL || identity.active !== true
-      || !['owner', 'super_admin', 'security_admin'].includes(identity.role)
-      || !/^[A-Za-z0-9._:@-]{1,160}$/.test(String(identity.userId || ''))
-      || !/^[a-f0-9]{64}$/.test(String(identity.binding || ''))) fail('ADMIN_FIXED_OWNER_REQUIRED', 403);
+  if (!identity || !Object.isFrozen(identity) || identity.email !== ADMIN_EMAIL || identity.active !== true || identity.role !== 'owner' || identity.userId !== ADMIN_USER_ID || !/^[a-f0-9]{64}$/.test(String(identity.binding || ''))) fail('ADMIN_FIXED_OWNER_REQUIRED', 403);
   let origin; try { origin = new URL(identity.origin); } catch (_) { fail('ADMIN_ORIGIN_INVALID', 403); }
-  if (origin.protocol !== 'https:' || origin.origin !== identity.origin || origin.username || origin.password || origin.port) fail('ADMIN_ORIGIN_INVALID', 403);
+  if (origin.origin !== identity.origin || origin.username || origin.password || (origin.protocol !== 'https:' && !loopbackHost(origin.hostname))) fail('ADMIN_ORIGIN_INVALID', 403);
   if (!ACTIONS.includes(ops.action) || !CONTRACTS[ops.action].methods.includes(ops.method)) fail('ADMIN_ACTION_INVALID', 400);
-  for (const name of ['read', 'claim', 'replace', 'takeRate', 'deriveKey', 'mail', 'verifyRegistration', 'verifyAssertion', 'readSession', 'setSession', 'clearSession', 'business']) {
-    if (typeof ops[name] !== 'function') fail('ADMIN_OPERATION_UNAVAILABLE', 503);
-  }
+  if (['read', 'claim', 'replace', 'takeRate', 'deriveKey', 'mail', 'verifyRegistration', 'verifyAssertion', 'readSession', 'setSession', 'clearSession', 'verifySecret', 'publishPassword', 'securityReport', 'business'].some(name => typeof ops[name] !== 'function')) fail('ADMIN_OPERATION_UNAVAILABLE', 503);
   return { owner: digest(ADMIN_EMAIL + ':' + identity.userId), binding: identity.binding, origin: identity.origin, rpId: origin.hostname };
 }
 function configKey(scope) { return PREFIX + 'enrollment:' + digest(scope.owner + ':' + scope.origin); }
-async function stored(ops, key) {
-  ops.assertFullGuard(); const result = await ops.read(key); ops.assertFullGuard();
-  if (!result || result.ok !== true) fail('ADMIN_STORE_UNAVAILABLE', 503);
-  return result.found === true ? result.record : null;
-}
+async function stored(ops, key) { ops.assertFullGuard(); const result = await ops.read(key); ops.assertFullGuard(); if (!result || result.ok !== true) fail('ADMIN_STORE_UNAVAILABLE', 503); return result.found === true ? result.record : null; }
 async function config(ops, scope) {
-  const value = await stored(ops, configKey(scope));
-  if (!value) return null;
-  if (value.version !== VERSION || value.owner !== scope.owner || value.origin !== scope.origin
-      || !exactToken(value.revision) || !value.passkey || !exactToken(value.userHandle)
-      || !Number.isSafeInteger(value.passkey.signCount) || value.passkey.signCount < 0
-      || typeof value.totp !== 'string') fail('ADMIN_ENROLLMENT_INVALID', 503);
+  const value = await stored(ops, configKey(scope)); if (!value) return null;
+  if (value.version !== VERSION || value.owner !== scope.owner || value.origin !== scope.origin || !exactToken(value.revision) || !value.passkey || !exactToken(value.userHandle) || !Number.isSafeInteger(value.passkey.signCount) || value.passkey.signCount < 0 || typeof value.totp !== 'string') fail('ADMIN_ENROLLMENT_INVALID', 503);
   return value;
 }
 async function issue(ops, scope, stage, values = {}, seconds = FACTOR_SECONDS) {
-  const token = randomToken(), now = Date.now();
-  const record = { version: VERSION, owner: scope.owner, binding: scope.binding, origin: scope.origin, stage, ...values, expiresAt: now + seconds * 1000 };
-  if (await ops.claim(PREFIX + 'ticket:' + digest(token), record, seconds) !== true) fail('ADMIN_STORE_UNAVAILABLE', 503);
-  return token;
+  const token = randomToken(), now = Date.now(); const record = { version: VERSION, owner: scope.owner, binding: scope.binding, origin: scope.origin, stage, ...values, expiresAt: now + seconds * 1000 };
+  if (await ops.claim(PREFIX + 'ticket:' + digest(token), record, seconds) !== true) fail('ADMIN_STORE_UNAVAILABLE', 503); return token;
 }
 async function ticket(ops, scope, token, stage) {
-  if (!exactToken(token)) fail('ADMIN_TICKET_INVALID', 401);
-  const key = PREFIX + 'ticket:' + digest(token), value = await stored(ops, key);
-  if (!value || value.version !== VERSION || value.owner !== scope.owner || value.origin !== scope.origin || value.binding !== scope.binding
-      || value.stage !== stage || !Number.isSafeInteger(value.expiresAt) || value.expiresAt <= Date.now()) fail('ADMIN_TICKET_EXPIRED', 401);
-  if (await stored(ops, key + ':used')) fail('ADMIN_TICKET_ALREADY_USED', 409);
-  return { key, value };
+  if (!exactToken(token)) fail('ADMIN_TICKET_INVALID', 401); const key = PREFIX + 'ticket:' + digest(token), value = await stored(ops, key);
+  if (!value || value.version !== VERSION || value.owner !== scope.owner || value.origin !== scope.origin || value.binding !== scope.binding || value.stage !== stage || !Number.isSafeInteger(value.expiresAt) || value.expiresAt <= Date.now()) fail('ADMIN_TICKET_EXPIRED', 401);
+  if (await stored(ops, key + ':used')) fail('ADMIN_TICKET_ALREADY_USED', 409); return { key, value };
 }
-async function consume(ops, entry) {
-  const remaining = Math.max(60, Math.ceil((entry.value.expiresAt - Date.now()) / 1000));
-  if (await ops.claim(entry.key + ':used', { version: VERSION, usedAt: Date.now() }, remaining) !== true) fail('ADMIN_TICKET_ALREADY_USED', 409);
-}
-async function throttle(ops, scope, name, limit, seconds) {
-  if (await ops.takeRate(PREFIX + 'rate:' + digest(scope.owner + ':' + scope.origin + ':' + name), limit, seconds) !== true) fail('ADMIN_RATE_LIMITED', 429);
-}
+async function consume(ops, entry) { const remaining = Math.max(60, Math.ceil((entry.value.expiresAt - Date.now()) / 1000)); if (await ops.claim(entry.key + ':used', { version: VERSION, usedAt: Date.now() }, remaining) !== true) fail('ADMIN_TICKET_ALREADY_USED', 409); }
+async function throttle(ops, scope, name, limit, seconds) { if (await ops.takeRate(PREFIX + 'rate:' + digest(scope.owner + ':' + scope.origin + ':' + name), limit, seconds) !== true) fail('ADMIN_RATE_LIMITED', 429); }
 async function session(ops, scope, must = true) {
-  const raw = ops.readSession();
-  if (!exactToken(raw)) { if (must) fail('ADMIN_THREE_FACTORS_REQUIRED', 401); return null; }
-  try {
-    const entry = await ticket(ops, scope, raw, 'session');
-    if (entry.value.factors !== 'email+passkey+totp') fail('ADMIN_THREE_FACTORS_REQUIRED', 401);
-    return entry;
-  } catch (error) { if (!must && [401, 409].includes(error.status)) return null; throw error; }
+  const raw = ops.readSession(); if (!exactToken(raw)) { if (must) fail('ADMIN_THREE_FACTORS_REQUIRED', 401); return null; }
+  try { const entry = await ticket(ops, scope, raw, 'session'); if (entry.value.factors !== 'email+passkey+totp') fail('ADMIN_THREE_FACTORS_REQUIRED', 401); return entry; }
+  catch (error) { if (!must && [401, 409].includes(error.status)) return null; throw error; }
 }
 function validateClientData(credential, proof, scope) {
-  if (!credential || typeof credential !== 'object' || Array.isArray(credential) || credential.type !== 'public-key'
-      || typeof credential.id !== 'string' || typeof credential.rawId !== 'string' || credential.id !== credential.rawId
-      || !/^[A-Za-z0-9_-]{22,1364}$/.test(credential.id) || !credential.response || typeof credential.response !== 'object') fail('ADMIN_PASSKEY_INVALID', 400);
-  const encoded = credential.response.clientDataJSON;
-  if (typeof encoded !== 'string' || !/^[A-Za-z0-9_-]{1,8192}$/.test(encoded)) fail('ADMIN_PASSKEY_CLIENT_INVALID', 400);
-  const bytes = Buffer.from(encoded, 'base64url'); let data;
-  try { data = JSON.parse(bytes.toString('utf8')); } catch (_) { fail('ADMIN_PASSKEY_CLIENT_INVALID', 400); }
-  if (!data || data.type !== (proof.mode === 'registration' ? 'webauthn.create' : 'webauthn.get') || data.challenge !== proof.challenge
-      || data.origin !== scope.origin || (data.crossOrigin !== undefined && data.crossOrigin !== false) || data.topOrigin !== undefined) fail('ADMIN_PASSKEY_CLIENT_MISMATCH', 403);
+  if (!credential || typeof credential !== 'object' || Array.isArray(credential) || credential.type !== 'public-key' || typeof credential.id !== 'string' || typeof credential.rawId !== 'string' || credential.id !== credential.rawId || !/^[A-Za-z0-9_-]{22,1364}$/.test(credential.id) || !credential.response || typeof credential.response !== 'object' || Array.isArray(credential.response)) fail('ADMIN_PASSKEY_INVALID', 400);
+  const encoded = credential.response.clientDataJSON; if (typeof encoded !== 'string' || !/^[A-Za-z0-9_-]{1,8192}$/.test(encoded)) fail('ADMIN_PASSKEY_CLIENT_INVALID', 400);
+  const bytes = decodeB64url(encoded, 8192, 1); let data; try { data = JSON.parse(bytes.toString('utf8')); } catch (_) { fail('ADMIN_PASSKEY_CLIENT_INVALID', 400); }
+  if (!data || data.type !== (proof.mode === 'registration' ? 'webauthn.create' : 'webauthn.get') || data.challenge !== proof.challenge || data.origin !== scope.origin || (data.crossOrigin !== undefined && data.crossOrigin !== false) || data.topOrigin !== undefined) fail('ADMIN_PASSKEY_CLIENT_MISMATCH', 403);
   return data;
 }
 async function execute(ops) {
   const scope = checkOperations(ops), body = ops.body || {}, action = ops.action;
   if (ops.method === 'HEAD') return { ok: true };
+  if (action === 'admin_entry') {
+    const configured = adminSecretState().configured;
+    return { ok: true, email: ADMIN_EMAIL, credentials_required: true, credentials_configured: configured, factor_count: 3, email_digits: EMAIL_DIGITS, totp_period: 30 };
+  }
+  if (action === 'admin_security_report') {
+    await throttle(ops, scope, 'security-report', 3, 60);
+    const report = validateSecurityReport(body), result = await ops.securityReport(report);
+    if (!result || !Number.isSafeInteger(result.blockedUntil) || result.blockedUntil <= Date.now()) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
+    fail('ADMIN_SECURITY_BLOCKED', 403);
+  }
+  if (action === 'admin_login') {
+    await throttle(ops, scope, 'password-login', 5, FACTOR_SECONDS);
+    if (String(body.email || '').trim().toLowerCase() !== ADMIN_EMAIL || typeof body.password !== 'string' || body.password.length > 4096 || !ops.verifySecret(body.password)) fail('ADMIN_CREDENTIALS_INVALID', 401);
+    await ops.publishPassword();
+    return { ok: true, stage: 'email', credentials_verified: true, email: ADMIN_EMAIL };
+  }
   if (action === 'admin_status') {
     const nonceTarget = body._dirac_page_nonce_for;
-    if (typeof nonceTarget === 'string' && Object.prototype.hasOwnProperty.call(CONTRACTS, nonceTarget)
-        && CONTRACTS[nonceTarget].methods.includes('POST')) return { ok: true };
+    if (typeof nonceTarget === 'string' && Object.prototype.hasOwnProperty.call(CONTRACTS, nonceTarget) && CONTRACTS[nonceTarget].methods.includes('POST')) return { ok: true };
     const [enrolled, active] = await Promise.all([config(ops, scope), session(ops, scope, false)]);
     return { ok: true, email: ADMIN_EMAIL, enrolled: !!enrolled, authenticated: !!active, factor_count: 3, email_digits: EMAIL_DIGITS, totp_period: 30, expires_at: active ? new Date(active.value.expiresAt).toISOString() : null };
   }
   if (action === 'admin_email_start') {
-    await throttle(ops, scope, 'email-start-minute', 1, 60);
-    await throttle(ops, scope, 'email-start-hour', 5, 3600);
-    const code = Array.from({ length: EMAIL_DIGITS }, () => String(crypto.randomInt(0, 10))).join('');
-    const salt = randomToken(), reference = crypto.randomBytes(12).toString('hex');
-    const token = await issue(ops, scope, 'email', { salt, codeHash: digest(salt + ':' + code), reference });
-    const delivered = await ops.mail({ to: ADMIN_EMAIL, code, reference, expiresAt: Date.now() + FACTOR_SECONDS * 1000 });
-    if (!delivered || delivered.ok !== true) fail('ADMIN_EMAIL_DELIVERY_UNCONFIRMED', 503);
-    return { ok: true, ticket: token, stage: 'email', email: ADMIN_EMAIL, digits: EMAIL_DIGITS, expires_in: FACTOR_SECONDS };
+    await throttle(ops, scope, 'email-start-minute', 1, 60); await throttle(ops, scope, 'email-start-hour', 5, 3600);
+    const code = Array.from({ length: EMAIL_DIGITS }, () => String(crypto.randomInt(0, 10))).join(''), salt = randomToken(), reference = crypto.randomBytes(12).toString('hex');
+    const token = await issue(ops, scope, 'email', { salt, codeHash: digest(salt + ':' + code), reference }); const delivered = await ops.mail({ to: ADMIN_EMAIL, code, reference, expiresAt: Date.now() + FACTOR_SECONDS * 1000 });
+    if (!delivered || delivered.ok !== true) fail('ADMIN_EMAIL_DELIVERY_UNCONFIRMED', 503); return { ok: true, ticket: token, stage: 'email', email: ADMIN_EMAIL, digits: EMAIL_DIGITS, expires_in: FACTOR_SECONDS };
   }
   if (action === 'admin_email_verify') {
-    const entry = await ticket(ops, scope, body.ticket, 'email');
-    await throttle(ops, scope, 'email-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
-    if (typeof body.code !== 'string' || !new RegExp('^[0-9]{' + EMAIL_DIGITS + '}$').test(body.code)
-        || !safeEqual(digest(entry.value.salt + ':' + body.code), entry.value.codeHash)) fail('ADMIN_EMAIL_CODE_INVALID', 401);
-    await consume(ops, entry);
-    return { ok: true, ticket: await issue(ops, scope, 'passkey-start'), stage: 'passkey' };
+    const entry = await ticket(ops, scope, body.ticket, 'email'); await throttle(ops, scope, 'email-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
+    if (typeof body.code !== 'string' || !new RegExp('^[0-9]{' + EMAIL_DIGITS + '}$').test(body.code) || !safeEqual(digest(entry.value.salt + ':' + body.code), entry.value.codeHash)) fail('ADMIN_EMAIL_CODE_INVALID', 401);
+    await consume(ops, entry); return { ok: true, ticket: await issue(ops, scope, 'passkey-start'), stage: 'passkey' };
   }
   if (action === 'admin_passkey_start') {
-    const entry = await ticket(ops, scope, body.ticket, 'passkey-start');
-    const enrolled = await config(ops, scope); await consume(ops, entry);
+    const entry = await ticket(ops, scope, body.ticket, 'passkey-start'), enrolled = await config(ops, scope); await consume(ops, entry);
     const challenge = randomToken(), userHandle = enrolled ? enrolled.userHandle : randomToken(), mode = enrolled ? 'authentication' : 'registration';
     const token = await issue(ops, scope, 'passkey', { challenge, mode, userHandle, revision: enrolled ? enrolled.revision : null });
-    const publicKey = mode === 'registration' ? {
-      challenge, rp: { id: scope.rpId, name: 'PT DIGDAYA INOVASI NUSANTARA' },
-      user: { id: userHandle, name: ADMIN_EMAIL, displayName: 'Administrator DIGDAYA' },
-      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
-      authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, attestation: 'none'
-    } : { challenge, rpId: scope.rpId, userVerification: 'required', timeout: 60000, allowCredentials: [{ id: enrolled.passkey.credentialId, type: 'public-key' }] };
+    const publicKey = mode === 'registration' ? { challenge, rp: { id: scope.rpId, name: 'PT DIRAC INOVASI NUSANTARA' }, user: { id: userHandle, name: ADMIN_EMAIL, displayName: 'Administrator DIRAC' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, attestation: 'none' } : { challenge, rpId: scope.rpId, userVerification: 'required', timeout: 60000, allowCredentials: [{ id: enrolled.passkey.credentialId, type: 'public-key' }] };
     return { ok: true, ticket: token, stage: 'passkey', mode, publicKey };
   }
   if (action === 'admin_passkey_verify') {
-    const entry = await ticket(ops, scope, body.ticket, 'passkey');
-    await throttle(ops, scope, 'passkey-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
-    const proof = entry.value, credential = body.credential, clientData = validateClientData(credential, proof, scope);
-    let enrolled = await config(ops, scope), passkey;
+    const entry = await ticket(ops, scope, body.ticket, 'passkey'); await throttle(ops, scope, 'passkey-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
+    const proof = entry.value, credential = body.credential, clientData = validateClientData(credential, proof, scope); let enrolled = await config(ops, scope), passkey;
     if (proof.mode === 'registration') {
-      if (enrolled) fail('ADMIN_ALREADY_ENROLLED', 409);
-      const verified = await ops.verifyRegistration({ credential, clientData, rpId: scope.rpId });
-      if (!verified || verified.ok !== true || verified.credentialId !== credential.id || !verified.publicKeyJwk) fail('ADMIN_PASSKEY_INVALID', 403);
-      passkey = { credentialId: verified.credentialId, publicKeyJwk: verified.publicKeyJwk, signCount: verified.signCount, backupEligible: verified.backupEligible };
+      if (enrolled) fail('ADMIN_ALREADY_ENROLLED', 409); const verified = await ops.verifyRegistration({ credential, clientData, rpId: scope.rpId });
+      if (!verified || verified.ok !== true || verified.credentialId !== credential.id || !verified.publicKeyJwk) fail('ADMIN_PASSKEY_INVALID', 403); passkey = { credentialId: verified.credentialId, publicKeyJwk: verified.publicKeyJwk, signCount: verified.signCount, backupEligible: verified.backupEligible };
     } else {
-      if (!enrolled || proof.revision !== enrolled.revision || credential.id !== enrolled.passkey.credentialId) fail('ADMIN_PASSKEY_STATE_CHANGED', 409);
-      const handle = credential.response.userHandle;
-      if (handle !== null && handle !== undefined && handle !== '' && handle !== enrolled.userHandle) fail('ADMIN_PASSKEY_USER_MISMATCH', 403);
-      const verified = await ops.verifyAssertion({ credential, clientData, rpId: scope.rpId, passkey: enrolled.passkey });
-      if (!verified || verified.ok !== true) fail('ADMIN_PASSKEY_INVALID', 403);
-      passkey = { ...enrolled.passkey, signCount: verified.signCount };
-      const next = { ...enrolled, passkey, revision: randomToken() };
-      if (await ops.replace(configKey(scope), enrolled.revision, next, ENROLLMENT_SECONDS) !== true) fail('ADMIN_PASSKEY_STATE_CHANGED', 409);
-      enrolled = next;
+      if (!enrolled || proof.revision !== enrolled.revision || credential.id !== enrolled.passkey.credentialId) fail('ADMIN_PASSKEY_STATE_CHANGED', 409); const handle = credential.response.userHandle;
+      if (handle !== null && handle !== undefined && handle !== '' && handle !== enrolled.userHandle) fail('ADMIN_PASSKEY_USER_MISMATCH', 403); const verified = await ops.verifyAssertion({ credential, clientData, rpId: scope.rpId, passkey: enrolled.passkey });
+      if (!verified || verified.ok !== true) fail('ADMIN_PASSKEY_INVALID', 403); passkey = { ...enrolled.passkey, signCount: verified.signCount }; const next = { ...enrolled, passkey, revision: randomToken() };
+      if (await ops.replace(configKey(scope), enrolled.revision, next, ENROLLMENT_SECONDS) !== true) fail('ADMIN_PASSKEY_STATE_CHANGED', 409); enrolled = next;
     }
-    await consume(ops, entry);
-    let provisioning = null, encrypted = enrolled ? enrolled.totp : null;
-    if (!enrolled) {
-      const secret = crypto.randomBytes(32);
-      try {
-        encrypted = seal(ops, secret, configKey(scope));
-        const manualKey = base32(secret), label = 'DIGDAYA ' + scope.rpId + ':' + ADMIN_EMAIL;
-        provisioning = { secret: manualKey, uri: 'otpauth://totp/' + encodeURIComponent(label) + '?secret=' + manualKey + '&issuer=' + encodeURIComponent('DIGDAYA ' + scope.rpId) + '&algorithm=SHA1&digits=6&period=30' };
-      } finally { secret.fill(0); }
-    }
-    const token = await issue(ops, scope, 'totp', { enroll: !enrolled, passkey: enrolled ? null : passkey, userHandle: proof.userHandle, totp: encrypted, revision: enrolled ? enrolled.revision : null });
-    return { ok: true, ticket: token, stage: 'totp', enrollment: provisioning, period: 30 };
+    await consume(ops, entry); let provisioning = null, encrypted = enrolled ? enrolled.totp : null;
+    if (!enrolled) { const secret = crypto.randomBytes(32); try { encrypted = seal(ops, secret, configKey(scope)); const manualKey = base32(secret), label = 'DIRAC ' + scope.rpId + ':' + ADMIN_EMAIL; provisioning = { secret: manualKey, uri: 'otpauth://totp/' + encodeURIComponent(label) + '?secret=' + manualKey + '&issuer=' + encodeURIComponent('DIRAC ' + scope.rpId) + '&algorithm=SHA1&digits=6&period=30' }; } finally { secret.fill(0); } }
+    const token = await issue(ops, scope, 'totp', { enroll: !enrolled, passkey: enrolled ? null : passkey, userHandle: proof.userHandle, totp: encrypted, revision: enrolled ? enrolled.revision : null }); return { ok: true, ticket: token, stage: 'totp', enrollment: provisioning, period: 30 };
   }
   if (action === 'admin_totp_verify') {
-    const entry = await ticket(ops, scope, body.ticket, 'totp');
-    await throttle(ops, scope, 'totp-verify', 5, FACTOR_SECONDS);
-    if (typeof body.code !== 'string' || !/^[0-9]{6}$/.test(body.code)) fail('ADMIN_TOTP_INVALID', 401);
-    const proof = entry.value, enrolled = await config(ops, scope);
+    const entry = await ticket(ops, scope, body.ticket, 'totp'); await throttle(ops, scope, 'totp-verify', 5, FACTOR_SECONDS);
+    if (typeof body.code !== 'string' || !/^[0-9]{6}$/.test(body.code)) fail('ADMIN_TOTP_INVALID', 401); const proof = entry.value, enrolled = await config(ops, scope);
     if (proof.enroll ? !!enrolled : (!enrolled || enrolled.revision !== proof.revision || enrolled.totp !== proof.totp)) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409);
     const secret = open(ops, proof.totp, configKey(scope)); let accepted = null;
-    try {
-      const current = Math.floor(Date.now() / 30000);
-      for (const counter of [current, current - 1, current + 1]) { if (safeEqual(totp(secret, counter), body.code)) { accepted = counter; break; } }
-    } finally { secret.fill(0); }
-    if (accepted === null) fail('ADMIN_TOTP_INVALID', 401);
-    if (await ops.claim(PREFIX + 'totp-used:' + digest(scope.owner + ':' + scope.origin + ':' + proof.totp + ':' + accepted), { version: VERSION }, 120) !== true) fail('ADMIN_TOTP_ALREADY_USED', 409);
-    await consume(ops, entry);
-    if (proof.enroll) {
-      const value = { version: VERSION, owner: scope.owner, origin: scope.origin, revision: randomToken(), passkey: proof.passkey, userHandle: proof.userHandle, totp: proof.totp, createdAt: Date.now() };
-      if (await ops.claim(configKey(scope), value, ENROLLMENT_SECONDS) !== true) fail('ADMIN_ALREADY_ENROLLED', 409);
-    }
-    const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS);
-    ops.setSession(token, SESSION_SECONDS);
-    return { ok: true, stage: 'complete', authenticated: true, expires_in: SESSION_SECONDS };
+    try { const current = Math.floor(Date.now() / 30000), match = [current, current - 1, current + 1].find(counter => safeEqual(totp(secret, counter), body.code)); accepted = Number.isSafeInteger(match) ? match : null; } finally { secret.fill(0); }
+    if (accepted === null) fail('ADMIN_TOTP_INVALID', 401); if (await ops.claim(PREFIX + 'totp-used:' + digest(scope.owner + ':' + scope.origin + ':' + proof.totp + ':' + accepted), { version: VERSION }, 120) !== true) fail('ADMIN_TOTP_ALREADY_USED', 409); await consume(ops, entry);
+    if (proof.enroll) { const value = { version: VERSION, owner: scope.owner, origin: scope.origin, revision: randomToken(), passkey: proof.passkey, userHandle: proof.userHandle, totp: proof.totp, createdAt: Date.now() }; if (await ops.claim(configKey(scope), value, ENROLLMENT_SECONDS) !== true) fail('ADMIN_ALREADY_ENROLLED', 409); }
+    const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); return { ok: true, stage: 'complete', authenticated: true, expires_in: SESSION_SECONDS };
   }
-  if (action === 'admin_logout') {
-    const active = await session(ops, scope, false);
-    if (active) await consume(ops, active);
-    await ops.clearSession(); return { ok: true };
-  }
-  await session(ops, scope);
-  const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_monitor: 'monitor' }[action];
-  if (!operation) fail('ADMIN_ACTION_INVALID', 400);
-  ops.assertFullGuard();
-  return ops.business(operation, body);
+  if (action === 'admin_logout') { const active = await session(ops, scope, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
+  await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_monitor: 'monitor' }[action];
+  if (!operation) fail('ADMIN_ACTION_INVALID', 400); ops.assertFullGuard(); return ops.business(operation, body);
 }
 
+function shipmentKey(kind, id) { if (!Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !isUuid(id)) fail('ADMIN_ORDER_ID_INVALID', 400); return SHIPMENT_PREFIX + kind + ':' + String(id).toLowerCase(); }
+function shipmentTimestamp(value) {
+  if (typeof value !== 'string') return null; const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?(?:Z|\+00:00)$/.exec(value); if (!match) return null;
+  const ms = Date.parse(match[1] + 'Z'); if (!Number.isFinite(ms) || new Date(ms).toISOString().slice(0, 19) !== match[1]) return null; return BigInt(ms) * 1000n + BigInt((match[2] || '').padEnd(6, '0'));
+}
+function businessText(value, maximum, required = false) { if (typeof value !== 'string' || value.length > maximum || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(value) || (required && !value.trim())) fail('ADMIN_SHIPMENT_TEXT_INVALID', 400); return value.trim(); }
+function validateShipmentRow(row, key) {
+  if (!row || typeof row !== 'object' || Array.isArray(row) || row.security_key !== key || Number(row.blocked_until_ms) !== 0 || shipmentTimestamp(row.updated_at) === null || !Number.isFinite(Date.parse(row.expires_at)) || Date.parse(row.expires_at) <= Date.now()) return null;
+  const value = row.record_json;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.schema !== 'dirac.admin_shipment.v406' || !['active', 'cancelled'].includes(value.state) || !isUuid(value.customer_id) || !isUuid(value.updated_by) || !Number.isSafeInteger(value.revision) || value.revision < 1 || !['prepared', 'shipped', 'in_transit', 'delivered', 'cancelled'].includes(value.status) || (value.state === 'cancelled') !== (value.status === 'cancelled') || shipmentTimestamp(value.updated_at) === null || shipmentTimestamp(value.updated_at) !== shipmentTimestamp(row.updated_at) || !Array.isArray(value.events) || value.events.length < 1 || value.events.length > 50) return null;
+  try { if (shipmentKey(value.order_kind, value.order_id) !== key || !/^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(value.tracking_number)) return null; businessText(value.courier, 80, true); businessText(value.location, 160); businessText(value.origin, 600); businessText(value.destination, 600); if (value.estimated_delivery !== '' && (!/^\d{4}-\d{2}-\d{2}$/.test(value.estimated_delivery) || !Number.isFinite(Date.parse(value.estimated_delivery)))) return null; const invalidEvent = value.events.some(event => { if (!event || typeof event !== 'object' || Array.isArray(event) || !Number.isFinite(Date.parse(event.timestamp)) || typeof event.status !== 'string') return true; businessText(event.description, 300, true); businessText(event.location, 160); return false; }); if (invalidEvent) return null; } catch (_) { return null; }
+  return value;
+}
+function shipmentPublic(value) { return value ? { tracking_number: value.tracking_number, courier: value.courier, state: value.state, status: value.status, location: value.location, origin: value.origin, destination: value.destination, estimated_delivery: value.estimated_delivery, updated_at: value.updated_at, revision: value.revision, events: value.events.map(event => ({ timestamp: event.timestamp, status: event.status, description: event.description, location: event.location })) } : null; }
+function orderPublic(row, kind) {
+  if (!row || !isUuid(row.id) || !isUuid(row.customer_id)) fail('ADMIN_ORDER_RECORD_INVALID', 503);
+  const total = Number(row.total === undefined ? row.total_price : row.total); if (!Number.isFinite(total)) fail('ADMIN_ORDER_RECORD_INVALID', 503);
+  return { id: row.id, kind, order_id: String(row.order_id || (kind === 'domain' ? 'DOM-' + row.id.slice(0, 8).toUpperCase() : row.id)), customer_id: row.customer_id, customer_name: String(row.customer_name || '').slice(0, 160), customer_email: String(row.customer_email || '').slice(0, 254), customer_phone: String(row.customer_phone || row.customer_whatsapp || '').slice(0, 40), shipping_address: String(row.shipping_address || '').slice(0, 600), service_type: kind === 'domain' ? 'domain' : String(row.service_type || '').slice(0, 60), domain_name: String(row.domain_name || '').slice(0, 254), total, currency: String(row.currency || 'IDR').slice(0, 8), payment_method: String(row.payment_method || '').slice(0, 80), payment_status: String(row.payment_status || '').slice(0, 40), order_status: String(row.order_status || '').slice(0, 40), created_at: row.created_at };
+}
+async function businessOrders(body) {
+  const kind = String(body.kind || 'regular'), offsetRaw = String(body.offset || '0'); if (!Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 50000) fail('ADMIN_PAGE_INVALID', 400);
+  const table = kind === 'domain' ? 'domain_orders' : 'orders', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + '&order=created_at.desc,id.desc&limit=41&offset=' + Number(offsetRaw), result = await dbFetch(path, { method: 'GET' });
+  if (!result.ok || !Array.isArray(result.data) || result.data.length > 41) fail('ADMIN_DATA_UNAVAILABLE', 503); const rows = result.data, orders = rows.slice(0, 40).map(row => orderPublic(row, kind)), keys = orders.map(row => shipmentKey(kind, row.id));
+  let shipments = []; if (keys.length) { const shipped = await dbFetch('/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=in.(' + keys.map(encodeURIComponent).join(',') + ')&limit=' + keys.length, { method: 'GET' }, 'security'); if (!shipped.ok || !Array.isArray(shipped.data) || shipped.data.length > keys.length) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); shipments = shipped.data; }
+  const map = new Map(); shipments.forEach(row => { if (!keys.includes(row && row.security_key) || map.has(row.security_key)) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); const value = validateShipmentRow(row, row.security_key), order = orders.find(item => item.id === (value && value.order_id)); if (!value || !order || order.customer_id !== value.customer_id) fail('ADMIN_SHIPMENT_OWNER_MISMATCH', 503); map.set(row.security_key, value); });
+  return { ok: true, kind, offset: Number(offsetRaw), has_more: rows.length === 41, orders: orders.map(row => ({ ...row, shipment: shipmentPublic(map.get(shipmentKey(kind, row.id))) })), time: new Date().toISOString() };
+}
+async function loadOrder(kind, id) {
+  const table = kind === 'domain' ? 'domain_orders' : 'orders', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + '&id=eq.' + encodeURIComponent(id) + '&limit=2', result = await dbFetch(path, { method: 'GET' });
+  if (!result.ok || !Array.isArray(result.data)) fail('ADMIN_DATA_UNAVAILABLE', 503); if (result.data.length !== 1 || result.data[0].id !== id) fail('ADMIN_ORDER_NOT_FOUND', 404); return orderPublic(result.data[0], kind);
+}
+async function loadShipment(key) {
+  const result = await dbFetch('/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=eq.' + encodeURIComponent(key) + '&limit=2', { method: 'GET' }, 'security');
+  if (!result.ok || !Array.isArray(result.data) || result.data.length > 1) fail('ADMIN_DATA_UNAVAILABLE', 503); if (!result.data.length) return { row: null, value: null }; const value = validateShipmentRow(result.data[0], key); if (!value) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); return { row: result.data[0], value };
+}
+async function businessShipment(body, cancel) {
+  const kind = String(body.kind || ''), id = String(body.order_id || ''), key = shipmentKey(kind, id), revision = body.expected_revision; if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER) fail('ADMIN_REVISION_INVALID', 400);
+  const order = await loadOrder(kind, id), current = await loadShipment(key); if (current.value && current.value.customer_id !== order.customer_id) fail('ADMIN_SHIPMENT_OWNER_MISMATCH', 503); if (revision !== (current.value ? current.value.revision : 0)) fail('ADMIN_VERSION_CONFLICT', 409); if (cancel && (!current.value || current.value.state === 'cancelled')) fail('ADMIN_SHIPMENT_NOT_ACTIVE', 409);
+  const description = businessText(body.description || (cancel ? 'Resi dibatalkan oleh admin.' : 'Informasi pengiriman diperbarui oleh admin.'), 300, true), status = cancel ? 'cancelled' : String(body.status || ''); if (!['prepared', 'shipped', 'in_transit', 'delivered', 'cancelled'].includes(status) || (!cancel && status === 'cancelled')) fail('ADMIN_SHIPMENT_STATUS_INVALID', 400);
+  const tracking = cancel ? current.value.tracking_number : String(body.tracking_number || '').trim(); if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(tracking)) fail('ADMIN_TRACKING_NUMBER_INVALID', 400);
+  const now = Math.max(Date.now(), current.row ? Date.parse(current.row.updated_at) + 1 : 0), timestamp = new Date(now).toISOString(), value = { schema: 'dirac.admin_shipment.v406', order_kind: kind, order_id: id, customer_id: order.customer_id, revision: revision + 1, state: cancel ? 'cancelled' : 'active', tracking_number: tracking, courier: cancel ? current.value.courier : businessText(body.courier, 80, true), status, location: cancel ? current.value.location : businessText(body.location || '', 160), origin: cancel ? current.value.origin : businessText(body.origin || '', 600), destination: cancel ? current.value.destination : businessText(body.destination || order.shipping_address || '', 600), estimated_delivery: cancel ? current.value.estimated_delivery : String(body.estimated_delivery || ''), events: (current.value ? current.value.events : []).slice(-49), updated_at: timestamp, updated_by: ADMIN_USER_ID };
+  value.events.push({ timestamp, status, description, location: value.location }); const row = { security_key: key, record_json: value, blocked_until_ms: 0, expires_at: new Date(now + ENROLLMENT_SECONDS * 1000).toISOString(), updated_at: timestamp }; if (!validateShipmentRow(row, key)) fail('ADMIN_SHIPMENT_RECORD_INVALID', 400);
+  let path, method, bodyValue; if (!current.row) { path = '/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT); method = 'POST'; bodyValue = [row]; } else { path = '/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=eq.' + encodeURIComponent(key) + '&updated_at=eq.' + encodeURIComponent(current.row.updated_at); method = 'PATCH'; bodyValue = row; }
+  const result = await dbFetch(path, { method, prefer: 'return=representation', body: bodyValue }, 'security'); if (!result.ok || !Array.isArray(result.data) || result.data.length !== 1) fail('ADMIN_VERSION_CONFLICT', 409); const confirmed = validateShipmentRow(result.data[0], key); if (!confirmed || stableJson(confirmed) !== stableJson(value)) fail('ADMIN_SHIPMENT_WRITE_UNVERIFIED', 503); return { ok: true, shipment: shipmentPublic(confirmed) };
+}
+function accessBlockKey(blockId) { return isUuid(blockId) ? 'customer-access-block-v325:event:' + String(blockId).toLowerCase() : ''; }
+function accessBlockDigest(scope, value) { const cleanScope = String(scope || '').toLowerCase(), clean = String(value || '').trim().toLowerCase(); if (cleanScope === 'account' ? !isUuid(clean) : !['ip', 'device'].includes(cleanScope) || !/^[a-f0-9]{64}$/.test(clean)) return ''; const key = deriveSecret('customer-access-block-v325-key'); try { return crypto.createHmac('sha256', key).update(['v325', cleanScope, clean].join('\0')).digest('hex'); } finally { key.fill(0); } }
+function accessBlockStorageKeys(record) {
+  const id = String(record.block_id || '').toLowerCase(), event = accessBlockKey(id), ip = accessBlockDigest('ip', record.ip_hash), device = accessBlockDigest('device', record.device_hash), account = record.customer_id ? accessBlockDigest('account', record.customer_id) : '';
+  const keys = [event, account && 'customer-access-block-v325:account:' + account + ':' + id, ip && 'customer-access-block-v325:ip:' + ip + ':' + id, device && 'customer-access-block-v325:device:' + device + ':' + id].filter(Boolean).sort(); return event && ip && device && keys.length === (record.customer_id ? 4 : 3) ? keys : [];
+}
+function validateAccessBlock(row, canonicalOnly = false) {
+  if (!row || typeof row !== 'object' || Array.isArray(row) || Object.keys(row).sort().join(',') !== 'blocked_until_ms,expires_at,record_json,security_key') return null; const record = row.record_json;
+  if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).sort().join(',') !== ACCESS_BLOCK_RECORD_KEYS.join(',')) return null;
+  const id = String(record.block_id || '').trim().toLowerCase(), customer = record.customer_id === null ? null : String(record.customer_id || '').trim().toLowerCase(), ip = String(record.ip_hash || '').toLowerCase(), device = String(record.device_hash || '').toLowerCase(), blocked = Number(row.blocked_until_ms), expires = Date.parse(String(row.expires_at || ''));
+  if (record.schema !== 'dirac.customer_access_block' || record.version !== 325 || !isUuid(id) || record.block_id !== id || (customer !== null && (!isUuid(customer) || record.customer_id !== customer)) || !/^[a-f0-9]{64}$/.test(ip) || !/^[a-f0-9]{64}$/.test(device) || record.ip_hash !== ip || record.device_hash !== device || !Number.isSafeInteger(blocked) || record.blocked_until_ms !== blocked || !Number.isSafeInteger(record.created_at_ms) || !Number.isSafeInteger(record.updated_at_ms) || record.created_at_ms <= 0 || record.updated_at_ms < record.created_at_ms || !Number.isFinite(expires) || expires < blocked || expires < record.updated_at_ms || record.fail_count !== 1 || !/^[a-z0-9_:-]{1,120}$/i.test(String(record.action || '')) || typeof record.reason !== 'string' || !record.reason.trim() || record.reason.length > 500 || /[\u0000-\u001f\u007f]/.test(record.reason) || !['active', 'revoked'].includes(record.state)) return null;
+  const meta = record.metadata, metaKeys = meta && typeof meta === 'object' && !Array.isArray(meta) ? Object.keys(meta).sort().join(',') : ''; if (!meta || !['origin,source,user_agent_hash', 'identity_email,identity_email_source,identity_email_verified,origin,source,user_agent_hash'].includes(metaKeys) || meta.source !== 'customer_security_gate' || !/^[a-f0-9]{64}$/.test(String(meta.user_agent_hash || '')) || (Object.prototype.hasOwnProperty.call(meta, 'identity_email') && meta.identity_email !== null && !isEmail(meta.identity_email)) || (Object.prototype.hasOwnProperty.call(meta, 'identity_email_verified') && typeof meta.identity_email_verified !== 'boolean') || (Object.prototype.hasOwnProperty.call(meta, 'identity_email_source') && !/^[a-z_]{3,64}$/.test(String(meta.identity_email_source || ''))) || (meta.origin !== null && (typeof meta.origin !== 'string' || meta.origin.length > 320 || /[\u0000-\u001f\u007f]/.test(meta.origin)))) return null;
+  if (record.state === 'active' && record.revocation !== null) return null; if (record.state === 'revoked') { const rev = record.revocation; if (!rev || typeof rev !== 'object' || Array.isArray(rev) || Object.keys(rev).sort().join(',') !== 'admin_email,admin_role,admin_user_id,revoked_at_ms,source' || rev.source !== 'admin_security_center_supabase' || !isEmail(rev.admin_email) || !/^[A-Za-z0-9._:@-]{1,160}$/.test(String(rev.admin_user_id || '')) || !/^[A-Za-z0-9._:@-]{1,80}$/.test(String(rev.admin_role || '')) || !Number.isSafeInteger(rev.revoked_at_ms) || rev.revoked_at_ms !== blocked || record.updated_at_ms !== blocked) return null; }
+  const expected = accessBlockStorageKeys(record), stored = Array.isArray(record.storage_keys) ? record.storage_keys.slice() : []; if (!expected.length || stored.length !== expected.length || new Set(stored).size !== stored.length || stored.some((key, index) => key !== expected[index]) || !expected.includes(row.security_key) || (canonicalOnly && row.security_key !== accessBlockKey(id))) return null;
+  return { ...record, security_key: row.security_key, storage_keys: expected };
+}
+
+function persistentBanRecord(record, securityKey) {
+  const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {}, type = String(source.type || '').trim(), eventType = String(source.event_type || '').trim(), key = String(securityKey || '').trim(), blocked = Number(source.blocked_until_ms || source.blockedUntilMs || 0);
+  const loginBan = /^domain-login-(?:account|ip|device):[a-f0-9]{64}$/i.test(key) && (source.permanent === true || (Number.isSafeInteger(blocked) && blocked > 0));
+  return loginBan || (source.schema === 'dirac.customer_access_block' && source.state === 'active') || ['central_guard_transient_lockout_v335', 'global_hard_ban_v107', 'xss_one_strike_permanent_block_v3', 'global_api_threat_ban_v143', 'recovery_one_strike_persistent_ban_v201', 'central_guard_global_ban_v146', 'central_guard_transient_persistent_ban_v284', 'central_external_ban_v354', 'dirac_s2s_key_revocation_v206'].includes(type) || ['bola_idor_global_hard_ban', 'sqlmap_or_sqli_block'].includes(eventType);
+}
+
+async function businessBlocks(body) {
+  const raw = String(body.offset || '0'); if (!/^(0|[1-9][0-9]{0,4})$/.test(raw) || Number(raw) > 50000) fail('ADMIN_PAGE_INVALID', 400); const result = await dbFetch('/rest/v1/dirac_persistent_bans?select=' + encodeURIComponent(ACCESS_BLOCK_SELECT) + '&blocked_until_ms=gt.0&order=security_key.asc&limit=41&offset=' + Number(raw), { method: 'GET' }, 'security'); if (!result.ok || !Array.isArray(result.data) || result.data.length > 41) fail('ADMIN_DATA_UNAVAILABLE', 503);
+  const blocks = [], seen = new Set(); result.data.slice(0, 40).forEach(row => {
+    const value = validateAccessBlock(row, false);
+    if (value) {
+      if (seen.has(value.block_id) || value.state !== 'active' || value.blocked_until_ms <= Date.now()) return;
+      seen.add(value.block_id); const meta = value.metadata || {}, mirrored = /^(central_guard_|wrong_password_rate_limit_)/.test(value.reason);
+      blocks.push({ id: value.block_id, customer_email: isEmail(meta.identity_email) ? String(meta.identity_email).toLowerCase() : '', email_verified: meta.identity_email_verified === true, family: 'customer_access', reason: value.reason.slice(0, 300), created_at: new Date(value.created_at_ms).toISOString(), active: true, can_unban: !mirrored, review_note: mirrored ? 'Blokir ini terkait otoritas guard asal. Membuka salinan akses saja tidak memulihkan akses akun.' : 'Membuka catatan akses ini; blokir lain tetap diperiksa.' });
+      return;
+    }
+    const record = row && row.record_json;
+    if (!persistentBanRecord(record, row && row.security_key)) return;
+    const id = digest(String(row.security_key || '')); if (seen.has(id)) return; seen.add(id);
+    const email = String(record.identity_email || record.identityEmail || record.email || '').trim().toLowerCase();
+    blocks.push({ id, customer_email: isEmail(email) ? email : '', email_verified: record.identity_email_verified === true, family: String(record.type || record.event_type || 'persistent').slice(0, 80), reason: String(record.reason || record.ban_reason || record.reason_code || '').slice(0, 300), created_at: String(record.created_at || record.createdAt || '').slice(0, 48), active: true, can_unban: false, review_note: 'Blokir ini terkait otoritas guard asal dan hanya ditampilkan sebagai baca-saja.' });
+  });
+  return { ok: true, blocks, offset: Number(raw), has_more: result.data.length === 41, time: new Date().toISOString() };
+}
+async function businessUnban(body) {
+  const id = String(body.block_id || '').toLowerCase(), key = accessBlockKey(id); if (!key) fail('ADMIN_BLOCK_ID_INVALID', 400); const read = await dbFetch('/rest/v1/dirac_persistent_bans?select=' + encodeURIComponent(ACCESS_BLOCK_SELECT) + '&security_key=eq.' + encodeURIComponent(key) + '&limit=2', { method: 'GET' }, 'security'); if (!read.ok || !Array.isArray(read.data) || read.data.length > 1) fail('ADMIN_BLOCK_STORE_UNAVAILABLE', 503); if (!read.data.length) fail('ADMIN_BLOCK_NOT_FOUND', 404); const row = validateAccessBlock(read.data[0], true); if (!row) fail('ADMIN_BLOCK_RECORD_INVALID', 503); if (/^(central_guard_|wrong_password_rate_limit_)/.test(row.reason)) fail('ADMIN_ORIGINAL_BAN_AUTHORITY_REQUIRED', 409); if (row.state !== 'active' || row.blocked_until_ms <= Date.now()) return { ok: true, affected_rows: 0, time: new Date().toISOString() };
+  const now = Date.now(), next = { ...row }; delete next.security_key; next.reason = 'manual_unblock_from_admin_security_center'; next.blocked_until_ms = now; next.updated_at_ms = now; next.state = 'revoked'; next.revocation = { source: 'admin_security_center_supabase', admin_user_id: ADMIN_USER_ID, admin_email: ADMIN_EMAIL, admin_role: 'owner', revoked_at_ms: now };
+  const path = '/rest/v1/dirac_persistent_bans?security_key=in.(' + row.storage_keys.map(encodeURIComponent).join(',') + ')&blocked_until_ms=gt.' + now + '&select=' + encodeURIComponent(ACCESS_BLOCK_SELECT), patched = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { record_json: next, blocked_until_ms: now } }, 'security'); if (!patched.ok || !Array.isArray(patched.data) || patched.data.length !== row.storage_keys.length) fail('ADMIN_BLOCK_REVOCATION_UNVERIFIED', 503); const returned = patched.data.map(item => validateAccessBlock(item, false)); if (returned.some(item => !item || item.block_id !== id || item.state !== 'revoked') || returned.map(item => item.security_key).sort().some((item, index) => item !== row.storage_keys[index])) fail('ADMIN_BLOCK_REVOCATION_UNVERIFIED', 503); return { ok: true, affected_rows: 1, time: new Date().toISOString() };
+}
+function adminGuardSelfTest() {
+  try {
+    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_passkey_start','admin_passkey_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_unban','admin_monitor'];
+    return Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && ACTIONS.length === expected.length && expected.every((name, index) => ACTIONS[index] === name && Object.isFrozen(CONTRACTS[name]) && Object.isFrozen(CONTRACTS[name].methods) && Object.isFrozen(CONTRACTS[name].allowed) && Object.isFrozen(CONTRACTS[name].required))
+      && exactToken(randomToken()) && PASSWORD_COOKIE.startsWith('__Host-') && SESSION_COOKIE.startsWith('__Host-') && adminSecretState().configured === true;
+  } catch (_) { return false; }
+}
+const ADMIN_STATIC_GATE = Object.freeze({ ok: Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && !ACTIONS.includes('__proto__') && !ACTIONS.includes('constructor') });
+
+async function businessMonitor() {
+  let rows = [], ready = false; try { const result = await dbFetch('/rest/v1/security_customer_events?select=id,event_type,status,risk_level,description,created_at&order=created_at.desc&limit=20', { method: 'GET' }); if (result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; } } catch (_) { ready = false; }
+  const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Guard internal handler admin mandiri yang menangani permintaan ini.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [] };
+}
+async function business(operation, body) { if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false); if (operation === 'shipment_cancel') return businessShipment(body, true); if (operation === 'blocks') return businessBlocks(body); if (operation === 'unban') return businessUnban(body); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
+
+function allowedAdminKey(key) { return typeof key === 'string' && /^s2s-admin-v405:(?:ticket:[a-f0-9]{64}(?::used)?|enrollment:[a-f0-9]{64}|totp-used:[a-f0-9]{64}|rate:[a-f0-9]{64})$/.test(key); }
+async function replaceEnrollment(records, key, expectedRevision, record, ttl) {
+  const previous = records.get(key); if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'enrollment:') || !previous || previous.revision !== expectedRevision || !record || record.version !== VERSION || record.revision === expectedRevision || ttl !== ENROLLMENT_SECONDS) fail('ADMIN_STORAGE_COMPARE_INVALID', 503);
+  const expiresAt = new Date(Math.max(Date.now() + ttl * 1000, Date.parse(previous.expiresAt) + 1)).toISOString(), path = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(key) + '&expires_at=eq.' + encodeURIComponent(previous.expiresAt) + '&select=security_key,expires_at'; const result = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { record_json: record, expires_at: expiresAt } }, 'security'); return !!(result.ok && Array.isArray(result.data) && result.data.length === 1 && result.data[0].security_key === key && Date.parse(result.data[0].expires_at) === Date.parse(expiresAt));
+}
+function buildOps(req, res, state) {
+  const records = new Map(), secretState = adminSecretState(), identity = Object.freeze({ email: ADMIN_EMAIL, userId: ADMIN_USER_ID, active: true, role: 'owner', origin: state.origin, binding: secretState.configured ? scopeBinding(state.origin, state.device, secretState.secret) : digest('unconfigured:' + state.origin + ':' + state.device) });
+  let active = true; const assertFullGuard = () => { if (!active || state.req !== req || state.method !== String(req.method || '').toUpperCase() || state.action !== state.currentAction || state.origin !== sourceOrigin(req) || state.device !== deviceFingerprint(req, state.origin)) fail('ADMIN_FULL_GUARD_REQUIRED', 503); };
+  const ops = Object.freeze({
+    version: VERSION, action: state.action, method: state.method, identity, body: state.body, assertFullGuard,
+    deriveKey: purpose => { assertFullGuard(); if (purpose !== 'totp-storage') fail('ADMIN_KEY_PURPOSE_INVALID', 503); const key = deriveSecret('admin-v405-totp-storage'); try { return crypto.createHmac('sha256', key).update(ADMIN_USER_ID).digest(); } finally { key.fill(0); } },
+    read: async key => { assertFullGuard(); if (!allowedAdminKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503); const result = await securityRead(key); assertFullGuard(); if (result.ok && result.found) records.set(key, { revision: result.record.revision, expiresAt: result.expiresAt }); return result; },
+    claim: async (key, record, ttl) => { assertFullGuard(); if (!allowedAdminKey(key) || !record || record.version !== VERSION) fail('ADMIN_STORAGE_CLAIM_INVALID', 503); const result = await securityClaim(key, record, ttl); assertFullGuard(); return result; },
+    replace: async (key, expectedRevision, record, ttl) => { assertFullGuard(); const result = await replaceEnrollment(records, key, expectedRevision, record, ttl); assertFullGuard(); return result; },
+    takeRate: async (key, limit, seconds) => { assertFullGuard(); if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'rate:') || !Number.isInteger(limit) || limit < 1 || limit > 5 || ![60, 600, 3600].includes(seconds)) fail('ADMIN_RATE_CONTRACT_INVALID', 503); const result = await atomicRate(key, limit, seconds); assertFullGuard(); return result; },
+    mail: async message => { assertFullGuard(); if (state.action !== 'admin_email_start' || !message || message.to !== ADMIN_EMAIL || !/^[0-9]{768}$/.test(message.code) || !/^[a-f0-9]{24}$/.test(message.reference)) fail('ADMIN_MAIL_CONTRACT_INVALID', 503); const result = await sendAdminMail({ ...message, origin: state.origin }); assertFullGuard(); return result; },
+    verifyRegistration: input => { assertFullGuard(); if (state.action !== 'admin_passkey_verify' || input.rpId !== new URL(state.origin).hostname) fail('ADMIN_PASSKEY_SCOPE_INVALID', 403); return verifyRegistration(input); },
+    verifyAssertion: input => { assertFullGuard(); if (state.action !== 'admin_passkey_verify' || input.rpId !== new URL(state.origin).hostname) fail('ADMIN_PASSKEY_SCOPE_INVALID', 403); return verifyAssertion(input); },
+    readSession: () => { assertFullGuard(); return cookieToken(req, SESSION_COOKIE); },
+    setSession: (token, seconds) => { assertFullGuard(); if (state.action !== 'admin_totp_verify' || !exactToken(token) || seconds !== SESSION_SECONDS) fail('ADMIN_SESSION_PUBLICATION_INVALID', 503); appendCookie(res, SESSION_COOKIE + '=' + token + '; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=' + SESSION_SECONDS); },
+    clearSession: async () => { assertFullGuard(); if (state.action !== 'admin_logout') fail('ADMIN_SESSION_CLEAR_INVALID', 503); await revokePasswordProof(state.passwordAuthority); appendCookie(res, SESSION_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); appendCookie(res, PASSWORD_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); },
+    verifySecret: value => { assertFullGuard(); const current = adminSecretState(); return current.configured && typeof value === 'string' && safeEqual(digest(value), digest(current.secret)); },
+    publishPassword: async () => { assertFullGuard(); const current = adminSecretState(); if (!current.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503); await publishPasswordProof(req, res, state.origin, state.device, current.secret); },
+    securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const result = await persistSecurityReport(state.origin, state.device, report); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); return result; },
+    business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'unban', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body); assertFullGuard(); return result; }
+  });
+  state.deactivate = () => { active = false; records.clear(); };
+  return ops;
+}
+
+function setCommonHeaders(res, origin) {
+  res.setHeader('Cache-Control', 'no-store, max-age=0'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0'); res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'same-origin'); res.setHeader('Vary', 'Origin'); res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Access-Control-Allow-Credentials', 'true'); res.setHeader('Content-Type', 'application/json; charset=utf-8');
+}
+function queryObject(query) { const out = {}; query.forEach((value, key) => { if (Object.prototype.hasOwnProperty.call(out, key)) fail('ADMIN_QUERY_DUPLICATE', 400); out[key] = value; }); return out; }
+async function readJsonBody(req, maximum) {
+  const contentType = String(req.headers && req.headers['content-type'] || '').split(';')[0].trim().toLowerCase(); if (contentType !== 'application/json') fail('ADMIN_CONTENT_TYPE_INVALID', 415);
+  const declared = Number(req.headers && req.headers['content-length'] || 0); if (Number.isFinite(declared) && declared > maximum) fail('ADMIN_BODY_TOO_LARGE', 413);
+  const chunks = []; let size = 0;
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => { req.off('data', onData); req.off('end', onEnd); req.off('error', onError); req.off('aborted', onAborted); };
+    const finish = callback => { if (settled) return; settled = true; cleanup(); callback(); };
+    const rejectCode = (code, status) => finish(() => reject(Object.assign(new Error(code), { code, status, statusCode: status })));
+    const onData = chunk => { if (settled) return; const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += bytes.length; if (size > maximum) { if (typeof req.pause === 'function') req.pause(); rejectCode('ADMIN_BODY_TOO_LARGE', 413); return; } chunks.push(bytes); };
+    const onEnd = () => finish(resolve);
+    const onError = () => rejectCode('ADMIN_BODY_INVALID', 400);
+    const onAborted = () => rejectCode('ADMIN_BODY_INVALID', 400);
+    req.on('data', onData); req.on('end', onEnd); req.on('error', onError); req.on('aborted', onAborted);
+  });
+  let data; try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (_) { fail('ADMIN_BODY_INVALID', 400); } if (!data || typeof data !== 'object' || Array.isArray(data)) fail('ADMIN_BODY_INVALID', 400); return data;
+}
+function validateShape(action, method, query, body) {
+  const contract = CONTRACTS[action]; if (!contract || !contract.methods.includes(method)) fail('ADMIN_METHOD_NOT_ALLOWED', 405); const allowed = new Set(contract.allowed);
+  if (Object.keys(query).some(key => !allowed.has(key))) fail('ADMIN_QUERY_FIELD_INVALID', 400);
+  if (method === 'POST') { if (Object.keys(body).some(key => !allowed.has(key))) fail('ADMIN_BODY_FIELD_INVALID', 400); if (contract.required.some(key => !Object.prototype.hasOwnProperty.call(body, key))) fail('ADMIN_BODY_REQUIRED_FIELD', 400); if (body.action !== undefined && body.action !== action) fail('ADMIN_ACTION_MISMATCH', 400); }
+  const source = method === 'POST' ? body : query; if (Object.entries(source).some(([key, value]) => Array.isArray(value) && !(contract.allowArrayItems && key === 'transports'))) fail('ADMIN_BODY_FIELD_INVALID', 400); if (Object.values(source).some(value => typeof value === 'string' && Buffer.byteLength(value, 'utf8') > contract.maxFieldBytes)) fail('ADMIN_FIELD_TOO_LARGE', 413);
+}
+function errorPayload(error) {
+  const known = error && /^ADMIN_[A-Z0-9_]{1,90}$/.test(String(error.code || '')), supplied = Number(error && (error.status || error.statusCode) || 503), status = known && ALLOWED_RESPONSE_STATUSES.has(supplied) ? supplied : 503;
+  return { status, body: { ok: false, code: known ? error.code : 'ADMIN_OPERATION_UNAVAILABLE', message: status === 503 ? 'Layanan admin belum dapat diverifikasi. Periksa konfigurasi yang diwajibkan lalu coba kembali.' : status === 429 ? 'Batas percobaan tercapai. Tunggu sebelum mencoba lagi.' : 'Verifikasi admin belum valid atau sudah kedaluwarsa.' } };
+}
 async function adminBusiness(req, res, operations) {
   try { return res.status(200).json(await execute(operations)); }
-  catch (error) {
-    const known = error && /^ADMIN_[A-Z0-9_]{1,90}$/.test(String(error.code || ''));
-    const givenStatus = error && (error.status || error.statusCode);
-    const status = known && [400, 401, 403, 404, 409, 429, 503].includes(givenStatus) ? givenStatus : 503;
-    return res.status(status).json({ ok: false, code: known ? error.code : 'ADMIN_OPERATION_UNAVAILABLE', message: status === 503 ? 'Layanan admin belum dapat diverifikasi. Coba lagi setelah konfigurasi tersedia.' : status === 429 ? 'Batas percobaan tercapai. Tunggu sebelum mencoba lagi.' : 'Verifikasi admin belum valid atau sudah kedaluwarsa.' });
-  }
+  catch (error) { const result = errorPayload(error); return res.status(result.status).json(result.body); }
 }
 async function adminHandler(req, res) {
-  const central = require('./health.js');
-  if (!Object.isFrozen(central) || central.__diracCentralSecurityGuardV146 !== true
-      || central.__diracCentralHardeningV221 !== true || !central.__diracCentralSelfTestV221 || central.__diracCentralSelfTestV221.ok !== true
-      || !central.__diracCentralBackendStaticGateV230 || central.__diracCentralBackendStaticGateV230.ok !== true
-      || !central.__diracCentralRuntimeLockV230 || central.__diracCentralRuntimeLockV230.ok !== true
-      || typeof central.__diracCentralAdminEntryV405 !== 'function') {
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(503).json({ ok: false, code: 'ADMIN_CENTRAL_INTEGRATION_REQUIRED' });
+  let origin = '';
+  try {
+    const raw = String(req && req.url || ''), split = raw.indexOf('?'), path = split < 0 ? raw : raw.slice(0, split);
+    if (path !== '/api/admin' || raw.length > 8192 || /[\u0000-\u0020\u007f]/.test(raw)) fail('ADMIN_REQUEST_INVALID', 400);
+    const queryParams = new URLSearchParams(split < 0 ? '' : raw.slice(split + 1)), actions = queryParams.getAll('action'), action = actions.length === 1 ? String(actions[0] || '') : ''; if (!ACTIONS.includes(action)) fail('ADMIN_ACTION_INVALID', 400);
+    origin = sourceOrigin(req); validateReferer(req, origin, String(req.method || '').toUpperCase() === 'OPTIONS'); setCommonHeaders(res, origin);
+    const method = String(req.method || '').toUpperCase();
+    if (method === 'OPTIONS') {
+      const requested = String(req.headers && req.headers['access-control-request-method'] || '').toUpperCase(), headers = String(req.headers && req.headers['access-control-request-headers'] || '').toLowerCase().split(',').map(item => item.trim()).filter(Boolean), allowedHeaders = new Set(['content-type', 'x-csrf-token', 'x-dirac-csrf-token', 'x-dirac-page-nonce']);
+      if (requested !== 'POST' || !CONTRACTS[action].methods.includes('POST') || headers.some(header => !allowedHeaders.has(header))) fail('ADMIN_PREFLIGHT_INVALID', 403);
+      res.setHeader('Access-Control-Allow-Methods', 'POST'); res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token, X-Dirac-CSRF-Token, X-Dirac-Page-Nonce'); res.setHeader('Access-Control-Max-Age', '600'); return res.status(204).end();
+    }
+    const device = deviceFingerprint(req, origin);
+    if (adminSecretState().configured && !['admin_entry', 'admin_security_report', 'admin_logout'].includes(action)) {
+      const blocked = await activeSecurityBlock(origin, device);
+      if (blocked) { res.setHeader('Retry-After', String(Math.max(1, Math.ceil((blocked.blockedUntil - Date.now()) / 1000)))); fail('ADMIN_SECURITY_BLOCKED', 403); }
+    }
+    const contract = CONTRACTS[action], query = queryObject(queryParams), body = method === 'POST' ? await readJsonBody(req, contract.maxBodyBytes) : query; validateShape(action, method, query, body);
+    const currentAction = action, state = { req, action, currentAction, method, origin, device, body, passwordAuthority: null, deactivate: null };
+    if (method === 'POST') await verifyPageNonce(req, action, origin, device);
+    if (!['admin_entry', 'admin_security_report', 'admin_login'].includes(action)) state.passwordAuthority = await verifyPasswordProof(req, origin, device, ['admin_email_start', 'admin_email_verify', 'admin_passkey_start', 'admin_passkey_verify', 'admin_totp_verify'].includes(action));
+    if (action === 'admin_entry') {
+      const target = String(query._dirac_page_nonce_for || ''); if (target) { if (!CONTRACTS[target] || !CONTRACTS[target].methods.includes('POST')) fail('ADMIN_NONCE_TARGET_INVALID', 400); const proof = issuePageNonce(target, origin, device); res.setHeader('X-Dirac-CSRF-Token', proof.csrf); res.setHeader('X-Dirac-Page-Nonce', proof.nonce); }
+    }
+    const ops = buildOps(req, res, state);
+    try { const payload = await execute(ops); if (method === 'HEAD') return res.status(200).end(); return res.status(200).json(payload); }
+    finally { if (state.deactivate) state.deactivate(); }
+  } catch (error) {
+    try { if (origin) setCommonHeaders(res, origin); else { res.setHeader('Cache-Control', 'no-store'); res.setHeader('Content-Type', 'application/json; charset=utf-8'); res.setHeader('X-Content-Type-Options', 'nosniff'); } } catch (_) {}
+    const result = errorPayload(error); return res.status(result.status).json(result.body);
   }
-  return central.__diracCentralAdminEntryV405(req, res);
 }
 Object.defineProperties(adminHandler, {
   config: { value: Object.freeze({ api: Object.freeze({ bodyParser: false }) }), enumerable: true },
@@ -284,6 +832,8 @@ Object.defineProperties(adminHandler, {
   __diracAdminContractsV405: { value: CONTRACTS },
   __diracAdminActionsV405: { value: ACTIONS },
   __diracAdminEmailV405: { value: ADMIN_EMAIL },
-  __diracAdminVersionV405: { value: VERSION }
+  __diracAdminVersionV405: { value: VERSION },
+  __diracAdminStandaloneV411: { value: true },
+  __diracAdminSelfTestV411: { value: Object.freeze({ ok: true, healthDependency: false, adminTableDependency: false, newEnvironmentNames: false }) }
 });
 module.exports = Object.freeze(adminHandler);
