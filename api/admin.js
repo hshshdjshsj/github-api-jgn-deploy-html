@@ -15,7 +15,9 @@ const SECURITY_BLOCK_PREFIX = 's2s-admin-v411:security-block:';
 const SECURITY_BLOCK_SECONDS = 86400;
 const PASSWORD_COOKIE = '__Host-dirac_admin_password_v411';
 const SESSION_COOKIE = '__Host-dirac_admin_v405';
-const EMAIL_DIGITS = 768;
+const EMAIL_CODE_MIN = 600;
+const EMAIL_CODE_MAX = 960;
+const EMAIL_CODE_SECONDS = 300;
 const FACTOR_SECONDS = 600;
 const PASSWORD_SECONDS = 1200;
 const SESSION_SECONDS = 600;
@@ -59,6 +61,13 @@ function fail(code, status = 400) { throw Object.assign(new Error(code), { code,
 function digest(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
 function digest512(value) { return crypto.createHash('sha512').update(String(value)).digest('hex'); }
 function randomToken() { return crypto.randomBytes(32).toString('base64url'); }
+function adminEmailCode() {
+  const length = crypto.randomInt(EMAIL_CODE_MIN, EMAIL_CODE_MAX + 1), chars = crypto.randomBytes(length).toString('base64url').slice(0, length).split(''), letterAt = crypto.randomInt(0, length);
+  let digitAt = crypto.randomInt(0, length - 1); if (digitAt >= letterAt) digitAt += 1;
+  const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz', digits = '23456789'; chars[letterAt] = letters[crypto.randomInt(0, letters.length)]; chars[digitAt] = digits[crypto.randomInt(0, digits.length)];
+  return chars.join('');
+}
+function validAdminEmailCode(value) { return typeof value === 'string' && value.length >= EMAIL_CODE_MIN && value.length <= EMAIL_CODE_MAX && /^[A-Za-z0-9_-]+$/.test(value) && /[A-Za-z]/.test(value) && /[0-9]/.test(value); }
 function exactToken(value) { return typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value); }
 function safeEqual(a, b) { const aa = Buffer.from(String(a)), bb = Buffer.from(String(b)); return aa.length === bb.length && crypto.timingSafeEqual(aa, bb); }
 function isUuid(value) { return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(value || '').trim().toLowerCase()); }
@@ -488,8 +497,8 @@ function dotStuff(value) { return String(value || '').replace(/^\./gm, '..'); }
 function mimeMessage(config, message) {
   const boundary = 'dirac-admin-' + crypto.randomBytes(16).toString('hex');
   const subject = 'Verifikasi administrator DIRAC [' + message.reference + ']';
-  const text = 'Kode administrator satu kali, berlaku 10 menit. Jangan bagikan kode ini.\n\n' + message.code;
-  const html = '<p>Kode administrator satu kali, berlaku 10 menit. Jangan bagikan kode ini.</p><p style="word-break:break-all;font-family:monospace">' + message.code + '</p>';
+  const text = 'Kode administrator satu kali. Berlaku 5 menit dan hanya dapat digunakan satu kali setelah verifikasi berhasil. Panjang kode berubah pada setiap pengiriman dan berisi campuran karakter acak. Jangan bagikan kode ini.\n\n' + message.code;
+  const html = '<p>Kode administrator satu kali. Berlaku <strong>5 menit</strong> dan hanya dapat digunakan satu kali setelah verifikasi berhasil. Panjang kode berubah pada setiap pengiriman dan berisi campuran karakter acak. Jangan bagikan kode ini.</p><p style="word-break:break-all;font-family:monospace">' + message.code + '</p>';
   const b64 = value => Buffer.from(value, 'utf8').toString('base64').match(/.{1,76}/g).join('\r\n');
   return ['From: PT Dirac Inovasi Nusantara <' + config.user + '>', 'To: ' + ADMIN_EMAIL, 'Subject: =?UTF-8?B?' + Buffer.from(subject).toString('base64') + '?=', 'Date: ' + new Date().toUTCString(), 'Auto-Submitted: auto-generated', 'MIME-Version: 1.0', 'Content-Type: multipart/alternative; boundary="' + boundary + '"', '', '--' + boundary, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64(text), '--' + boundary, 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64(html), '--' + boundary + '--', ''].join('\r\n');
 }
@@ -555,7 +564,7 @@ async function execute(ops) {
   if (ops.method === 'HEAD') return { ok: true };
   if (action === 'admin_entry') {
     const configured = adminSecretState().configured;
-    return { ok: true, email: ADMIN_EMAIL, credentials_required: true, credentials_configured: configured, factor_count: 3, email_digits: EMAIL_DIGITS, totp_period: 30 };
+    return { ok: true, email: ADMIN_EMAIL, credentials_required: true, credentials_configured: configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30 };
   }
   if (action === 'admin_security_report') {
     await throttle(ops, scope, 'security-report', 3, 60);
@@ -573,17 +582,17 @@ async function execute(ops) {
     const nonceTarget = body._dirac_page_nonce_for;
     if (typeof nonceTarget === 'string' && Object.prototype.hasOwnProperty.call(CONTRACTS, nonceTarget) && CONTRACTS[nonceTarget].methods.includes('POST')) return { ok: true };
     const [enrolled, active] = await Promise.all([config(ops, scope), session(ops, scope, false)]);
-    return { ok: true, email: ADMIN_EMAIL, enrolled: !!enrolled, authenticated: !!active, factor_count: 3, email_digits: EMAIL_DIGITS, totp_period: 30, expires_at: active ? new Date(active.value.expiresAt).toISOString() : null };
+    return { ok: true, email: ADMIN_EMAIL, enrolled: !!enrolled, authenticated: !!active, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: active ? new Date(active.value.expiresAt).toISOString() : null };
   }
   if (action === 'admin_email_start') {
     await throttle(ops, scope, 'email-start-minute', 1, 60); await throttle(ops, scope, 'email-start-hour', 5, 3600);
-    const code = Array.from({ length: EMAIL_DIGITS }, () => String(crypto.randomInt(0, 10))).join(''), salt = randomToken(), reference = crypto.randomBytes(12).toString('hex');
-    const token = await issue(ops, scope, 'email', { salt, codeHash: digest(salt + ':' + code), reference }); const delivered = await ops.mail({ to: ADMIN_EMAIL, code, reference, expiresAt: Date.now() + FACTOR_SECONDS * 1000 });
-    if (!delivered || delivered.ok !== true) fail('ADMIN_EMAIL_DELIVERY_UNCONFIRMED', 503); return { ok: true, ticket: token, stage: 'email', email: ADMIN_EMAIL, digits: EMAIL_DIGITS, expires_in: FACTOR_SECONDS };
+    const code = adminEmailCode(), codeLength = code.length, salt = randomToken(), reference = crypto.randomBytes(12).toString('hex');
+    const token = await issue(ops, scope, 'email', { salt, codeHash: digest(salt + ':' + code), reference, codeLength }, EMAIL_CODE_SECONDS); const delivered = await ops.mail({ to: ADMIN_EMAIL, code, reference, expiresAt: Date.now() + EMAIL_CODE_SECONDS * 1000 });
+    if (!delivered || delivered.ok !== true) fail('ADMIN_EMAIL_DELIVERY_UNCONFIRMED', 503); return { ok: true, ticket: token, stage: 'email', email: ADMIN_EMAIL, code_length: codeLength, min_chars: EMAIL_CODE_MIN, max_chars: EMAIL_CODE_MAX, expires_in: EMAIL_CODE_SECONDS, one_time: true };
   }
   if (action === 'admin_email_verify') {
     const entry = await ticket(ops, scope, body.ticket, 'email'); await throttle(ops, scope, 'email-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
-    if (typeof body.code !== 'string' || !new RegExp('^[0-9]{' + EMAIL_DIGITS + '}$').test(body.code) || !safeEqual(digest(entry.value.salt + ':' + body.code), entry.value.codeHash)) fail('ADMIN_EMAIL_CODE_INVALID', 401);
+    if (!Number.isInteger(entry.value.codeLength) || entry.value.codeLength < EMAIL_CODE_MIN || entry.value.codeLength > EMAIL_CODE_MAX || !validAdminEmailCode(body.code) || body.code.length !== entry.value.codeLength || !safeEqual(digest(entry.value.salt + ':' + body.code), entry.value.codeHash)) fail('ADMIN_EMAIL_CODE_INVALID', 401);
     await consume(ops, entry); return { ok: true, ticket: await issue(ops, scope, 'passkey-start'), stage: 'passkey' };
   }
   if (action === 'admin_passkey_start') {
@@ -752,7 +761,7 @@ function buildOps(req, res, state) {
     claim: async (key, record, ttl) => { assertFullGuard(); if (!allowedAdminKey(key) || !record || record.version !== VERSION) fail('ADMIN_STORAGE_CLAIM_INVALID', 503); const result = await securityClaim(key, record, ttl); assertFullGuard(); return result; },
     replace: async (key, expectedRevision, record, ttl) => { assertFullGuard(); const result = await replaceEnrollment(records, key, expectedRevision, record, ttl); assertFullGuard(); return result; },
     takeRate: async (key, limit, seconds) => { assertFullGuard(); if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'rate:') || !Number.isInteger(limit) || limit < 1 || limit > 5 || ![60, 600, 3600].includes(seconds)) fail('ADMIN_RATE_CONTRACT_INVALID', 503); const result = await atomicRate(key, limit, seconds); assertFullGuard(); return result; },
-    mail: async message => { assertFullGuard(); if (state.action !== 'admin_email_start' || !message || message.to !== ADMIN_EMAIL || !/^[0-9]{768}$/.test(message.code) || !/^[a-f0-9]{24}$/.test(message.reference)) fail('ADMIN_MAIL_CONTRACT_INVALID', 503); const result = await sendAdminMail({ ...message, origin: state.origin }); assertFullGuard(); return result; },
+    mail: async message => { assertFullGuard(); if (state.action !== 'admin_email_start' || !message || message.to !== ADMIN_EMAIL || !validAdminEmailCode(message.code) || !/^[a-f0-9]{24}$/.test(message.reference) || !Number.isSafeInteger(message.expiresAt) || message.expiresAt <= Date.now() || message.expiresAt > Date.now() + EMAIL_CODE_SECONDS * 1000 + 5000) fail('ADMIN_MAIL_CONTRACT_INVALID', 503); const result = await sendAdminMail({ ...message, origin: state.origin }); assertFullGuard(); return result; },
     verifyRegistration: input => { assertFullGuard(); if (state.action !== 'admin_passkey_verify' || input.rpId !== new URL(state.origin).hostname) fail('ADMIN_PASSKEY_SCOPE_INVALID', 403); return verifyRegistration(input); },
     verifyAssertion: input => { assertFullGuard(); if (state.action !== 'admin_passkey_verify' || input.rpId !== new URL(state.origin).hostname) fail('ADMIN_PASSKEY_SCOPE_INVALID', 403); return verifyAssertion(input); },
     readSession: () => { assertFullGuard(); return cookieToken(req, SESSION_COOKIE); },
