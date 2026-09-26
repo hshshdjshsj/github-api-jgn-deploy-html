@@ -182,8 +182,8 @@ async function execute(ops) {
     const challenge = randomToken(), userHandle = enrolled ? enrolled.userHandle : randomToken(), mode = enrolled ? 'authentication' : 'registration';
     const token = await issue(ops, scope, 'passkey', { challenge, mode, userHandle, revision: enrolled ? enrolled.revision : null });
     const publicKey = mode === 'registration' ? {
-      challenge, rp: { id: scope.rpId, name: 'PT DIRAC INOVASI NUSANTARA' },
-      user: { id: userHandle, name: ADMIN_EMAIL, displayName: 'Administrator DIRAC' },
+      challenge, rp: { id: scope.rpId, name: 'PT DIGDAYA INOVASI NUSANTARA' },
+      user: { id: userHandle, name: ADMIN_EMAIL, displayName: 'Administrator DIGDAYA' },
       pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
       authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, attestation: 'none'
     } : { challenge, rpId: scope.rpId, userVerification: 'required', timeout: 60000, allowCredentials: [{ id: enrolled.passkey.credentialId, type: 'public-key' }] };
@@ -216,8 +216,8 @@ async function execute(ops) {
       const secret = crypto.randomBytes(32);
       try {
         encrypted = seal(ops, secret, configKey(scope));
-        const manualKey = base32(secret), label = 'DIRAC ' + scope.rpId + ':' + ADMIN_EMAIL;
-        provisioning = { secret: manualKey, uri: 'otpauth://totp/' + encodeURIComponent(label) + '?secret=' + manualKey + '&issuer=' + encodeURIComponent('DIRAC ' + scope.rpId) + '&algorithm=SHA1&digits=6&period=30' };
+        const manualKey = base32(secret), label = 'DIGDAYA ' + scope.rpId + ':' + ADMIN_EMAIL;
+        provisioning = { secret: manualKey, uri: 'otpauth://totp/' + encodeURIComponent(label) + '?secret=' + manualKey + '&issuer=' + encodeURIComponent('DIGDAYA ' + scope.rpId) + '&algorithm=SHA1&digits=6&period=30' };
       } finally { secret.fill(0); }
     }
     const token = await issue(ops, scope, 'totp', { enroll: !enrolled, passkey: enrolled ? null : passkey, userHandle: proof.userHandle, totp: encrypted, revision: enrolled ? enrolled.revision : null });

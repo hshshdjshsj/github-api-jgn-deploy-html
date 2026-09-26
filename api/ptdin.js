@@ -204,7 +204,7 @@ function projectResponse(action, view, payload, profile) {
     if (out.view === 'invoice') {
       out.orders = out.orders.map(order => ({ ...order, invoice_eligible: order.payment_status === 'paid' }));
       out.invoice_issuer = {
-        legal_name: 'PT Dirac Inovasi Nusantara',
+        legal_name: 'PT Digdaya Inovasi Nusantara',
         nib: invoiceLegalIdentifier(process.env.DIRAC_INVOICE_NIB, 13, 13),
         npwp: invoiceLegalIdentifier(process.env.DIRAC_INVOICE_NPWP, 15, 16)
       };
@@ -427,7 +427,7 @@ function invoiceDocumentV440(data, identity, issuer) {
   const legal = issuer || {}, missing = 'Belum dicantumkan';
   let website; try { website = new URL(identity.origin).hostname.replace(/^pt\./,''); } catch (_) { return invalid(); }
   return {eligible:true,id:row.id,reference:domain ? 'DOM-'+String(row.id).slice(0,8).toUpperCase() : copy(row.order_id || row.id,253),date,currency:'IDR',total,orderStatus:status(row.order_status),paymentStatus:'Sudah dibayar',method,
-    issuer:{name:'PT Dirac Inovasi Nusantara',nib:invoiceLegalIdentifier(legal.nib,13,13)||missing,npwp:invoiceLegalIdentifier(legal.npwp,15,16)||missing,address:'GJ3X+HHH, RT.4/RW.1, Kedunggiling, Gelang, Kec. Tulangan, Kabupaten Sidoarjo, Jawa Timur 61273.',email:'companydirac@gmail.com',phone:'0878-9252-3968'},
+    issuer:{name:'PT Digdaya Inovasi Nusantara',nib:invoiceLegalIdentifier(legal.nib,13,13)||missing,npwp:invoiceLegalIdentifier(legal.npwp,15,16)||missing,address:'GJ3X+HHH, RT.4/RW.1, Kedunggiling, Gelang, Kec. Tulangan, Kabupaten Sidoarjo, Jawa Timur 61273.',email:'companydirac@gmail.com',phone:'0878-9252-3968'},
     buyer:{name:copy(row.customer_name,160,missing),email:copy(row.customer_email || (domain && row.owner_email),254,identity.email),phone:copy(domain?row.customer_whatsapp:row.customer_phone,80,missing),address:copy(row.shipping_address,600,missing)},
     items,totals:[['Subtotal',subtotal],['Ongkos kirim',shipping],['Diskon',discount],['Dasar pengenaan pajak',taxable],['Pajak',tax]],legalMissing:!invoiceLegalIdentifier(legal.nib,13,13)||!invoiceLegalIdentifier(legal.npwp,15,16),website};
 }
@@ -599,7 +599,7 @@ function invoiceLayout(doc){
     ['Instagram','TikTok','X','Threads','LinkedIn','Facebook'].forEach(function(platform,i){
       var x=72+(i%3)*374,top=1514+Math.floor(i/3)*44;
       pageOps.push({kind:'social',platform:platform,x:x,y:top+4,w:23,h:23});
-      label(platform,x+33,top,320,13,muted,600);label('PT DIRAC INOVASI NUSANTARA',x+33,top+19,320,14,navy,600);
+      label(platform,x+33,top,320,13,muted,600);label('PT DIGDAYA INOVASI NUSANTARA',x+33,top+19,320,14,navy,600);
     });
     label('Website: '+doc.website+'   |   Email: companydirac@gmail.com   |   WhatsApp: +6287892523968',72,1610,1096,16,ink);
     label('Alamat penerbit: '+doc.issuer.address,72,1652,1096,14,muted);

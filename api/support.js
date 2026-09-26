@@ -1677,7 +1677,7 @@ async function actionAdminLogin(req, res, body) {
       catch (_) { throw new PublicError(502, 'MFA_ENROLLMENT_CLEANUP_FAILED', 'Faktor TOTP lama belum dapat dibersihkan dengan aman.'); }
       if (!removed || removed.ok !== true) throw new PublicError(502, 'MFA_ENROLLMENT_CLEANUP_FAILED', 'Faktor TOTP lama belum dapat dibersihkan dengan aman.');
     }
-    const enrolled = await auth('/factors', { token: login.data.access_token, body: { factor_type: 'totp', friendly_name: 'PT Dirac Inovasi Nusantara Console' } });
+    const enrolled = await auth('/factors', { token: login.data.access_token, body: { factor_type: 'totp', friendly_name: 'PT Digdaya Inovasi Nusantara Console' } });
     const totp = enrolled.data && enrolled.data.totp; const factorId = enrolled.data && enrolled.data.id;
     const qrCode = String(totp && totp.qr_code || ''); const secret = String(totp && totp.secret || '');
     if (!enrolled.ok || !factorId || !/^data:image\/svg\+xml[,;]/i.test(qrCode) || qrCode.length > 20000 || !/^[A-Z2-7]{16,128}$/i.test(secret)) throw new PublicError(502, 'MFA_ENROLLMENT_FAILED', 'Faktor TOTP belum dapat dibuat.');
