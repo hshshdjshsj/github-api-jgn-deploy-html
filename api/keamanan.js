@@ -1171,9 +1171,10 @@ function securityResetValidateBrowserV334(req, method) {
 }
 
 function securityResetValidateHeadersV361(req) {
-  const critical = new Set(['host', 'origin', 'authorization', 'cookie', 'content-length', 'content-type', 'transfer-encoding', 'x-forwarded-host', 'x-forwarded-proto', 'x-dirac-csrf-token', 'x-csrf-token', 'x-dirac-page-nonce', 'x-page-nonce']);
+  const critical = new Set(['host', 'origin', 'referer', 'authorization', 'cookie', 'content-length', 'content-type', 'content-encoding', 'transfer-encoding', 'x-forwarded-host', 'x-forwarded-proto', 'x-dirac-csrf-token', 'x-csrf-token', 'x-dirac-page-nonce', 'x-page-nonce']);
   const seen = new Set();
   const raw = req && req.rawHeaders;
+  if (Array.isArray(raw) && raw.length % 2 !== 0) throw resetError('SECURITY_RESET_HEADER_INVALID', 400);
   if (Array.isArray(raw)) for (let index = 0; index < raw.length; index += 2) {
     const name = String(raw[index] || '').toLowerCase();
     if (critical.has(name) && seen.has(name)) throw resetError('SECURITY_RESET_DUPLICATE_HEADER', 400);
@@ -1248,7 +1249,15 @@ async function securityResetReadJsonV334(req) {
   if (declared && size !== Number(declared)) throw resetError('SECURITY_RESET_CONTENT_LENGTH_MISMATCH', 400);
   let parsed;
   try { parsed = parseStrictJson(raw, { maxBytes: SECURITY_RESET_MAX_BODY_V334, maxDepth: 12, maxNodes: 4096 }); }
-  catch (_) { throw resetError('SECURITY_RESET_JSON_INVALID', 400); }
+  catch (error) {
+    const reason = error && error.code === 'JSON_KEY_REJECTED' ? 'prototype_pollution' : error && error.code === 'JSON_DUPLICATE_KEY' ? 'duplicate_json_key' : '';
+    const context = diracCentralCurrentContextV149();
+    if (reason && context && context.req === req && context.active && context.browserChecked && context.banChecked) {
+      const recorded = await securityResetCentralBanAuthorityV354().ban(req, 'security_reset_' + reason, 900).catch(() => null);
+      if (!recorded || recorded.ok !== true) throw resetError('SECURITY_RESET_ATTACK_BAN_UNAVAILABLE', 503);
+    }
+    throw resetError('SECURITY_RESET_JSON_INVALID', 400);
+  }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw resetError('SECURITY_RESET_JSON_INVALID', 400);
   const currentBodyDescriptor = Object.getOwnPropertyDescriptor(req, 'body');
   if (!currentBodyDescriptor || currentBodyDescriptor.configurable === true) {
@@ -3655,6 +3664,13 @@ async function diracSecuritySmtpRequestRateTakeV374(req, flow, owner) {
   const currentBlockedUntil = row ? Number(record.blocked_until_ms) : 0;
   if (currentAttempt >= 5) throw resetError('SECURITY_SMTP_REQUEST_PERMANENTLY_BANNED', 423);
   if (currentBlockedUntil > Date.now()) throw resetError('SECURITY_SMTP_REQUEST_RATE_LIMITED', 429);
+  const consumed = await diracCentralAtomicConsumeV230({
+    namespace: 'smtp_request_rate_v374',
+    jti: diracCentralHashV146([key, currentAttempt, record ? record.updated_at_ms : 'initial'].join('|')),
+    expiresAt: Math.floor(Date.now() / 1000) + 900,
+    contextHash: key
+  });
+  if (!consumed || consumed.ok !== true) throw resetError('SECURITY_SMTP_REQUEST_RATE_CONFLICT', 409);
   const nextAttempt = currentAttempt + 1;
   if (nextAttempt >= 5) {
     const authority = securityResetCentralBanAuthorityV354();

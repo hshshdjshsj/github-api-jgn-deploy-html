@@ -56206,13 +56206,18 @@ function diracCentralRawRequestHeaderGuardV228(req, ctx) {
   const allowedHosts = diracCentralIngressAllowedHostsV228();
   const criticalNames = [
     'host', ':authority', 'x-forwarded-host', 'x-forwarded-proto',
-    'content-length', 'transfer-encoding', 'connection', 'upgrade', 'expect'
+    'content-length', 'transfer-encoding', 'connection', 'upgrade', 'expect',
+    'origin', 'referer', 'authorization', 'cookie', 'content-type', 'content-encoding',
+    'x-csrf-token', 'x-dirac-csrf-token', 'x-page-nonce', 'x-dirac-page-nonce'
   ];
   const critical = Object.fromEntries(criticalNames.map((name) => [name, diracCentralRawHeaderValuesV228(req, name)]));
   if (!Object.values(critical).every((entry) => entry.ok)) return { ok: false, reason: 'raw_header_array_malformed' };
   for (const name of criticalNames) {
     if (critical[name].values.length > 1) return { ok: false, reason: 'duplicate_critical_header_' + name.replace(/[^a-z0-9]+/g, '_') };
   }
+  if (['host', ':authority', 'x-forwarded-host'].some((name) => critical[name].values.length > 0
+      && (!/^[a-z0-9.-]+(?::443)?$/i.test(critical[name].values[0])
+        || !diracCentralNormalizeIngressHostV228(critical[name].values[0])))) return { ok: false, reason: 'host_header_invalid' };
   const transferEncoding = String(critical['transfer-encoding'].values[0] || '').trim();
   const contentLength = String(critical['content-length'].values[0] || '').trim();
   const connection = String(critical.connection.values[0] || '').trim().toLowerCase();
@@ -56342,6 +56347,8 @@ async function diracCentralCaptureRawRequestV230(req) {
           if (completed) return;
           completed = true;
           clearReplayWatchdogV264();
+          chunks.length = 0;
+          try { if (typeof req.pause === 'function') req.pause(); } catch (pauseErrorV443) { diracCentralRecordSuppressedExceptionV221(pauseErrorV443); }
           const error = new Error(code);
           error.code = code;
           reject(error);
@@ -56364,8 +56371,8 @@ async function diracCentralCaptureRawRequestV230(req) {
         req.on('close', () => {
           if (!completed && !req.readableEnded) fail('raw_body_stream_closed');
         });
-        if (rawReplayAttemptV264 && !completed) {
-          replayWatchdogV264 = setTimeout(() => fail('raw_body_replay_unavailable'), 250);
+        if (!completed) {
+          replayWatchdogV264 = setTimeout(() => fail(rawReplayAttemptV264 ? 'raw_body_replay_unavailable' : 'raw_body_read_timeout'), rawReplayAttemptV264 ? 250 : 6500);
         }
       });
     }
@@ -66680,6 +66687,7 @@ function diracCentralIsUnsafeIpV146(ip) {
       || (a === 172 && b >= 16 && b <= 31)
       || (a === 192 && b === 0)
       || (a === 192 && b === 168)
+      || (a === 192 && b === 88 && c === 99)
       || (a === 192 && b === 0 && c === 2)
       || (a === 198 && (b === 18 || b === 19))
       || (a === 198 && b === 51 && c === 100)
@@ -66697,10 +66705,11 @@ function diracCentralIsUnsafeIpV146(ip) {
   if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0xc0) return true;
   if (bytes[0] === 0xff) return true;
   if (prefix(0, [0x20, 0x01, 0x0d, 0xb8])) return true;
+  if (bytes[0] === 0x3f && bytes[1] === 0xff && (bytes[2] & 0xf0) === 0x00) return true;
   if (prefix(0, [0x01, 0x00]) && bytes.slice(2, 8).every((value) => value === 0)) return true;
   if (prefix(0, [0x20, 0x01, 0x00, 0x00])) return true;
   if (prefix(0, [0x20, 0x01, 0x00, 0x02])) return true;
-  if (prefix(0, [0x20, 0x01, 0x00, 0x10]) || prefix(0, [0x20, 0x01, 0x00, 0x20])) return true;
+  if (prefix(0, [0x20, 0x01, 0x00]) && ((bytes[3] & 0xf0) === 0x10 || (bytes[3] & 0xf0) === 0x20)) return true;
   if (prefix(0, [0x00, 0x64, 0xff, 0x9b, 0x00, 0x01])) return true;
   if (bytes.slice(0, 10).every((value) => value === 0) && bytes[10] === 0xff && bytes[11] === 0xff) return true;
   if (prefix(0, [0x00, 0x64, 0xff, 0x9b])) return true;
@@ -72217,6 +72226,15 @@ module.exports = async function diracCentralArchitectureConsolidationV202(req, r
     reason_code: rawCaptureV230 && rawCaptureV230.reason
   }, res);
   if (!rawCaptureV230.ok) {
+    const ingressDecisionV443 = diracCentralRawRequestHeaderGuardV228(req, null);
+    if (ingressDecisionV443 && ingressDecisionV443.ok !== true
+        && /^(?:duplicate_critical_header_[a-z0-9_]+|transfer_encoding_rejected|content_length_transfer_encoding_conflict)$/.test(String(ingressDecisionV443.reason || ''))) {
+      const recordedV443 = await diracCentralBanAuthorityBanV354(req, 'ingress_' + ingressDecisionV443.reason, 900).catch(() => null);
+      if (!recordedV443 || recordedV443.ok !== true) {
+        diracCentralApplyHeadersV146(res);
+        return res.status(503).json({ ok: false, code: 'CENTRAL_SECURITY_PERSISTENCE_UNAVAILABLE', message: 'Permintaan ditolak oleh sistem keamanan.' });
+      }
+    }
     if (/(?:^|[?&])action=security_report(?:&|$)/.test(String(req && req.url || ''))) {
       try {
         const bodyDescriptorV264 = Object.getOwnPropertyDescriptor(req, 'body');

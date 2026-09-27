@@ -853,19 +853,43 @@ async function readJson(req) {
   let raw = Buffer.isBuffer(req.rawBody) || typeof req.rawBody === 'string' ? req.rawBody : req.body;
   if (raw !== undefined && raw !== null && !Buffer.isBuffer(raw) && typeof raw !== 'string') throw new PublicError(400, 'RAW_BODY_REQUIRED', 'Request wajib mempertahankan JSON asli.');
   if (raw === undefined || raw === null) {
-    const chunks = []; let total = 0;
-    for await (const chunk of req) {
-      const bytes = Buffer.from(chunk); total += bytes.length;
-      if (total > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
-      chunks.push(bytes);
-    }
-    raw = Buffer.concat(chunks, total);
+    raw = await new Promise((resolve, reject) => {
+      const chunks = []; let total = 0; let settled = false; let deadline;
+      const context = supportCentralCurrentContextV146();
+      const remaining = Math.max(1, Math.min(5000, 5000 - (context ? Date.now() - context.startedAt : 0)));
+      const finish = (error) => {
+        if (settled) return;
+        settled = true; clearTimeout(deadline);
+        req.removeListener('data', onData); req.removeListener('end', onEnd);
+        req.removeListener('error', onError); req.removeListener('aborted', onAborted); req.removeListener('close', onAborted);
+        if (error) { req.pause(); chunks.length = 0; reject(error); }
+        else { const bytes = Buffer.concat(chunks, total); chunks.length = 0; resolve(bytes); }
+      };
+      const onData = (chunk) => {
+        if (settled) return;
+        const bytes = Buffer.from(chunk); total += bytes.length;
+        if (total > MAX_BODY_BYTES) return finish(new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.'));
+        chunks.push(bytes);
+      };
+      const onEnd = () => finish();
+      const onError = () => finish(new PublicError(400, 'BODY_READ_FAILED', 'Request belum dapat dibaca.'));
+      const onAborted = () => finish(new PublicError(400, 'BODY_ABORTED', 'Request belum selesai diterima.'));
+      deadline = setTimeout(() => finish(new PublicError(408, 'BODY_READ_TIMEOUT', 'Batas waktu pembacaan request terlampaui.')), remaining);
+      req.once('end', onEnd); req.once('error', onError); req.once('aborted', onAborted); req.once('close', onAborted);
+      req.on('data', onData);
+      if (req.readableEnded) onEnd();
+      else if (req.destroyed) onAborted();
+    });
   }
   const size = Buffer.byteLength(raw);
   if (size > MAX_BODY_BYTES) throw new PublicError(413, 'BODY_TOO_LARGE', 'Ukuran request melebihi batas.');
   if (declared && size !== Number(declared)) throw new PublicError(400, 'CONTENT_LENGTH_MISMATCH', 'Framing request tidak cocok.');
   try { return parseStrictJson(raw, { maxBytes: MAX_BODY_BYTES, maxDepth: 8, maxNodes: 512 }); }
-  catch (_) { throw new PublicError(400, 'JSON_INVALID', 'JSON request tidak valid.'); }
+  catch (error) {
+    const rejected = new PublicError(400, 'JSON_INVALID', 'JSON request tidak valid.');
+    if (error && ['JSON_KEY_REJECTED', 'JSON_DUPLICATE_KEY'].includes(error.code)) rejected.centralBanReason = 'support_' + error.code.toLowerCase();
+    throw rejected;
+  }
 }
 
 function exactKeys(body, allowed) {
@@ -2869,7 +2893,15 @@ async function handler(req, res) {
     } catch (error) {
       caught = error;
       ctx.phase = 'audit';
-      const safe = error instanceof PublicError ? error : new PublicError(500, 'SUPPORT_INTERNAL_ERROR', 'Sistem support sedang mengalami gangguan.');
+      let safe = error instanceof PublicError ? error : new PublicError(500, 'SUPPORT_INTERNAL_ERROR', 'Sistem support sedang mengalami gangguan.');
+      if (error instanceof PublicError && ['support_json_key_rejected', 'support_json_duplicate_key'].includes(error.centralBanReason)) {
+        try {
+          const authority = await supportCentralBanAuthorityV354();
+          const persisted = await authority.ban(req, error.centralBanReason, 15 * 60);
+          if (!persisted || persisted.ok !== true) throw new Error('CENTRAL_BAN_PERSISTENCE_FAILED');
+          safe.retryAfter = Math.max(1, Math.floor(Number(persisted.ttl_seconds || 15 * 60)));
+        } catch (_) { safe = new PublicError(503, 'CENTRAL_BAN_PERSISTENCE_FAILED', 'Blokir keamanan pusat tidak dapat dipastikan tersimpan.'); }
+      }
       if ((ctx.action === 'admin_login' || ctx.action === 'admin_mfa_verify') && req.diracAuthAuditEligible === true && req.diracAuthOutcome !== 'success') {
         const pending = ctx.action === 'admin_mfa_verify' ? readSession(req, MFA_COOKIE) : null;
         const attemptedEmail = ctx.action === 'admin_login' && ctx.body && typeof ctx.body === 'object' ? String(ctx.body.email || '').slice(0, 254) : '';

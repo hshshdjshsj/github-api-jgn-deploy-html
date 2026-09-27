@@ -58,7 +58,7 @@ const SHIPMENT_PREFIX = 's2s-admin-shipment-v406:';
 const SHIPMENT_SELECT = 'security_key,record_json,blocked_until_ms,expires_at,updated_at';
 const ACCESS_BLOCK_SELECT = 'security_key,record_json,blocked_until_ms,expires_at';
 const ACCESS_BLOCK_RECORD_KEYS = Object.freeze(['action', 'block_id', 'blocked_until_ms', 'created_at_ms', 'customer_id', 'device_hash', 'fail_count', 'ip_hash', 'metadata', 'reason', 'revocation', 'schema', 'state', 'storage_keys', 'updated_at_ms', 'version'].sort());
-const ALLOWED_RESPONSE_STATUSES = new Set([400, 401, 403, 404, 405, 409, 413, 415, 429, 503]);
+const ALLOWED_RESPONSE_STATUSES = new Set([400, 401, 403, 404, 405, 408, 409, 413, 415, 429, 503]);
 
 function fail(code, status = 400) { throw Object.assign(new Error(code), { code, status, statusCode: status }); }
 function digest(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
@@ -463,7 +463,7 @@ function verifyAssertion({ credential, rpId, passkey }) {
   let ok = false; try { ok = crypto.verify('sha256', signed, key, signature); } catch (_) { ok = false; }
   if (!ok) fail('ADMIN_PASSKEY_SIGNATURE_INVALID', 403);
   const previous = Number(passkey.signCount || 0), current = parsed.signCount;
-  if (previous > 0 && current > 0 && current <= previous) fail('ADMIN_PASSKEY_COUNTER_REPLAY', 409);
+  if (previous > 0 && current <= previous) fail('ADMIN_PASSKEY_COUNTER_REPLAY', 409);
   return { ok: true, signCount: current };
 }
 
@@ -889,7 +889,7 @@ function buildOps(req, res, state) {
     verifyAssertion: input => { assertFullGuard(); if (state.action !== 'admin_passkey_verify' || input.rpId !== new URL(state.origin).hostname) fail('ADMIN_PASSKEY_SCOPE_INVALID', 403); return verifyAssertion(input); },
     readSession: () => { assertFullGuard(); return cookieToken(req, SESSION_COOKIE); },
     setSession: (token, seconds) => { assertFullGuard(); if (state.action !== 'admin_totp_verify' || !exactToken(token) || seconds !== SESSION_SECONDS) fail('ADMIN_SESSION_PUBLICATION_INVALID', 503); appendCookie(res, SESSION_COOKIE + '=' + token + '; Path=/; Secure; HttpOnly; SameSite=Strict'); },
-    clearSession: async () => { assertFullGuard(); if (state.action !== 'admin_logout') fail('ADMIN_SESSION_CLEAR_INVALID', 503); await revokePasswordProof(state.passwordAuthority); appendCookie(res, SESSION_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); appendCookie(res, PASSWORD_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); },
+    clearSession: async () => { assertFullGuard(); if (state.action !== 'admin_logout') fail('ADMIN_SESSION_CLEAR_INVALID', 503); if (await revokePasswordProof(state.passwordAuthority) !== true) fail('ADMIN_PROOF_REVOCATION_UNVERIFIED', 503); appendCookie(res, SESSION_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); appendCookie(res, PASSWORD_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); },
     verifySecret: value => { assertFullGuard(); const current = adminSecretState(); return current.configured && typeof value === 'string' && safeEqual(digest(value), digest(current.secret)); },
     publishPassword: async () => { assertFullGuard(); const current = adminSecretState(); if (!current.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503); await publishPasswordProof(req, res, state.origin, state.device, current.secret); },
     securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const result = await persistSecurityReport(state.origin, state.device, report); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); return result; },
@@ -904,21 +904,45 @@ function setCommonHeaders(res, origin) {
 }
 function queryObject(query) { const out = {}; query.forEach((value, key) => { if (Object.prototype.hasOwnProperty.call(out, key)) fail('ADMIN_QUERY_DUPLICATE', 400); out[key] = value; }); return out; }
 async function readJsonBody(req, maximum) {
-  const contentType = String(req.headers && req.headers['content-type'] || '').split(';')[0].trim().toLowerCase(); if (contentType !== 'application/json') fail('ADMIN_CONTENT_TYPE_INVALID', 415);
-  const declared = Number(req.headers && req.headers['content-length'] || 0); if (Number.isFinite(declared) && declared > maximum) fail('ADMIN_BODY_TOO_LARGE', 413);
+  const contentType = String(req.headers && req.headers['content-type'] || '').trim().toLowerCase(); if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/.test(contentType)) fail('ADMIN_CONTENT_TYPE_INVALID', 415);
+  if (String(req.headers && req.headers['transfer-encoding'] || '').trim()) fail('ADMIN_BODY_FRAMING_INVALID', 400);
+  const encoding = String(req.headers && req.headers['content-encoding'] || '').trim().toLowerCase(); if (encoding && encoding !== 'identity') fail('ADMIN_CONTENT_TYPE_INVALID', 415);
+  const declared = String(req.headers && req.headers['content-length'] || '').trim(); if (declared && !/^(?:0|[1-9][0-9]{0,11})$/.test(declared)) fail('ADMIN_BODY_FRAMING_INVALID', 400); if (declared && Number(declared) > maximum) fail('ADMIN_BODY_TOO_LARGE', 413);
   const chunks = []; let size = 0;
   await new Promise((resolve, reject) => {
-    let settled = false;
-    const cleanup = () => { req.off('data', onData); req.off('end', onEnd); req.off('error', onError); req.off('aborted', onAborted); };
+    let settled = false, timer;
+    const cleanup = () => { clearTimeout(timer); req.off('data', onData); req.off('end', onEnd); req.off('error', onError); req.off('aborted', onAborted); req.off('close', onAborted); };
     const finish = callback => { if (settled) return; settled = true; cleanup(); callback(); };
-    const rejectCode = (code, status) => finish(() => reject(Object.assign(new Error(code), { code, status, statusCode: status })));
-    const onData = chunk => { if (settled) return; const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += bytes.length; if (size > maximum) { if (typeof req.pause === 'function') req.pause(); rejectCode('ADMIN_BODY_TOO_LARGE', 413); return; } chunks.push(bytes); };
+    const rejectCode = (code, status) => finish(() => { if (typeof req.pause === 'function') req.pause(); chunks.length = 0; reject(Object.assign(new Error(code), { code, status, statusCode: status })); });
+    const onData = chunk => { if (settled) return; const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += bytes.length; if (size > maximum) { rejectCode('ADMIN_BODY_TOO_LARGE', 413); return; } chunks.push(bytes); };
     const onEnd = () => finish(resolve);
     const onError = () => rejectCode('ADMIN_BODY_INVALID', 400);
     const onAborted = () => rejectCode('ADMIN_BODY_INVALID', 400);
-    req.on('data', onData); req.on('end', onEnd); req.on('error', onError); req.on('aborted', onAborted);
+    if (req.aborted === true || req.destroyed === true || req.readableEnded === true) { rejectCode('ADMIN_BODY_INVALID', 400); return; }
+    timer = setTimeout(() => rejectCode('ADMIN_BODY_TIMEOUT', 408), 6500);
+    req.on('data', onData); req.on('end', onEnd); req.on('error', onError); req.on('aborted', onAborted); req.on('close', onAborted);
   });
-  let data; try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (_) { fail('ADMIN_BODY_INVALID', 400); } if (!data || typeof data !== 'object' || Array.isArray(data)) fail('ADMIN_BODY_INVALID', 400); return data;
+  if (declared && size !== Number(declared)) fail('ADMIN_BODY_FRAMING_INVALID', 400);
+  let data, source; try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks)); data = JSON.parse(source); } catch (_) { fail('ADMIN_BODY_INVALID', 400); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) fail('ADMIN_BODY_INVALID', 400);
+  const containers = [], tokens = Array.from(source.matchAll(/"(?:[^"\\]|\\[\s\S])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}\[\]]/g));
+  if (tokens.length > 4096) fail('ADMIN_BODY_TOO_COMPLEX', 413);
+  tokens.forEach(match => {
+    const token = match[0];
+    if (token === '{' || token === '[') { containers.push(token === '{' ? new Set() : null); if (containers.length > 12) fail('ADMIN_BODY_TOO_COMPLEX', 413); }
+    else if (token === '}' || token === ']') containers.pop();
+    else if (token[0] === '"') {
+      const value = JSON.parse(token); if (/[\u0000\ud800-\udfff]/u.test(value)) fail('ADMIN_BODY_INVALID', 400);
+      if (/^[\x20\t\r\n]*:/.test(source.slice(match.index + token.length))) {
+        const names = containers[containers.length - 1];
+        if (!names || names.has(value) || ['__proto__', 'prototype', 'constructor'].includes(value)) fail('ADMIN_BODY_KEY_INVALID', 400);
+        names.add(value);
+      }
+    } else if (/^-?\d/.test(token)) {
+      const value = Number(token); if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) fail('ADMIN_BODY_INVALID', 400);
+    }
+  });
+  return data;
 }
 function validateShape(action, method, query, body) {
   const contract = CONTRACTS[action]; if (!contract || !contract.methods.includes(method)) fail('ADMIN_METHOD_NOT_ALLOWED', 405); const allowed = new Set(contract.allowed);
