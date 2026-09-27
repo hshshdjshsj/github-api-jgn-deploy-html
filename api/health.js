@@ -5618,7 +5618,10 @@ async function domainDashboardMe(req, res) {
 
   const { user, mfa, protectedLock } = access;
   const checkoutSource = diracAppOriginHandoffTargetV313('parfum');
-  const checkoutProfileRequested = checkoutSource && diracCsrfRequestOrigin(req) === checkoutSource.origin;
+  const laboratoryCheckoutSource = diracAppOriginHandoffTargetV313('laboratorium');
+  const checkoutRequestOrigin = diracCsrfRequestOrigin(req);
+  const checkoutProfileRequested = (checkoutSource && checkoutRequestOrigin === checkoutSource.origin)
+    || (laboratoryCheckoutSource && checkoutRequestOrigin === laboratoryCheckoutSource.origin);
   let profileName = '';
   if (checkoutProfileRequested) {
     const profileId = String(access.protectedLock && access.protectedLock.customerId || '').trim();
@@ -40668,6 +40671,7 @@ async function diracBolaIdorV128ResolveKnownObjectOwners(objectIds, preferredTab
     const profileLegacyContext = diracBolaIdorV128CurrentContext();
     const profileOwner = profileContext && diracCentralOwnerFromVerifiedContextV215(profileContext.req);
     const profileTarget = diracAppOriginHandoffTargetV313('parfum');
+    const laboratoryProfileTarget = diracAppOriginHandoffTargetV313('laboratorium');
     const profilePermit = diracCentralCurrentDatabaseEgressPermitV230();
     const profilePermitBinding = profilePermit && DIRAC_CENTRAL_DATABASE_PERMIT_BINDINGS_V362.get(profilePermit);
     const profilePath = '/rest/v1/customers?select=' + encodeURIComponent('id,email,name,phone')
@@ -40680,6 +40684,7 @@ async function diracBolaIdorV128ResolveKnownObjectOwners(objectIds, preferredTab
     const dashboardProfileRead = profileContext && profileContext.req
       && profileContext.action === 'domain_dashboard_me' && profileContext.method === 'GET'
       && ((profileTarget && diracCsrfRequestOrigin(profileContext.req) === profileTarget.origin)
+        || (laboratoryProfileTarget && diracCsrfRequestOrigin(profileContext.req) === laboratoryProfileTarget.origin)
         || diracCentralPtdinSourceV402(profileContext.req, 'domain_dashboard_me'));
     if (profileContext && profileContext.req
         && (dashboardProfileRead || recoveryProfileRead)
@@ -64364,10 +64369,13 @@ function diracCentralIsCheckoutCustomerOwnerReadServiceRoleV196(ctx, table, path
 
   const dashboardOwner = ctx.action === 'domain_dashboard_me' ? diracCentralOwnerFromStage26V217(ctx) : null;
   const dashboardCheckoutSource = ctx.action === 'domain_dashboard_me' ? diracAppOriginHandoffTargetV313('parfum') : null;
+  const dashboardLaboratorySource = ctx.action === 'domain_dashboard_me' ? diracAppOriginHandoffTargetV313('laboratorium') : null;
+  const dashboardRequestOrigin = ctx.action === 'domain_dashboard_me' ? diracCsrfRequestOrigin(ctx.req) : '';
   if (ctx.action === 'domain_dashboard_me'
       && (!diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) || !dashboardOwner
-        || dashboardOwner.customerIds.length !== 1 || !dashboardCheckoutSource
-        || (diracCsrfRequestOrigin(ctx.req) !== dashboardCheckoutSource.origin
+        || dashboardOwner.customerIds.length !== 1 || (!dashboardCheckoutSource && !dashboardLaboratorySource)
+        || (dashboardRequestOrigin !== (dashboardCheckoutSource && dashboardCheckoutSource.origin)
+          && dashboardRequestOrigin !== (dashboardLaboratorySource && dashboardLaboratorySource.origin)
           && !diracCentralPtdinSourceV402(ctx.req, 'domain_dashboard_me')))) return false;
   const boundCustomerId = String(dashboardOwner ? dashboardOwner.customerIds[0] : ctx.__diracCentralCheckoutOwnerCustomerIdV196 || '').trim();
   const boundAuthUserId = String(dashboardOwner ? dashboardOwner.authUserId : ctx.__diracCentralCheckoutOwnerAuthUserIdV196 || '').trim();
