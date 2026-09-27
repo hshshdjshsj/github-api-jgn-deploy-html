@@ -5638,7 +5638,7 @@ async function domainDashboardMe(req, res) {
     if (laboratoryCheckoutSource && checkoutRequestOrigin === laboratoryCheckoutSource.origin) {
       const savedAddressPath = '/rest/v1/orders?select=' + encodeURIComponent('shipping_address')
         + '&customer_id=eq.' + encodeURIComponent(profileId) + '&order=created_at.desc&limit=6';
-      const savedAddressResult = await supabaseFetch(savedAddressPath, { method: 'GET', auth: 'service', db: 'commerce' }).catch(() => null);
+      const savedAddressResult = await supabaseFetch(savedAddressPath, { method: 'GET', auth: 'service', db: 'security' }).catch(() => null);
       if (savedAddressResult && savedAddressResult.ok === true && Array.isArray(savedAddressResult.data)) {
         const savedRows = savedAddressResult.data;
         const safeAddress = (row) => {
@@ -17211,6 +17211,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
   const orderResult = await supabaseFetch('/rest/v1/orders', {
     method: 'POST',
     auth: 'service',
+    db: laboratoryCheckoutOrder ? 'security' : 'commerce',
     prefer: 'return=representation',
     body: [{
       order_id: orderCode,
@@ -17257,50 +17258,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     return res.status(500).json({ ok: false, message: 'Order dibuat, tetapi ID order tidak ditemukan.' });
   }
 
-  let laboratorySecurityOrderId = '';
-  let laboratorySecuritySaved = !laboratoryCheckoutOrder;
-  if (laboratoryCheckoutOrder) {
-    const laboratoryOrderResult = await supabaseFetch('/rest/v1/orders', {
-      method: 'POST',
-      auth: 'service',
-      db: 'security',
-      prefer: 'return=representation',
-      body: [{
-        order_id: order.order_id || orderCode,
-        customer_id: customerId,
-        customer_name: finalCustomerName,
-        customer_phone: finalCustomerPhone,
-        customer_email: finalCustomerEmail,
-        shipping_address: shippingAddress || null,
-        service_type: serviceType,
-        subtotal: backendQuote.subtotal,
-        shipping_cost: backendQuote.shippingCost || 0,
-        discount: backendQuote.discount || 0,
-        taxable_amount: backendQuote.taxableAmount || 0,
-        tax_amount: backendQuote.taxAmount || 0,
-        tax_effective_rate_bps: backendQuote.taxEffectiveRateBps || DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps,
-        tax_statutory_rate_bps: backendQuote.taxStatutoryRateBps || DIRAC_COMMERCE_PRICING_V401.taxStatutoryRateBps,
-        tax_dpp_numerator: backendQuote.taxDppNumerator || DIRAC_COMMERCE_PRICING_V401.taxDppNumerator,
-        tax_dpp_denominator: backendQuote.taxDppDenominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator,
-        shipping_origin_code: backendQuote.shippingQuote && backendQuote.shippingQuote.originCode || null,
-        shipping_distance_km: backendQuote.shippingQuote && backendQuote.shippingQuote.distanceKm || 0,
-        shipping_actual_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.actualWeightGrams || 0,
-        shipping_volumetric_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.volumetricWeightGrams || 0,
-        shipping_billable_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.billableWeightGrams || 0,
-        shipping_mode: backendQuote.shippingQuote && backendQuote.shippingQuote.mode || 'standard',
-        shipping_breakdown: backendQuote.shippingQuote || {},
-        total: backendQuote.total,
-        note: checkoutNote || null,
-        payment_method: 'Belum dipilih',
-        payment_status: 'unpaid',
-        order_status: 'pending'
-      }]
-    }).catch(() => null);
-    const laboratoryOrder = laboratoryOrderResult && laboratoryOrderResult.ok === true
-      ? (Array.isArray(laboratoryOrderResult.data) ? laboratoryOrderResult.data[0] : laboratoryOrderResult.data)
-      : null;
-    laboratorySecurityOrderId = laboratoryOrder && customerSecurityLooksLikeUuid(laboratoryOrder.id) ? String(laboratoryOrder.id) : '';
-  }
+  const laboratorySecuritySaved = laboratoryCheckoutOrder;
 
   const quoteItems = Array.isArray(backendQuote.items) && backendQuote.items.length
     ? backendQuote.items
@@ -17317,7 +17275,6 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
         shippingHeightCm: backendQuote.product && backendQuote.product.shipping_height_cm || 10
       }];
 
-  const laboratorySecurityItemBodies = [];
   const itemBodies = quoteItems.map((item) => {
     const row = {
       order_id: order.id,
@@ -17332,13 +17289,13 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     };
     const productDocId = sessionOwnershipCheckoutCleanText(item.productDocId || '', 80);
     if (productDocId) row.product_doc_id = productDocId;
-    if (laboratorySecurityOrderId) laboratorySecurityItemBodies.push({ ...row, order_id: laboratorySecurityOrderId });
     return row;
   });
 
   const itemResult = await supabaseFetch('/rest/v1/order_items', {
     method: 'POST',
     auth: 'service',
+    db: laboratoryCheckoutOrder ? 'security' : 'commerce',
     prefer: 'return=representation',
     body: itemBodies
   });
@@ -17351,16 +17308,6 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     });
   }
 
-  if (laboratoryCheckoutOrder && laboratorySecurityOrderId && laboratorySecurityItemBodies.length === itemBodies.length) {
-    const laboratoryItemResult = await supabaseFetch('/rest/v1/order_items', {
-      method: 'POST',
-      auth: 'service',
-      db: 'security',
-      prefer: 'return=representation',
-      body: laboratorySecurityItemBodies
-    }).catch(() => null);
-    laboratorySecuritySaved = Boolean(laboratoryItemResult && laboratoryItemResult.ok === true);
-  }
 
   // PATCH: unpaid checkout must not send customer/admin invoice email.
   // Invoice email is sent only after a trusted payment webhook marks the order as paid.

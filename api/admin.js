@@ -42,6 +42,8 @@ const CONTRACTS = Object.freeze({
   admin_action_email_verify: post(['ticket', 'code'], ['ticket', 'code']),
   admin_passkey_start: post(['ticket'], ['ticket']),
   admin_passkey_verify: post(['ticket', ...PASSKEY_FIELDS], ['ticket', 'credential'], 98304),
+  admin_passkey_recovery_start: post(['ticket', 'recovery_secret', 'totp_code'], ['ticket', 'recovery_secret', 'totp_code']),
+  admin_passkey_recovery_verify: post(['ticket', ...PASSKEY_FIELDS], ['ticket', 'credential'], 98304),
   admin_totp_verify: post(['ticket', 'code'], ['ticket', 'code']),
   admin_logout: post([]),
   admin_orders: get(['kind', 'offset']),
@@ -105,6 +107,16 @@ function adminSecretState() {
   if (!secret) return { configured: false, secret: '' };
   if (Buffer.byteLength(secret, 'utf8') < 32 || /[\u0000\r\n]/.test(secret)) return { configured: false, secret: '' };
   return { configured: true, secret };
+}
+function adminPasskeyRecoverySecretState() {
+  const secret = String(process.env.DIRAC_ADMIN_PASSKEY_RECOVERY_SECRET || '');
+  const minimum = isProduction() ? 64 : 32;
+  if (!secret || Buffer.byteLength(secret, 'utf8') < minimum || Buffer.byteLength(secret, 'utf8') > 4096 || /[\u0000\r\n]/.test(secret)) return { configured: false, secret: '' };
+  return { configured: true, secret };
+}
+function verifyAdminPasskeyRecoverySecret(value) {
+  const current = adminPasskeyRecoverySecretState();
+  return current.configured && typeof value === 'string' && value.length <= 4096 && safeEqual(digest(value), digest(current.secret));
 }
 function secretBinding(secret) {
   const key = deriveSecret('admin-secret-binding-v411');
@@ -573,6 +585,17 @@ function adminMailHtml(message) {
 </body>
 </html>`;
 }
+function adminPasskeyRecoveryAlertHtml(message) {
+  const parts = mailOriginParts(message.origin), reference = mailEscape(message.reference || ''), actionUrl = mailEscape(parts.actionUrl || '');
+  return '<!doctype html><html lang="id"><head><meta charset="utf-8"></head><body style="margin:0;padding:24px;background:#0b1220;color:#eef4ff;font-family:Arial,Helvetica,sans-serif"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center"><table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px;background:#121d2d;border:1px solid #33465f;border-radius:16px"><tr><td style="padding:24px"><div style="font-size:12px;font-weight:800;letter-spacing:.12em;color:#75d7ee">ALERT KEAMANAN ADMIN</div><h1 style="margin:10px 0 16px;font-size:24px;color:#ffffff">Pemulihan passkey dimulai</h1><p style="font-size:15px;line-height:1.7;color:#cbd6e5">Permintaan pemulihan passkey administrator telah melewati secret admin, verifikasi email, secret recovery server, dan kode Authenticator. Jika ini bukan Anda, segera kunci akses dan rotasi secret recovery server.</p><p style="font-size:13px;color:#9fb0c4">Referensi: '+reference+'</p>'+(actionUrl?'<p style="margin:20px 0 0"><a href="'+actionUrl+'" style="display:inline-block;padding:12px 16px;border-radius:10px;background:#2fc3e8;color:#07111d;font-weight:800;text-decoration:none">Buka administrasi</a></p>':'')+'</td></tr></table></td></tr></table></body></html>';
+}
+function adminPasskeyRecoveryAlertMime(config, message) {
+  const boundary = 'dirac-admin-recovery-' + crypto.randomBytes(16).toString('hex');
+  const subject = 'PT Dirac Inovasi Nusantara Security - Pemulihan passkey admin [' + message.reference + ']';
+  const text = 'PT Dirac Inovasi Nusantara\n\nALERT KEAMANAN ADMIN\n\nPemulihan passkey administrator dimulai setelah verifikasi berlapis. Jika ini bukan Anda, segera kunci akses dan rotasi secret recovery server.\n\nReferensi: ' + message.reference;
+  const html = adminPasskeyRecoveryAlertHtml(message), b64 = value => (Buffer.from(value, 'utf8').toString('base64').match(/.{1,76}/g) || ['']).join('\r\n');
+  return ['From: PT Dirac Inovasi Nusantara <' + config.user + '>', 'To: ' + ADMIN_EMAIL, 'Subject: =?UTF-8?B?' + Buffer.from(subject).toString('base64') + '?=', 'Date: ' + new Date().toUTCString(), 'Auto-Submitted: auto-generated', 'MIME-Version: 1.0', 'Content-Type: multipart/alternative; boundary="' + boundary + '"', '', '--' + boundary, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64(text), '--' + boundary, 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64(html), '--' + boundary + '--', ''].join('\r\n');
+}
 function smtpConfig() {
   if (String(process.env.DIRAC_SECURITY_ALERT_ENABLED || '').trim().toLowerCase() !== 'true') return null;
   const host = String(process.env.DIRAC_SECURITY_ALERT_SMTP_HOST || '').trim().toLowerCase();
@@ -622,7 +645,7 @@ async function sendAdminMail(message) {
     reader = smtpReader(socket); await smtpCommand(socket, reader, null, 220, config.timeout);
     const ehlo = message && message.origin ? new URL(message.origin).hostname : 'localhost'; await smtpCommand(socket, reader, 'EHLO ' + ehlo, 250, config.timeout);
     auth = Buffer.from('\0' + config.user + '\0' + config.password, 'utf8'); await smtpCommand(socket, reader, 'AUTH PLAIN ' + auth.toString('base64'), 235, config.timeout);
-    await smtpCommand(socket, reader, 'MAIL FROM:<' + config.user + '>', 250, config.timeout); await smtpCommand(socket, reader, 'RCPT TO:<' + ADMIN_EMAIL + '>', [250, 251], config.timeout); await smtpCommand(socket, reader, 'DATA', 354, config.timeout); await smtpCommand(socket, reader, dotStuff(mimeMessage(config, message)) + '\r\n.', 250, config.timeout);
+    await smtpCommand(socket, reader, 'MAIL FROM:<' + config.user + '>', 250, config.timeout); await smtpCommand(socket, reader, 'RCPT TO:<' + ADMIN_EMAIL + '>', [250, 251], config.timeout); await smtpCommand(socket, reader, 'DATA', 354, config.timeout); const mime = message && message.kind === 'recovery' ? adminPasskeyRecoveryAlertMime(config, message) : mimeMessage(config, message); await smtpCommand(socket, reader, dotStuff(mime) + '\r\n.', 250, config.timeout);
     try { socket.write('QUIT\r\n'); } catch (_) {} return { ok: true };
   } catch (_) { return { ok: false }; }
   finally { if (auth) auth.fill(0); if (reader) reader.close(); try { if (socket) socket.destroy(); } catch (_) {} }
@@ -705,7 +728,7 @@ function checkOperations(ops) {
   let origin; try { origin = new URL(identity.origin); } catch (_) { fail('ADMIN_ORIGIN_INVALID', 403); }
   if (origin.origin !== identity.origin || origin.username || origin.password || (origin.protocol !== 'https:' && !loopbackHost(origin.hostname))) fail('ADMIN_ORIGIN_INVALID', 403);
   if (!ACTIONS.includes(ops.action) || !CONTRACTS[ops.action].methods.includes(ops.method)) fail('ADMIN_ACTION_INVALID', 400);
-  if (['read', 'claim', 'replace', 'takeRate', 'deriveKey', 'mail', 'verifyRegistration', 'verifyAssertion', 'readSession', 'setSession', 'clearSession', 'verifySecret', 'publishPassword', 'securityReport', 'business'].some(name => typeof ops[name] !== 'function')) fail('ADMIN_OPERATION_UNAVAILABLE', 503);
+  if (['read', 'claim', 'replace', 'takeRate', 'deriveKey', 'mail', 'recoveryAlert', 'verifyRegistration', 'verifyAssertion', 'readSession', 'setSession', 'clearSession', 'verifySecret', 'publishPassword', 'securityReport', 'business'].some(name => typeof ops[name] !== 'function')) fail('ADMIN_OPERATION_UNAVAILABLE', 503);
   return { owner: digest(ADMIN_EMAIL + ':' + identity.userId), binding: identity.binding, origin: identity.origin, rpId: origin.hostname };
 }
 function configKey(scope) { return PREFIX + 'enrollment:' + digest(scope.owner + ':' + scope.origin); }
@@ -739,12 +762,28 @@ function validateClientData(credential, proof, scope) {
   if (!data || data.type !== (proof.mode === 'registration' ? 'webauthn.create' : 'webauthn.get') || data.challenge !== proof.challenge || data.origin !== scope.origin || (data.crossOrigin !== undefined && data.crossOrigin !== false) || data.topOrigin !== undefined) fail('ADMIN_PASSKEY_CLIENT_MISMATCH', 403);
   return data;
 }
+async function adminPasskeyRecoveryTicket(ops, scope, token) {
+  try { return await ticket(ops, scope, token, 'passkey-start'); }
+  catch (error) { if (!error || error.code !== 'ADMIN_TICKET_EXPIRED') throw error; return ticket(ops, scope, token, 'passkey'); }
+}
+async function adminVerifyRecoveryTotp(ops, scope, enrolled, code) {
+  if (!enrolled || enrolled.enrollmentState !== 'active' || typeof code !== 'string' || !/^[0-9]{6}$/.test(code)) fail('ADMIN_TOTP_INVALID', 401);
+  const secret = open(ops, enrolled.totp, configKey(scope)); let accepted = null;
+  try {
+    const current = Math.floor(Date.now() / 30000);
+    if (safeEqual(totp(secret, current), code)) accepted = current;
+    else if (safeEqual(totp(secret, current - 1), code)) accepted = current - 1;
+    else if (safeEqual(totp(secret, current + 1), code)) accepted = current + 1;
+  } finally { secret.fill(0); }
+  if (accepted === null) fail('ADMIN_TOTP_INVALID', 401);
+  if (await ops.claim(PREFIX + 'totp-used:' + digest(scope.owner + ':' + scope.origin + ':' + enrolled.totp + ':' + accepted), { version: VERSION }, 120) !== true) fail('ADMIN_TOTP_ALREADY_USED', 409);
+}
 async function execute(ops) {
   const scope = checkOperations(ops), body = ops.body || {}, action = ops.action;
   if (ops.method === 'HEAD') return { ok: true };
   if (action === 'admin_entry') {
     const configured = adminSecretState().configured;
-    return { ok: true, email: ADMIN_EMAIL, credentials_required: true, credentials_configured: configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30 };
+    return { ok: true, email: ADMIN_EMAIL, credentials_required: true, credentials_configured: configured, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30 };
   }
   if (action === 'admin_security_report') {
     await throttle(ops, scope, 'security-report', 3, 60);
@@ -762,7 +801,7 @@ async function execute(ops) {
     const nonceTarget = body._dirac_page_nonce_for;
     if (typeof nonceTarget === 'string' && Object.prototype.hasOwnProperty.call(CONTRACTS, nonceTarget) && CONTRACTS[nonceTarget].methods.includes('POST')) return { ok: true };
     const [enrolled, active] = await Promise.all([config(ops, scope), session(ops, scope, false)]);
-    return { ok: true, email: ADMIN_EMAIL, enrolled: !!enrolled, authenticated: !!active, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: null, persistent_session: !!active, action_email_required: true };
+    return { ok: true, email: ADMIN_EMAIL, enrolled: !!enrolled, authenticated: !!active, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: null, persistent_session: !!active, action_email_required: true };
   }
   if (action === 'admin_email_start') {
     await throttle(ops, scope, 'email-start-minute', 1, 60); await throttle(ops, scope, 'email-start-hour', 5, 3600);
@@ -820,6 +859,27 @@ async function execute(ops) {
     }
     await consume(ops, entry); const pending = enrolled.enrollmentState === 'pending_totp';
     const token = await issue(ops, scope, 'totp', { enroll: pending, totp: enrolled.totp, revision: enrolled.revision }); return { ok: true, ticket: token, stage: 'totp', enrollment: pending ? provisioning : null, period: 30 };
+  }
+  if (action === 'admin_passkey_recovery_start') {
+    const recoveryState = adminPasskeyRecoverySecretState(); if (!recoveryState.configured) fail('ADMIN_PASSKEY_RECOVERY_NOT_CONFIGURED', 503);
+    const entry = await adminPasskeyRecoveryTicket(ops, scope, body.ticket), enrolled = await config(ops, scope);
+    await throttle(ops, scope, 'passkey-recovery-hour', 2, 3600);
+    if (!enrolled || enrolled.enrollmentState !== 'active' || !verifyAdminPasskeyRecoverySecret(body.recovery_secret)) fail('ADMIN_PASSKEY_RECOVERY_INVALID', 403);
+    await adminVerifyRecoveryTotp(ops, scope, enrolled, body.totp_code);
+    await consume(ops, entry);
+    const reference = crypto.randomBytes(12).toString('hex'), delivered = await ops.recoveryAlert({ to: ADMIN_EMAIL, kind: 'recovery', event: 'started', reference, origin: scope.origin });
+    if (!delivered || delivered.ok !== true) fail('ADMIN_EMAIL_DELIVERY_UNCONFIRMED', 503);
+    const challenge = randomToken(), token = await issue(ops, scope, 'passkey-recovery', { challenge, mode: 'registration', userHandle: enrolled.userHandle, revision: enrolled.revision, reference }, FACTOR_SECONDS);
+    return { ok: true, ticket: token, stage: 'passkey-recovery', mode: 'registration', publicKey: { challenge, rp: { id: scope.rpId, name: 'PT DIRAC INOVASI NUSANTARA' }, user: { id: enrolled.userHandle, name: ADMIN_EMAIL, displayName: 'Administrator DIRAC' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, attestation: 'none' }, alert_reference: reference };
+  }
+  if (action === 'admin_passkey_recovery_verify') {
+    const entry = await ticket(ops, scope, body.ticket, 'passkey-recovery'); await throttle(ops, scope, 'passkey-recovery-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
+    const proof = entry.value, enrolled = await config(ops, scope); if (!enrolled || enrolled.enrollmentState !== 'active' || enrolled.revision !== proof.revision || enrolled.userHandle !== proof.userHandle) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409);
+    const credential = body.credential, clientData = validateClientData(credential, proof, scope), verified = await ops.verifyRegistration({ credential, clientData, rpId: scope.rpId });
+    if (!verified || verified.ok !== true || verified.credentialId !== credential.id || !verified.publicKeyJwk) fail('ADMIN_PASSKEY_INVALID', 403);
+    const next = { ...enrolled, passkey: { credentialId: verified.credentialId, publicKeyJwk: verified.publicKeyJwk, signCount: verified.signCount, backupEligible: verified.backupEligible }, revision: randomToken(), recoveredAt: Date.now() };
+    if (await ops.replace(configKey(scope), enrolled.revision, next, ENROLLMENT_SECONDS) !== true) fail('ADMIN_PASSKEY_STATE_CHANGED', 409);
+    await consume(ops, entry); return { ok: true, stage: 'recovered', recovered: true, relogin_required: true, alert_reference: proof.reference || '' };
   }
   if (action === 'admin_totp_verify') {
     const entry = await ticket(ops, scope, body.ticket, 'totp'); await throttle(ops, scope, 'totp-verify', 5, FACTOR_SECONDS);
@@ -961,7 +1021,8 @@ function buildOps(req, res, state) {
     replace: async (key, expectedRevision, record, ttl) => { assertFullGuard(); const result = await replaceEnrollment(records, key, expectedRevision, record, ttl); assertFullGuard(); return result; },
     takeRate: async (key, limit, seconds) => { assertFullGuard(); const actionMailHourly = state.action === 'admin_action_email_start' && limit === 30 && seconds === 3600; if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'rate:') || !Number.isInteger(limit) || limit < 1 || (limit > 5 && !actionMailHourly) || ![60, 600, 3600].includes(seconds)) fail('ADMIN_RATE_CONTRACT_INVALID', 503); const result = await atomicRate(key, limit, seconds); assertFullGuard(); return result; },
     mail: async message => { assertFullGuard(); const loginMail = state.action === 'admin_email_start' && message && message.kind === 'login' && message.operation === '', actionMail = state.action === 'admin_action_email_start' && message && message.kind === 'action' && Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS, message.operation); if ((!loginMail && !actionMail) || message.to !== ADMIN_EMAIL || !validAdminEmailCode(message.code) || !/^[a-f0-9]{24}$/.test(message.reference) || !Number.isSafeInteger(message.expiresAt) || message.expiresAt <= Date.now() || message.expiresAt > Date.now() + EMAIL_CODE_SECONDS * 1000 + 5000) fail('ADMIN_MAIL_CONTRACT_INVALID', 503); const result = await sendAdminMail({ ...message, origin: state.origin }); assertFullGuard(); return result; },
-    verifyRegistration: input => { assertFullGuard(); if (state.action !== 'admin_passkey_verify' || input.rpId !== new URL(state.origin).hostname) fail('ADMIN_PASSKEY_SCOPE_INVALID', 403); return verifyRegistration(input); },
+    recoveryAlert: async message => { assertFullGuard(); if (state.action !== 'admin_passkey_recovery_start' || !message || message.to !== ADMIN_EMAIL || message.kind !== 'recovery' || message.event !== 'started' || message.origin !== state.origin || !/^[a-f0-9]{24}$/.test(String(message.reference || ''))) fail('ADMIN_MAIL_CONTRACT_INVALID', 503); const result = await sendAdminMail(message); assertFullGuard(); return result; },
+    verifyRegistration: input => { assertFullGuard(); if (!['admin_passkey_verify', 'admin_passkey_recovery_verify'].includes(state.action) || input.rpId !== new URL(state.origin).hostname) fail('ADMIN_PASSKEY_SCOPE_INVALID', 403); return verifyRegistration(input); },
     verifyAssertion: input => { assertFullGuard(); if (state.action !== 'admin_passkey_verify' || input.rpId !== new URL(state.origin).hostname) fail('ADMIN_PASSKEY_SCOPE_INVALID', 403); return verifyAssertion(input); },
     readSession: () => { assertFullGuard(); return cookieToken(req, SESSION_COOKIE); },
     setSession: (token, seconds) => { assertFullGuard(); if (state.action !== 'admin_totp_verify' || !exactToken(token) || seconds !== SESSION_SECONDS) fail('ADMIN_SESSION_PUBLICATION_INVALID', 503); appendCookie(res, SESSION_COOKIE + '=' + token + '; Path=/; Secure; HttpOnly; SameSite=Strict'); },
@@ -1055,7 +1116,7 @@ async function adminHandler(req, res) {
     const contract = CONTRACTS[action], query = queryObject(queryParams), body = method === 'POST' ? await readJsonBody(req, contract.maxBodyBytes) : query; validateShape(action, method, query, body);
     const currentAction = action, state = { req, action, currentAction, method, origin, device, body, passwordAuthority: null, deactivate: null };
     if (method === 'POST') await verifyPageNonce(req, action, origin, device);
-    if (!['admin_entry', 'admin_security_report', 'admin_login'].includes(action)) state.passwordAuthority = await verifyPasswordProof(req, origin, device, ['admin_email_start', 'admin_email_verify', 'admin_passkey_start', 'admin_passkey_verify', 'admin_totp_verify'].includes(action));
+    if (!['admin_entry', 'admin_security_report', 'admin_login'].includes(action)) state.passwordAuthority = await verifyPasswordProof(req, origin, device, ['admin_email_start', 'admin_email_verify', 'admin_passkey_start', 'admin_passkey_verify', 'admin_passkey_recovery_start', 'admin_passkey_recovery_verify', 'admin_totp_verify'].includes(action));
     if (action === 'admin_entry') {
       const target = String(query._dirac_page_nonce_for || ''); if (target) { if (!CONTRACTS[target] || !CONTRACTS[target].methods.includes('POST')) fail('ADMIN_NONCE_TARGET_INVALID', 400); const proof = issuePageNonce(target, origin, device); res.setHeader('X-Dirac-CSRF-Token', proof.csrf); res.setHeader('X-Dirac-Page-Nonce', proof.nonce); }
     }
@@ -1075,6 +1136,6 @@ Object.defineProperties(adminHandler, {
   __diracAdminEmailV405: { value: ADMIN_EMAIL },
   __diracAdminVersionV405: { value: VERSION },
   __diracAdminStandaloneV411: { value: true },
-  __diracAdminSelfTestV411: { value: Object.freeze({ ok: true, healthDependency: false, adminTableDependency: false, newEnvironmentNames: false }) }
+  __diracAdminSelfTestV411: { value: Object.freeze({ ok: true, healthDependency: false, adminTableDependency: false, newEnvironmentNames: true }) }
 });
 module.exports = Object.freeze(adminHandler);
