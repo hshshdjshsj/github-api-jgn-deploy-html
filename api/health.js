@@ -5623,6 +5623,7 @@ async function domainDashboardMe(req, res) {
   const checkoutProfileRequested = (checkoutSource && checkoutRequestOrigin === checkoutSource.origin)
     || (laboratoryCheckoutSource && checkoutRequestOrigin === laboratoryCheckoutSource.origin);
   let profileName = '';
+  let laboratorySavedAddresses = [];
   if (checkoutProfileRequested) {
     const profileId = String(access.protectedLock && access.protectedLock.customerId || '').trim();
     const profile = customerSecurityLooksLikeUuid(profileId)
@@ -5634,6 +5635,30 @@ async function domainDashboardMe(req, res) {
       return res.status(503).json({ ok: false, code: 'REGISTERED_PROFILE_UNAVAILABLE', message: 'Profil akun belum dapat diverifikasi. Silakan coba lagi.' });
     }
     profileName = String(profile.customer.name || '').trim();
+    if (laboratoryCheckoutSource && checkoutRequestOrigin === laboratoryCheckoutSource.origin) {
+      const savedAddressPath = '/rest/v1/orders?select=' + encodeURIComponent('shipping_address')
+        + '&customer_id=eq.' + encodeURIComponent(profileId) + '&order=created_at.desc&limit=6';
+      const savedAddressResult = await supabaseFetch(savedAddressPath, { method: 'GET', auth: 'service', db: 'commerce' }).catch(() => null);
+      if (savedAddressResult && savedAddressResult.ok === true && Array.isArray(savedAddressResult.data)) {
+        const savedRows = savedAddressResult.data;
+        const safeAddress = (row) => {
+          const value = sessionOwnershipCheckoutCleanText(row && row.shipping_address || '', 520);
+          return value.length >= 20 && /^Negara:\s*/.test(value) ? value : '';
+        };
+        const a0 = safeAddress(savedRows[0]);
+        const a1 = safeAddress(savedRows[1]);
+        const a2 = safeAddress(savedRows[2]);
+        const a3 = safeAddress(savedRows[3]);
+        const a4 = safeAddress(savedRows[4]);
+        const a5 = safeAddress(savedRows[5]);
+        const first = a0 || a1 || a2 || a3 || a4 || a5;
+        const second = a1 && a1 !== first ? a1 : a2 && a2 !== first ? a2 : a3 && a3 !== first ? a3 : a4 && a4 !== first ? a4 : a5 && a5 !== first ? a5 : '';
+        const third = a2 && a2 !== first && a2 !== second ? a2 : a3 && a3 !== first && a3 !== second ? a3 : a4 && a4 !== first && a4 !== second ? a4 : a5 && a5 !== first && a5 !== second ? a5 : '';
+        if (first) laboratorySavedAddresses.push(first);
+        if (second) laboratorySavedAddresses.push(second);
+        if (third) laboratorySavedAddresses.push(third);
+      }
+    }
   }
   customerSecuritySessionDecisionDebugV219(req, 'dashboard_response.200', {
     decision: 'respond_200_dashboard_true',
@@ -5644,7 +5669,7 @@ async function domainDashboardMe(req, res) {
   return res.status(200).json({
     ok: true,
     dashboard: true,
-    user: { ...sanitizeUser(user), name: profileName && profileName.length <= 120 && !/[\u0000-\u001F\u007F]/.test(profileName) ? profileName : '' },
+    user: { ...sanitizeUser(user), name: profileName && profileName.length <= 120 && !/[\u0000-\u001F\u007F]/.test(profileName) ? profileName : '', saved_addresses: laboratorySavedAddresses },
     session: {
       idleTimeoutMs: DOMAIN_PROTECTED_IDLE_TIMEOUT_MS,
       maxAgeMs: 8 * 60 * 60 * 1000,
@@ -17109,6 +17134,8 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
   const access = await requireDomainDashboardAccess(req, res);
   if (!access || !access.user) return;
 
+  const laboratoryCheckoutTarget = diracAppOriginHandoffTargetV313('laboratorium');
+  const laboratoryCheckoutOrder = Boolean(laboratoryCheckoutTarget && diracCsrfRequestOrigin(req) === laboratoryCheckoutTarget.origin);
   const body = await readBody(req);
   const user = access.user || {};
   const authUserId = String(user.id || '').trim();
@@ -17228,6 +17255,51 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     return res.status(500).json({ ok: false, message: 'Order dibuat, tetapi ID order tidak ditemukan.' });
   }
 
+  let laboratorySecurityOrderId = '';
+  let laboratorySecuritySaved = !laboratoryCheckoutOrder;
+  if (laboratoryCheckoutOrder) {
+    const laboratoryOrderResult = await supabaseFetch('/rest/v1/orders', {
+      method: 'POST',
+      auth: 'service',
+      db: 'security',
+      prefer: 'return=representation',
+      body: [{
+        order_id: order.order_id || orderCode,
+        customer_id: customerId,
+        customer_name: finalCustomerName,
+        customer_phone: finalCustomerPhone,
+        customer_email: finalCustomerEmail,
+        shipping_address: shippingAddress || null,
+        service_type: serviceType,
+        subtotal: backendQuote.subtotal,
+        shipping_cost: backendQuote.shippingCost || 0,
+        discount: backendQuote.discount || 0,
+        taxable_amount: backendQuote.taxableAmount || 0,
+        tax_amount: backendQuote.taxAmount || 0,
+        tax_effective_rate_bps: backendQuote.taxEffectiveRateBps || DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps,
+        tax_statutory_rate_bps: backendQuote.taxStatutoryRateBps || DIRAC_COMMERCE_PRICING_V401.taxStatutoryRateBps,
+        tax_dpp_numerator: backendQuote.taxDppNumerator || DIRAC_COMMERCE_PRICING_V401.taxDppNumerator,
+        tax_dpp_denominator: backendQuote.taxDppDenominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator,
+        shipping_origin_code: backendQuote.shippingQuote && backendQuote.shippingQuote.originCode || null,
+        shipping_distance_km: backendQuote.shippingQuote && backendQuote.shippingQuote.distanceKm || 0,
+        shipping_actual_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.actualWeightGrams || 0,
+        shipping_volumetric_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.volumetricWeightGrams || 0,
+        shipping_billable_weight_grams: backendQuote.shippingQuote && backendQuote.shippingQuote.billableWeightGrams || 0,
+        shipping_mode: backendQuote.shippingQuote && backendQuote.shippingQuote.mode || 'standard',
+        shipping_breakdown: backendQuote.shippingQuote || {},
+        total: backendQuote.total,
+        note: checkoutNote || null,
+        payment_method: 'Belum dipilih',
+        payment_status: 'unpaid',
+        order_status: 'pending'
+      }]
+    }).catch(() => null);
+    const laboratoryOrder = laboratoryOrderResult && laboratoryOrderResult.ok === true
+      ? (Array.isArray(laboratoryOrderResult.data) ? laboratoryOrderResult.data[0] : laboratoryOrderResult.data)
+      : null;
+    laboratorySecurityOrderId = laboratoryOrder && customerSecurityLooksLikeUuid(laboratoryOrder.id) ? String(laboratoryOrder.id) : '';
+  }
+
   const quoteItems = Array.isArray(backendQuote.items) && backendQuote.items.length
     ? backendQuote.items
     : [{
@@ -17243,6 +17315,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
         shippingHeightCm: backendQuote.product && backendQuote.product.shipping_height_cm || 10
       }];
 
+  const laboratorySecurityItemBodies = [];
   const itemBodies = quoteItems.map((item) => {
     const row = {
       order_id: order.id,
@@ -17257,6 +17330,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     };
     const productDocId = sessionOwnershipCheckoutCleanText(item.productDocId || '', 80);
     if (productDocId) row.product_doc_id = productDocId;
+    if (laboratorySecurityOrderId) laboratorySecurityItemBodies.push({ ...row, order_id: laboratorySecurityOrderId });
     return row;
   });
 
@@ -17275,6 +17349,17 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     });
   }
 
+  if (laboratoryCheckoutOrder && laboratorySecurityOrderId && laboratorySecurityItemBodies.length === itemBodies.length) {
+    const laboratoryItemResult = await supabaseFetch('/rest/v1/order_items', {
+      method: 'POST',
+      auth: 'service',
+      db: 'security',
+      prefer: 'return=representation',
+      body: laboratorySecurityItemBodies
+    }).catch(() => null);
+    laboratorySecuritySaved = Boolean(laboratoryItemResult && laboratoryItemResult.ok === true);
+  }
+
   // PATCH: unpaid checkout must not send customer/admin invoice email.
   // Invoice email is sent only after a trusted payment webhook marks the order as paid.
   // This keeps payment gateway, email templates, login/hash/A2F, and endpoints unchanged.
@@ -17287,6 +17372,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     order_code: order.order_id || orderCode,
     customer_name: finalCustomerName,
     service_type: serviceType,
+    laboratory_security_saved: laboratorySecuritySaved,
     total: backendQuote.total,
     subtotal: backendQuote.subtotal,
     shipping_cost: backendQuote.shippingCost || 0,
