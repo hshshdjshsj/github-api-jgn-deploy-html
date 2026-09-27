@@ -18570,81 +18570,121 @@ async function myOrdersResolveOwner(authUserId, userEmail) {
 
 async function myOrdersFetchGenericOrders(owner, userEmail) {
   const orderMap = new Map();
+  const orderCodeMap = new Map();
   const errors = [];
   const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at';
 
-  async function addRowsFromPath(path) {
-    const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
-    if (!result.ok) {
-      errors.push(myOrdersSafeUpstreamError(result.data) || `HTTP ${result.status}`);
+  async function addRowsFromPath(path, db) {
+    const result = await supabaseFetch(path, { method: 'GET', auth: 'service', db }).catch(() => null);
+    if (!result || !result.ok || !Array.isArray(result.data)) {
+      errors.push(result ? (myOrdersSafeUpstreamError(result.data) || `HTTP ${result.status}`) : 'request_failed');
       return;
     }
-    const rows = Array.isArray(result.data) ? result.data : [];
-    rows.forEach((row) => {
-      if (row && row.id) orderMap.set(String(row.id), row);
+    result.data.forEach((row) => {
+      if (!row || !customerSecurityLooksLikeUuid(row.id)) return;
+      const id = String(row.id);
+      const orderCode = myOrdersCleanText(row.order_id || '', 80);
+      const existing = orderMap.get(id);
+      if (existing && existing.db !== db) {
+        throw Object.assign(new Error('ORDER_STORAGE_COLLISION'), { code: 'ORDER_STORAGE_COLLISION', statusCode: 409 });
+      }
+      if (orderCode) {
+        const existingCode = orderCodeMap.get(orderCode);
+        if (existingCode && (existingCode.db !== db || existingCode.id !== id)) {
+          throw Object.assign(new Error('ORDER_STORAGE_COLLISION'), { code: 'ORDER_STORAGE_COLLISION', statusCode: 409 });
+        }
+        orderCodeMap.set(orderCode, { id, db });
+      }
+      orderMap.set(id, { row, db });
     });
   }
 
   // Strict ownership mode: do not query orders by customer_email.
-  // Only active backend-resolved customer_id values are used.
+  // Only active backend-resolved customer_id values are used. Regular orders
+  // are resolved from both approved storage targets; partial reads fail closed.
   if (owner.customerIds && owner.customerIds.length) {
     const ids = owner.customerIds.filter(customerSecurityLooksLikeUuid).map(encodeURIComponent).join(',');
     if (ids) {
-      await addRowsFromPath('/rest/v1/orders?select=' + encodeURIComponent(select) + '&customer_id=in.(' + ids + ')&order=created_at.desc&limit=80');
+      const path = '/rest/v1/orders?select=' + encodeURIComponent(select) + '&customer_id=in.(' + ids + ')&order=created_at.desc&limit=80';
+      await addRowsFromPath(path, 'commerce');
+      await addRowsFromPath(path, 'security');
     }
   }
 
-  const orderRows = Array.from(orderMap.values());
+  if (errors.length) {
+    throw Object.assign(new Error('ORDER_STORAGE_UNAVAILABLE'), { code: 'ORDER_STORAGE_UNAVAILABLE', statusCode: 503 });
+  }
+
+  const orderEntries = Array.from(orderMap.values());
+  const orderRows = orderEntries.map((entry) => entry.row);
+  const orderSources = new Map(orderEntries.map((entry) => [String(entry.row.id), entry.db]));
   diracCustomerShipmentRegisterParentsV406('regular', orderRows);
   const itemMap = await myOrdersFetchOrderItems(
     orderRows.map((row) => row.id),
-    owner && Array.isArray(owner.customerIds) ? owner.customerIds : []
+    owner && Array.isArray(owner.customerIds) ? owner.customerIds : [],
+    orderSources
   );
 
   return {
-    ok: errors.length === 0 || orderRows.length > 0,
-    error: errors[0] || '',
+    ok: true,
+    error: '',
     orders: orderRows.map((row) => myOrdersNormalizeGenericOrder(row, itemMap[String(row.id)] || []))
   };
 }
 
-async function myOrdersFetchOrderItems(orderIds, customerIds) {
+async function myOrdersFetchOrderItems(orderIds, customerIds, orderSources) {
   const ids = Array.from(new Set((orderIds || []).filter(customerSecurityLooksLikeUuid))).slice(0, 120);
   const owners = Array.from(new Set((customerIds || []).filter(customerSecurityLooksLikeUuid))).slice(0, 20);
   const map = {};
   if (!ids.length || !owners.length) return map;
-  const select = 'id,order_id,customer_id,product_title,quantity,unit_price,created_at';
-  const path = '/rest/v1/order_items?select=' + encodeURIComponent(select)
-    + '&order_id=in.(' + ids.map(encodeURIComponent).join(',') + ')'
-    + '&customer_id=in.(' + owners.map(encodeURIComponent).join(',') + ')'
-    + '&order=created_at.asc';
-  const result = await supabaseFetch(path, { method: 'GET', auth: 'service' }).catch(() => null);
-  if (result && result.status === 503 && result.data && result.data.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE') {
-    const error = new Error('ORDER_PARENT_OWNERSHIP_UNAVAILABLE');
-    error.code = 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE';
-    throw error;
+  if (!(orderSources instanceof Map) || ids.some((id) => !/^(commerce|security)$/.test(String(orderSources.get(id) || '')))) {
+    throw Object.assign(new Error('ORDER_PARENT_OWNERSHIP_UNAVAILABLE'), { code: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE', statusCode: 503 });
   }
-  if (!result || !result.ok || !Array.isArray(result.data)) return map;
-  result.data.forEach((item) => {
-    const orderId = String(item && item.order_id || '');
-    if (!orderId) return;
-    if (!map[orderId]) map[orderId] = [];
-    const rawUnitPrice = typeof item.unit_price === 'number' || (typeof item.unit_price === 'string' && item.unit_price.trim())
-      ? Number(item.unit_price) : NaN;
-    const unitPrice = Number.isSafeInteger(rawUnitPrice) && rawUnitPrice >= 0 ? rawUnitPrice : null;
-    const rawQuantity = typeof item.quantity === 'number' || (typeof item.quantity === 'string' && item.quantity.trim())
-      ? Number(item.quantity) : NaN;
-    const lineSubtotal = unitPrice !== null && Number.isSafeInteger(rawQuantity) && rawQuantity >= 1 && rawQuantity <= 999
-      && Number.isSafeInteger(unitPrice * rawQuantity) ? unitPrice * rawQuantity : null;
-    map[orderId].push({
-      id: String(item.id || ''),
-      title: myOrdersCleanText(item.product_title || 'Item pesanan', 180),
-      quantity: myOrdersPositiveInteger(item.quantity || 1, 1, 999),
-      unit_price: unitPrice,
-      subtotal: lineSubtotal,
-      created_at: item.created_at || ''
+  const select = 'id,order_id,customer_id,product_title,quantity,unit_price,created_at';
+  const appendItems = (rows) => {
+    rows.forEach((item) => {
+      const orderId = String(item && item.order_id || '');
+      if (!orderId) return;
+      if (!map[orderId]) map[orderId] = [];
+      const rawUnitPrice = typeof item.unit_price === 'number' || (typeof item.unit_price === 'string' && item.unit_price.trim())
+        ? Number(item.unit_price) : NaN;
+      const unitPrice = Number.isSafeInteger(rawUnitPrice) && rawUnitPrice >= 0 ? rawUnitPrice : null;
+      const rawQuantity = typeof item.quantity === 'number' || (typeof item.quantity === 'string' && item.quantity.trim())
+        ? Number(item.quantity) : NaN;
+      const lineSubtotal = unitPrice !== null && Number.isSafeInteger(rawQuantity) && rawQuantity >= 1 && rawQuantity <= 999
+        && Number.isSafeInteger(unitPrice * rawQuantity) ? unitPrice * rawQuantity : null;
+      map[orderId].push({
+        id: String(item.id || ''),
+        title: myOrdersCleanText(item.product_title || 'Item pesanan', 180),
+        quantity: myOrdersPositiveInteger(item.quantity || 1, 1, 999),
+        unit_price: unitPrice,
+        subtotal: lineSubtotal,
+        created_at: item.created_at || ''
+      });
     });
-  });
+  };
+  const fetchSource = async (db) => {
+    const sourceIds = ids.filter((id) => orderSources.get(id) === db);
+    if (!sourceIds.length) return;
+    const path = '/rest/v1/order_items?select=' + encodeURIComponent(select)
+      + '&order_id=in.(' + sourceIds.map(encodeURIComponent).join(',') + ')'
+      + '&customer_id=in.(' + owners.map(encodeURIComponent).join(',') + ')'
+      + '&order=created_at.asc';
+    const result = await supabaseFetch(path, { method: 'GET', auth: 'service', db }).catch(() => null);
+    if (result && result.status === 503 && result.data && result.data.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE') {
+      throw Object.assign(new Error('ORDER_PARENT_OWNERSHIP_UNAVAILABLE'), { code: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE', statusCode: 503 });
+    }
+    if (!result || !result.ok || !Array.isArray(result.data)) {
+      throw Object.assign(new Error('ORDER_ITEMS_STORAGE_UNAVAILABLE'), { code: 'ORDER_ITEMS_STORAGE_UNAVAILABLE', statusCode: 503 });
+    }
+    if (result.data.some((item) => !item || orderSources.get(String(item.order_id || '')) !== db
+        || !owners.includes(String(item.customer_id || '')))) {
+      throw Object.assign(new Error('ORDER_ITEMS_STORAGE_BINDING_INVALID'), { code: 'ORDER_ITEMS_STORAGE_BINDING_INVALID', statusCode: 409 });
+    }
+    appendItems(result.data);
+  };
+  await fetchSource('commerce');
+  await fetchSource('security');
   return map;
 }
 
@@ -19827,10 +19867,13 @@ function midtransWebhookBindingIsValid(input, suppliedSignature) {
 const DIRAC_MIDTRANS_WEBHOOK_CAPABILITIES_V350 = new WeakMap();
 const DIRAC_MIDTRANS_WEBHOOK_STATES_V352 = new WeakMap();
 
-function midtransBindWebhookStateV352(ctx, transaction, order) {
+function midtransBindWebhookStateV352(ctx, transaction, ownerCheck) {
   const cap = ctx && DIRAC_MIDTRANS_WEBHOOK_CAPABILITIES_V350.get(ctx);
+  const order = ownerCheck && ownerCheck.order;
+  const orderDb = cap && cap.parentType === 'r' ? String(ownerCheck && ownerCheck.orderDb || '') : 'domain';
   if (!cap || Date.now() >= cap.expiresAt || DIRAC_MIDTRANS_WEBHOOK_STATES_V352.has(ctx)
       || !transaction || !order
+      || (cap.parentType === 'r' && !/^(commerce|security)$/.test(orderDb))
       || String(transaction.id || '') !== cap.transactionId
       || String(transaction.customer_id || '') !== cap.customerId
       || String(order.id || '') !== cap.parentId
@@ -19849,7 +19892,7 @@ function midtransBindWebhookStateV352(ctx, transaction, order) {
         && !['unpaid', 'pending', 'pending_payment', 'created'].includes(orderStatus)) return false;
   }
   DIRAC_MIDTRANS_WEBHOOK_STATES_V352.set(ctx, Object.freeze({
-    transactionStatus, orderPaymentStatus, orderStatus, legacyStatus
+    transactionStatus, orderPaymentStatus, orderStatus, legacyStatus, orderDb
   }));
   return true;
 }
@@ -20699,7 +20742,7 @@ async function midtransHandleWebhook(req, res) {
     });
     return res.status(ownerCheck.status || 409).json({ ok: false, message: ownerCheck.message || 'Payment tidak cocok dengan order/customer.' });
   }
-  if (!midtransBindWebhookStateV352(capabilityContextV350.ctx, tx, ownerCheck.order)) {
+  if (!midtransBindWebhookStateV352(capabilityContextV350.ctx, tx, ownerCheck)) {
     return res.status(409).json({ ok: false, message: 'Status order tidak mengizinkan mutasi payment.' });
   }
   diracPaidMailTimingMarkV371(paidMailTimingV371, 'payment_verified');
@@ -20926,19 +20969,26 @@ async function midtransFetchPaymentTransaction(input) {
 async function midtransVerifyTransactionOwnerAndAmount(tx, amount) {
   if (tx.order_id) {
     const select = 'id,customer_id,total,payment_status,order_status';
-    const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select)
+    const path = '/rest/v1/orders?select=' + encodeURIComponent(select)
       + '&id=eq.' + encodeURIComponent(tx.order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
-      + '&limit=1', {
-      method: 'GET',
-      auth: 'service'
-    });
-    if (!result.ok) return { ok: false, status: result.status, message: 'Gagal membaca order regular.', reason: 'orders_read_failed' };
-    const order = Array.isArray(result.data) ? result.data[0] : null;
-    if (!order || !order.id) return { ok: false, status: 404, message: 'Order regular tidak ditemukan.', reason: 'order_not_found' };
+      + '&limit=1';
+    const commerce = await supabaseFetch(path, { method: 'GET', auth: 'service', db: 'commerce' }).catch(() => null);
+    const security = await supabaseFetch(path, { method: 'GET', auth: 'service', db: 'security' }).catch(() => null);
+    if (!commerce || !commerce.ok || !Array.isArray(commerce.data)
+        || !security || !security.ok || !Array.isArray(security.data)) {
+      return { ok: false, status: 503, message: 'Gagal memverifikasi seluruh storage order regular.', reason: 'orders_storage_read_failed' };
+    }
+    const matches = [];
+    commerce.data.forEach((order) => { if (order && order.id) matches.push({ order, orderDb: 'commerce' }); });
+    security.data.forEach((order) => { if (order && order.id) matches.push({ order, orderDb: 'security' }); });
+    if (matches.length > 1) return { ok: false, status: 409, message: 'Order regular ambigu antar storage.', reason: 'order_storage_ambiguous' };
+    if (!matches.length) return { ok: false, status: 404, message: 'Order regular tidak ditemukan.', reason: 'order_not_found' };
+    const match = matches[0];
+    const order = match.order;
     if (String(order.customer_id || '') !== String(tx.customer_id || '')) return { ok: false, status: 409, message: 'Customer payment tidak sama dengan customer order.', reason: 'customer_mismatch' };
     if (midtransMoney(order.total) !== midtransMoney(amount)) return { ok: false, status: 409, message: 'Nominal payment tidak sama dengan total order.', reason: 'amount_mismatch_order_total' };
-    return { ok: true, orderType: 'regular', order };
+    return { ok: true, orderType: 'regular', orderDb: match.orderDb, order };
   }
 
   if (tx.domain_order_id) {
@@ -20968,14 +21018,17 @@ async function midtransFetchPaidInvoiceOrderAfterBindingV376(tx) {
 
   if (tx.order_id) {
     const orderId = String(tx.order_id || '').trim();
-    if (!orderId) return null;
+    const binding = midtransCurrentWebhookStateV352();
+    const orderDb = binding && binding.cap.parentType === 'r' ? String(binding.state.orderDb || '') : '';
+    if (!orderId || !/^(commerce|security)$/.test(orderDb)) return null;
     const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_status,order_status,created_at';
     const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select)
       + '&id=eq.' + encodeURIComponent(orderId)
       + '&customer_id=eq.' + encodeURIComponent(customerId)
       + '&limit=1', {
       method: 'GET',
-      auth: 'service'
+      auth: 'service',
+      db: orderDb
     });
     const row = result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
     if (!row || String(row.id || '') !== orderId
@@ -21167,9 +21220,11 @@ async function midtransPatchRelatedOrderPaid(tx, payload) {
     const path = '/rest/v1/orders?id=eq.' + encodeURIComponent(tx.order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
       + '&total=eq.' + encodeURIComponent(String(binding.cap.grossAmount)) + predicates;
+    if (!/^(commerce|security)$/.test(String(binding.state.orderDb || ''))) return { ok: false, status: 409 };
     const result = await supabaseFetch(path, {
       method: 'PATCH',
       auth: 'service',
+      db: binding.state.orderDb,
       prefer: 'return=representation',
       body: { payment_status: 'paid', order_status: 'paid', paid_at: paidAt }
     });
@@ -21205,8 +21260,9 @@ async function midtransPatchRelatedOrderRefundedV350(tx) {
     const path = '/rest/v1/orders?id=eq.' + encodeURIComponent(tx.order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
       + '&total=eq.' + encodeURIComponent(String(binding.cap.grossAmount)) + predicates;
+    if (!/^(commerce|security)$/.test(String(binding.state.orderDb || ''))) return { ok: false, status: 409 };
     const result = await supabaseFetch(path, {
-      method: 'PATCH', auth: 'service', prefer: 'return=representation',
+      method: 'PATCH', auth: 'service', db: binding.state.orderDb, prefer: 'return=representation',
       body: { payment_status: 'refunded', order_status: 'refunded' }
     });
     return midtransSingleRowMutationResultV350(result, tx.order_id);
@@ -30148,16 +30204,24 @@ async function diracUniversalPesananFillTxMap(map, type, ids) {
       || cleanIds.some((id) => {
         const row = parentLegacyContext.ownerRowsCacheV128.get('owner-row-v364:' + parentTable + ':' + id);
         return !row || !Object.isFrozen(row) || row.id !== id || row.table !== parentTable
-          || row.customer_id !== parentOwner.customerIds[0];
+          || row.customer_id !== parentOwner.customerIds[0]
+          || (type === 'regular' && !/^(commerce|security)$/.test(String(row.db || '')));
       })) throw parentUnavailable();
   const parentRows = [];
-  for (let index = 0; index < cleanIds.length; index += 40) {
-    const batch = cleanIds.slice(index, index + 40);
-    const rows = await diracBolaIdorV128FetchOwnerRows(parentTable, batch, 'id').catch(() => null);
-    if (!Array.isArray(rows) || rows.length !== batch.length
-        || batch.some((id) => rows.filter((row) => row && row.id === id && row.table === parentTable
-          && row.customer_id === parentOwner.customerIds[0]).length !== 1)) throw parentUnavailable();
-    parentRows.push(...rows.map((row) => Object.freeze({ id: row.id, customer_id: row.customer_id, table: parentTable })));
+  if (type === 'regular') {
+    cleanIds.forEach((id) => {
+      const row = parentLegacyContext.ownerRowsCacheV128.get('owner-row-v364:' + parentTable + ':' + id);
+      parentRows.push(Object.freeze({ id: row.id, customer_id: row.customer_id, table: parentTable }));
+    });
+  } else {
+    for (let index = 0; index < cleanIds.length; index += 40) {
+      const batch = cleanIds.slice(index, index + 40);
+      const rows = await diracBolaIdorV128FetchOwnerRows(parentTable, batch, 'id').catch(() => null);
+      if (!Array.isArray(rows) || rows.length !== batch.length
+          || batch.some((id) => rows.filter((row) => row && row.id === id && row.table === parentTable
+            && row.customer_id === parentOwner.customerIds[0]).length !== 1)) throw parentUnavailable();
+      parentRows.push(...rows.map((row) => Object.freeze({ id: row.id, customer_id: row.customer_id, table: parentTable })));
+    }
   }
   const column = type === 'domain' ? 'domain_order_id' : 'order_id';
   const select = 'id,customer_id,order_id,domain_order_id,gateway_name,gateway_reference,payment_status,amount,currency,payment_url,expired_at,created_at,metadata';
@@ -30483,6 +30547,7 @@ async function diracUniversalPesananFindOwnedOrder(inputOrderId, requestedType, 
       ? await diracUniversalPesananFetchOwnedDomainOrder(inputOrderId, customerId)
       : await diracUniversalPesananFetchOwnedRegularOrder(inputOrderId, customerId);
     if (result.ok) return result;
+    if (Number(result.status || 0) >= 409) return result;
     last = result;
   }
   return last || { ok: false, status: 404, message: 'Order tidak ditemukan.' };
@@ -30501,12 +30566,18 @@ async function diracUniversalPesananFetchOwnedRegularOrder(inputOrderId, custome
     + '&customer_id=eq.' + encodeURIComponent(customerId)
     + '&or=' + encodeURIComponent(`(${filters.join(',')})`)
     + '&limit=1';
-
-  const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
-  if (!result.ok) return { ok: false, status: result.status || 500, message: 'Gagal membaca order regular.' };
-  const row = Array.isArray(result.data) ? result.data[0] : null;
-  if (!row || !row.id) return { ok: false, status: 404, message: 'Order regular tidak ditemukan atau bukan milik akun ini.' };
-  return { ok: true, kind: 'regular', order: row };
+  const commerce = await supabaseFetch(path, { method: 'GET', auth: 'service', db: 'commerce' }).catch(() => null);
+  const security = await supabaseFetch(path, { method: 'GET', auth: 'service', db: 'security' }).catch(() => null);
+  if (!commerce || !commerce.ok || !Array.isArray(commerce.data)
+      || !security || !security.ok || !Array.isArray(security.data)) {
+    return { ok: false, status: 503, message: 'Gagal memverifikasi seluruh storage order regular.' };
+  }
+  const matches = [];
+  commerce.data.forEach((row) => { if (row && row.id) matches.push({ row, db: 'commerce' }); });
+  security.data.forEach((row) => { if (row && row.id) matches.push({ row, db: 'security' }); });
+  if (matches.length > 1) return { ok: false, status: 409, message: 'Identitas order regular ambigu antar storage.' };
+  if (!matches.length) return { ok: false, status: 404, message: 'Order regular tidak ditemukan atau bukan milik akun ini.' };
+  return { ok: true, kind: 'regular', order: matches[0].row, orderDb: matches[0].db };
 }
 
 async function diracUniversalPesananFetchOwnedDomainOrder(inputOrderId, customerId) {
@@ -30548,10 +30619,10 @@ async function diracUniversalPesananFetchOwnedDomainOrder(inputOrderId, customer
 async function diracUniversalPesananBuildPaymentInput(lookup, customer, userEmail) {
   if (!lookup || !lookup.ok || !lookup.order) return { ok: false, status: 404, message: 'Order tidak ditemukan.' };
   if (lookup.kind === 'domain') return diracUniversalPesananBuildDomainPaymentInput(lookup.order, customer, userEmail);
-  return diracUniversalPesananBuildRegularPaymentInput(lookup.order, customer, userEmail);
+  return diracUniversalPesananBuildRegularPaymentInput(lookup.order, customer, userEmail, lookup.orderDb);
 }
 
-async function diracUniversalPesananBuildRegularPaymentInput(order, customer, userEmail) {
+async function diracUniversalPesananBuildRegularPaymentInput(order, customer, userEmail, orderDb) {
   const orderId = String(order.id || '').trim();
   const orderCode = lockedPaymentCleanText(order.order_id || orderId, 100);
   const serviceType = lockedPaymentNormalizeServiceType(order.service_type || 'order');
@@ -30561,11 +30632,12 @@ async function diracUniversalPesananBuildRegularPaymentInput(order, customer, us
   const orderStatus = lockedPaymentStatus(order.order_status);
 
   if (!customerSecurityLooksLikeUuid(orderId)) return { ok: false, status: 409, message: 'Order ID database tidak valid.' };
+  if (!/^(commerce|security)$/.test(String(orderDb || ''))) return { ok: false, status: 409, message: 'Storage order database tidak valid.' };
   if (!diracUniversalPesananCanPayByStatus(paymentStatus, orderStatus, amount)) {
     return { ok: false, status: 409, message: `Order belum bisa dibayar. Status pembayaran: ${paymentStatus}, status order: ${orderStatus}.` };
   }
 
-  const itemPack = await diracUniversalPesananFetchRegularItems(orderId, amount, serviceType, false);
+  const itemPack = await diracUniversalPesananFetchRegularItems(orderId, amount, serviceType, false, orderDb);
   if (subtotal <= 0 || itemPack.totalItem !== subtotal) return { ok: false, status: 409, message: 'Subtotal rincian order tidak cocok dengan database.' };
   return {
     ok: true,
@@ -30623,10 +30695,11 @@ async function diracUniversalPesananBuildDomainPaymentInput(order, customer, use
   };
 }
 
-async function diracUniversalPesananFetchRegularItems(orderId, amount, serviceType, includePresentation = true) {
+async function diracUniversalPesananFetchRegularItems(orderId, amount, serviceType, includePresentation = true, orderDb = 'commerce') {
+  if (!/^(commerce|security)$/.test(String(orderDb || ''))) throw Object.assign(new Error('PAYMENT_ORDER_STORAGE_INVALID'), { statusCode: 409 });
   const select = 'id,order_id,product_doc_id,product_title,quantity,unit_price,cost_price';
   const path = '/rest/v1/order_items?select=' + encodeURIComponent(select) + '&order_id=eq.' + encodeURIComponent(orderId);
-  const result = await supabaseFetch(path, { method: 'GET', auth: 'service' }).catch(() => null);
+  const result = await supabaseFetch(path, { method: 'GET', auth: 'service', db: orderDb }).catch(() => null);
   const rows = result && result.ok && Array.isArray(result.data) ? result.data : [];
   if (!result || result.ok !== true || rows.length === 0) throw Object.assign(new Error('PAYMENT_ITEMS_UNAVAILABLE'), { statusCode: 503 });
   // Payment uses the locked item title, quantity and price. Presentation-only
@@ -31051,6 +31124,11 @@ async function orderMailBuildPaidInvoiceContextFromBackend(tx, provider, paidAt,
 async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, paidOrder, paidItems, paymentDescriptor) {
   const orderId = String(tx.order_id || '').trim();
   if (!orderId) return { ok: false, reason: 'regular_order_id_missing' };
+  const activeBinding = midtransCurrentWebhookStateV352();
+  const orderDb = activeBinding && activeBinding.cap.parentType === 'r'
+    && String(activeBinding.cap.transactionId || '') === String(tx.id || '')
+    ? String(activeBinding.state.orderDb || '') : 'commerce';
+  if (!/^(commerce|security)$/.test(orderDb)) return { ok: false, reason: 'regular_order_storage_invalid' };
 
   let order = paidOrder && String(paidOrder.id || '') === orderId
     && String(paidOrder.customer_id || '') === String(tx.customer_id || '')
@@ -31061,7 +31139,8 @@ async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, pai
     const result = await supabaseFetch('/rest/v1/orders?select=' + encodeURIComponent(select) + '&id=eq.' + encodeURIComponent(orderId)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id) + '&limit=1', {
       method: 'GET',
-      auth: 'service'
+      auth: 'service',
+      db: orderDb
     }).catch((error) => ({ ok: false, status: 500, data: { message: orderMailSafeError(error) } }));
 
     if (!result.ok) return { ok: false, reason: 'regular_order_read_failed', message: lockedPaymentSafeUpstreamError(result.data) };
@@ -31076,7 +31155,7 @@ async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, pai
     || !orderMailCleanText(order.customer_name || '', 120)
     || !orderMailCleanText(order.customer_phone || '', 80);
   const [itemPack, customerFallback] = await Promise.all([
-    paidItems ? Promise.resolve(paidItems) : diracUniversalPesananFetchRegularItems(order.id, amount, serviceType, true),
+    paidItems ? Promise.resolve(paidItems) : diracUniversalPesananFetchRegularItems(order.id, amount, serviceType, true, orderDb),
     customerFallbackRequired ? orderMailFetchCustomerFallback(order.customer_id) : Promise.resolve({ name: '', email: '', phone: '' })
   ]);
   const customerEmail = orderMailNormalizeEmail(order.customer_email || customerFallback.email || '');
@@ -40442,7 +40521,7 @@ async function diracBolaIdorV128InspectSupabaseAccess(path, options = {}) {
   if (diracBolaIdorV128IsChildOrderTable(table) && /^(GET|HEAD|PATCH|PUT|DELETE)$/i.test(method)) {
     const parentIds = diracBolaIdorV128ChildOrderIds(table, ids);
     if (parentIds.length) {
-      const owners = await diracBolaIdorV128ResolveChildParentOwners(table, parentIds).catch(() => []);
+      const owners = await diracBolaIdorV128ResolveChildParentOwners(table, parentIds, options.db).catch(() => []);
       const foreign = owners.filter((row) => row && row.customer_id && !allowed.includes(String(row.customer_id)));
       if (foreign.length) {
         return diracBolaIdorV128BuildBlockDecision('child_order_parent_not_bound_to_authenticated_owner', {
@@ -40711,11 +40790,26 @@ function diracBolaIdorV128LearnTrustedOwners(path, options = {}, result) {
   } catch (_) {}
 }
 
-async function diracBolaIdorV128ResolveChildParentOwners(childTable, parentIds) {
+async function diracBolaIdorV128ResolveChildParentOwners(childTable, parentIds, dbHint) {
   const ids = Array.from(new Set((parentIds || []).filter(diracBolaIdorV128LooksLikeUuid))).slice(0, 80);
   if (!ids.length) return [];
   const parentTable = String(childTable || '').toLowerCase() === 'domain_order_items' ? 'domain_orders' : 'orders';
   const parentContext = diracCentralCurrentContextV149();
+  const scopedDb = parentTable === 'orders' && /^(commerce|security)$/.test(String(dbHint || '')) ? String(dbHint) : '';
+  if (scopedDb && parentContext && parentContext.req && parentContext.action === 'my_orders' && parentContext.method === 'GET'
+      && diracCentralHandlerContextFullyPassedV211(parentContext, parentContext.req) === true) {
+    const legacyContext = diracBolaIdorV128CurrentContext();
+    const owner = diracCentralOwnerFromVerifiedContextV215(parentContext.req);
+    const cache = legacyContext && legacyContext.ownerRowsCacheV128 instanceof Map ? legacyContext.ownerRowsCacheV128 : null;
+    const rows = cache ? ids.map((id) => cache.get('owner-row-v364:' + parentTable + ':' + id)) : [];
+    if (legacyContext && legacyContext.req === parentContext.req && legacyContext.action === parentContext.action
+        && legacyContext.method === parentContext.method && owner && owner.ok === true && owner.customerIds.length === 1
+        && rows.length === ids.length && rows.every((row, index) => row && Object.isFrozen(row) && row.id === ids[index]
+          && row.table === parentTable && row.customer_id === owner.customerIds[0] && row.db === scopedDb)) {
+      return rows.map((row) => ({ ...row }));
+    }
+    return [];
+  }
   if (ids.length > 40 && parentContext && parentContext.action === 'my_orders' && parentContext.method === 'GET') {
     const parentRows = [];
     for (let index = 0; index < ids.length; index += 40) {
@@ -59475,9 +59569,11 @@ function diracCentralBindOwnerScopedSessionRowsV197(ctx, path, options = {}, res
       if ((rowCustomerFilter === 'eq.' + rowCustomerId || rowCustomerFilter === 'in.(' + rowCustomerId + ')')
           && result.data.length && result.data.every((row) => row && diracCentralLooksLikeUuidV146(row.id)
             && row.customer_id === rowCustomerId)) {
+        const rowDb = table === 'orders' ? String(resolveDiracSupabaseTargetKey(rawPath, options) || '') : '';
+        if (table === 'orders' && !/^(commerce|security)$/.test(rowDb)) return false;
         for (const row of result.data) {
           rowLegacyContext.ownerRowsCacheV128.set('owner-row-v364:' + table + ':' + row.id,
-            Object.freeze({ id: row.id, customer_id: row.customer_id, table }));
+            Object.freeze({ id: row.id, customer_id: row.customer_id, table, ...(table === 'orders' ? { db: rowDb } : {}) }));
         }
       }
     }
@@ -63807,8 +63903,13 @@ function diracCentralMidtransWebhookServiceRoleDecisionV350(ctx, table, path, op
       ? 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_status,order_status,created_at'
       : 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at';
     const selectOk = one('select', select) || Boolean(cap.success && state && one('select', invoiceSelect));
+    const sourceOptionsOk = expectedTable === 'orders'
+      ? exactOptionKeys('auth','db','method') && options.auth === 'service'
+        && /^(commerce|security)$/.test(String(options.db || ''))
+        && (!state || options.db === state.orderDb)
+      : exactOptionKeys('auth','method') && options.auth === 'service';
     const ok = cleanTable === expectedTable && parsed.pathname === '/rest/v1/' + expectedTable
-      && exactOptionKeys('auth','method') && options.auth === 'service'
+      && sourceOptionsOk
       && queryKeys('select','id','customer_id','limit') && selectOk
       && eq('id', cap.parentId) && eq('customer_id', cap.customerId) && one('limit', '1');
     return { relevant: true, ok, reason: ok ? '' : 'midtrans_order_read_contract_mismatch_v350' };
@@ -63820,12 +63921,17 @@ function diracCentralMidtransWebhookServiceRoleDecisionV350(ctx, table, path, op
       ? 'id,order_id,product_doc_id,product_title,quantity,unit_price,cost_price'
       : 'id,order_id,domain_name,extension,years,register_price,subtotal';
     const customerRead = cleanTable === 'customers'
+      && exactOptionKeys('auth','method') && options.auth === 'service'
       && queryKeys('select','id','limit') && one('select', 'id,name,email,phone')
       && eq('id', cap.customerId) && one('limit', '1');
-    const itemRead = cleanTable === expectedTable && queryKeys('select','order_id')
-      && one('select', itemSelect) && eq('order_id', cap.parentId);
+    const itemRead = cleanTable === expectedTable
+      && (expectedTable === 'order_items'
+        ? exactOptionKeys('auth','db','method') && options.auth === 'service'
+          && /^(commerce|security)$/.test(String(state && state.orderDb || '')) && options.db === state.orderDb
+        : exactOptionKeys('auth','method') && options.auth === 'service')
+      && queryKeys('select','order_id') && one('select', itemSelect) && eq('order_id', cap.parentId);
     const ok = Boolean(cap.success && state) && parsed.pathname === '/rest/v1/' + cleanTable
-      && exactOptionKeys('auth','method') && options.auth === 'service' && (customerRead || itemRead);
+      && (customerRead || itemRead);
     return { relevant: true, ok, reason: ok ? '' : 'midtrans_paid_invoice_read_contract_mismatch_v352' };
   }
 
@@ -63916,9 +64022,14 @@ function diracCentralMidtransWebhookServiceRoleDecisionV350(ctx, table, path, op
     const statePredicates = state && eq('payment_status', state.orderPaymentStatus) && eq('order_status', state.orderStatus)
       && eq(expectedTable === 'orders' ? 'total' : 'total_price', cap.grossAmount)
       && (expectedTable !== 'domain_orders' || (state.legacyStatus === null ? one('status', 'is.null') : eq('status', state.legacyStatus)));
+    const sourceOptionsOk = expectedTable === 'orders'
+      ? exactOptionKeys('auth','body','db','method','prefer') && options.auth === 'service'
+        && options.prefer === 'return=representation' && /^(commerce|security)$/.test(String(state && state.orderDb || ''))
+        && options.db === state.orderDb
+      : exactOptionKeys('auth','body','method','prefer') && options.auth === 'service' && options.prefer === 'return=representation';
     const ok = Boolean(targetStatus) && cleanTable === expectedTable
       && parsed.pathname === '/rest/v1/' + expectedTable
-      && exactOptionKeys('auth','body','method','prefer') && options.auth === 'service' && options.prefer === 'return=representation'
+      && sourceOptionsOk
       && queryKeys(...stateKeys) && statePredicates
       && midtransPaymentTransitionAllowedV350(state.orderPaymentStatus, targetStatus)
       && eq('id', cap.parentId) && eq('customer_id', cap.customerId)
