@@ -19299,6 +19299,7 @@ async function lockedPaymentInsertTransaction(data) {
   return supabaseFetch('/rest/v1/payment_transactions', {
     method: 'POST',
     auth: 'service',
+    db: 'paymentService',
     prefer: 'return=representation',
     body: [body]
   });
@@ -19328,6 +19329,7 @@ async function lockedPaymentPatchTransactionUrl(transactionId, paymentUrl, invoi
   return supabaseFetch('/rest/v1/payment_transactions?id=eq.' + encodeURIComponent(transactionId), {
     method: 'PATCH',
     auth: 'service',
+    db: 'paymentService',
     prefer: 'return=representation',
     body
   });
@@ -19355,6 +19357,7 @@ async function lockedPaymentMarkTransactionGatewayFailed(transactionId, error, r
   return supabaseFetch('/rest/v1/payment_transactions?id=eq.' + encodeURIComponent(transactionId), {
     method: 'PATCH',
     auth: 'service',
+    db: 'paymentService',
     body: { metadata }
   }).catch(() => null);
 }
@@ -30886,7 +30889,7 @@ async function diracUniversalPesananFindReusableTransaction(input) {
     + '&payment_status=in.(' + statuses + ')'
     + '&order=created_at.desc&limit=8';
 
-  const result = await supabaseFetch(path, { method: 'GET', auth: 'service' }).catch(() => null);
+  const result = await supabaseFetch(path, { method: 'GET', auth: 'service', db: 'paymentService' }).catch(() => null);
   if (!result || !result.ok) return { ok: false, status: result && result.status || 500 };
 
   const rows = Array.isArray(result.data) ? result.data : [];
