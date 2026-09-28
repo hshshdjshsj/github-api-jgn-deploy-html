@@ -21348,8 +21348,11 @@ async function midtransPatchRelatedOrderPaid(tx, payload) {
     const path = '/rest/v1/orders?id=eq.' + encodeURIComponent(tx.order_id)
       + '&customer_id=eq.' + encodeURIComponent(tx.customer_id)
       + '&total=eq.' + encodeURIComponent(String(binding.cap.grossAmount)) + predicates;
+    const securityLaboratoryParentV447 = binding.cap.orderDatabase === 'security' && binding.cap.serviceType === 'laboratorium';
     const orderOptions = binding.cap.orderDatabase === 'security'
-      ? { method: 'PATCH', auth: 'service', db: 'security', prefer: 'return=representation', body: { payment_status: 'paid', order_status: 'paid', paid_at: paidAt } }
+      ? { method: 'PATCH', auth: 'service', db: 'security', prefer: 'return=representation', body: securityLaboratoryParentV447
+        ? { payment_status: 'paid', order_status: 'paid' }
+        : { payment_status: 'paid', order_status: 'paid', paid_at: paidAt } }
       : { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: { payment_status: 'paid', order_status: 'paid', paid_at: paidAt } };
     const result = await supabaseFetch(path, orderOptions);
     return midtransSingleRowMutationResultV350(result, tx.order_id);
@@ -64250,8 +64253,12 @@ function diracCentralMidtransWebhookServiceRoleDecisionV350(ctx, table, path, op
     const body = options.body;
     const paidMutation = cap.success === true && cap.mappedStatus === 'paid';
     const refundedMutation = cap.success === false && cap.mappedStatus === 'refunded';
+    const securityLaboratoryPaidParentV447 = paidMutation && expectedTable === 'orders'
+      && cap.parentType === 'r' && cap.orderDatabase === 'security' && cap.serviceType === 'laboratorium';
     const expectedFields = paidMutation
-      ? (expectedTable === 'orders' ? ['payment_status','order_status','paid_at'] : ['payment_status','order_status','status','paid_at'])
+      ? (expectedTable === 'orders'
+        ? (securityLaboratoryPaidParentV447 ? ['payment_status','order_status'] : ['payment_status','order_status','paid_at'])
+        : ['payment_status','order_status','status','paid_at'])
       : (expectedTable === 'orders' ? ['payment_status','order_status'] : ['payment_status','order_status','status']);
     const targetStatus = paidMutation ? 'paid' : (refundedMutation ? 'refunded' : '');
     const stateKeys = expectedTable === 'orders'
@@ -64271,7 +64278,9 @@ function diracCentralMidtransWebhookServiceRoleDecisionV350(ctx, table, path, op
       && eq('id', cap.parentId) && eq('customer_id', cap.customerId)
       && exactBodyKeys(body, expectedFields) && body.payment_status === targetStatus && body.order_status === targetStatus
       && (expectedTable !== 'domain_orders' || body.status === targetStatus)
-      && (paidMutation ? cap.evidence && body.paid_at === cap.evidence.confirmed_at : body.paid_at === undefined);
+      && (paidMutation
+        ? cap.evidence && (securityLaboratoryPaidParentV447 ? body.paid_at === undefined : body.paid_at === cap.evidence.confirmed_at)
+        : body.paid_at === undefined);
     return { relevant: true, ok, reason: ok ? '' : 'midtrans_order_patch_contract_mismatch_v350' };
   }
 
