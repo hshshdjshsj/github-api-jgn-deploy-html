@@ -30885,9 +30885,15 @@ async function diracUniversalPesananFetchRegularItems(orderId, amount, serviceTy
     : new Map();
   const items = [];
   let total = 0;
+  const laboratoryImageTarget = orderDatabase === 'security' && lockedPaymentNormalizeServiceType(serviceType) === 'laboratorium'
+    ? diracAppOriginHandoffTargetV313('laboratorium')
+    : null;
 
   rows.forEach((row, index) => {
     const productKey = lockedPaymentCleanText(row && row.product_doc_id || '', 120);
+    const laboratoryProductId = laboratoryImageTarget
+      ? sessionOwnershipCheckoutNormalizeLaboratoryProductIdV443(productKey)
+      : 0;
     const product = productsById.get(productKey) || {};
     const quantity = Number(row && row.quantity);
     const unitPrice = lockedPaymentMoney(row && row.unit_price);
@@ -30902,7 +30908,9 @@ async function diracUniversalPesananFetchRegularItems(orderId, amount, serviceTy
       quantity,
       unit_price: unitPrice,
       subtotal,
-      image_url: orderMailProductAssetUrl(productKey, product.image_url || product.img || ''),
+      image_url: laboratoryProductId
+        ? orderMailProductAssetUrl(productKey, laboratoryImageTarget.origin + '/lb' + laboratoryProductId + '.webp')
+        : orderMailProductAssetUrl(productKey, product.image_url || product.img || ''),
       description: orderMailCleanText(product.description || product.notes || product.long_description || product.category || '', 220),
       category: orderMailCleanText(product.category || '', 80),
       fragrance_type: orderMailCleanText(product.fragrance_type || '', 80)
