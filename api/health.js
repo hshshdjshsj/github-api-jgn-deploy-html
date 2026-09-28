@@ -67690,7 +67690,7 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
       identity_account_bound: Boolean(identity.email),
       first_key_type: String(unique[0] && unique[0].type || '').slice(0, 40)
     });
-    try { console.error('[dirac-central-ban-authority-diagnostic-v445] ' + JSON.stringify({ ...authorityDiagnosticV445, event: 'ban_write_requested' })); } catch (_) {}
+    try { console.error('[dirac-central-ban-authority-diagnostic-v445] ' + JSON.stringify({ ...authorityDiagnosticV445, event: 'ban_write_requested' })); } catch (diagnosticErrorV445) { diracCentralRecordSuppressedExceptionV221(diagnosticErrorV445); }
     const now = Date.now();
     const blockedUntilMs = DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
     const expiresAt = new Date(DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335).toISOString();
@@ -67730,7 +67730,7 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
       if (write && write.ok === true) break;
     }
     if (!write || write.ok !== true) {
-      try { console.error('[dirac-central-ban-authority-diagnostic-v445] ' + JSON.stringify({ ...authorityDiagnosticV445, event: 'ban_write_failed', database_status: Number(write && write.status || 0), database_code: lockedPaymentDiagnosticTextV445(write && write.data) })); } catch (_) {}
+      try { console.error('[dirac-central-ban-authority-diagnostic-v445] ' + JSON.stringify({ ...authorityDiagnosticV445, event: 'ban_write_failed', database_status: Number(write && write.status || 0), database_code: lockedPaymentDiagnosticTextV445(write && write.data) })); } catch (diagnosticErrorV445) { diracCentralRecordSuppressedExceptionV221(diagnosticErrorV445); }
       try { diracSecurityAlertScheduleV320(alertContext, 'persistent_ban_write_failed', { reason, persistent_ban_written: false }); } catch (error) { diracCentralRecordSuppressedExceptionV221(error); }
       return Object.freeze({ ok: false, reason: 'central_ban_persistence_failed' });
     }
@@ -67746,7 +67746,7 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
         );
       }
     }
-    try { console.error('[dirac-central-ban-authority-diagnostic-v445] ' + JSON.stringify({ ...authorityDiagnosticV445, event: 'ban_write_committed', database_status: Number(write && write.status || 0), stored_row_count: Array.isArray(write && write.data) ? write.data.length : -1 })); } catch (_) {}
+    try { console.error('[dirac-central-ban-authority-diagnostic-v445] ' + JSON.stringify({ ...authorityDiagnosticV445, event: 'ban_write_committed', database_status: Number(write && write.status || 0), stored_row_count: Array.isArray(write && write.data) ? write.data.length : -1 })); } catch (diagnosticErrorV445) { diracCentralRecordSuppressedExceptionV221(diagnosticErrorV445); }
     try { diracSecurityAlertScheduleV320(alertContext, 'persistent_ban_written', { reason, persistent_ban_written: true, ban_type: record.type, ban_permanent: true, blocked_until: expiresAt }); } catch (error) { diracCentralRecordSuppressedExceptionV221(error); }
     return Object.freeze({ ok: true, blocked: true, blocked_until_ms: blockedUntilMs, ttl_seconds: ttlSeconds });
   } catch (_) {
