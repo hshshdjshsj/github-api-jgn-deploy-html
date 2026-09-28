@@ -46,7 +46,8 @@ function ownRows(value, maximum) {
 }
 function orderMatchesView(order, view) {
   const service = cleanText(order.service_type, 80).toLowerCase();
-  if (view === 'parfum' || view === 'shipment') return service === 'parfum';
+  if (view === 'parfum') return service === 'parfum';
+  if (view === 'shipment') return service === 'parfum' || service === 'laboratorium';
   if (view === 'projects') return service === 'jasa_website' || service === 'pengembangan_website';
   if (view === 'topup') return DIGITAL_SERVICES.includes(service);
   return true;

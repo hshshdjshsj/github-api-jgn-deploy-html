@@ -38,8 +38,8 @@ const CONTRACTS = Object.freeze({
   admin_status: get(),
   admin_email_start: post([]),
   admin_email_verify: post(['ticket', 'code'], ['ticket', 'code']),
-  admin_action_email_start: post(['operation', 'payload'], ['operation', 'payload']),
-  admin_action_email_verify: post(['ticket', 'code'], ['ticket', 'code']),
+  admin_action_passkey_start: post(['operation', 'payload'], ['operation', 'payload']),
+  admin_action_passkey_verify: post(['ticket', ...PASSKEY_FIELDS], ['ticket', 'credential'], 98304),
   admin_passkey_start: post(['ticket'], ['ticket']),
   admin_passkey_verify: post(['ticket', ...PASSKEY_FIELDS], ['ticket', 'credential'], 98304),
   admin_passkey_recovery_start: post(['ticket', 'recovery_secret', 'totp_code'], ['ticket', 'recovery_secret', 'totp_code']),
@@ -51,7 +51,7 @@ const CONTRACTS = Object.freeze({
   admin_shipment_cancel: post(['kind', 'order_id', 'expected_revision', 'description', 'approval'], ['kind', 'order_id', 'expected_revision', 'approval']),
   admin_blocks: get(['offset']),
   admin_unban: post(['block_id', 'approval'], ['block_id', 'approval']),
-  admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
+  admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
   admin_monitor: get()
 });
 const ACTIONS = Object.freeze(Object.keys(CONTRACTS));
@@ -488,23 +488,16 @@ function approvalPayload(action, body) {
   if (action === 'admin_shipment_update') return { action, kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, tracking_number: value.tracking_number, courier: value.courier, status: value.status, location: value.location || '', origin: value.origin || '', destination: value.destination || '', estimated_delivery: value.estimated_delivery || '', description: value.description || '' };
   if (action === 'admin_shipment_cancel') return { action, kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, description: value.description || '' };
   if (action === 'admin_unban') return { action, block_id: value.block_id };
-  if (action === 'admin_smtp_send') return { action, recipient_count: value.recipient_count, recipients_sha256: value.recipients_sha256, subject_sha256: value.subject_sha256, body_sha256: value.body_sha256, document_kind: value.document_kind, attachment_name: value.attachment_name || '', attachment_type: value.attachment_type || '', attachment_sha256: value.attachment_sha256 || '', legal_confirm: value.legal_confirm === true };
+  if (action === 'admin_smtp_send') return { action, provider: value.provider, recipient_count: value.recipient_count, recipients_sha256: value.recipients_sha256, subject_sha256: value.subject_sha256, body_sha256: value.body_sha256, document_kind: value.document_kind, attachment_name: value.attachment_name || '', attachment_type: value.attachment_type || '', attachment_sha256: value.attachment_sha256 || '', legal_confirm: value.legal_confirm === true };
   fail('ADMIN_ACTION_APPROVAL_OPERATION_INVALID', 400);
 }
 function approvalPayloadHash(action, body) { return digest(stableJson(approvalPayload(action, body))); }
-function actionLabel(action) {
-  if (action === 'admin_shipment_update') return 'Simpan pembaruan pengiriman';
-  if (action === 'admin_shipment_cancel') return 'Batalkan resi pengiriman';
-  if (action === 'admin_unban') return 'Pulihkan akses akun';
-  if (action === 'admin_smtp_send') return 'Kirim email pelanggan melalui SMTP';
-  return 'Aksi administrator';
-}
 function mailEscape(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])); }
 function mailOriginParts(origin) {
-  let url; try { url = new URL(String(origin || '')); } catch (_) { return { actionUrl: '', bannerUrl: '', supportEmail: '' }; }
+  let url; try { url = new URL(String(origin || '')); } catch (_) { return { actionUrl: '', bannerUrl: '', supportEmail: '', siteUrl: '' }; }
   const host = String(url.hostname || '').toLowerCase(), base = host.startsWith('pt.') ? host.slice(3) : host;
-  if (url.protocol !== 'https:' || !base || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(base)) return { actionUrl: '', bannerUrl: '', supportEmail: '' };
-  return { actionUrl: 'https://pt.' + base + '/admin.html', bannerUrl: 'https://' + base + '/headerstp.webp', supportEmail: 'support@' + base };
+  if (url.protocol !== 'https:' || !base || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(base)) return { actionUrl: '', bannerUrl: '', supportEmail: '', siteUrl: '' };
+  return { actionUrl: 'https://pt.' + base + '/admin.html', bannerUrl: 'https://' + base + '/headerstp.webp', supportEmail: 'support@' + base, siteUrl: 'https://' + base + '/' };
 }
 
 function adminSocialGridHtml() {
@@ -515,9 +508,9 @@ function adminExecutiveEscalationHtml() {
 }
 
 function adminMailHtml(message) {
-  const code = mailEscape(message.code), reference = mailEscape(message.reference), parts = mailOriginParts(message.origin), operation = message.kind === 'action' ? actionLabel(message.operation) : 'Verifikasi masuk administrator';
-  const title = message.kind === 'action' ? 'Konfirmasi Aksi<br>Administrator' : 'Verifikasi Akses<br>Administrator';
-  const summary = message.kind === 'action' ? 'Kode ini diminta untuk mengonfirmasi satu aksi administrator. Aksi tidak akan dijalankan sebelum kode berhasil diverifikasi.' : 'Kode ini digunakan sebagai faktor email pada proses masuk administrator. Gunakan hanya pada halaman administrasi resmi yang sedang Anda buka.';
+  const code = mailEscape(message.code), reference = mailEscape(message.reference), parts = mailOriginParts(message.origin), operation = 'Verifikasi masuk administrator';
+  const title = 'Verifikasi Akses<br>Administrator';
+  const summary = 'Kode ini digunakan sebagai faktor email pada proses masuk administrator. Gunakan hanya pada halaman administrasi resmi yang sedang Anda buka.';
   const destination = parts.actionUrl ? mailEscape(new URL(parts.actionUrl).hostname) : '', supportEmail = mailEscape(parts.supportEmail || 'companydirac@gmail.com'), socialSupportRowHtml = adminSocialGridHtml(), executiveHtml = adminExecutiveEscalationHtml();
   const banner = parts.bannerUrl ? '<tr><td bgcolor="#10151e" style="padding:0;line-height:0;font-size:0;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><img src="' + mailEscape(parts.bannerUrl) + '" width="600" alt="PT Dirac Inovasi Nusantara Secure Security" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;background:#10151e;background-color:#10151e"></td></tr>' : '';
   const button = parts.actionUrl ? '<table class="dirac-button" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:0 0 9px;border-collapse:separate"><tr><td align="center" bgcolor="#5276e8" style="border-radius:10px;background:#5276e8;background-color:#5276e8"><a href="' + mailEscape(parts.actionUrl) + '" style="display:block;padding:17px 18px;font-size:15px;line-height:1.2;font-weight:800;letter-spacing:.04em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;text-decoration:none;border-radius:10px">BUKA ADMINISTRASI</a></td></tr></table>' : '';
@@ -628,7 +621,7 @@ async function smtpCommand(socket, reader, command, expected, timeout) {
 function dotStuff(value) { return String(value || '').replace(/^\./gm, '..'); }
 function mimeMessage(config, message) {
   const boundary = 'dirac-admin-' + crypto.randomBytes(16).toString('hex');
-  const purpose = message.kind === 'action' ? actionLabel(message.operation) : 'Verifikasi masuk administrator';
+  const purpose = 'Verifikasi masuk administrator';
   const subject = 'PT Dirac Inovasi Nusantara Security - ' + purpose + ' [' + message.reference + ']';
   const text = 'PT Dirac Inovasi Nusantara\n\n' + purpose + '\n\nKode administrator satu kali. Berlaku 5 menit dan hanya dapat digunakan satu kali setelah verifikasi berhasil. Jangan bagikan kode ini.\n\n' + message.code + '\n\nReferensi: ' + message.reference;
   const html = adminMailHtml(message);
@@ -655,6 +648,40 @@ function adminSmtpDocumentKind(value) {
   const kind = String(value || '').trim().toLowerCase();
   if (!['offer', 'announcement', 'invoice', 'proforma', 'quotation', 'receipt', 'delivery', 'document'].includes(kind)) fail('ADMIN_SMTP_DOCUMENT_KIND_INVALID', 400);
   return kind;
+}
+function adminSmtpProvider(value) {
+  const provider = String(value || '').trim().toLowerCase();
+  if (!['google', 'mailjet', 'brevo', 'resend'].includes(provider)) fail('ADMIN_SMTP_PROVIDER_INVALID', 400);
+  return provider;
+}
+function customerMailProviderConfig(provider) {
+  const timeout = 12000;
+  if (provider === 'google') {
+    const user = String(process.env.DIRAC_ADMIN_CUSTOMER_GOOGLE_SMTP_USER || '').trim().toLowerCase();
+    const password = String(process.env.DIRAC_ADMIN_CUSTOMER_GOOGLE_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
+    if (!isEmail(user) || !/^[A-Za-z0-9]{16,128}$/.test(password)) return null;
+    return Object.freeze({ provider, transport: 'smtp', host: 'smtp.gmail.com', port: 465, user, password, from: user, timeout });
+  }
+  if (provider === 'mailjet') {
+    const user = String(process.env.DIRAC_ADMIN_CUSTOMER_MAILJET_API_KEY || '').trim();
+    const password = String(process.env.DIRAC_ADMIN_CUSTOMER_MAILJET_SECRET_KEY || '').trim();
+    const from = String(process.env.DIRAC_ADMIN_CUSTOMER_MAILJET_FROM_EMAIL || '').trim().toLowerCase();
+    if (!/^[A-Za-z0-9._~-]{16,256}$/.test(user) || !/^[A-Za-z0-9._~-]{16,256}$/.test(password) || !isEmail(from)) return null;
+    return Object.freeze({ provider, transport: 'smtp', host: 'in-v3.mailjet.com', port: 465, user, password, from, timeout });
+  }
+  if (provider === 'brevo') {
+    const apiKey = String(process.env.DIRAC_USER_SECURITY_BREVO_API_KEY || '').trim();
+    const from = String(process.env.DIRAC_USER_SECURITY_BREVO_FROM_EMAIL || '').trim().toLowerCase();
+    if (!/^[A-Za-z0-9._~+\-]{24,2048}$/.test(apiKey) || !isEmail(from)) return null;
+    return Object.freeze({ provider, transport: 'api', apiKey, from, timeout });
+  }
+  if (provider === 'resend') {
+    const apiKey = String(process.env.DIRAC_USER_SECURITY_RESEND_API_KEY || '').trim();
+    const from = String(process.env.DIRAC_USER_SECURITY_RESEND_FROM_EMAIL || '').trim().toLowerCase();
+    if (!/^re_[A-Za-z0-9_-]{16,252}$/.test(apiKey) || !isEmail(from)) return null;
+    return Object.freeze({ provider, transport: 'api', apiKey, from, timeout });
+  }
+  return null;
 }
 function adminSmtpHash(value) { return digest(String(value == null ? '' : value)); }
 function adminSmtpRecipients(value, count, expectedHash, kind) {
@@ -683,12 +710,39 @@ function adminSmtpAttachment(body) {
   if (!bytes.length || bytes.length > ADMIN_SMTP_ATTACHMENT_MAX_BYTES || !safeEqual(bytes.toString('base64'), encoded) || !safeEqual(crypto.createHash('sha256').update(bytes).digest('hex'), expected)) { bytes.fill(0); fail('ADMIN_SMTP_ATTACHMENT_INVALID', 400); }
   return { name, type, bytes, sha256: expected };
 }
+function customerMailKindLabel(kind) {
+  if (kind === 'offer') return 'Penawaran umum';
+  if (kind === 'announcement') return 'Informasi perusahaan';
+  if (kind === 'quotation') return 'Penawaran harga';
+  if (kind === 'invoice') return 'Invoice pelanggan';
+  if (kind === 'proforma') return 'Proforma invoice';
+  if (kind === 'receipt') return 'Kuitansi';
+  if (kind === 'delivery') return 'Surat jalan';
+  return 'Dokumen perusahaan';
+}
+function customerMailText(message) {
+  const parts = mailOriginParts(message.origin), rows = [String(message.body || ''), '', '---', 'PT Dirac Inovasi Nusantara', customerMailKindLabel(message.kind)];
+  if (parts.siteUrl) rows.push('Website: ' + parts.siteUrl);
+  if (parts.supportEmail) rows.push('Email: ' + parts.supportEmail);
+  rows.push('WhatsApp: +62 878-9252-3968');
+  if (message.attachment) rows.push('Lampiran: ' + message.attachment.name);
+  rows.push('', 'Pesan ini dikirim melalui kanal resmi perusahaan. Balas email ini bila Anda memerlukan klarifikasi atau ingin menghentikan komunikasi penawaran serupa.');
+  return rows.join('\n');
+}
+function customerMailHtml(message) {
+  const parts = mailOriginParts(message.origin), subject = mailEscape(message.subject), body = mailEscape(message.body).replace(/\n/g, '<br>'), kind = mailEscape(customerMailKindLabel(message.kind));
+  const siteUrl = mailEscape(parts.siteUrl || ''), supportEmail = mailEscape(parts.supportEmail || ''), attachment = message.attachment ? mailEscape(message.attachment.name) : '';
+  const siteBlock = siteUrl ? '<tr><td style="padding:0 28px 22px"><a href="' + siteUrl + '" style="display:inline-block;padding:11px 16px;border-radius:8px;background:#163d67;color:#ffffff;text-decoration:none;font-size:13px;font-weight:700">Kunjungi situs resmi</a></td></tr>' : '';
+  const supportBlock = supportEmail ? '<a href="mailto:' + supportEmail + '" style="color:#175b86;text-decoration:none">' + supportEmail + '</a>' : 'Kanal kontak resmi perusahaan';
+  const attachmentBlock = attachment ? '<tr><td style="padding:0 28px 20px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;background:#f6f8fb;border:1px solid #d9e1ea;border-radius:8px"><tr><td style="padding:13px 15px;font-size:12px;line-height:1.5;color:#4b5a6b"><strong style="color:#172033">Lampiran</strong><br>' + attachment + '</td></tr></table></td></tr>' : '';
+  return '<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:0;background:#eef2f6;color:#172033;font-family:Arial,Helvetica,sans-serif"><div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent">' + subject + ' · PT Dirac Inovasi Nusantara</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#EEF2F6" style="width:100%;border-collapse:collapse;background:#eef2f6"><tr><td align="center" style="padding:28px 12px"><table role="presentation" width="680" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:680px;border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #d8e0e9;border-radius:14px;overflow:hidden"><tr><td style="padding:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse"><tr><td width="44%" bgcolor="#27B3CB" style="height:5px;line-height:5px;font-size:0;background:#27B3CB">&nbsp;</td><td width="34%" bgcolor="#2D6FAD" style="height:5px;line-height:5px;font-size:0;background:#2D6FAD">&nbsp;</td><td width="22%" bgcolor="#C69A32" style="height:5px;line-height:5px;font-size:0;background:#C69A32">&nbsp;</td></tr></table></td></tr><tr><td bgcolor="#0F1D2D" style="padding:27px 28px 25px;background:#0f1d2d;color:#ffffff"><div style="font-size:10px;line-height:1.4;font-weight:800;letter-spacing:.17em;color:#71d0e3">KOMUNIKASI RESMI PERUSAHAAN</div><div style="margin-top:8px;font-size:15px;line-height:1.4;font-weight:700;letter-spacing:.03em;color:#ffffff">PT DIRAC INOVASI NUSANTARA</div><div style="margin-top:18px;font-size:11px;line-height:1.4;font-weight:700;color:#a9bbcf">' + kind + '</div><h1 style="margin:6px 0 0;font-size:26px;line-height:1.28;font-weight:800;color:#ffffff">' + subject + '</h1></td></tr><tr><td style="padding:28px 28px 22px;background:#ffffff"><div style="font-size:15px;line-height:1.75;color:#334155">' + body + '</div></td></tr>' + attachmentBlock + siteBlock + '<tr><td style="padding:20px 28px;background:#f8fafc;border-top:1px solid #e2e8f0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse"><tr><td style="font-size:11px;line-height:1.5;font-weight:800;letter-spacing:.12em;color:#64748b">KONTAK RESMI</td></tr><tr><td style="padding-top:8px;font-size:13px;line-height:1.75;color:#475569">Website: ' + (siteUrl ? '<a href="' + siteUrl + '" style="color:#175b86;text-decoration:none">' + siteUrl + '</a>' : 'situs resmi perusahaan') + '<br>Email: ' + supportBlock + '<br>WhatsApp: <a href="https://wa.me/6287892523968" style="color:#175b86;text-decoration:none">+62 878-9252-3968</a></td></tr></table></td></tr><tr><td bgcolor="#0B1220" style="padding:0 10px;background:#0b1220"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse">' + adminSocialGridHtml() + '</table></td></tr><tr><td bgcolor="#0B1220" style="padding:8px 28px 26px;background:#0b1220;color:#9fb0c4;font-size:11px;line-height:1.65">Pesan ini dikirim melalui kanal resmi PT Dirac Inovasi Nusantara. Untuk penawaran atau informasi pemasaran, Anda dapat membalas email ini untuk meminta penghentian komunikasi serupa.<br><span style="color:#74859a">&copy; ' + String(new Date().getUTCFullYear()) + ' PT Dirac Inovasi Nusantara.</span></td></tr></table></td></tr></table></body></html>';
+}
 function customerMailMime(config, message) {
   const mixed = 'dirac-customer-mixed-' + crypto.randomBytes(16).toString('hex'), alternative = 'dirac-customer-alt-' + crypto.randomBytes(16).toString('hex');
   const b64Text = value => (Buffer.from(String(value), 'utf8').toString('base64').match(/.{1,76}/g) || ['']).join('\r\n');
   const b64Buffer = value => (value.toString('base64').match(/.{1,76}/g) || ['']).join('\r\n');
-  const htmlBody = '<!doctype html><html lang="id"><head><meta charset="utf-8"></head><body style="margin:0;padding:24px;background:#f6f8fb;color:#172033;font-family:Arial,Helvetica,sans-serif"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center"><table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:640px;background:#ffffff;border:1px solid #d8dee8;border-radius:14px"><tr><td style="padding:24px"><div style="font-size:12px;font-weight:800;letter-spacing:.12em;color:#24618f">PT DIRAC INOVASI NUSANTARA</div><h1 style="margin:10px 0 18px;font-size:24px;line-height:1.3;color:#0f172a">' + mailEscape(message.subject) + '</h1><div style="font-size:15px;line-height:1.7;color:#334155">' + mailEscape(message.body).replace(/\n/g, '<br>') + '</div><p style="margin:24px 0 0;font-size:12px;line-height:1.6;color:#64748b">Pesan dikirim melalui kanal email resmi perusahaan. Jika pesan ini berupa penawaran dan Anda tidak ingin menerima penawaran serupa, balas email ini untuk meminta penghentian komunikasi pemasaran.</p></td></tr></table></td></tr></table></body></html>';
-  const lines = ['From: PT Dirac Inovasi Nusantara <' + config.user + '>', 'To: undisclosed-recipients:;', 'Reply-To: ' + config.user, 'Subject: =?UTF-8?B?' + Buffer.from(message.subject, 'utf8').toString('base64') + '?=', 'Date: ' + new Date().toUTCString(), 'MIME-Version: 1.0', 'Auto-Submitted: no', 'Content-Type: multipart/mixed; boundary="' + mixed + '"', '', '--' + mixed, 'Content-Type: multipart/alternative; boundary="' + alternative + '"', '', '--' + alternative, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64Text(message.body), '--' + alternative, 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64Text(htmlBody), '--' + alternative + '--'];
+  const toHeader = message.recipients.length === 1 ? message.recipients[0] : 'undisclosed-recipients:;';
+  const lines = ['From: PT Dirac Inovasi Nusantara <' + config.from + '>', 'To: ' + toHeader, 'Reply-To: ' + config.from, 'Subject: =?UTF-8?B?' + Buffer.from(message.subject, 'utf8').toString('base64') + '?=', 'Date: ' + new Date().toUTCString(), 'MIME-Version: 1.0', 'Auto-Submitted: no', 'Content-Type: multipart/mixed; boundary="' + mixed + '"', '', '--' + mixed, 'Content-Type: multipart/alternative; boundary="' + alternative + '"', '', '--' + alternative, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64Text(customerMailText(message)), '--' + alternative, 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64Text(customerMailHtml(message)), '--' + alternative + '--'];
   if (message.attachment) {
     const fallback = message.attachment.name.replace(/[^A-Za-z0-9._ -]/g, '_').slice(0, 120) || 'document';
     lines.push('--' + mixed, 'Content-Type: ' + message.attachment.type, 'Content-Transfer-Encoding: base64', 'Content-Disposition: attachment; filename="' + fallback.replace(/["\\]/g, '_') + '"; filename*=UTF-8\'\'' + encodeURIComponent(message.attachment.name), '', b64Buffer(message.attachment.bytes));
@@ -696,8 +750,39 @@ function customerMailMime(config, message) {
   lines.push('--' + mixed + '--', '');
   return lines.join('\r\n');
 }
+async function sendCustomerProviderHttp(config, message) {
+  const multiple = message.recipients.length > 1, html = customerMailHtml(message), text = customerMailText(message), encodedAttachment = message.attachment ? message.attachment.bytes.toString('base64') : '';
+  let target = '', headers = null, payload = null;
+  if (config.provider === 'brevo') {
+    target = 'https://api.brevo.com/v3/smtp/email';
+    payload = { sender: { name: 'PT Dirac Inovasi Nusantara', email: config.from }, to: multiple ? [{ email: config.from, name: 'PT Dirac Inovasi Nusantara' }] : [{ email: message.recipients[0] }], subject: message.subject, textContent: text, htmlContent: html, replyTo: { name: 'PT Dirac Inovasi Nusantara', email: config.from } };
+    if (multiple) payload.bcc = message.recipients.map(email => ({ email }));
+    if (message.attachment) payload.attachment = [{ name: message.attachment.name, content: encodedAttachment }];
+    headers = { 'api-key': config.apiKey, 'Content-Type': 'application/json', Accept: 'application/json' };
+  } else if (config.provider === 'resend') {
+    target = 'https://api.resend.com/emails';
+    payload = { from: 'PT Dirac Inovasi Nusantara <' + config.from + '>', to: multiple ? [config.from] : [message.recipients[0]], subject: message.subject, text, html, reply_to: config.from };
+    if (multiple) payload.bcc = message.recipients;
+    if (message.attachment) payload.attachments = [{ filename: message.attachment.name, content: encodedAttachment }];
+    headers = { Authorization: 'Bearer ' + config.apiKey, 'Content-Type': 'application/json', Accept: 'application/json' };
+  } else return { ok: false, accepted: 0, provider: config.provider, status: 0 };
+  const serialized = JSON.stringify(payload);
+  if (Buffer.byteLength(serialized, 'utf8') > ADMIN_SMTP_BODY_MAX_BYTES) return { ok: false, accepted: 0, provider: config.provider, status: 0 };
+  const controller = typeof AbortController === 'function' ? new AbortController() : null, timer = controller ? setTimeout(() => controller.abort(), config.timeout) : null;
+  let response = null;
+  try {
+    response = await fetch(target, { method: 'POST', headers, body: serialized, redirect: 'error', signal: controller ? controller.signal : undefined });
+    const accepted = response && [200, 201, 202].includes(Number(response.status)) ? message.recipients.length : 0;
+    return { ok: accepted === message.recipients.length, accepted, provider: config.provider, status: Number(response && response.status || 0) };
+  } catch (_) { return { ok: false, accepted: 0, provider: config.provider, status: 0 }; }
+  finally {
+    if (timer) clearTimeout(timer);
+    if (response && response.body && typeof response.body.cancel === 'function' && response.body.locked !== true) { try { await Promise.resolve(response.body.cancel()).catch(() => false); } catch (_) {} }
+  }
+}
 async function sendCustomerMail(message) {
-  const config = smtpConfig(); if (!config) return { ok: false };
+  const config = customerMailProviderConfig(message.provider); if (!config) return { ok: false, accepted: 0, provider: message.provider, configurationUnavailable: true };
+  if (config.transport === 'api') return sendCustomerProviderHttp(config, message);
   let socket = null, reader = null, auth = null;
   try {
     socket = tls.connect({ host: config.host, port: config.port, servername: config.host, rejectUnauthorized: true });
@@ -705,18 +790,18 @@ async function sendCustomerMail(message) {
     reader = smtpReader(socket); await smtpCommand(socket, reader, null, 220, config.timeout);
     const ehlo = message && message.origin ? new URL(message.origin).hostname : 'localhost'; await smtpCommand(socket, reader, 'EHLO ' + ehlo, 250, config.timeout);
     auth = Buffer.from('\0' + config.user + '\0' + config.password, 'utf8'); await smtpCommand(socket, reader, 'AUTH PLAIN ' + auth.toString('base64'), 235, config.timeout);
-    await smtpCommand(socket, reader, 'MAIL FROM:<' + config.user + '>', 250, config.timeout);
+    await smtpCommand(socket, reader, 'MAIL FROM:<' + config.from + '>', 250, config.timeout);
     const rcpt = async index => { if (index >= message.recipients.length) return; await smtpCommand(socket, reader, 'RCPT TO:<' + message.recipients[index] + '>', [250, 251], config.timeout); return rcpt(index + 1); };
     await rcpt(0); await smtpCommand(socket, reader, 'DATA', 354, config.timeout); await smtpCommand(socket, reader, dotStuff(customerMailMime(config, message)) + '\r\n.', 250, config.timeout);
-    try { socket.write('QUIT\r\n'); } catch (_) {} return { ok: true, accepted: message.recipients.length };
-  } catch (_) { return { ok: false }; }
+    try { socket.write('QUIT\r\n'); } catch (_) {} return { ok: true, accepted: message.recipients.length, provider: config.provider, status: 250 };
+  } catch (_) { return { ok: false, accepted: 0, provider: config.provider, status: 0 }; }
   finally { if (auth) auth.fill(0); if (reader) reader.close(); try { if (socket) socket.destroy(); } catch (_) {} }
 }
 async function businessSmtpSend(body, origin) {
   if (!body || body.legal_confirm !== true) fail('ADMIN_SMTP_LEGAL_CONFIRMATION_REQUIRED', 400);
-  const kind = adminSmtpDocumentKind(body.document_kind), recipients = adminSmtpRecipients(body.recipients, body.recipient_count, body.recipients_sha256, kind), subject = adminSmtpSubject(body.subject, body.subject_sha256), content = adminSmtpBody(body.body_text, body.body_sha256), attachment = adminSmtpAttachment(body);
-  const result = await sendCustomerMail({ origin, recipients, subject, body: content, kind, attachment });
-  try { if (!result || result.ok !== true || result.accepted !== recipients.length) fail('ADMIN_SMTP_DELIVERY_UNCONFIRMED', 503); return { ok: true, accepted: result.accepted, document_kind: kind, attachment: !!attachment }; }
+  const provider = adminSmtpProvider(body.provider), kind = adminSmtpDocumentKind(body.document_kind), recipients = adminSmtpRecipients(body.recipients, body.recipient_count, body.recipients_sha256, kind), subject = adminSmtpSubject(body.subject, body.subject_sha256), content = adminSmtpBody(body.body_text, body.body_sha256), attachment = adminSmtpAttachment(body);
+  const result = await sendCustomerMail({ origin, provider, recipients, subject, body: content, kind, attachment });
+  try { if (result && result.configurationUnavailable === true) fail('ADMIN_SMTP_CONFIGURATION_UNAVAILABLE', 503); if (!result || result.ok !== true || result.accepted !== recipients.length || result.provider !== provider) fail('ADMIN_SMTP_DELIVERY_UNCONFIRMED', 503); return { ok: true, accepted: result.accepted, provider, document_kind: kind, attachment: !!attachment }; }
   finally { if (attachment && attachment.bytes) attachment.bytes.fill(0); }
 }
 
@@ -801,7 +886,7 @@ async function execute(ops) {
     const nonceTarget = body._dirac_page_nonce_for;
     if (typeof nonceTarget === 'string' && Object.prototype.hasOwnProperty.call(CONTRACTS, nonceTarget) && CONTRACTS[nonceTarget].methods.includes('POST')) return { ok: true };
     const [enrolled, active] = await Promise.all([config(ops, scope), session(ops, scope, false)]);
-    return { ok: true, email: ADMIN_EMAIL, enrolled: !!enrolled, authenticated: !!active, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: null, persistent_session: !!active, action_email_required: true };
+    return { ok: true, email: ADMIN_EMAIL, enrolled: !!enrolled, authenticated: !!active, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: null, persistent_session: !!active, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_email_start') {
     await throttle(ops, scope, 'email-start-minute', 1, 60); await throttle(ops, scope, 'email-start-hour', 5, 3600);
@@ -814,21 +899,27 @@ async function execute(ops) {
     if (!Number.isInteger(entry.value.codeLength) || entry.value.codeLength < EMAIL_CODE_MIN || entry.value.codeLength > EMAIL_CODE_MAX || !validAdminEmailCode(body.code) || body.code.length !== entry.value.codeLength || !safeEqual(digest(entry.value.salt + ':' + body.code), entry.value.codeHash)) fail('ADMIN_EMAIL_CODE_INVALID', 401);
     await consume(ops, entry); return { ok: true, ticket: await issue(ops, scope, 'passkey-start'), stage: 'passkey' };
   }
-  if (action === 'admin_action_email_start') {
+  if (action === 'admin_action_passkey_start') {
     await session(ops, scope); const operation = String(body.operation || ''), payload = body.payload;
     if (!Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS, operation)) fail('ADMIN_ACTION_APPROVAL_OPERATION_INVALID', 400);
-    const payloadHash = approvalPayloadHash(operation, payload); await throttle(ops, scope, 'action-email-start-minute', 5, 60); await throttle(ops, scope, 'action-email-start-hour', 30, 3600);
-    const code = adminEmailCode(), codeLength = code.length, salt = randomToken(), reference = crypto.randomBytes(12).toString('hex');
-    const token = await issue(ops, scope, 'action-email', { salt, codeHash: digest(salt + ':' + code), reference, codeLength, operation, payloadHash }, EMAIL_CODE_SECONDS);
-    const delivered = await ops.mail({ to: ADMIN_EMAIL, code, reference, expiresAt: Date.now() + EMAIL_CODE_SECONDS * 1000, kind: 'action', operation });
-    if (!delivered || delivered.ok !== true) fail('ADMIN_EMAIL_DELIVERY_UNCONFIRMED', 503);
-    return { ok: true, ticket: token, stage: 'action-email', operation, code_length: codeLength, min_chars: EMAIL_CODE_MIN, max_chars: EMAIL_CODE_MAX, expires_in: EMAIL_CODE_SECONDS, one_time: true };
+    const enrolled = await config(ops, scope);
+    if (!enrolled || enrolled.enrollmentState !== 'active' || !enrolled.passkey || !exactToken(enrolled.revision) || !exactToken(enrolled.userHandle) || typeof enrolled.passkey.credentialId !== 'string' || !/^[A-Za-z0-9_-]{22,1364}$/.test(enrolled.passkey.credentialId)) fail('ADMIN_PASSKEY_STATE_INVALID', 403);
+    const payloadHash = approvalPayloadHash(operation, payload); await throttle(ops, scope, 'action-passkey-start-minute', 5, 60); await throttle(ops, scope, 'action-passkey-start-hour', 30, 3600);
+    const challenge = randomToken(), token = await issue(ops, scope, 'action-passkey', { challenge, mode: 'authentication', operation, payloadHash, revision: enrolled.revision, credentialId: enrolled.passkey.credentialId, userHandle: enrolled.userHandle }, EMAIL_CODE_SECONDS);
+    return { ok: true, ticket: token, stage: 'action-passkey', operation, mode: 'authentication', publicKey: { challenge, rpId: scope.rpId, userVerification: 'required', timeout: 60000, allowCredentials: [{ id: enrolled.passkey.credentialId, type: 'public-key' }] }, expires_in: EMAIL_CODE_SECONDS, one_time: true };
   }
-  if (action === 'admin_action_email_verify') {
-    await session(ops, scope); const entry = await ticket(ops, scope, body.ticket, 'action-email'); await throttle(ops, scope, 'action-email-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
-    if (!Number.isInteger(entry.value.codeLength) || entry.value.codeLength < EMAIL_CODE_MIN || entry.value.codeLength > EMAIL_CODE_MAX || !validAdminEmailCode(body.code) || body.code.length !== entry.value.codeLength || !safeEqual(digest(entry.value.salt + ':' + body.code), entry.value.codeHash)) fail('ADMIN_ACTION_EMAIL_CODE_INVALID', 401);
-    await consume(ops, entry); const approval = await issue(ops, scope, 'action-approval', { operation: entry.value.operation, payloadHash: entry.value.payloadHash }, EMAIL_CODE_SECONDS);
-    return { ok: true, approval, operation: entry.value.operation, expires_in: EMAIL_CODE_SECONDS, one_time: true };
+  if (action === 'admin_action_passkey_verify') {
+    await session(ops, scope); const entry = await ticket(ops, scope, body.ticket, 'action-passkey'); await throttle(ops, scope, 'action-passkey-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
+    const proof = entry.value, enrolled = await config(ops, scope), credential = body.credential, clientData = validateClientData(body.credential, entry.value, scope);
+    if (!enrolled || enrolled.enrollmentState !== 'active' || proof.mode !== 'authentication' || proof.revision !== enrolled.revision || proof.credentialId !== enrolled.passkey.credentialId || proof.userHandle !== enrolled.userHandle || credential.id !== enrolled.passkey.credentialId) fail('ADMIN_PASSKEY_STATE_CHANGED', 409);
+    const handle = credential.response && credential.response.userHandle;
+    if (handle !== null && handle !== undefined && handle !== '' && handle !== enrolled.userHandle) fail('ADMIN_PASSKEY_USER_MISMATCH', 403);
+    const verified = await ops.verifyAssertion({ credential, clientData, rpId: scope.rpId, passkey: enrolled.passkey });
+    if (!verified || verified.ok !== true) fail('ADMIN_PASSKEY_INVALID', 403);
+    const next = { ...enrolled, passkey: { ...enrolled.passkey, signCount: verified.signCount }, revision: randomToken() };
+    if (await ops.replace(configKey(scope), enrolled.revision, next, ENROLLMENT_SECONDS) !== true) fail('ADMIN_PASSKEY_STATE_CHANGED', 409);
+    await consume(ops, entry); const approval = await issue(ops, scope, 'action-approval', { operation: proof.operation, payloadHash: proof.payloadHash }, EMAIL_CODE_SECONDS);
+    return { ok: true, approval, operation: proof.operation, expires_in: EMAIL_CODE_SECONDS, one_time: true };
   }
   if (action === 'admin_passkey_start') {
     const entry = await ticket(ops, scope, body.ticket, 'passkey-start'), enrolled = await config(ops, scope); await consume(ops, entry);
@@ -889,7 +980,7 @@ async function execute(ops) {
     try { const current = Math.floor(Date.now() / 30000), match = [current, current - 1, current + 1].find(counter => safeEqual(totp(secret, counter), body.code)); accepted = Number.isSafeInteger(match) ? match : null; } finally { secret.fill(0); }
     if (accepted === null) fail('ADMIN_TOTP_INVALID', 401); if (await ops.claim(PREFIX + 'totp-used:' + digest(scope.owner + ':' + scope.origin + ':' + proof.totp + ':' + accepted), { version: VERSION }, 120) !== true) fail('ADMIN_TOTP_ALREADY_USED', 409); await consume(ops, entry);
     if (proof.enroll) { const active = { ...enrolled, enrollmentState: 'active', revision: randomToken(), activatedAt: Date.now() }; if (await ops.replace(configKey(scope), enrolled.revision, active, ENROLLMENT_SECONDS) !== true) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409); }
-    const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); return { ok: true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: true };
+    const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); return { ok: true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_logout') { const active = await session(ops, scope, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
   await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_smtp_send: 'smtp_send', admin_monitor: 'monitor' }[action];
@@ -918,92 +1009,17 @@ function orderPublic(row, kind) {
   const total = Number(row.total === undefined ? row.total_price : row.total); if (!Number.isFinite(total)) fail('ADMIN_ORDER_RECORD_INVALID', 503);
   return { id: row.id, kind, order_id: String(row.order_id || (kind === 'domain' ? 'DOM-' + row.id.slice(0, 8).toUpperCase() : row.id)), customer_id: row.customer_id, customer_name: String(row.customer_name || '').slice(0, 160), customer_email: String(row.customer_email || '').slice(0, 254), customer_phone: String(row.customer_phone || row.customer_whatsapp || '').slice(0, 40), shipping_address: String(row.shipping_address || '').slice(0, 600), service_type: kind === 'domain' ? 'domain' : String(row.service_type || '').slice(0, 60), domain_name: String(row.domain_name || '').slice(0, 254), total, currency: String(row.currency || 'IDR').slice(0, 8), payment_method: String(row.payment_method || '').slice(0, 80), payment_status: String(row.payment_status || '').slice(0, 40), order_status: String(row.order_status || '').slice(0, 40), created_at: row.created_at };
 }
-function adminRegularOrderMicros(value) {
-  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})$/.exec(String(value || ''));
-  if (!match) fail('ADMIN_ORDER_RECORD_INVALID', 503);
-  const base = Date.parse(match[1] + match[3]);
-  if (!Number.isFinite(base)) fail('ADMIN_ORDER_RECORD_INVALID', 503);
-  return BigInt(base) * 1000n + BigInt((match[2] || '').padEnd(6, '0'));
-}
-function adminCompareRegularOrderRows(left, right) {
-  if (!left || !right || !isUuid(left.id) || !isUuid(right.id)) fail('ADMIN_ORDER_RECORD_INVALID', 503);
-  const a = adminRegularOrderMicros(left.created_at), b = adminRegularOrderMicros(right.created_at);
-  if (a !== b) return a > b ? -1 : 1;
-  const ai = String(left.id).toLowerCase(), bi = String(right.id).toLowerCase();
-  return ai === bi ? 0 : (ai > bi ? -1 : 1);
-}
-function adminRegularOrderPath(select, limit, offset) {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 41 || !Number.isSafeInteger(offset) || offset < 0 || offset > 50000) fail('ADMIN_PAGE_INVALID', 400);
-  return '/rest/v1/orders?select=' + encodeURIComponent(select) + '&order=created_at.desc,id.desc&limit=' + limit + '&offset=' + offset;
-}
-async function adminRegularOrderPoint(source, offset) {
-  if (!['commerce', 'security'].includes(source) || !Number.isSafeInteger(offset) || offset < 0 || offset > 50000) fail('ADMIN_PAGE_INVALID', 400);
-  const result = await dbFetch(adminRegularOrderPath('id,created_at', 1, offset), { method: 'GET' }, source === 'security' ? 'security' : '');
-  if (!result.ok || !Array.isArray(result.data) || result.data.length > 1) fail('ADMIN_DATA_UNAVAILABLE', 503);
-  const row = result.data[0] || null; if (row) adminCompareRegularOrderRows(row, row); return row;
-}
-async function adminRegularOrderPartition(offset) {
-  const cache = new Map();
-  const point = (source, index) => {
-    if (index < 0) return Promise.resolve(null);
-    const key = source + ':' + index;
-    if (!cache.has(key)) cache.set(key, adminRegularOrderPoint(source, index));
-    return cache.get(key);
-  };
-  let low = 0, high = offset;
-  for (let step = 0; step < 17 && low <= high; step += 1) {
-    const commerce = Math.floor((low + high) / 2), security = offset - commerce;
-    const [commerceLeft, commerceRight, securityLeft, securityRight] = await Promise.all([
-      commerce ? point('commerce', commerce - 1) : Promise.resolve(null), point('commerce', commerce),
-      security ? point('security', security - 1) : Promise.resolve(null), point('security', security)
-    ]);
-    if (commerce && !commerceLeft) { high = commerce - 1; continue; }
-    if (security && !securityLeft) { low = commerce + 1; continue; }
-    if (commerceLeft && securityRight && adminCompareRegularOrderRows(commerceLeft, securityRight) > 0) { high = commerce - 1; continue; }
-    if (securityLeft && commerceRight && adminCompareRegularOrderRows(securityLeft, commerceRight) > 0) { low = commerce + 1; continue; }
-    return { commerce, security };
-  }
-  fail('ADMIN_DATA_UNAVAILABLE', 503);
-}
-async function adminRegularOrdersPage(offset) {
-  const partition = await adminRegularOrderPartition(offset), select = ORDER_SELECT.regular;
-  const [commerce, security] = await Promise.all([
-    dbFetch(adminRegularOrderPath(select, 41, partition.commerce), { method: 'GET' }),
-    dbFetch(adminRegularOrderPath(select, 41, partition.security), { method: 'GET' }, 'security')
-  ]);
-  if (!commerce.ok || !Array.isArray(commerce.data) || commerce.data.length > 41
-      || !security.ok || !Array.isArray(security.data) || security.data.length > 41) fail('ADMIN_DATA_UNAVAILABLE', 503);
-  const candidates = commerce.data.map(row => ({ row, source: 'commerce' })).concat(security.data.map(row => ({ row, source: 'security' })));
-  candidates.forEach(entry => adminCompareRegularOrderRows(entry.row, entry.row));
-  candidates.sort((left, right) => adminCompareRegularOrderRows(left.row, right.row));
-  const page = candidates.slice(0, 41), ids = page.map(entry => String(entry.row.id || '').toLowerCase());
-  if (new Set(ids).size !== ids.length) fail('ADMIN_ORDER_STORAGE_COLLISION', 409);
-  if (ids.length) {
-    const collisionPath = '/rest/v1/orders?select=id&id=in.(' + ids.map(encodeURIComponent).join(',') + ')&limit=' + ids.length;
-    const [commerceIds, securityIds] = await Promise.all([dbFetch(collisionPath, { method: 'GET' }), dbFetch(collisionPath, { method: 'GET' }, 'security')]);
-    if (!commerceIds.ok || !Array.isArray(commerceIds.data) || commerceIds.data.length > ids.length
-        || !securityIds.ok || !Array.isArray(securityIds.data) || securityIds.data.length > ids.length) fail('ADMIN_DATA_UNAVAILABLE', 503);
-    const commerceSet = new Set(commerceIds.data.map(row => String(row && row.id || '').toLowerCase()));
-    if (securityIds.data.some(row => commerceSet.has(String(row && row.id || '').toLowerCase()))) fail('ADMIN_ORDER_STORAGE_COLLISION', 409);
-  }
-  return { rows: page.map(entry => entry.row), hasMore: page.length === 41 };
-}
 async function businessOrders(body) {
   const kind = String(body.kind || 'regular'), offsetRaw = String(body.offset || '0'); if (!Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 50000) fail('ADMIN_PAGE_INVALID', 400);
-  const offset = Number(offsetRaw); let rows, hasMore;
-  if (kind === 'regular') { const page = await adminRegularOrdersPage(offset); rows = page.rows; hasMore = page.hasMore; }
-  else { const path = '/rest/v1/domain_orders?select=' + encodeURIComponent(ORDER_SELECT.domain) + '&order=created_at.desc,id.desc&limit=41&offset=' + offset, result = await dbFetch(path, { method: 'GET' }); if (!result.ok || !Array.isArray(result.data) || result.data.length > 41) fail('ADMIN_DATA_UNAVAILABLE', 503); rows = result.data; hasMore = rows.length === 41; }
-  const orders = rows.slice(0, 40).map(row => orderPublic(row, kind)), keys = orders.map(row => shipmentKey(kind, row.id));
+  const table = kind === 'domain' ? 'domain_orders' : 'orders', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + '&order=created_at.desc,id.desc&limit=41&offset=' + Number(offsetRaw), result = await dbFetch(path, { method: 'GET' });
+  if (!result.ok || !Array.isArray(result.data) || result.data.length > 41) fail('ADMIN_DATA_UNAVAILABLE', 503); const rows = result.data, orders = rows.slice(0, 40).map(row => orderPublic(row, kind)), keys = orders.map(row => shipmentKey(kind, row.id));
   let shipments = []; if (keys.length) { const shipped = await dbFetch('/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=in.(' + keys.map(encodeURIComponent).join(',') + ')&limit=' + keys.length, { method: 'GET' }, 'security'); if (!shipped.ok || !Array.isArray(shipped.data) || shipped.data.length > keys.length) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); shipments = shipped.data; }
   const map = new Map(); shipments.forEach(row => { if (!keys.includes(row && row.security_key) || map.has(row.security_key)) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); const value = validateShipmentRow(row, row.security_key), order = orders.find(item => item.id === (value && value.order_id)); if (!value || !order || order.customer_id !== value.customer_id) fail('ADMIN_SHIPMENT_OWNER_MISMATCH', 503); map.set(row.security_key, value); });
-  return { ok: true, kind, offset, has_more: hasMore, orders: orders.map(row => ({ ...row, shipment: shipmentPublic(map.get(shipmentKey(kind, row.id))) })), time: new Date().toISOString() };
+  return { ok: true, kind, offset: Number(offsetRaw), has_more: rows.length === 41, orders: orders.map(row => ({ ...row, shipment: shipmentPublic(map.get(shipmentKey(kind, row.id))) })), time: new Date().toISOString() };
 }
 async function loadOrder(kind, id) {
-  const table = kind === 'domain' ? 'domain_orders' : 'orders', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + '&id=eq.' + encodeURIComponent(id) + '&limit=2';
-  if (kind === 'domain') { const result = await dbFetch(path, { method: 'GET' }); if (!result.ok || !Array.isArray(result.data)) fail('ADMIN_DATA_UNAVAILABLE', 503); if (result.data.length !== 1 || result.data[0].id !== id) fail('ADMIN_ORDER_NOT_FOUND', 404); return orderPublic(result.data[0], kind); }
-  const [commerce, security] = await Promise.all([dbFetch(path, { method: 'GET' }), dbFetch(path, { method: 'GET' }, 'security')]);
-  if (!commerce.ok || !Array.isArray(commerce.data) || commerce.data.length > 1 || !security.ok || !Array.isArray(security.data) || security.data.length > 1) fail('ADMIN_DATA_UNAVAILABLE', 503);
-  const matches = commerce.data.concat(security.data); if (!matches.length) fail('ADMIN_ORDER_NOT_FOUND', 404); if (matches.length !== 1 || matches[0].id !== id) fail('ADMIN_ORDER_STORAGE_COLLISION', 409); return orderPublic(matches[0], kind);
+  const table = kind === 'domain' ? 'domain_orders' : 'orders', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + '&id=eq.' + encodeURIComponent(id) + '&limit=2', result = await dbFetch(path, { method: 'GET' });
+  if (!result.ok || !Array.isArray(result.data)) fail('ADMIN_DATA_UNAVAILABLE', 503); if (result.data.length !== 1 || result.data[0].id !== id) fail('ADMIN_ORDER_NOT_FOUND', 404); return orderPublic(result.data[0], kind);
 }
 async function loadShipment(key) {
   const result = await dbFetch('/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=eq.' + encodeURIComponent(key) + '&limit=2', { method: 'GET' }, 'security');
@@ -1067,7 +1083,7 @@ async function businessUnban(body) {
 }
 function adminGuardSelfTest() {
   try {
-    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_email_start','admin_action_email_verify','admin_passkey_start','admin_passkey_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_unban','admin_smtp_send','admin_monitor'];
+    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_unban','admin_smtp_send','admin_monitor'];
     return Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && ACTIONS.length === expected.length && expected.every((name, index) => ACTIONS[index] === name && Object.isFrozen(CONTRACTS[name]) && Object.isFrozen(CONTRACTS[name].methods) && Object.isFrozen(CONTRACTS[name].allowed) && Object.isFrozen(CONTRACTS[name].required))
       && exactToken(randomToken()) && PASSWORD_COOKIE.startsWith('__Host-') && SESSION_COOKIE.startsWith('__Host-') && adminSecretState().configured === true;
   } catch (_) { return false; }
@@ -1080,6 +1096,24 @@ async function businessMonitor() {
 }
 async function business(operation, body, origin) { if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false); if (operation === 'shipment_cancel') return businessShipment(body, true); if (operation === 'blocks') return businessBlocks(body); if (operation === 'unban') return businessUnban(body); if (operation === 'smtp_send') return businessSmtpSend(body, origin); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
 
+function adminCentralBanReason(error) {
+  const raw = String(error && error.code || 'admin_failure').trim().toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');
+  return ('admin_failure:' + (raw || 'unknown')).slice(0, 96);
+}
+function adminCentralBanAuthority() {
+  try {
+    const central = require('./health.js'), authority = central && central.__diracCentralBanAuthorityV354;
+    return authority && authority.version === 'dirac-central-ban-authority-v354' && typeof authority.ban === 'function' ? authority : null;
+  } catch (_) { return null; }
+}
+async function adminCentralBanFailure(req, error) {
+  const authority = adminCentralBanAuthority();
+  if (!authority) return Object.freeze({ ok: false, reason: 'central_ban_authority_unavailable' });
+  try {
+    const result = await authority.ban(req, adminCentralBanReason(error), 10 * 365 * 24 * 60 * 60);
+    return result && typeof result === 'object' ? result : Object.freeze({ ok: false, reason: 'central_ban_result_invalid' });
+  } catch (_) { return Object.freeze({ ok: false, reason: 'central_ban_write_exception' }); }
+}
 function allowedAdminKey(key) { return typeof key === 'string' && /^s2s-admin-v405:(?:ticket:[a-f0-9]{64}(?::used)?|enrollment:[a-f0-9]{64}|totp-used:[a-f0-9]{64}|rate:[a-f0-9]{64})$/.test(key); }
 async function replaceEnrollment(records, key, expectedRevision, record, ttl) {
   const previous = records.get(key), expectedTtl = record && record.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS; if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'enrollment:') || !previous || previous.revision !== expectedRevision || !record || record.version !== VERSION || record.revision === expectedRevision || ttl !== expectedTtl) fail('ADMIN_STORAGE_COMPARE_INVALID', 503);
@@ -1094,17 +1128,17 @@ function buildOps(req, res, state) {
     read: async key => { assertFullGuard(); if (!allowedAdminKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503); const result = await securityRead(key); assertFullGuard(); if (result.ok && result.found) records.set(key, { revision: result.record.revision, expiresAt: result.expiresAt }); return result; },
     claim: async (key, record, ttl) => { assertFullGuard(); if (!allowedAdminKey(key) || !record || record.version !== VERSION) fail('ADMIN_STORAGE_CLAIM_INVALID', 503); const result = await securityClaim(key, record, ttl); assertFullGuard(); return result; },
     replace: async (key, expectedRevision, record, ttl) => { assertFullGuard(); const result = await replaceEnrollment(records, key, expectedRevision, record, ttl); assertFullGuard(); return result; },
-    takeRate: async (key, limit, seconds) => { assertFullGuard(); const actionMailHourly = state.action === 'admin_action_email_start' && limit === 30 && seconds === 3600; if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'rate:') || !Number.isInteger(limit) || limit < 1 || (limit > 5 && !actionMailHourly) || ![60, 600, 3600].includes(seconds)) fail('ADMIN_RATE_CONTRACT_INVALID', 503); const result = await atomicRate(key, limit, seconds); assertFullGuard(); return result; },
-    mail: async message => { assertFullGuard(); const loginMail = state.action === 'admin_email_start' && message && message.kind === 'login' && message.operation === '', actionMail = state.action === 'admin_action_email_start' && message && message.kind === 'action' && Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS, message.operation); if ((!loginMail && !actionMail) || message.to !== ADMIN_EMAIL || !validAdminEmailCode(message.code) || !/^[a-f0-9]{24}$/.test(message.reference) || !Number.isSafeInteger(message.expiresAt) || message.expiresAt <= Date.now() || message.expiresAt > Date.now() + EMAIL_CODE_SECONDS * 1000 + 5000) fail('ADMIN_MAIL_CONTRACT_INVALID', 503); const result = await sendAdminMail({ ...message, origin: state.origin }); assertFullGuard(); return result; },
+    takeRate: async (key, limit, seconds) => { assertFullGuard(); const actionPasskeyHourly = state.action === 'admin_action_passkey_start' && limit === 30 && seconds === 3600; if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'rate:') || !Number.isInteger(limit) || limit < 1 || (limit > 5 && !actionPasskeyHourly) || ![60, 600, 3600].includes(seconds)) fail('ADMIN_RATE_CONTRACT_INVALID', 503); const result = await atomicRate(key, limit, seconds); assertFullGuard(); return result; },
+    mail: async message => { assertFullGuard(); const loginMail = state.action === 'admin_email_start' && message && message.kind === 'login' && message.operation === ''; if (!loginMail || message.to !== ADMIN_EMAIL || !validAdminEmailCode(message.code) || !/^[a-f0-9]{24}$/.test(message.reference) || !Number.isSafeInteger(message.expiresAt) || message.expiresAt <= Date.now() || message.expiresAt > Date.now() + EMAIL_CODE_SECONDS * 1000 + 5000) fail('ADMIN_MAIL_CONTRACT_INVALID', 503); const result = await sendAdminMail({ ...message, origin: state.origin }); assertFullGuard(); return result; },
     recoveryAlert: async message => { assertFullGuard(); if (state.action !== 'admin_passkey_recovery_start' || !message || message.to !== ADMIN_EMAIL || message.kind !== 'recovery' || message.event !== 'started' || message.origin !== state.origin || !/^[a-f0-9]{24}$/.test(String(message.reference || ''))) fail('ADMIN_MAIL_CONTRACT_INVALID', 503); const result = await sendAdminMail(message); assertFullGuard(); return result; },
     verifyRegistration: input => { assertFullGuard(); if (!['admin_passkey_verify', 'admin_passkey_recovery_verify'].includes(state.action) || input.rpId !== new URL(state.origin).hostname) fail('ADMIN_PASSKEY_SCOPE_INVALID', 403); return verifyRegistration(input); },
-    verifyAssertion: input => { assertFullGuard(); if (state.action !== 'admin_passkey_verify' || input.rpId !== new URL(state.origin).hostname) fail('ADMIN_PASSKEY_SCOPE_INVALID', 403); return verifyAssertion(input); },
+    verifyAssertion: input => { assertFullGuard(); if (!['admin_passkey_verify', 'admin_action_passkey_verify'].includes(state.action) || input.rpId !== new URL(state.origin).hostname) fail('ADMIN_PASSKEY_SCOPE_INVALID', 403); return verifyAssertion(input); },
     readSession: () => { assertFullGuard(); return cookieToken(req, SESSION_COOKIE); },
     setSession: (token, seconds) => { assertFullGuard(); if (state.action !== 'admin_totp_verify' || !exactToken(token) || seconds !== SESSION_SECONDS) fail('ADMIN_SESSION_PUBLICATION_INVALID', 503); appendCookie(res, SESSION_COOKIE + '=' + token + '; Path=/; Secure; HttpOnly; SameSite=Strict'); },
     clearSession: async () => { assertFullGuard(); if (state.action !== 'admin_logout') fail('ADMIN_SESSION_CLEAR_INVALID', 503); if (await revokePasswordProof(state.passwordAuthority) !== true) fail('ADMIN_PROOF_REVOCATION_UNVERIFIED', 503); appendCookie(res, SESSION_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); appendCookie(res, PASSWORD_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); },
     verifySecret: value => { assertFullGuard(); const current = adminSecretState(); return current.configured && typeof value === 'string' && safeEqual(digest(value), digest(current.secret)); },
     publishPassword: async () => { assertFullGuard(); const current = adminSecretState(); if (!current.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503); await publishPasswordProof(req, res, state.origin, state.device, current.secret); },
-    securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const result = await persistSecurityReport(state.origin, state.device, report); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); return result; },
+    securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const result = await persistSecurityReport(state.origin, state.device, report); assertFullGuard(); const centralBan = await adminCentralBanFailure(req, Object.assign(new Error('ADMIN_SECURITY_REPORT_ONE_STRIKE'), { code: 'ADMIN_SECURITY_REPORT_ONE_STRIKE', status: 403, statusCode: 403 })); if (!centralBan || centralBan.ok !== true) fail('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', 503); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); res.setHeader('X-Dirac-Central-Ban', '1'); return { ...result, central_ban: true }; },
     business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'unban', 'smtp_send', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin); assertFullGuard(); return result; }
   });
   state.deactivate = () => { active = false; records.clear(); };
@@ -1168,7 +1202,12 @@ function errorPayload(error) {
 }
 async function adminBusiness(req, res, operations) {
   try { return res.status(200).json(await execute(operations)); }
-  catch (error) { const result = errorPayload(error); return res.status(result.status).json(result.body); }
+  catch (error) {
+    const centralBan = await adminCentralBanFailure(req, error);
+    if (!centralBan || centralBan.ok !== true) { const unavailable = errorPayload(Object.assign(new Error('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE'), { code: 'ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', status: 503, statusCode: 503 })); return res.status(unavailable.status).json(unavailable.body); }
+    try { res.setHeader('X-Dirac-Central-Ban', '1'); } catch (_) {}
+    const result = errorPayload(error); return res.status(result.status).json(result.body);
+  }
 }
 async function adminHandler(req, res) {
   let origin = '';
@@ -1199,7 +1238,10 @@ async function adminHandler(req, res) {
     try { const payload = await execute(ops); if (method === 'HEAD') return res.status(200).end(); return res.status(200).json(payload); }
     finally { if (state.deactivate) state.deactivate(); }
   } catch (error) {
+    const centralBan = await adminCentralBanFailure(req, error);
     try { if (origin) setCommonHeaders(res, origin); else { res.setHeader('Cache-Control', 'no-store'); res.setHeader('Content-Type', 'application/json; charset=utf-8'); res.setHeader('X-Content-Type-Options', 'nosniff'); } } catch (_) {}
+    if (!centralBan || centralBan.ok !== true) { const unavailable = errorPayload(Object.assign(new Error('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE'), { code: 'ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', status: 503, statusCode: 503 })); return res.status(unavailable.status).json(unavailable.body); }
+    try { res.setHeader('X-Dirac-Central-Ban', '1'); } catch (_) {}
     const result = errorPayload(error); return res.status(result.status).json(result.body);
   }
 }
