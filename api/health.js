@@ -63736,7 +63736,18 @@ async function diracCentralLookupOwnerRowsV146(objects) {
   // negative/positive caches cannot establish the current owner of a resource.
   const rows = [];
   const values = (regex) => Array.from(new Set((objects || []).filter((item) => regex.test(item.key)).map((item) => String(item.value || '').trim()).filter(Boolean))).slice(0, 40);
-  rows.push(...await diracCentralFetchOwnerRowsV194('orders', values(/^(order_id|order_code)$/i), ['id', 'order_id']));
+  const orderValuesV445 = values(/^(order_id|order_code)$/i);
+  const ownerLookupCtxV445 = diracCentralCurrentContextV149();
+  if (ownerLookupCtxV445 && ownerLookupCtxV445.action === 'create_payment' && ownerLookupCtxV445.method === 'POST'
+      && diracCentralCheckoutStage26BootstrapModeV216(ownerLookupCtxV445, ownerLookupCtxV445.req)) {
+    const orderRowsV445 = await Promise.all([
+      diracCentralFetchOwnerRowsV194('orders', orderValuesV445, ['id', 'order_id'], 'commerce'),
+      diracCentralFetchOwnerRowsV194('orders', orderValuesV445, ['id', 'order_id'], 'security')
+    ]);
+    rows.push(...orderRowsV445[0], ...orderRowsV445[1]);
+  } else {
+    rows.push(...await diracCentralFetchOwnerRowsV194('orders', orderValuesV445, ['id', 'order_id']));
+  }
   rows.push(...await diracCentralFetchOwnerRowsV194('domain_orders', values(/^(domain_order_id|order_id)$/i), ['id']));
   rows.push(...await diracCentralFetchOwnerRowsV194('payment_transactions', values(/^(payment_id|transaction_id|gateway_reference|invoice_id)$/i), ['id', 'gateway_reference']));
   rows.push(...await diracCentralFetchOwnerRowsV194('security_customer_sessions', values(/^session_id$/i), ['id']));
