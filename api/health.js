@@ -35092,11 +35092,16 @@ __diracV202RegisterMiddleware(async function diracGlobalHardBanStableWrapperV107
 
   try {
     if (!diracV107ShouldSkip(req, action, method)) {
-      const existing = await diracV107CheckActiveBan(req).catch(() => ({
-        blocked: true,
-        keyType: 'persistent_store_fail_closed',
-        retryAfterSeconds: 60
-      }));
+      const existing = await diracV107CheckActiveBan(req).catch(async (firstErrorV448) => {
+        if (String(firstErrorV448 && firstErrorV448.message || '') !== 'DIRAC_V144_BAN_STORE_UNAVAILABLE') {
+          return { blocked: true, keyType: 'persistent_store_fail_closed', retryAfterSeconds: 60 };
+        }
+        return diracV107CheckActiveBan(req).catch(() => ({
+          blocked: true,
+          keyType: 'persistent_store_fail_closed',
+          retryAfterSeconds: 60
+        }));
+      });
       if (existing && existing.blocked) {
         try { res.setHeader('Retry-After', String(existing.retryAfterSeconds || 86400)); } catch (_) {}
         try { res.setHeader('X-Dirac-V107-Blocked-By', String(existing.keyType || 'global').slice(0, 80)); } catch (_) {}
