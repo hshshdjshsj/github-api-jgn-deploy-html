@@ -19281,6 +19281,96 @@ async function lockedPaymentFindReusableTransaction(orderId, customerId, amount)
   return { ok: true, transaction: reusable || null };
 }
 
+function lockedPaymentDiagnosticDigestV445(value) {
+  const text = String(value || '');
+  return text ? crypto.createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16) : '';
+}
+
+function lockedPaymentDiagnosticTextV445(value) {
+  if (value === undefined || value === null) return '';
+  let text = '';
+  try { text = typeof value === 'string' ? value : JSON.stringify(value); } catch (_) { text = String(value); }
+  return diracSecurityRedactDiagnosticV210(text, 400);
+}
+
+function lockedPaymentInsertFailureDiagnosticV445(data, body, result) {
+  try {
+    const ctx = diracCentralCurrentContextV149();
+    const expected = ctx && ctx.__diracCentralCreatePaymentExpectedV199 && typeof ctx.__diracCentralCreatePaymentExpectedV199 === 'object'
+      ? ctx.__diracCentralCreatePaymentExpectedV199
+      : null;
+    const responseData = result && result.data;
+    const responseObject = responseData && typeof responseData === 'object' && !Array.isArray(responseData) ? responseData : null;
+    let responseSerialized = '';
+    try { responseSerialized = responseData === undefined ? '' : (typeof responseData === 'string' ? responseData : JSON.stringify(responseData)); } catch (_) { responseSerialized = String(responseData || ''); }
+    let bodySerialized = '';
+    try { bodySerialized = JSON.stringify([body]); } catch (_) { bodySerialized = ''; }
+    const metadata = body && body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata) ? body.metadata : {};
+    const orderId = String(body && body.order_id || '');
+    const domainOrderId = String(body && body.domain_order_id || '');
+    const customerId = String(body && body.customer_id || '');
+    const expectedObjectId = String(expected && expected.objectId || '');
+    const payload = {
+      patch: 'dirac-payment-insert-diagnostic-v445',
+      event: 'payment_transactions_insert_failed',
+      request_id: String(ctx && ctx.requestId || '').slice(0, 64),
+      central_guard_passed: Boolean(ctx && ctx.req && ctx.req.__diracCentralSecurityGuardPassedV146 === true),
+      http_status: Number(result && result.status || 0),
+      transport_error: lockedPaymentDiagnosticTextV445(result && result.error),
+      db: 'paymentService',
+      route: 'table:payment_transactions',
+      method: 'POST',
+      prefer: 'return=representation',
+      payload_keys: Object.keys(body || {}).sort(),
+      metadata_keys: Object.keys(metadata).sort(),
+      request_body_bytes: Buffer.byteLength(bodySerialized, 'utf8'),
+      response_type: Array.isArray(responseData) ? 'array' : responseData === null ? 'null' : typeof responseData,
+      response_body_bytes: Buffer.byteLength(responseSerialized, 'utf8'),
+      provider_code: lockedPaymentDiagnosticTextV445(responseObject && (responseObject.code || responseObject.error_code || responseObject.error)),
+      provider_message: lockedPaymentDiagnosticTextV445(responseObject && responseObject.message),
+      provider_details: lockedPaymentDiagnosticTextV445(responseObject && responseObject.details),
+      provider_hint: lockedPaymentDiagnosticTextV445(responseObject && responseObject.hint),
+      provider_response_excerpt: lockedPaymentDiagnosticTextV445(responseSerialized),
+      service_type: lockedPaymentNormalizeServiceType(body && body.service_type),
+      gateway_name: String(body && body.gateway_name || '').slice(0, 40),
+      gateway_reference_length: String(body && body.gateway_reference || '').length,
+      gateway_reference_digest: lockedPaymentDiagnosticDigestV445(body && body.gateway_reference),
+      payment_status: String(body && body.payment_status || '').slice(0, 40),
+      amount: Number(body && body.amount),
+      amount_type: typeof (body && body.amount),
+      currency: String(body && body.currency || '').slice(0, 8),
+      customer_id_uuid: customerSecurityLooksLikeUuid(customerId),
+      customer_id_digest: lockedPaymentDiagnosticDigestV445(customerId),
+      order_id_present: Boolean(orderId),
+      order_id_uuid: orderId ? customerSecurityLooksLikeUuid(orderId) : false,
+      order_id_digest: lockedPaymentDiagnosticDigestV445(orderId),
+      domain_order_id_present: Boolean(domainOrderId),
+      domain_order_id_uuid: domainOrderId ? customerSecurityLooksLikeUuid(domainOrderId) : false,
+      domain_order_id_digest: lockedPaymentDiagnosticDigestV445(domainOrderId),
+      order_database: String(metadata.order_database || '').slice(0, 32),
+      order_kind: String(metadata.order_kind || '').slice(0, 32),
+      order_code_length: String(metadata.order_code || '').length,
+      order_code_digest: lockedPaymentDiagnosticDigestV445(metadata.order_code),
+      amount_source: String(metadata.amount_source || '').slice(0, 120),
+      item_total: Number(metadata.item_total),
+      expected_binding_present: Boolean(expected),
+      expected_kind: String(expected && expected.kind || '').slice(0, 32),
+      expected_order_database: String(expected && expected.orderDatabase || '').slice(0, 32),
+      expected_service_type: lockedPaymentNormalizeServiceType(expected && expected.serviceType),
+      expected_transaction_service_type: expected ? lockedPaymentTransactionServiceTypeV444(expected.serviceType, expected.kind, expected.orderDatabase) : '',
+      expected_amount: Number(expected && expected.amount),
+      expected_object_id_digest: lockedPaymentDiagnosticDigestV445(expectedObjectId),
+      binding_customer_match: Boolean(expected && customerId && customerId === String(expected.customerId || '')),
+      binding_object_match: Boolean(expected && expectedObjectId && expectedObjectId === (orderId || domainOrderId)),
+      binding_amount_match: Boolean(expected && Number(body && body.amount) === Number(expected.amount)),
+      binding_service_match: Boolean(expected && lockedPaymentNormalizeServiceType(body && body.service_type) === lockedPaymentTransactionServiceTypeV444(expected.serviceType, expected.kind, expected.orderDatabase))
+    };
+    console.error('[dirac-payment-insert-diagnostic-v445] ' + JSON.stringify(payload));
+  } catch (error) {
+    try { diracCentralRecordSuppressedExceptionV221(error); } catch (_) {}
+  }
+}
+
 async function lockedPaymentInsertTransaction(data) {
   const body = {
     customer_id: data.customerId,
@@ -19296,13 +19386,15 @@ async function lockedPaymentInsertTransaction(data) {
   if (data.orderId) body.order_id = data.orderId;
   if (data.domainOrderId) body.domain_order_id = data.domainOrderId;
 
-  return supabaseFetch('/rest/v1/payment_transactions', {
+  const result = await supabaseFetch('/rest/v1/payment_transactions', {
     method: 'POST',
     auth: 'service',
     db: 'paymentService',
     prefer: 'return=representation',
     body: [body]
   });
+  if (!result || result.ok !== true) lockedPaymentInsertFailureDiagnosticV445(data, body, result);
+  return result;
 }
 
 async function lockedPaymentPatchTransactionUrl(transactionId, paymentUrl, invoiceId, raw) {
@@ -67588,6 +67680,17 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
     const identity = diracCentralExternalBanIdentityV404(req);
     const unique = identity.keys;
     if (!unique.length) return Object.freeze({ ok: false, reason: 'central_ban_identity_unavailable' });
+    const authorityDiagnosticV445 = Object.freeze({
+      patch: 'dirac-central-ban-authority-diagnostic-v445',
+      action: String(req && req.query && req.query.action || '').slice(0, 80),
+      method: String(req && req.method || 'GET').toUpperCase().slice(0, 12),
+      request_id: String(req && req.__diracCentralRequestIdV211 || '').slice(0, 64),
+      reason,
+      identity_key_count: unique.length,
+      identity_account_bound: Boolean(identity.email),
+      first_key_type: String(unique[0] && unique[0].type || '').slice(0, 40)
+    });
+    try { console.error('[dirac-central-ban-authority-diagnostic-v445] ' + JSON.stringify({ ...authorityDiagnosticV445, event: 'ban_write_requested' })); } catch (_) {}
     const now = Date.now();
     const blockedUntilMs = DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
     const expiresAt = new Date(DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335).toISOString();
@@ -67627,6 +67730,7 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
       if (write && write.ok === true) break;
     }
     if (!write || write.ok !== true) {
+      try { console.error('[dirac-central-ban-authority-diagnostic-v445] ' + JSON.stringify({ ...authorityDiagnosticV445, event: 'ban_write_failed', database_status: Number(write && write.status || 0), database_code: lockedPaymentDiagnosticTextV445(write && write.data) })); } catch (_) {}
       try { diracSecurityAlertScheduleV320(alertContext, 'persistent_ban_write_failed', { reason, persistent_ban_written: false }); } catch (error) { diracCentralRecordSuppressedExceptionV221(error); }
       return Object.freeze({ ok: false, reason: 'central_ban_persistence_failed' });
     }
@@ -67642,6 +67746,7 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
         );
       }
     }
+    try { console.error('[dirac-central-ban-authority-diagnostic-v445] ' + JSON.stringify({ ...authorityDiagnosticV445, event: 'ban_write_committed', database_status: Number(write && write.status || 0), stored_row_count: Array.isArray(write && write.data) ? write.data.length : -1 })); } catch (_) {}
     try { diracSecurityAlertScheduleV320(alertContext, 'persistent_ban_written', { reason, persistent_ban_written: true, ban_type: record.type, ban_permanent: true, blocked_until: expiresAt }); } catch (error) { diracCentralRecordSuppressedExceptionV221(error); }
     return Object.freeze({ ok: true, blocked: true, blocked_until_ms: blockedUntilMs, ttl_seconds: ttlSeconds });
   } catch (_) {

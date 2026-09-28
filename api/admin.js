@@ -1070,7 +1070,10 @@ async function businessBlocks(body) {
     }
     const record = row && row.record_json;
     if (!persistentBanRecord(record, row && row.security_key)) return;
-    const id = digest(String(row.security_key || '')); if (seen.has(id)) return; seen.add(id);
+    const logicalKey = String(record && record.type || '') === 'central_external_ban_v354'
+      ? ['central_external_ban_v354', String(record.identity_email || record.identityEmail || record.email || '').trim().toLowerCase(), String(record.reason || ''), String(record.created_at || record.createdAt || ''), String(record.blocked_until_ms || record.blockedUntilMs || '')].join('|')
+      : String(row.security_key || '');
+    const id = digest(logicalKey); if (seen.has(id)) return; seen.add(id);
     const email = String(record.identity_email || record.identityEmail || record.email || '').trim().toLowerCase();
     blocks.push({ id, customer_email: isEmail(email) ? email : '', email_verified: record.identity_email_verified === true, family: String(record.type || record.event_type || 'persistent').slice(0, 80), reason: String(record.reason || record.ban_reason || record.reason_code || '').slice(0, 300), created_at: String(record.created_at || record.createdAt || '').slice(0, 48), active: true, can_unban: false, review_note: 'Blokir ini terkait otoritas guard asal dan hanya ditampilkan sebagai baca-saja.' });
   });
@@ -1081,6 +1084,22 @@ async function businessUnban(body) {
   const now = Date.now(), next = { ...row }; delete next.security_key; next.reason = 'manual_unblock_from_admin_security_center'; next.blocked_until_ms = now; next.updated_at_ms = now; next.state = 'revoked'; next.revocation = { source: 'admin_security_center_supabase', admin_user_id: ADMIN_USER_ID, admin_email: ADMIN_EMAIL, admin_role: 'owner', revoked_at_ms: now };
   const path = '/rest/v1/dirac_persistent_bans?security_key=in.(' + row.storage_keys.map(encodeURIComponent).join(',') + ')&blocked_until_ms=gt.' + now + '&select=' + encodeURIComponent(ACCESS_BLOCK_SELECT), patched = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { record_json: next, blocked_until_ms: now } }, 'security'); if (!patched.ok || !Array.isArray(patched.data) || patched.data.length !== row.storage_keys.length) fail('ADMIN_BLOCK_REVOCATION_UNVERIFIED', 503); const returned = patched.data.map(item => validateAccessBlock(item, false)); if (returned.some(item => !item || item.block_id !== id || item.state !== 'revoked') || returned.map(item => item.security_key).sort().some((item, index) => item !== row.storage_keys[index])) fail('ADMIN_BLOCK_REVOCATION_UNVERIFIED', 503); return { ok: true, affected_rows: 1, time: new Date().toISOString() };
 }
+const ADMIN_CENTRAL_BAN_FAILURE_CODES = Object.freeze([
+  'ADMIN_ACTION_APPROVAL_MISMATCH', 'ADMIN_ACTION_MISMATCH', 'ADMIN_BODY_FRAMING_INVALID', 'ADMIN_BODY_INVALID', 'ADMIN_BODY_KEY_INVALID',
+  'ADMIN_BODY_TOO_COMPLEX', 'ADMIN_BODY_TOO_LARGE', 'ADMIN_CLIENT_HEADERS_INVALID', 'ADMIN_CONTENT_TYPE_INVALID', 'ADMIN_CREDENTIALS_INVALID',
+  'ADMIN_EMAIL_CODE_INVALID', 'ADMIN_ENCODING_INVALID', 'ADMIN_FIXED_OWNER_REQUIRED', 'ADMIN_METHOD_NOT_ALLOWED', 'ADMIN_ORIGIN_INVALID',
+  'ADMIN_PASSKEY_ALGORITHM_INVALID', 'ADMIN_PASSKEY_ATTESTATION_INVALID', 'ADMIN_PASSKEY_ATTESTED_DATA_REQUIRED', 'ADMIN_PASSKEY_AUTHDATA_INVALID',
+  'ADMIN_PASSKEY_BACKUP_STATE_INVALID', 'ADMIN_PASSKEY_CBOR_INVALID', 'ADMIN_PASSKEY_CLIENT_INVALID', 'ADMIN_PASSKEY_CLIENT_MISMATCH',
+  'ADMIN_PASSKEY_COUNTER_REPLAY', 'ADMIN_PASSKEY_CREDENTIAL_INVALID', 'ADMIN_PASSKEY_CREDENTIAL_MISMATCH', 'ADMIN_PASSKEY_INVALID',
+  'ADMIN_PASSKEY_KEY_INVALID', 'ADMIN_PASSKEY_RECOVERY_INVALID', 'ADMIN_PASSKEY_RPID_MISMATCH', 'ADMIN_PASSKEY_SCOPE_INVALID',
+  'ADMIN_PASSKEY_SIGNATURE_INVALID', 'ADMIN_PASSKEY_USER_MISMATCH', 'ADMIN_PASSKEY_UV_REQUIRED', 'ADMIN_PREFLIGHT_INVALID', 'ADMIN_PROOF_INVALID',
+  'ADMIN_PROOF_REPLAYED', 'ADMIN_QUERY_DUPLICATE', 'ADMIN_REFERER_INVALID', 'ADMIN_REQUEST_INVALID', 'ADMIN_SECURITY_REPORT_INVALID',
+  'ADMIN_SECURITY_REPORT_ONE_STRIKE', 'ADMIN_TICKET_ALREADY_USED', 'ADMIN_TICKET_INVALID', 'ADMIN_TOTP_ALREADY_USED', 'ADMIN_TOTP_INVALID'
+]);
+function adminCentralBanRequired(error) {
+  const code = String(error && error.code || ''), status = Number(error && (error.status || error.statusCode) || 0);
+  return [400, 401, 403, 405, 409, 413, 415].includes(status) && ADMIN_CENTRAL_BAN_FAILURE_CODES.includes(code);
+}
 function adminGuardSelfTest() {
   try {
     const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_unban','admin_smtp_send','admin_monitor'];
@@ -1088,7 +1107,7 @@ function adminGuardSelfTest() {
       && exactToken(randomToken()) && PASSWORD_COOKIE.startsWith('__Host-') && SESSION_COOKIE.startsWith('__Host-') && adminSecretState().configured === true;
   } catch (_) { return false; }
 }
-const ADMIN_STATIC_GATE = Object.freeze({ ok: Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && !ACTIONS.includes('__proto__') && !ACTIONS.includes('constructor') });
+const ADMIN_STATIC_GATE = Object.freeze({ ok: Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && Object.isFrozen(ADMIN_CENTRAL_BAN_FAILURE_CODES) && !ACTIONS.includes('__proto__') && !ACTIONS.includes('constructor') });
 
 async function businessMonitor() {
   let rows = [], ready = false; try { const result = await dbFetch('/rest/v1/security_customer_events?select=id,event_type,status,risk_level,description,created_at&order=created_at.desc&limit=20', { method: 'GET' }); if (result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; } } catch (_) { ready = false; }
@@ -1106,13 +1125,50 @@ function adminCentralBanAuthority() {
     return authority && authority.version === 'dirac-central-ban-authority-v354' && typeof authority.ban === 'function' ? authority : null;
   } catch (_) { return null; }
 }
+function adminCentralBanDiagnosticV445(req, error, required, outcome) {
+  try {
+    const rawUrl = String(req && req.url || '');
+    const actionMatch = rawUrl.match(/[?&]action=([a-z0-9_]{1,80})(?:&|$)/i);
+    const result = outcome && typeof outcome === 'object' ? outcome : {};
+    console.error('[dirac-admin-ban-decision-diagnostic-v445] ' + JSON.stringify({
+      patch: 'dirac-admin-ban-decision-diagnostic-v445',
+      event: 'admin_central_ban_decision',
+      action: actionMatch ? actionMatch[1].toLowerCase() : '',
+      method: String(req && req.method || '').toUpperCase().slice(0, 12),
+      error_code: String(error && error.code || '').slice(0, 96),
+      error_status: Number(error && (error.status || error.statusCode) || 0),
+      central_ban_required: required === true,
+      central_ban_reason: required === true ? adminCentralBanReason(error) : '',
+      outcome_ok: result.ok === true,
+      outcome_skipped: result.skipped === true,
+      outcome_reason: String(result.reason || '').slice(0, 96),
+      central_ban_header_expected: required === true && result.ok === true && result.skipped !== true
+    }));
+  } catch (_) {}
+}
 async function adminCentralBanFailure(req, error) {
+  const required = adminCentralBanRequired(error);
+  if (!required) {
+    const skipped = Object.freeze({ ok: true, skipped: true });
+    adminCentralBanDiagnosticV445(req, error, false, skipped);
+    return skipped;
+  }
   const authority = adminCentralBanAuthority();
-  if (!authority) return Object.freeze({ ok: false, reason: 'central_ban_authority_unavailable' });
+  if (!authority) {
+    const unavailable = Object.freeze({ ok: false, reason: 'central_ban_authority_unavailable' });
+    adminCentralBanDiagnosticV445(req, error, true, unavailable);
+    return unavailable;
+  }
   try {
     const result = await authority.ban(req, adminCentralBanReason(error), 10 * 365 * 24 * 60 * 60);
-    return result && typeof result === 'object' ? result : Object.freeze({ ok: false, reason: 'central_ban_result_invalid' });
-  } catch (_) { return Object.freeze({ ok: false, reason: 'central_ban_write_exception' }); }
+    const finalResult = result && typeof result === 'object' ? result : Object.freeze({ ok: false, reason: 'central_ban_result_invalid' });
+    adminCentralBanDiagnosticV445(req, error, true, finalResult);
+    return finalResult;
+  } catch (_) {
+    const failed = Object.freeze({ ok: false, reason: 'central_ban_write_exception' });
+    adminCentralBanDiagnosticV445(req, error, true, failed);
+    return failed;
+  }
 }
 function allowedAdminKey(key) { return typeof key === 'string' && /^s2s-admin-v405:(?:ticket:[a-f0-9]{64}(?::used)?|enrollment:[a-f0-9]{64}|totp-used:[a-f0-9]{64}|rate:[a-f0-9]{64})$/.test(key); }
 async function replaceEnrollment(records, key, expectedRevision, record, ttl) {
@@ -1205,7 +1261,7 @@ async function adminBusiness(req, res, operations) {
   catch (error) {
     const centralBan = await adminCentralBanFailure(req, error);
     if (!centralBan || centralBan.ok !== true) { const unavailable = errorPayload(Object.assign(new Error('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE'), { code: 'ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', status: 503, statusCode: 503 })); return res.status(unavailable.status).json(unavailable.body); }
-    try { res.setHeader('X-Dirac-Central-Ban', '1'); } catch (_) {}
+    if (centralBan.skipped !== true) { try { res.setHeader('X-Dirac-Central-Ban', '1'); } catch (_) {} }
     const result = errorPayload(error); return res.status(result.status).json(result.body);
   }
 }
@@ -1241,7 +1297,7 @@ async function adminHandler(req, res) {
     const centralBan = await adminCentralBanFailure(req, error);
     try { if (origin) setCommonHeaders(res, origin); else { res.setHeader('Cache-Control', 'no-store'); res.setHeader('Content-Type', 'application/json; charset=utf-8'); res.setHeader('X-Content-Type-Options', 'nosniff'); } } catch (_) {}
     if (!centralBan || centralBan.ok !== true) { const unavailable = errorPayload(Object.assign(new Error('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE'), { code: 'ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', status: 503, statusCode: 503 })); return res.status(unavailable.status).json(unavailable.body); }
-    try { res.setHeader('X-Dirac-Central-Ban', '1'); } catch (_) {}
+    if (centralBan.skipped !== true) { try { res.setHeader('X-Dirac-Central-Ban', '1'); } catch (_) {} }
     const result = errorPayload(error); return res.status(result.status).json(result.body);
   }
 }
