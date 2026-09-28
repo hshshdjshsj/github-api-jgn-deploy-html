@@ -19433,6 +19433,11 @@ async function lockedPaymentMarkTransactionGatewayFailed(transactionId, error, r
     gateway_debug_patch: lockedPaymentResolveGatewayDebugPatch(raw),
     gateway_error: lockedPaymentCleanText(error, 500) || 'gateway_create_failed'
   };
+  const paymentContext = diracCentralCurrentContextV149();
+  const paymentExpected = paymentContext && paymentContext.__diracCentralCreatePaymentExpectedV199;
+  if (paymentExpected && /^(commerce|security|domain)$/.test(String(paymentExpected.orderDatabase || ''))) {
+    metadata.order_database = String(paymentExpected.orderDatabase);
+  }
 
   const upstreamMessage = getUpstreamMessage(raw) || lockedPaymentSafeUpstreamError(raw);
   if (upstreamMessage) metadata.gateway_response = lockedPaymentCleanText(upstreamMessage, 1000);
@@ -19559,10 +19564,7 @@ function lockedPaymentNormalizeServiceType(value) {
 }
 
 function lockedPaymentTransactionServiceTypeV444(value, kind, orderDatabase) {
-  const serviceType = lockedPaymentNormalizeServiceType(value);
-  return String(kind || '') === 'regular' && String(orderDatabase || '') === 'security' && serviceType === 'laboratorium'
-    ? 'parfum'
-    : serviceType;
+  return lockedPaymentNormalizeServiceType(value);
 }
 
 function lockedPaymentStatus(value) {
@@ -30592,7 +30594,13 @@ async function diracUniversalPesananCreatePayment(req, res) {
       create_payment_started_at: diracNowIso(),
       frontend_amount_ignored: true,
       frontend_invoice_storage_trusted: false,
-      owner_source: owner.source || 'backend_auth_link'
+      owner_source: owner.source || 'backend_auth_link',
+      ...(paymentInput.kind === 'regular' && paymentInput.orderDatabase === 'security' && paymentInput.serviceType === 'laboratorium' ? {
+        external_order_id: paymentInput.orderId,
+        external_customer_id: customerId,
+        external_service_type: paymentInput.serviceType,
+        external_amount: paymentInput.amount
+      } : {})
     }
   });
 
@@ -64936,6 +64944,19 @@ function diracCentralIsCreatePaymentTransactionServiceRoleV199(ctx, table, path,
     const expectedItemTotal = expected.itemTotal === undefined ? expected.amount : expected.itemTotal;
     if (!Number.isFinite(Number(expectedItemTotal)) || Number(metadata.item_total) !== Number(expectedItemTotal)) return false;
     if (metadata.frontend_amount_ignored !== true || metadata.frontend_invoice_storage_trusted !== false) return false;
+    const securityLaboratory = String(expected.kind || '') === 'regular'
+      && String(expected.orderDatabase || '') === 'security'
+      && lockedPaymentNormalizeServiceType(expected.serviceType) === 'laboratorium';
+    const hasExternalOrderId = Object.prototype.hasOwnProperty.call(metadata, 'external_order_id');
+    const hasExternalCustomerId = Object.prototype.hasOwnProperty.call(metadata, 'external_customer_id');
+    const hasExternalServiceType = Object.prototype.hasOwnProperty.call(metadata, 'external_service_type');
+    const hasExternalAmount = Object.prototype.hasOwnProperty.call(metadata, 'external_amount');
+    if (securityLaboratory) {
+      if (String(metadata.external_order_id || '') !== String(expected.objectId || '')) return false;
+      if (String(metadata.external_customer_id || '') !== String(expected.customerId || '')) return false;
+      if (lockedPaymentNormalizeServiceType(metadata.external_service_type) !== 'laboratorium') return false;
+      if (!Number.isFinite(Number(metadata.external_amount)) || Number(metadata.external_amount) !== Number(expected.amount)) return false;
+    } else if (hasExternalOrderId || hasExternalCustomerId || hasExternalServiceType || hasExternalAmount) return false;
     const startedAtMs = Date.parse(String(metadata.create_payment_started_at || ''));
     if (!Number.isFinite(startedAtMs) || Math.abs(Date.now() - startedAtMs) > 10 * 60 * 1000) return false;
     return true;
@@ -64981,7 +65002,8 @@ function diracCentralCreatePaymentMetadataSafeV199(metadata, phase) {
     const allowed = new Set([
       'order_kind', 'order_code', 'order_status', 'amount_source', 'item_total',
       'create_payment_started_at', 'frontend_amount_ignored',
-      'frontend_invoice_storage_trusted', 'owner_source', 'order_database'
+      'frontend_invoice_storage_trusted', 'owner_source', 'order_database',
+      'external_order_id', 'external_customer_id', 'external_service_type', 'external_amount'
     ]);
     if (keys.some((key) => !allowed.has(String(key || '')))) return false;
   }
