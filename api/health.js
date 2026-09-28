@@ -19466,6 +19466,13 @@ function lockedPaymentNormalizeServiceType(value) {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
 }
 
+function lockedPaymentTransactionServiceTypeV444(value, kind, orderDatabase) {
+  const serviceType = lockedPaymentNormalizeServiceType(value);
+  return String(kind || '') === 'regular' && String(orderDatabase || '') === 'security' && serviceType === 'laboratorium'
+    ? 'parfum'
+    : serviceType;
+}
+
 function lockedPaymentStatus(value) {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
 }
@@ -30470,11 +30477,16 @@ async function diracUniversalPesananCreatePayment(req, res) {
 
   const gatewayName = lockedPaymentGatewayName();
   const gatewayReference = lockedPaymentGenerateReference(`${paymentInput.referencePrefix}-${paymentInput.orderCode}`);
+  const transactionServiceType = lockedPaymentTransactionServiceTypeV444(
+    paymentInput.serviceType,
+    paymentInput.kind,
+    paymentInput.orderDatabase
+  );
   const transactionResult = await lockedPaymentInsertTransaction({
     orderId: paymentInput.kind === 'regular' ? paymentInput.orderId : null,
     domainOrderId: paymentInput.kind === 'domain' ? paymentInput.domainOrderId : null,
     customerId,
-    serviceType: paymentInput.serviceType,
+    serviceType: transactionServiceType,
     gatewayName,
     gatewayReference,
     amount: paymentInput.amount,
@@ -30518,7 +30530,7 @@ async function diracUniversalPesananCreatePayment(req, res) {
     currency: 'IDR',
     customer: paymentInput.customer,
     items: paymentInput.items,
-    serviceType: paymentInput.serviceType,
+    serviceType: transactionServiceType,
     orderDatabase: paymentInput.orderDatabase
   });
 
@@ -64810,7 +64822,11 @@ function diracCentralIsCreatePaymentTransactionServiceRoleV199(ctx, table, path,
     if (Boolean(orderId) === Boolean(domainOrderId)) return false;
     if (!diracCentralLooksLikeUuidV146(objectId) || !boundObjects.has(objectId) || objectId !== String(expected.objectId || '')) return false;
     if (String(expected.kind || '') === 'regular' ? !orderId || !!domainOrderId : !domainOrderId || !!orderId) return false;
-    if (String(row.service_type || '').trim() !== String(expected.serviceType || '')) return false;
+    if (String(row.service_type || '').trim() !== lockedPaymentTransactionServiceTypeV444(
+      expected.serviceType,
+      expected.kind,
+      expected.orderDatabase
+    )) return false;
     if (String(row.gateway_name || '').trim().toLowerCase() !== 'midtrans') return false;
     const gatewayReference = String(row.gateway_reference || '').trim();
     const expectedReferencePrefix = String(expected.kind || '') === 'domain' ? 'PAY-DOM-' : 'PAY-ORD-';
