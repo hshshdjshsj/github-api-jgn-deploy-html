@@ -20636,14 +20636,23 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
     const config = orderMailSmtpConfig(role);
     const recipients = role === 'customer' ? [job.recipient.email] : config.recipients;
     const configuredOwnerRecipients = role === 'customer' ? orderMailOwnerRecipientListV129() : [];
-    const alertOwnerConfig = role === 'customer' && configuredOwnerRecipients.length === 0 && typeof diracSecurityAlertConfigV320 === 'function'
-      ? diracSecurityAlertConfigV320() : null;
-    const ownerBlindRecipients = role === 'customer'
-      ? (configuredOwnerRecipients.length ? configuredOwnerRecipients : (alertOwnerConfig && Array.isArray(alertOwnerConfig.recipients) ? alertOwnerConfig.recipients : []))
-      : [];
+    const customerRecipientV447 = role === 'customer' ? orderMailNormalizeEmail(job.recipient && job.recipient.email || '') : '';
+    const configuredOwnerOnlyCustomerV447 = role === 'customer' && configuredOwnerRecipients.length === 1
+      && configuredOwnerRecipients[0] === customerRecipientV447;
+    const configuredOwnerUsableV447 = role === 'customer' && configuredOwnerRecipients.length > 0 && !configuredOwnerOnlyCustomerV447;
+    const ownerSmtpCandidateV447 = role === 'customer'
+      ? orderMailNormalizeEmail(process.env.ORDER_OWNER_SMTP_USER || process.env.ORDER_OWNER_FROM_EMAIL || '') : '';
+    const adminOwnerCandidateV447 = role === 'customer'
+      ? orderMailNormalizeEmail(typeof DIRAC_ADMIN_OWNER_EMAIL_V405 === 'string' ? DIRAC_ADMIN_OWNER_EMAIL_V405 : '') : '';
+    const ownerBlindRecipients = role !== 'customer' ? []
+      : (configuredOwnerUsableV447 ? configuredOwnerRecipients
+        : (ownerSmtpCandidateV447 && ownerSmtpCandidateV447 !== customerRecipientV447 ? [ownerSmtpCandidateV447]
+          : (adminOwnerCandidateV447 && adminOwnerCandidateV447 !== customerRecipientV447 ? [adminOwnerCandidateV447] : [])));
     const orderCustomerEmailV446 = orderMailNormalizeEmail(context && context.mail && context.mail.customer && context.mail.customer.email || '');
     const ownerRecipientSourceV446 = role !== 'customer' ? 'dedicated_owner_role'
-      : (configuredOwnerRecipients.length ? 'order_owner_config' : (ownerBlindRecipients.length ? 'security_alert_fallback' : 'none'));
+      : (configuredOwnerUsableV447 ? 'order_owner_config'
+        : (ownerSmtpCandidateV447 && ownerSmtpCandidateV447 !== customerRecipientV447 ? 'order_owner_smtp_user'
+          : (adminOwnerCandidateV447 && adminOwnerCandidateV447 !== customerRecipientV447 ? 'canonical_admin_owner' : 'none')));
     diracPaidMailDiagLogV446('recipient_resolution', {
       role,
       recipient_source: role === 'customer' ? 'verified_auth_link' : 'owner_config',
@@ -20653,11 +20662,19 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
       order_customer_email_hash: orderCustomerEmailV446 ? diracPaidMailDiagHashV446(orderCustomerEmailV446) : '',
       customer_matches_order_email: role === 'customer' ? Boolean(orderCustomerEmailV446 && orderCustomerEmailV446 === job.recipient.email) : null,
       configured_owner_count: configuredOwnerRecipients.length,
-      alert_fallback_count: alertOwnerConfig && Array.isArray(alertOwnerConfig.recipients) ? alertOwnerConfig.recipients.length : 0,
+      configured_owner_only_customer: Boolean(configuredOwnerOnlyCustomerV447),
+      configured_owner_usable: Boolean(configuredOwnerUsableV447),
+      owner_smtp_candidate_present: Boolean(ownerSmtpCandidateV447),
+      owner_smtp_candidate_hash: ownerSmtpCandidateV447 ? diracPaidMailDiagHashV446(ownerSmtpCandidateV447) : '',
+      owner_smtp_candidate_distinct: Boolean(ownerSmtpCandidateV447 && ownerSmtpCandidateV447 !== customerRecipientV447),
+      admin_owner_candidate_present: Boolean(adminOwnerCandidateV447),
+      admin_owner_candidate_hash: adminOwnerCandidateV447 ? diracPaidMailDiagHashV446(adminOwnerCandidateV447) : '',
+      admin_owner_candidate_distinct: Boolean(adminOwnerCandidateV447 && adminOwnerCandidateV447 !== customerRecipientV447),
+      owner_destination_policy: 'owner_only_no_security_alert_recipient',
       owner_effective_count: ownerBlindRecipients.length,
       owner_recipient_source: ownerRecipientSourceV446,
       owner_recipient_set_hash: ownerBlindRecipients.length ? diracPaidMailDiagHashV446(ownerBlindRecipients.slice().sort().join(',')) : '',
-      owner_overlaps_customer: role === 'customer' ? ownerBlindRecipients.includes(job.recipient.email) : false,
+      owner_overlaps_customer: role === 'customer' ? ownerBlindRecipients.includes(customerRecipientV447) : false,
       config_kind: String(config && config.kind || ''),
       config_configured: Boolean(config && config.configured),
       config_smtp_configured: Boolean(config && config.smtpConfigured),
@@ -20680,9 +20697,18 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
       role,
       claim_new: transport.data === true,
       transport_key_hash: diracPaidMailDiagHashV446(lane.ownerTransportKey || ''),
-      receipt_key_hash: diracPaidMailDiagHashV446(lane.ownerKey || '')
+      receipt_key_hash: diracPaidMailDiagHashV446(lane.ownerKey || ''),
+      owner_scope_hash: diracPaidMailDiagHashV446(lane.ownerScope || ''),
+      owner_recipient_source: ownerRecipientSourceV446
     });
-    if (transport.data !== true) return { sent: false, skipped: true, status: 'unknown', reason: role + '_transport_already_claimed' };
+    if (transport.data !== true) {
+      diracPaidMailDiagLogV446('duplicate_transport_suppressed', {
+        role,
+        transport_key_hash: diracPaidMailDiagHashV446(lane.ownerTransportKey || ''),
+        receipt_status: lane.ownerRow && lane.ownerRow.record_json ? String(lane.ownerRow.record_json.status || '') : ''
+      });
+      return { sent: false, skipped: true, status: 'unknown', reason: role + '_transport_already_claimed' };
+    }
     transportClaimed = true;
     // Recipient and payment capability must still be valid immediately before transport.
     diracPaidReceiptLaneV443(job, role);
@@ -55054,7 +55080,19 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
         return { ok: false, error: 'customer_cascade_not_configured' };
       }
       const recipients = Array.from(new Set((message.to || []).map(orderMailNormalizeEmail).filter(Boolean)));
+      const requestedBccCountV447 = Array.isArray(message.bcc) ? message.bcc.length : 0;
       const bccRecipients = Array.from(new Set((message.bcc || []).map(orderMailNormalizeEmail).filter((emailAddress) => emailAddress && !recipients.includes(emailAddress))));
+      if (diagnosticV371) diracPaidMailDiagLogV446('bcc_invariant', {
+        role: String(diagnosticV371 && diagnosticV371.role || 'customer'),
+        requested_bcc_count: requestedBccCountV447,
+        effective_bcc_count: bccRecipients.length,
+        dropped_overlap_count: Math.max(0, requestedBccCountV447 - bccRecipients.length),
+        requested_bcc_set_hash: requestedBccCountV447 ? diracPaidMailDiagHashV446((message.bcc || []).join(',')) : '',
+        effective_bcc_set_hash: bccRecipients.length ? diracPaidMailDiagHashV446(bccRecipients.slice().sort().join(',')) : ''
+      });
+      if (requestedBccCountV447 > 0 && bccRecipients.length === 0) {
+        return { ok: false, provider: 'internal', status: 0, limited: false, quotaLimited: false, deliveryAmbiguous: false, code: 'CUSTOMER_BCC_RECIPIENT_COLLISION' };
+      }
       const generic = Object.freeze({
         fromName: 'PT Dirac Inovasi Nusantara', recipients, bccRecipients,
         replyTo: customerCfg.replyTo, subject: String(message.subject || 'PT Dirac Inovasi Nusantara'), text: String(message.text || ''),
@@ -55088,7 +55126,12 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
         smtp_slot: Number(result && result.smtp_slot || 0),
         result_code: String(result && (result.code || result.error) || '').slice(0, 120)
       });
-      if (result && result.ok === true) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, result.provider || 'customer_provider');
+      if (result && result.ok === true) {
+        diracPaidMailTimingProviderAcceptedV371(diagnosticV371, result.provider || 'customer_provider');
+        if (diagnosticV371 && String(diagnosticV371.role || '') === 'customer' && bccRecipients.length) {
+          diracPaidMailTimingProviderAcceptedV371({ timing: diagnosticV371.timing, role: 'owner' }, result.provider || 'customer_provider');
+        }
+      }
       return result;
     }
     if (config && config.kind === 'owner') {

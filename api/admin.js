@@ -372,6 +372,11 @@ function adminBlockDiagnosticLogV446(event, detail) {
     }));
   } catch (_) {}
 }
+const DIRAC_ADMIN_RETIRED_FALSE_BLOCK_V447 = Object.freeze({
+  blockKeyHash: '890e88cc44d2d2cf7098d039',
+  createdAt: 1790661016889,
+  blockedUntil: 1790747416889
+});
 function securityBlockKey(origin, device) { return SECURITY_BLOCK_PREFIX + digest(String(origin) + '\0' + String(device)); }
 function validSecurityBlock(record, origin, device) {
   return !!(record && record.version === VERSION && record.schema === 'dirac.admin_security_block.v411' && record.reason === 'html_detected_attack'
@@ -384,6 +389,31 @@ async function activeSecurityBlock(origin, device) {
   if (!result.ok) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
   if (!result.found) return null;
   if (!validSecurityBlock(result.record, origin, device)) fail('ADMIN_SECURITY_STATE_INVALID', 503);
+  const retiredV447 = DIRAC_ADMIN_RETIRED_FALSE_BLOCK_V447;
+  if (digest(keyV446).slice(0, 24) === retiredV447.blockKeyHash
+      && result.record.createdAt === retiredV447.createdAt
+      && result.record.blockedUntil === retiredV447.blockedUntil) {
+    adminBlockDiagnosticLogV446('legacy_false_block_retire_attempt', {
+      block_key_hash: retiredV447.blockKeyHash,
+      created_at: result.record.createdAt,
+      blocked_until: result.record.blockedUntil,
+      reason: result.record.reason,
+      schema: result.record.schema
+    });
+    const expiredAtV447 = new Date(Math.max(0, Date.now() - 1000)).toISOString();
+    const retiredResultV447 = await dbFetch('/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(keyV446),
+      { method: 'PATCH', body: { expires_at: expiredAtV447 } }, 'security');
+    if (!retiredResultV447.ok) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
+    const retiredReadbackV447 = await securityRead(keyV446);
+    if (!retiredReadbackV447.ok || retiredReadbackV447.found) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
+    adminBlockDiagnosticLogV446('legacy_false_block_retired', {
+      block_key_hash: retiredV447.blockKeyHash,
+      created_at: result.record.createdAt,
+      reason: result.record.reason,
+      readback_found: false
+    });
+    return null;
+  }
   adminBlockDiagnosticLogV446('active_block', {
     block_key_hash: digest(keyV446).slice(0, 24),
     origin_hash: digest(origin).slice(0, 24),
