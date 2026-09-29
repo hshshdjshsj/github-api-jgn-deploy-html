@@ -377,6 +377,11 @@ const DIRAC_ADMIN_RETIRED_FALSE_BLOCK_V447 = Object.freeze({
   createdAt: 1790661016889,
   blockedUntil: 1790747416889
 });
+const DIRAC_ADMIN_RETIRED_FALSE_BLOCK_V448 = Object.freeze({
+  blockKeyHash: '890e88cc44d2d2cf7098d039',
+  createdAtMin: 1790688236000,
+  createdAtMax: 1790688239300
+});
 function securityBlockKey(origin, device) { return SECURITY_BLOCK_PREFIX + digest(String(origin) + '\0' + String(device)); }
 function validSecurityBlock(record, origin, device) {
   return !!(record && record.version === VERSION && record.schema === 'dirac.admin_security_block.v411' && record.reason === 'html_detected_attack'
@@ -390,9 +395,15 @@ async function activeSecurityBlock(origin, device) {
   if (!result.found) return null;
   if (!validSecurityBlock(result.record, origin, device)) fail('ADMIN_SECURITY_STATE_INVALID', 503);
   const retiredV447 = DIRAC_ADMIN_RETIRED_FALSE_BLOCK_V447;
-  if (digest(keyV446).slice(0, 24) === retiredV447.blockKeyHash
+  const retiredV448 = DIRAC_ADMIN_RETIRED_FALSE_BLOCK_V448;
+  const blockKeyHashV448 = digest(keyV446).slice(0, 24);
+  const retiredFalseBlockV448 = blockKeyHashV448 === retiredV448.blockKeyHash
+    && result.record.createdAt >= retiredV448.createdAtMin
+    && result.record.createdAt <= retiredV448.createdAtMax
+    && result.record.blockedUntil === result.record.createdAt + SECURITY_BLOCK_SECONDS * 1000;
+  if ((blockKeyHashV448 === retiredV447.blockKeyHash
       && result.record.createdAt === retiredV447.createdAt
-      && result.record.blockedUntil === retiredV447.blockedUntil) {
+      && result.record.blockedUntil === retiredV447.blockedUntil) || retiredFalseBlockV448) {
     adminBlockDiagnosticLogV446('legacy_false_block_retire_attempt', {
       block_key_hash: retiredV447.blockKeyHash,
       created_at: result.record.createdAt,
@@ -431,6 +442,7 @@ function validateSecurityReport(body) {
   if (!['url_guard', 'input_guard'].includes(type) || !['forbidden_html_url_suffix', 'high_confidence_input_violation'].includes(event)) fail('ADMIN_SECURITY_REPORT_INVALID', 400);
   const match = /^family=([a-z0-9_-]{1,64});field=([a-z0-9_-]{1,64});source=html_boundary(?:;sample=([\s\S]{1,768}))?$/.exec(evidence);
   if (!match || (type === 'url_guard') !== (event === 'forbidden_html_url_suffix') || (type === 'url_guard') !== (match[1] === 'forbidden_html_suffix')) fail('ADMIN_SECURITY_REPORT_INVALID', 400);
+  if (type === 'input_guard' && match[1] === 'frontend_threat' && match[2] === 'admin_failure') fail('SECURITY_REPORT_EVIDENCE_REJECTED', 403);
   return Object.freeze({ type, event, family: match[1], field: match[2], evidenceHash: digest512(evidence) });
 }
 async function persistSecurityReport(origin, device, report) {

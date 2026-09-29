@@ -2668,7 +2668,8 @@ function diracPersistentSecurityRetiredAdminReportBanV446(record) {
   const createdAtMs = Date.parse(String(source.created_at || ''));
   const knownFalsePositiveV446 = Number.isFinite(createdAtMs)
     && ((createdAtMs >= 1790676120000 && createdAtMs <= 1790676135000)
-      || (createdAtMs >= 1790678115000 && createdAtMs <= 1790678130000));
+      || (createdAtMs >= 1790678115000 && createdAtMs <= 1790678130000)
+      || (createdAtMs >= 1790688239000 && createdAtMs <= 1790688240500));
   return knownFalsePositiveV446
     && String(source.type || '') === 'central_external_ban_v354'
     && String(source.patch || '') === 'dirac-central-ban-authority-v354'
