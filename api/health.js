@@ -55943,7 +55943,7 @@ const DIRAC_CENTRAL_LEGACY_DUPLICATE_FUNCTIONS_V221 = Object.freeze({});
 const DIRAC_CENTRAL_BAN_FUNCTION_HASHES_V221 = Object.freeze({
   diracCentralBanAndBlockV146: 'a5315d36c86c39e30a863ea43a2ba8de19a92bd9dce23eba375024645dff10ba',
   diracCentralWritePersistentBanV146: '39aff298cdaa263aeb6d6e4592ea7554d32f2e56006efdef7cffc88a4b8ee89a',
-  diracCentralCheckPersistentBanV146: 'a1fe42d2983c2a0e8af5f57c0d4f16d9fde9a448922e202824ea04b27c3154ae',
+  diracCentralCheckPersistentBanV146: 'c2e2e9a7ab28fe0fc54202459184643ac9df57f0a5445ad5b418ca77fb4b7629',
   diracCentralBlockMsV146: '15ba6d2ca1c5370c7d650b5f82b0e93169f7e9085426877664d962412f7dfce2',
   diracCentralSetMemoryBanV146: '2aae1755a113d229b2a0c132b6dd75d1a4e239349bafc4c523255c2b2a142ca0'
 });
@@ -60482,6 +60482,30 @@ function diracCentralCheckMemoryBanV146(identity) {
   return { blocked: false };
 }
 
+function diracCentralStaleOriginMigrationBanV452(req, row) {
+  const record = row && row.record && typeof row.record === 'object' ? row.record : null;
+  if (!record
+      || String(record.type || '') !== 'central_guard_transient_lockout_v335'
+      || String(record.action || '') !== 'domain_health'
+      || String(record.method || '').toUpperCase() !== 'GET'
+      || String(record.reason || '') !== 'public_origin_invalid'
+      || String(record.failure_class || '') !== 'request_contract_violation'
+      || String(record.source || '') !== DIRAC_CENTRAL_SECURITY_GUARD_V146) return false;
+  const requestMethod = String(req && req.method || '').toUpperCase();
+  if (requestMethod !== 'GET' && requestMethod !== 'POST' && requestMethod !== 'HEAD') return false;
+  const headers = req && req.headers || {};
+  const origin = diracCentralNormalizeOriginV146(headers.origin || '');
+  if (!origin || !DIRAC_CENTRAL_ALLOWED_ORIGINS_V146.has(origin)) return false;
+  const refererRaw = headers.referer || headers.referrer || '';
+  const referer = diracCentralValidateRefererV146(refererRaw);
+  if (!referer || referer.ok !== true || diracCentralNormalizeOriginV146(refererRaw) !== origin) return false;
+  const host = String(headers.host || headers['x-forwarded-host'] || '').trim().toLowerCase().replace(/:\d+$/, '');
+  if (host !== 'api.' + diracBaseDomainV250()) return false;
+  const fetchSite = String(headers['sec-fetch-site'] || '').trim().toLowerCase();
+  if (fetchSite !== 'same-site' && fetchSite !== 'same-origin') return false;
+  return true;
+}
+
 async function diracCentralCheckPersistentBanV146(req, identity) {
   const now = Date.now();
   const key = String(identity && identity.key || '');
@@ -60507,7 +60531,7 @@ async function diracCentralCheckPersistentBanV146(req, identity) {
         return { blocked: true, blockedUntilMs: now + diracCentralBlockMsV146(), failClosed: true, reason: 'persistent_ban_store_unavailable' };
       }
       const active = lookup.records
-        .filter((record) => Number(record && record.blocked_until_ms || 0) > now)
+        .filter((record) => Number(record && record.blocked_until_ms || 0) > now && !diracCentralStaleOriginMigrationBanV452(req, record))
         .sort((left, right) => Number(right.blocked_until_ms || 0) - Number(left.blocked_until_ms || 0))[0];
       return active
         ? { blocked: true, blockedUntilMs: Number(active.blocked_until_ms) }
