@@ -362,6 +362,16 @@ async function verifyPageNonce(req, action, origin, device) {
   return true;
 }
 
+const DIRAC_ADMIN_BLOCK_DIAGNOSTIC_V446 = 'dirac-admin-security-block-diagnostic-v446';
+function adminBlockDiagnosticLogV446(event, detail) {
+  try {
+    console.info('[' + DIRAC_ADMIN_BLOCK_DIAGNOSTIC_V446 + '] ' + JSON.stringify({
+      patch: DIRAC_ADMIN_BLOCK_DIAGNOSTIC_V446,
+      event: String(event || 'unknown').slice(0, 80),
+      ...(detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {})
+    }));
+  } catch (_) {}
+}
 function securityBlockKey(origin, device) { return SECURITY_BLOCK_PREFIX + digest(String(origin) + '\0' + String(device)); }
 function validSecurityBlock(record, origin, device) {
   return !!(record && record.version === VERSION && record.schema === 'dirac.admin_security_block.v411' && record.reason === 'html_detected_attack'
@@ -369,10 +379,20 @@ function validSecurityBlock(record, origin, device) {
     && record.blockedUntil === record.createdAt + SECURITY_BLOCK_SECONDS * 1000 && record.blockedUntil > Date.now());
 }
 async function activeSecurityBlock(origin, device) {
-  const result = await securityRead(securityBlockKey(origin, device));
+  const keyV446 = securityBlockKey(origin, device);
+  const result = await securityRead(keyV446);
   if (!result.ok) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
   if (!result.found) return null;
   if (!validSecurityBlock(result.record, origin, device)) fail('ADMIN_SECURITY_STATE_INVALID', 503);
+  adminBlockDiagnosticLogV446('active_block', {
+    block_key_hash: digest(keyV446).slice(0, 24),
+    origin_hash: digest(origin).slice(0, 24),
+    device_hash: digest(device).slice(0, 24),
+    created_age_ms: Math.max(0, Date.now() - result.record.createdAt),
+    remaining_ms: Math.max(0, result.record.blockedUntil - Date.now()),
+    reason: result.record.reason,
+    schema: result.record.schema
+  });
   return result.record;
 }
 function validateSecurityReport(body) {
@@ -393,6 +413,19 @@ async function persistSecurityReport(origin, device, report) {
   }
   const reportKey = SECURITY_REPORT_PREFIX + digest(randomToken()), reportRecord = { version: VERSION, schema: 'dirac.admin_security_report.v411', reason: 'html_detected_attack', type: report.type, event: report.event, family: report.family, field: report.field, evidenceHash: report.evidenceHash, originHash: digest(origin), device, createdAt: now };
   if (await securityClaim(reportKey, reportRecord, SECURITY_BLOCK_SECONDS) !== true) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
+  adminBlockDiagnosticLogV446('security_report_committed', {
+    block_claim_new: claimed === true,
+    block_key_hash: digest(blockKey).slice(0, 24),
+    report_key_hash: digest(reportKey).slice(0, 24),
+    origin_hash: digest(origin).slice(0, 24),
+    device_hash: digest(device).slice(0, 24),
+    report_type: report.type,
+    report_event: report.event,
+    report_family: report.family,
+    report_field: report.field,
+    evidence_hash_prefix: String(report.evidenceHash || '').slice(0, 24),
+    blocked_for_ms: blockedUntil - now
+  });
   return { blockedUntil };
 }
 
@@ -1294,7 +1327,17 @@ async function adminHandler(req, res) {
     const device = deviceFingerprint(req, origin);
     if (adminSecretState().configured && !['admin_entry', 'admin_security_report', 'admin_logout'].includes(action)) {
       const blocked = await activeSecurityBlock(origin, device);
-      if (blocked) { res.setHeader('Retry-After', String(Math.max(1, Math.ceil((blocked.blockedUntil - Date.now()) / 1000)))); fail('ADMIN_SECURITY_BLOCKED', 403); }
+      if (blocked) {
+        adminBlockDiagnosticLogV446('request_blocked', {
+          action,
+          method,
+          remaining_ms: Math.max(0, blocked.blockedUntil - Date.now()),
+          created_age_ms: Math.max(0, Date.now() - blocked.createdAt),
+          origin_hash: digest(origin).slice(0, 24),
+          device_hash: digest(device).slice(0, 24)
+        });
+        res.setHeader('Retry-After', String(Math.max(1, Math.ceil((blocked.blockedUntil - Date.now()) / 1000)))); fail('ADMIN_SECURITY_BLOCKED', 403);
+      }
     }
     const contract = CONTRACTS[action], query = queryObject(queryParams), body = method === 'POST' ? await readJsonBody(req, contract.maxBodyBytes) : query; validateShape(action, method, query, body);
     const currentAction = action, state = { req, action, currentAction, method, origin, device, body, passwordAuthority: null, deactivate: null };

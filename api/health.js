@@ -20611,6 +20611,19 @@ async function diracPaidOwnerFinishV441(job, status, role = 'owner') {
   return !!(result && result.ok === true && Array.isArray(result.data) && result.data.length === 1
     && result.data[0].security_key === lane.ownerKey && Date.parse(result.data[0].expires_at) === Date.parse(expiresAt));
 }
+const DIRAC_PAID_MAIL_DEEP_DIAGNOSTIC_V446 = 'dirac-paid-mail-deep-diagnostic-v446';
+function diracPaidMailDiagHashV446(value) {
+  return crypto.createHash('sha256').update(String(value || ''), 'utf8').digest('hex').slice(0, 24);
+}
+function diracPaidMailDiagLogV446(event, detail) {
+  try {
+    console.info('[' + DIRAC_PAID_MAIL_DEEP_DIAGNOSTIC_V446 + '] ' + JSON.stringify({
+      patch: DIRAC_PAID_MAIL_DEEP_DIAGNOSTIC_V446,
+      event: String(event || 'unknown').slice(0, 80),
+      ...(detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {})
+    }));
+  } catch (_) {}
+}
 async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
   const lane = diracPaidReceiptLaneV443(job, role);
   if (!lane.ownerClaimed) return { sent: false, skipped: true, status: lane.ownerRow ? lane.ownerRow.record_json.status : 'idle', reason: role + '_delivery_already_claimed' };
@@ -20628,6 +20641,29 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
     const ownerBlindRecipients = role === 'customer'
       ? (configuredOwnerRecipients.length ? configuredOwnerRecipients : (alertOwnerConfig && Array.isArray(alertOwnerConfig.recipients) ? alertOwnerConfig.recipients : []))
       : [];
+    const orderCustomerEmailV446 = orderMailNormalizeEmail(context && context.mail && context.mail.customer && context.mail.customer.email || '');
+    const ownerRecipientSourceV446 = role !== 'customer' ? 'dedicated_owner_role'
+      : (configuredOwnerRecipients.length ? 'order_owner_config' : (ownerBlindRecipients.length ? 'security_alert_fallback' : 'none'));
+    diracPaidMailDiagLogV446('recipient_resolution', {
+      role,
+      recipient_source: role === 'customer' ? 'verified_auth_link' : 'owner_config',
+      customer_recipient_present: Boolean(role === 'customer' && job.recipient && job.recipient.email),
+      customer_recipient_hash: role === 'customer' ? diracPaidMailDiagHashV446(job.recipient && job.recipient.email || '') : '',
+      order_customer_email_present: Boolean(orderCustomerEmailV446),
+      order_customer_email_hash: orderCustomerEmailV446 ? diracPaidMailDiagHashV446(orderCustomerEmailV446) : '',
+      customer_matches_order_email: role === 'customer' ? Boolean(orderCustomerEmailV446 && orderCustomerEmailV446 === job.recipient.email) : null,
+      configured_owner_count: configuredOwnerRecipients.length,
+      alert_fallback_count: alertOwnerConfig && Array.isArray(alertOwnerConfig.recipients) ? alertOwnerConfig.recipients.length : 0,
+      owner_effective_count: ownerBlindRecipients.length,
+      owner_recipient_source: ownerRecipientSourceV446,
+      owner_recipient_set_hash: ownerBlindRecipients.length ? diracPaidMailDiagHashV446(ownerBlindRecipients.slice().sort().join(',')) : '',
+      owner_overlaps_customer: role === 'customer' ? ownerBlindRecipients.includes(job.recipient.email) : false,
+      config_kind: String(config && config.kind || ''),
+      config_configured: Boolean(config && config.configured),
+      config_smtp_configured: Boolean(config && config.smtpConfigured),
+      config_provider_configured: Boolean(config && config.providerConfigured),
+      config_from_hash: config && config.fromEmail ? diracPaidMailDiagHashV446(config.fromEmail) : ''
+    });
     if (!(role === 'customer' ? orderMailCustomerEnabled() : orderMailOwnerEnabled()) || !config.configured || !recipients.length
         || (role === 'customer' && !ownerBlindRecipients.length)) throw new Error('PAID_OWNER_MAIL_NOT_CONFIGURED');
     const mail = role === 'customer' ? { ...context.mail, customer: { ...context.mail.customer, email: job.recipient.email } } : context.mail;
@@ -20640,16 +20676,51 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
         p_expires_at: new Date(now + 100 * 365 * 86400000).toISOString() }
     });
     if (!transport || transport.ok !== true || typeof transport.data !== 'boolean') throw new Error('PAID_OWNER_TRANSPORT_UNAVAILABLE');
+    diracPaidMailDiagLogV446('transport_claim', {
+      role,
+      claim_new: transport.data === true,
+      transport_key_hash: diracPaidMailDiagHashV446(lane.ownerTransportKey || ''),
+      receipt_key_hash: diracPaidMailDiagHashV446(lane.ownerKey || '')
+    });
     if (transport.data !== true) return { sent: false, skipped: true, status: 'unknown', reason: role + '_transport_already_claimed' };
     transportClaimed = true;
     // Recipient and payment capability must still be valid immediately before transport.
     diracPaidReceiptLaneV443(job, role);
     started = true;
+    diracPaidMailDiagLogV446('shared_submission_ready', {
+      role,
+      to_count: recipients.length,
+      bcc_count: ownerBlindRecipients.length,
+      to_set_hash: recipients.length ? diracPaidMailDiagHashV446(recipients.slice().sort().join(',')) : '',
+      bcc_set_hash: ownerBlindRecipients.length ? diracPaidMailDiagHashV446(ownerBlindRecipients.slice().sort().join(',')) : '',
+      subject_hash: diracPaidMailDiagHashV446(messages[role + 'Subject'] || ''),
+      text_bytes: Buffer.byteLength(String(messages[role + 'Text'] || ''), 'utf8'),
+      html_bytes: Buffer.byteLength(String(messages[role + 'Html'] || ''), 'utf8')
+    });
     const result = await orderMailSendViaSmtpSafe(config, { to: recipients, bcc: ownerBlindRecipients, subject: messages[role + 'Subject'],
       text: messages[role + 'Text'], html: messages[role + 'Html'], fromName: config.fromName, fromEmail: config.fromEmail }, timing ? { timing, role } : null);
+    diracPaidMailDiagLogV446('shared_submission_result', {
+      role,
+      ok: Boolean(result && result.ok === true),
+      provider: String(result && result.provider || ''),
+      provider_status: Number(result && result.status || 0),
+      limited: Boolean(result && result.limited === true),
+      quota_limited: Boolean(result && (result.quotaLimited === true || result.quota_limited === true)),
+      delivery_ambiguous: Boolean(result && result.deliveryAmbiguous === true),
+      smtp_slot: Number(result && result.smtp_slot || 0),
+      result_code: String(result && (result.code || result.error) || '').slice(0, 120)
+    });
     status = result && result.ok === true ? 'accepted' : 'unknown';
     return { sent: status === 'accepted', status };
-  } catch (_) { status = started ? 'unknown' : 'failed'; return { sent: false, status }; }
+  } catch (error) {
+    diracPaidMailDiagLogV446('shared_submission_exception', {
+      role,
+      started,
+      transport_claimed: transportClaimed,
+      error: String(orderMailSafeError(error) || '').slice(0, 160)
+    });
+    status = started ? 'unknown' : 'failed'; return { sent: false, status };
+  }
   finally { if (transportClaimed) await diracPaidOwnerFinishV441(job, status, role).catch(() => false); }
 }
 function diracPaidContinuationCreateV441(req, input) {
@@ -54124,6 +54195,29 @@ async function diracSecurityMailProviderHttpV330(provider, targetUrl, headers, b
   if (!serializedBody || Buffer.byteLength(serializedBody, 'utf8') > 2 * 1024 * 1024) {
     return Object.freeze({ ok: false, provider, status: 0, limited: false, code: 'PROVIDER_REQUEST_BODY_INVALID' });
   }
+  if (action === 'midtrans_webhook') {
+    try {
+      const payloadV446 = JSON.parse(serializedBody);
+      const toV446 = Array.isArray(payloadV446 && payloadV446.to) ? payloadV446.to : [];
+      const bccV446 = Array.isArray(payloadV446 && payloadV446.bcc) ? payloadV446.bcc : [];
+      const senderV446 = payloadV446 && (payloadV446.sender || payloadV446.from) || '';
+      const attachmentV446 = Array.isArray(payloadV446 && (payloadV446.attachment || payloadV446.attachments)) ? (payloadV446.attachment || payloadV446.attachments) : [];
+      diracPaidMailDiagLogV446('provider_http_request', {
+        provider,
+        body_sha256: crypto.createHash('sha256').update(serializedBody, 'utf8').digest('hex'),
+        body_bytes: Buffer.byteLength(serializedBody, 'utf8'),
+        to_count: toV446.length,
+        bcc_count: bccV446.length,
+        to_payload_hash: diracPaidMailDiagHashV446(JSON.stringify(toV446)),
+        bcc_payload_hash: diracPaidMailDiagHashV446(JSON.stringify(bccV446)),
+        sender_hash: diracPaidMailDiagHashV446(JSON.stringify(senderV446)),
+        subject_hash: diracPaidMailDiagHashV446(payloadV446 && payloadV446.subject || ''),
+        attachment_count: attachmentV446.length
+      });
+    } catch (errorV446) {
+      diracPaidMailDiagLogV446('provider_http_request_diagnostic_error', { provider, error: String(orderMailSafeError(errorV446) || '').slice(0, 120) });
+    }
+  }
   const permit = {
     ctx,
     action,
@@ -54161,8 +54255,26 @@ async function diracSecurityMailProviderHttpV330(provider, targetUrl, headers, b
     const limited = !ok && diracSecurityMailProviderLimitedV330(provider, status, responseBody);
     const code = diracSecurityMailProviderResultCodeV330(responseBody)
       || (ok ? '' : String(provider || 'provider').toUpperCase() + '_HTTP_' + String(status || 0));
+    if (action === 'midtrans_webhook') {
+      const providerMessageIdV446 = String(responseBody && (responseBody.messageId || responseBody.message_id || responseBody.id) || '');
+      diracPaidMailDiagLogV446('provider_http_response', {
+        provider,
+        ok,
+        status,
+        limited,
+        code: diracSecurityMailCleanV327(code, 100),
+        provider_message_id_present: Boolean(providerMessageIdV446),
+        provider_message_id: providerMessageIdV446 ? diracSecurityMailCleanV327(providerMessageIdV446, 180) : '',
+        provider_message_id_hash: providerMessageIdV446 ? diracPaidMailDiagHashV446(providerMessageIdV446) : '',
+        response_keys: responseBody && typeof responseBody === 'object' && !Array.isArray(responseBody) ? Object.keys(responseBody).sort().join(',').slice(0, 240) : ''
+      });
+    }
     return Object.freeze({ ok, provider, status, limited, code: diracSecurityMailCleanV327(code, 100) });
   } catch (error) {
+    if (action === 'midtrans_webhook') diracPaidMailDiagLogV446('provider_http_exception', {
+      provider,
+      error: String(orderMailSafeError(error) || '').slice(0, 160)
+    });
     return Object.freeze({
       ok: false,
       provider,
@@ -54948,11 +55060,34 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
         replyTo: customerCfg.replyTo, subject: String(message.subject || 'PT Dirac Inovasi Nusantara'), text: String(message.text || ''),
         html: String(message.html || ''), reference: crypto.createHash('sha256').update(String(message.subject || '') + '|' + String(recipients[0] || '') + '|' + bccRecipients.join(',')).digest('hex').slice(0, 32)
       });
+      if (diagnosticV371) diracPaidMailDiagLogV446('cascade_input', {
+        role: String(diagnosticV371 && diagnosticV371.role || 'customer'),
+        to_count: recipients.length,
+        bcc_count: bccRecipients.length,
+        to_set_hash: recipients.length ? diracPaidMailDiagHashV446(recipients.slice().sort().join(',')) : '',
+        bcc_set_hash: bccRecipients.length ? diracPaidMailDiagHashV446(bccRecipients.slice().sort().join(',')) : '',
+        reference: generic.reference,
+        sender_hash: diracPaidMailDiagHashV446(customerCfg.brevoFromEmail || customerCfg.resendFromEmail || config.fromEmail || ''),
+        brevo_ready: Boolean(customerCfg.brevoApiKey && customerCfg.brevoFromEmail),
+        resend_ready: Boolean(customerCfg.resendApiKey && customerCfg.resendFromEmail),
+        smtp_ready: Boolean(customerCfg.smtpHost && customerCfg.smtpUser && customerCfg.smtpAppPassword)
+      });
       const result = await diracSecurityMailProviderCascadeV330(
         generic,
         customerCfg,
         () => diracCustomerMailSmtpCascadeV352(generic, customerCfg)
       );
+      if (diagnosticV371) diracPaidMailDiagLogV446('cascade_result', {
+        role: String(diagnosticV371 && diagnosticV371.role || 'customer'),
+        ok: Boolean(result && result.ok === true),
+        provider: String(result && result.provider || ''),
+        provider_status: Number(result && result.status || 0),
+        limited: Boolean(result && result.limited === true),
+        quota_limited: Boolean(result && (result.quotaLimited === true || result.quota_limited === true)),
+        delivery_ambiguous: Boolean(result && result.deliveryAmbiguous === true),
+        smtp_slot: Number(result && result.smtp_slot || 0),
+        result_code: String(result && (result.code || result.error) || '').slice(0, 120)
+      });
       if (result && result.ok === true) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, result.provider || 'customer_provider');
       return result;
     }
