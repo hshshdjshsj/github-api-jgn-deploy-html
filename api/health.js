@@ -833,7 +833,7 @@ function diracExecutiveEscalationTextV380() {
   return [
     'LAPOR LANGSUNG KE DIREKTUR & FOUNDER',
     'Jalur privat pelanggan untuk melaporkan dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra PT Dirac Inovasi Nusantara kepada Achmad Zaenuddin, Direktur & Founder.',
-    'Email: supportdirac@gmail.com',
+    'Email: ' + diracSupportEmailV250(),
     'WhatsApp: +62 882-0092-57589',
     'Format laporan: Nama; Email akun; Nomor pesanan/tiket (jika ada); Tanggal & waktu kejadian; Ringkasan; Bukti pendukung tanpa data rahasia.',
     'Jangan sertakan password, OTP, PIN, CVV, passkey, cookie, token, atau secret dalam laporan.'
@@ -841,7 +841,7 @@ function diracExecutiveEscalationTextV380() {
 }
 
 function diracExecutiveEscalationHtmlV380() {
-  return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" data-dirac-executive-report="v380" style="width:100%;margin:18px 0 0;border-collapse:collapse"><tr><td align="center" style="padding:0 12px"><table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#F7F9FC" style="width:100%;max-width:600px;border-collapse:separate;border-spacing:0;border:1px solid #CBD5E1;border-radius:16px;overflow:hidden;background-color:#F7F9FC"><tr><td style="padding:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="42%" bgcolor="#27B3CB" style="height:4px;line-height:4px;font-size:0;background-color:#27B3CB">&nbsp;</td><td width="34%" bgcolor="#2D6FAD" style="height:4px;line-height:4px;font-size:0;background-color:#2D6FAD">&nbsp;</td><td width="24%" bgcolor="#C69A32" style="height:4px;line-height:4px;font-size:0;background-color:#C69A32">&nbsp;</td></tr></table></td></tr><tr><td bgcolor="#F7F9FC" style="padding:18px 18px 17px;font-family:Arial,Helvetica,sans-serif;background-color:#F7F9FC;color:#172033"><div style="font-size:10px;line-height:1.4;font-weight:800;letter-spacing:.15em;color:#087A8F">JALUR PRIVAT PELANGGAN</div><div style="margin-top:5px;font-size:20px;line-height:1.28;font-weight:800;color:#0F172A">Lapor ke Direktur &amp; Founder</div><p style="margin:8px 0 14px;font-size:13px;line-height:1.55;color:#475569">Dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra dapat dilaporkan langsung kepada Achmad Zaenuddin, Direktur &amp; Founder PT Dirac Inovasi Nusantara.</p><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td bgcolor="#0B6F88" style="padding:0;border-radius:10px;background-color:#0B6F88"><a href="mailto:supportdirac@gmail.com?subject=Laporan%20Pelanggan%20ke%20Direktur%20%26%20Founder&amp;body=Halo%20Direktur%20%26%20Founder%20PT%20Dirac%20Inovasi%20Nusantara%2C%0D%0A%0D%0ASaya%20ingin%20menyampaikan%20laporan%20pelanggan.%0D%0A%0D%0ANama%3A%20%0D%0AEmail%20akun%3A%20%0D%0ANomor%20pesanan%2Ftiket%20%28jika%20ada%29%3A%20%0D%0ATanggal%20%26%20waktu%20kejadian%3A%20%0D%0ARingkasan%3A%20%0D%0ABukti%20pendukung%20%28tanpa%20data%20rahasia%29%3A%20%0D%0A%0D%0ATerima%20kasih." style="display:block;padding:12px 14px;font-size:13px;line-height:1.35;font-weight:800;text-align:center;color:#FFFFFF;text-decoration:none"><font color="#FFFFFF" style="color:#FFFFFF">EMAIL&nbsp;&nbsp;•&nbsp;&nbsp;SIAPKAN LAPORAN</font></a></td></tr><tr><td style="height:9px;line-height:9px;font-size:0">&nbsp;</td></tr><tr><td bgcolor="#18794E" style="padding:0;border-radius:10px;background-color:#18794E"><a href="https://wa.me/62882009257589?text=Halo%20Direktur%20%26%20Founder%20PT%20Dirac%20Inovasi%20Nusantara%2C%0A%0ASaya%20ingin%20menyampaikan%20laporan%20pelanggan.%0A%0ANama%3A%20%0AEmail%20akun%3A%20%0ANomor%20pesanan%2Ftiket%20%28jika%20ada%29%3A%20%0ATanggal%20%26%20waktu%20kejadian%3A%20%0ARingkasan%3A%20%0ABukti%20pendukung%20%28tanpa%20data%20rahasia%29%3A%20%0A%0ATerima%20kasih." style="display:block;padding:12px 14px;font-size:13px;line-height:1.35;font-weight:800;text-align:center;color:#FFFFFF;text-decoration:none"><font color="#FFFFFF" style="color:#FFFFFF">WHATSAPP&nbsp;&nbsp;•&nbsp;&nbsp;+62 882-0092-57589</font></a></td></tr></table><p style="margin:12px 0 0;font-size:11px;line-height:1.5;color:#64748B">Template laporan sudah disiapkan. Lengkapi bagian yang kosong dan jangan sertakan password, OTP, PIN, CVV, passkey, cookie, token, atau secret.</p></td></tr></table></td></tr></table>';
+  return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" data-dirac-executive-report="v380" style="width:100%;margin:18px 0 0;border-collapse:collapse"><tr><td align="center" style="padding:0 12px"><table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#F7F9FC" style="width:100%;max-width:600px;border-collapse:separate;border-spacing:0;border:1px solid #CBD5E1;border-radius:16px;overflow:hidden;background-color:#F7F9FC"><tr><td style="padding:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="42%" bgcolor="#27B3CB" style="height:4px;line-height:4px;font-size:0;background-color:#27B3CB">&nbsp;</td><td width="34%" bgcolor="#2D6FAD" style="height:4px;line-height:4px;font-size:0;background-color:#2D6FAD">&nbsp;</td><td width="24%" bgcolor="#C69A32" style="height:4px;line-height:4px;font-size:0;background-color:#C69A32">&nbsp;</td></tr></table></td></tr><tr><td bgcolor="#F7F9FC" style="padding:18px 18px 17px;font-family:Arial,Helvetica,sans-serif;background-color:#F7F9FC;color:#172033"><div style="font-size:10px;line-height:1.4;font-weight:800;letter-spacing:.15em;color:#087A8F">JALUR PRIVAT PELANGGAN</div><div style="margin-top:5px;font-size:20px;line-height:1.28;font-weight:800;color:#0F172A">Lapor ke Direktur &amp; Founder</div><p style="margin:8px 0 14px;font-size:13px;line-height:1.55;color:#475569">Dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra dapat dilaporkan langsung kepada Achmad Zaenuddin, Direktur &amp; Founder PT Dirac Inovasi Nusantara.</p><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td bgcolor="#0B6F88" style="padding:0;border-radius:10px;background-color:#0B6F88"><a href="mailto:' + diracSupportEmailV250() + '?subject=Laporan%20Pelanggan%20ke%20Direktur%20%26%20Founder&amp;body=Halo%20Direktur%20%26%20Founder%20PT%20Dirac%20Inovasi%20Nusantara%2C%0D%0A%0D%0ASaya%20ingin%20menyampaikan%20laporan%20pelanggan.%0D%0A%0D%0ANama%3A%20%0D%0AEmail%20akun%3A%20%0D%0ANomor%20pesanan%2Ftiket%20%28jika%20ada%29%3A%20%0D%0ATanggal%20%26%20waktu%20kejadian%3A%20%0D%0ARingkasan%3A%20%0D%0ABukti%20pendukung%20%28tanpa%20data%20rahasia%29%3A%20%0D%0A%0D%0ATerima%20kasih." style="display:block;padding:12px 14px;font-size:13px;line-height:1.35;font-weight:800;text-align:center;color:#FFFFFF;text-decoration:none"><font color="#FFFFFF" style="color:#FFFFFF">EMAIL&nbsp;&nbsp;•&nbsp;&nbsp;SIAPKAN LAPORAN</font></a></td></tr><tr><td style="height:9px;line-height:9px;font-size:0">&nbsp;</td></tr><tr><td bgcolor="#18794E" style="padding:0;border-radius:10px;background-color:#18794E"><a href="https://wa.me/62882009257589?text=Halo%20Direktur%20%26%20Founder%20PT%20Dirac%20Inovasi%20Nusantara%2C%0A%0ASaya%20ingin%20menyampaikan%20laporan%20pelanggan.%0A%0ANama%3A%20%0AEmail%20akun%3A%20%0ANomor%20pesanan%2Ftiket%20%28jika%20ada%29%3A%20%0ATanggal%20%26%20waktu%20kejadian%3A%20%0ARingkasan%3A%20%0ABukti%20pendukung%20%28tanpa%20data%20rahasia%29%3A%20%0A%0ATerima%20kasih." style="display:block;padding:12px 14px;font-size:13px;line-height:1.35;font-weight:800;text-align:center;color:#FFFFFF;text-decoration:none"><font color="#FFFFFF" style="color:#FFFFFF">WHATSAPP&nbsp;&nbsp;•&nbsp;&nbsp;+62 882-0092-57589</font></a></td></tr></table><p style="margin:12px 0 0;font-size:11px;line-height:1.5;color:#64748B">Template laporan sudah disiapkan. Lengkapi bagian yang kosong dan jangan sertakan password, OTP, PIN, CVV, passkey, cookie, token, atau secret.</p></td></tr></table></td></tr></table>';
 }
 
 function diracExecutiveEscalationAppendTextV380(value) {
@@ -863,8 +863,11 @@ function diracExecutiveEscalationAppendHtmlV380(value) {
 }
 
 function diracSupportEmailV250() {
-  const explicit = String(process.env.DIRAC_SUPPORT_EMAIL || '').trim();
-  return explicit || ('support@' + diracBaseDomainV250());
+  return 'support@' + diracBaseDomainV250();
+}
+
+function diracCareEmailV250() {
+  return 'care@' + diracBaseDomainV250();
 }
 
 function diracUniversalRecoveryPrivateEnvNamesV250() {
@@ -31732,9 +31735,10 @@ function orderMailBuildNewOrderMessages(data) {
     ['Total akhir', total]
   ];
   const officialSupportText = [
+    'Website Resmi: ' + diracBaseOriginV250() + '/',
     'WhatsApp: 0878 9252 3968',
     'Email Support: ' + diracSupportEmailV250(),
-    'Email Perusahaan: companydirac@gmail.com',
+    'Email Perusahaan: ' + diracCareEmailV250(),
     ...diracSecuritySocialTextLinesV383()
   ];
   const paymentSafetyText = 'PT Dirac Inovasi Nusantara tidak pernah meminta password, OTP, PIN, CVV, atau data kartu melalui WhatsApp, Instagram, telepon, maupun balasan email.';
@@ -31933,7 +31937,8 @@ function orderMailHtmlShell(title, body, options = {}) {
   try { orderHost = new URL(orderUrl).hostname; } catch (_) {}
   const supportEmail = diracSupportEmailV250();
   const whatsappUrl = 'https://wa.me/6287892523968';
-  const companyEmail = 'companydirac@gmail.com';
+  const companyEmail = diracCareEmailV250();
+  const websiteUrl = diracBaseOriginV250() + '/';
   const bannerImage = diracSmtpHeaderImageUrlV332();
   const showActions = options.showActions !== false;
   const showBanner = options.showPromoImage !== false;
@@ -31970,6 +31975,7 @@ function orderMailHtmlShell(title, body, options = {}) {
               </div></div>
 
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:0 0 13px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
+                <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WEBSITE RESMI</div><a href="${orderMailEscapeHtml(websiteUrl)}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${orderMailEscapeHtml(websiteUrl)}</a></div></div></td></tr>
                 <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WHATSAPP</div><a href="${whatsappUrl}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">0878 9252 3968</a></div></div></td></tr>
                 <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL SUPPORT</div><a href="mailto:${orderMailEscapeHtml(supportEmail)}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${orderMailEscapeHtml(supportEmail)}</a></div></div></td></tr>
                 <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL PERUSAHAAN</div><a href="mailto:${companyEmail}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${companyEmail}</a></div></div></td></tr>
@@ -47700,7 +47706,7 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
     'Link resmi: ' + recoveryLink,
     'SECRET_EMAIL_100_CHAR: ' + String(context.emailSecret || ''),
     'Jangan bagikan email secret, link, atau isi pesan ini kepada pihak lain. Website secret hanya tampil di website yang masih login.',
-    'Bantuan resmi PT Dirac Inovasi Nusantara:\nWhatsApp: 0878 9252 3968\nEmail Support: ' + diracSupportEmailV250() + '\nEmail Perusahaan: companydirac@gmail.com\nInstagram: https://www.instagram.com/achzaenuddin15?stkn=MW4zc3FldjAzb21wNg%3D%3D&utm_source=qr',
+    'Bantuan resmi PT Dirac Inovasi Nusantara:\nWebsite Resmi: ' + diracBaseOriginV250() + '/\nWhatsApp: 0878 9252 3968\nEmail Support: ' + diracSupportEmailV250() + '\nEmail Perusahaan: ' + diracCareEmailV250() + '\nInstagram: https://www.instagram.com/achzaenuddin15?stkn=MW4zc3FldjAzb21wNg%3D%3D&utm_source=qr',
     'Tim PT Dirac Inovasi Nusantara tidak pernah meminta Secret Email, Secret Website, password, OTP, atau hasil decrypt melalui WhatsApp, Instagram, telepon, maupun balasan email.'
   ].join('\n\n'));
   const html = diracExecutiveEscalationAppendHtmlV380(customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(emailContext));
@@ -52366,7 +52372,7 @@ function diracUserSecurityConfigV327() {
   if (String(process.env.DIRAC_USER_SECURITY_EMAIL_ENABLED || '').trim().toLowerCase() !== 'true') return null;
   const resendApiKey = String(process.env.DIRAC_USER_SECURITY_RESEND_API_KEY || '').trim();
   const resendFromEmail = diracSecurityMailEmailV327(process.env.DIRAC_USER_SECURITY_RESEND_FROM_EMAIL);
-  const replyTo = diracSecurityMailEmailV327(process.env.DIRAC_USER_SECURITY_REPLY_TO);
+  const replyTo = diracSupportEmailV250();
   const smtpHost = String(process.env.DIRAC_USER_SECURITY_SMTP_HOST || '').trim().toLowerCase();
   const smtpPort = Number(process.env.DIRAC_USER_SECURITY_SMTP_PORT || 0);
   const smtpSecure = String(process.env.DIRAC_USER_SECURITY_SMTP_SECURE || '').trim().toLowerCase() === 'true';
@@ -52592,6 +52598,7 @@ function diracSecuritySocialTextLinesV383() {
 function diracSecurityCorporateEmailHtmlV327(input = {}) {
   const preheader = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.preheader || input.title || 'Notifikasi keamanan PT Dirac Inovasi Nusantara.', 180));
   const bannerUrl = diracSecurityMailEscapeV327(diracSecurityMailBannerUrlV327());
+  const websiteUrl = diracSecurityMailEscapeV327(diracBaseOriginV250() + '/');
   const brandLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.brandLabel || 'SECURE ACCOUNT RECOVERY', 80));
   const eyebrow = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.eyebrow || 'SECURITY ACTIVITY NOTICE', 90));
   const titleLines = String(input.title || 'Aktivitas Keamanan\nTerdeteksi').split(/\n+/).slice(0, 3)
@@ -52665,9 +52672,10 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1d1b17" style="width:100%;margin:28px 0;border-collapse:separate;border-spacing:0;border:1px solid #4a4030;border-radius:14px;overflow:hidden;background:#1d1b17;background-color:#1d1b17;background-image:linear-gradient(#1d1b17,#1d1b17)"><tr><td style="padding:18px 20px;border-left:4px solid #9a741f"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.14em;color:#f0c86c!important;-webkit-text-fill-color:#f0c86c!important;mso-color-alt:#f0c86c">${warningTitle}</div><p style="margin:10px 0 0;font-size:14px;line-height:1.65;color:#e8ebef!important;-webkit-text-fill-color:#e8ebef!important;mso-color-alt:#e8ebef">${warning}</p></div></div></td></tr></table>
           <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI PT Dirac Inovasi Nusantara</div><p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${supportLead}</p></div></div>
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:0 0 13px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
+            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WEBSITE RESMI</div><a href="${websiteUrl}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${websiteUrl}</a></div></div></td></tr>
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WHATSAPP</div><a href="https://wa.me/6287892523968" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">0878 9252 3968</a></div></div></td></tr>
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL SUPPORT</div><a href="mailto:${diracSecurityMailEscapeV327(diracSupportEmailV250())}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${diracSecurityMailEscapeV327(diracSupportEmailV250())}</a></div></div></td></tr>
-            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL PERUSAHAAN</div><a href="mailto:companydirac@gmail.com" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">companydirac@gmail.com</a></div></div></td></tr>
+            <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL PERUSAHAAN</div><a href="mailto:${diracCareEmailV250()}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${diracCareEmailV250()}</a></div></div></td></tr>
             ${socialSupportRowHtml}
           </table>
           <div class="gmail-blend-screen"><div class="gmail-blend-difference"><p style="margin:0;font-size:12px;line-height:1.65;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tim PT Dirac Inovasi Nusantara tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui WhatsApp, Instagram, telepon, maupun balasan email.</p></div></div>
@@ -52709,9 +52717,10 @@ function diracSecurityMailTextV327(input = {}) {
     diracSecurityMailCleanV327(input.warning || '', 700),
     '',
     'Pusat keamanan: ' + diracSecurityMailOfficialUrlV327(input.actionUrl || (diracRoleOriginV250('security') + '/keamanan.html'), diracRoleOriginV250('security') + '/keamanan.html'),
+    'Website Resmi: ' + diracBaseOriginV250() + '/',
     'WhatsApp: 0878 9252 3968',
     'Email Support: ' + diracSupportEmailV250(),
-    'Email Perusahaan: companydirac@gmail.com',
+    'Email Perusahaan: ' + diracCareEmailV250(),
     ...diracSecuritySocialTextLinesV383(),
     '',
     'PT Dirac Inovasi Nusantara tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau material keamanan melalui telepon, chat, atau balasan email.',
@@ -53972,7 +53981,7 @@ async function diracInvoiceMailSmtpV420(message, config, binding) {
       return Object.freeze({ ok: false, provider: 'gmail_smtp', status: 0, code: 'INVOICE_MAIL_DELIVERY_BUDGET_EXHAUSTED' });
     }
     last = await diracCustomerMailGmailAttemptV352(message,
-      Object.freeze({ ...config, timeoutMs: Math.min(Math.max(1000, Math.min(15000, Number(config.timeoutMs || 7000))), remaining) }), account, account.slot);
+      Object.freeze({ ...config, replyTo: message.replyTo, timeoutMs: Math.min(Math.max(1000, Math.min(15000, Number(config.timeoutMs || 7000))), remaining) }), account, account.slot);
     if (last.ok || !last.quotaLimited || last.deliveryAmbiguous) return last;
   }
   return last;
@@ -53996,18 +54005,19 @@ async function diracInvoiceAttachmentSendV420(input, capability) {
   const config = diracUserSecurityConfigV327();
   if (!config || !config.brevoApiKey || !config.brevoFromEmail || !config.resendApiKey || !config.resendFromEmail
       || !diracCustomerMailSmtpPoolV354(config).ok) return rejected('INVOICE_MAIL_CONFIGURATION_UNAVAILABLE');
+  const invoiceReplyTo = diracCareEmailV250();
   if (Buffer.byteLength(JSON.stringify([
     input.subject, diracExecutiveEscalationAppendTextV380(input.text), diracExecutiveEscalationAppendHtmlV380(input.html),
-    config.replyTo || '', binding.email
+    invoiceReplyTo, binding.email
   ]), 'utf8') > 96 * 1024) return rejected('INVOICE_MAIL_BODY_TOO_LARGE');
   const message = Object.freeze({ fromName: 'PT Dirac Inovasi Nusantara', recipients: Object.freeze([binding.email]),
-    replyTo: config.replyTo, subject: input.subject, text: input.text, html: input.html, reference: binding.reference });
+    replyTo: invoiceReplyTo, subject: input.subject, text: input.text, html: input.html, reference: binding.reference });
   const stored = { binding, filename: 'invoice-' + binding.reference + '.pdf', base64: attachment.content.toString('base64') };
   DIRAC_INVOICE_MAIL_MESSAGES_V420.set(message, stored);
   let dispatched = false;
   try {
     // Preflight the largest representation before attempting any provider.
-    diracInvoiceMailMimeV420(message, { user: config.smtpUser }, config.replyTo || '');
+    diracInvoiceMailMimeV420(message, { user: config.smtpUser }, invoiceReplyTo);
     dispatched = true;
     const result = await diracSecurityMailProviderCascadeV330(message, config, () => diracInvoiceMailSmtpV420(message, config, binding));
     const accepted = Boolean(result && result.ok === true);
@@ -54865,7 +54875,7 @@ orderMailSmtpConfig = function orderMailSmtpConfigRolePartitionV352(kind) {
     const dedicatedFromEmail = orderMailNormalizeEmail(process.env.ORDER_OWNER_FROM_EMAIL || user);
     const cascade = diracUserSecurityConfigV327();
     const configuredRecipients = orderMailOwnerRecipientListV129();
-    const fallbackOwner = orderMailNormalizeEmail('companydirac@gmail.com');
+    const fallbackOwner = orderMailNormalizeEmail(diracCareEmailV250());
     const recipients = configuredRecipients.length ? configuredRecipients : (fallbackOwner ? [fallbackOwner] : []);
     const smtpConfigured = host === 'smtp.gmail.com' && port === 465 && secure === true && user && dedicatedFromEmail === user
       && /^[A-Za-z0-9]{16,128}$/.test(pass) && recipients.length > 0;
@@ -61846,7 +61856,7 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
   async function verifyOwner() { assertContext(); await diracInvoicePaidDataV440(proof, db, false); assertContext(); return true; }
   const operations = Object.freeze({
     version: 'dirac-invoice-v440', action, method: ctx.method, body: source,
-    identity: Object.freeze({ userId: proof.userId, customerId: proof.customerId, email, origin }), assertFullGuard: assertContext, verifyOwner, read, onPrepared,
+    identity: Object.freeze({ userId: proof.userId, customerId: proof.customerId, email, origin, orderDatabase: proof.orderDatabase }), assertFullGuard: assertContext, verifyOwner, read, onPrepared,
     reconcileOnly: continuation && diracInvoiceContinuationStateV441(req).reconcileOnly === true,
     document: async () => { assertContext(); const data = await diracInvoicePaidDataV440(proof, db, true); assertContext(); return ptdin.__diracInvoiceDocumentV440(data, { userId: proof.userId, customerId: proof.customerId, email, origin }, { nib: process.env.DIRAC_INVOICE_NIB, npwp: process.env.DIRAC_INVOICE_NPWP }); },
     storageKey: () => { assertContext(); return crypto.createHmac('sha256', diracCentralRootSecretV146()).update('DIRAC_INVOICE_V440_STORAGE:' + proof.userId + ':' + proof.customerId).digest(); },

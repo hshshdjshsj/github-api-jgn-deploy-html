@@ -288,10 +288,11 @@ async function invoiceBusinessV440(req, res, ops) {
   if (!ops || !Object.isFrozen(ops) || ops.version !== INVOICE_VERSION_V440 || typeof ops.assertFullGuard !== 'function' || !INVOICE_ACTIONS_V440.includes(ops.action)) throw invoiceErrorV440('INVOICE_FULL_GUARD_REQUIRED', 403);
   const identity = ops.identity, input = ops.body || {};
   ops.assertFullGuard();
-  if (!identity || !Object.isFrozen(identity) || !/^[0-9a-f-]{36}$/.test(identity.customerId) || !/^[0-9a-f-]{36}$/.test(identity.userId) || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(identity.email)) throw invoiceErrorV440('INVOICE_OWNER_REQUIRED', 403);
+  if (!identity || !Object.isFrozen(identity) || !/^[0-9a-f-]{36}$/.test(identity.customerId) || !/^[0-9a-f-]{36}$/.test(identity.userId) || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(identity.email) || !/^(commerce|security|domain)$/.test(String(identity.orderDatabase || ''))) throw invoiceErrorV440('INVOICE_OWNER_REQUIRED', 403);
   const order = String(input.order_id || ''), kind = String(input.kind || '');
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(order) || !['regular', 'domain'].includes(kind)) return res.status(400).json({ ok: false, code: 'INVOICE_SCOPE_INVALID' });
-  const scope = invoiceHashV440(JSON.stringify([identity.userId, identity.customerId, kind, order]));
+  const scopeParts = kind === 'regular' && identity.orderDatabase === 'security' ? [identity.userId, identity.customerId, kind, order, 'security'] : [identity.userId, identity.customerId, kind, order];
+  const scope = invoiceHashV440(JSON.stringify(scopeParts));
   const prefix = 's2s-invoice-v440:', rateKey = prefix + 'send:' + scope, headKey = prefix + 'latest:' + scope;
   const fileKey = id => prefix + 'file:' + invoiceHashV440(scope + ':' + id);
   const transportKey = id => prefix + 'transport:' + invoiceHashV440(scope + ':' + id);
@@ -427,8 +428,9 @@ function invoiceDocumentV440(data, identity, issuer) {
   const method = labels[String(tx.metadata && tx.metadata.midtrans_payment_type || '').toLowerCase()] || 'Sudah dibayar; metode belum tercatat';
   const legal = issuer || {}, missing = 'Belum dicantumkan';
   let website; try { website = new URL(identity.origin).hostname.replace(/^pt\./,''); } catch (_) { return invalid(); }
+  const careEmail = 'care@' + website;
   return {eligible:true,id:row.id,reference:domain ? 'DOM-'+String(row.id).slice(0,8).toUpperCase() : copy(row.order_id || row.id,253),date,currency:'IDR',total,orderStatus:status(row.order_status),paymentStatus:'Sudah dibayar',method,
-    issuer:{name:'PT Dirac Inovasi Nusantara',nib:invoiceLegalIdentifier(legal.nib,13,13)||missing,npwp:invoiceLegalIdentifier(legal.npwp,15,16)||missing,address:'GJ3X+HHH, RT.4/RW.1, Kedunggiling, Gelang, Kec. Tulangan, Kabupaten Sidoarjo, Jawa Timur 61273.',email:'companydirac@gmail.com',phone:'0878-9252-3968'},
+    issuer:{name:'PT Dirac Inovasi Nusantara',nib:invoiceLegalIdentifier(legal.nib,13,13)||missing,npwp:invoiceLegalIdentifier(legal.npwp,15,16)||missing,address:'GJ3X+HHH, RT.4/RW.1, Kedunggiling, Gelang, Kec. Tulangan, Kabupaten Sidoarjo, Jawa Timur 61273.',email:careEmail,phone:'0878-9252-3968'},
     buyer:{name:copy(row.customer_name,160,missing),email:copy(row.customer_email || (domain && row.owner_email),254,identity.email),phone:copy(domain?row.customer_whatsapp:row.customer_phone,80,missing),address:copy(row.shipping_address,600,missing)},
     items,totals:[['Subtotal',subtotal],['Ongkos kirim',shipping],['Diskon',discount],['Dasar pengenaan pajak',taxable],['Pajak',tax]],legalMissing:!invoiceLegalIdentifier(legal.nib,13,13)||!invoiceLegalIdentifier(legal.npwp,15,16),website};
 }
@@ -602,7 +604,7 @@ function invoiceLayout(doc){
       pageOps.push({kind:'social',platform:platform,x:x,y:top+4,w:23,h:23});
       label(platform,x+33,top,320,13,muted,600);label('PT DIRAC INOVASI NUSANTARA',x+33,top+19,320,14,navy,600);
     });
-    label('Website: '+doc.website+'   |   Email: companydirac@gmail.com   |   WhatsApp: +6287892523968',72,1610,1096,16,ink);
+    label('Website: '+doc.website+'   |   Email: '+doc.issuer.email+'   |   WhatsApp: +6287892523968',72,1610,1096,16,ink);
     label('Alamat penerbit: '+doc.issuer.address,72,1652,1096,14,muted);
     label('Invoice transaksi · Bukan faktur pajak',72,1711,910,13,muted);
     label(String(index+1).padStart(2,'0')+' / '+String(pages.length).padStart(2,'0'),1058,1710,110,17,navy,600,'right');
