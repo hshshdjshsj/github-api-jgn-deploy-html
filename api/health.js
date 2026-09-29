@@ -2663,6 +2663,17 @@ function diracPersistentBlockedUntilCandidateV331(value) {
 
 const DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 = 253370764800000;
 
+function diracPersistentSecurityRetiredAdminReportBanV446(record) {
+  const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
+  return String(source.type || '') === 'central_external_ban_v354'
+    && String(source.patch || '') === 'dirac-central-ban-authority-v354'
+    && String(source.action || '') === 'external_security_violation'
+    && String(source.method || '').toUpperCase() === 'POST'
+    && String(source.reason || '') === 'admin_failure:admin_security_report_one_strike'
+    && String(source.source || '') === 'health.js'
+    && String(source.risk || '') === 'high';
+}
+
 function diracPersistentSecurityRecordIsBanV363(record, securityKey) {
   const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
   const type = String(source.type || '').trim();
@@ -2802,9 +2813,11 @@ async function readPersistentSecurityJsonStrictV194(securityKey) {
         || (rawExpiresAt && !Number.isFinite(expiresAtMs))) {
       return { ok: false, found: false, record: null };
     }
-    const blockedUntilMs = diracPersistentSecurityRecordIsPermanentV335(recordJson, key)
-      ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
-      : parsedBlockedUntilMs;
+    const blockedUntilMs = diracPersistentSecurityRetiredAdminReportBanV446(recordJson)
+      ? 0
+      : diracPersistentSecurityRecordIsPermanentV335(recordJson, key)
+        ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
+        : parsedBlockedUntilMs;
     const record = recordJson && typeof recordJson === 'object'
       ? { ...recordJson, blocked_until_ms: blockedUntilMs }
       : { blocked_until_ms: blockedUntilMs };
@@ -2863,9 +2876,11 @@ async function readPersistentSecurityJsonManyStrictV194(securityKeys) {
         return { ok: false, records: [] };
       }
       seen.add(rowKey);
-      const blockedUntilMs = diracPersistentSecurityRecordIsPermanentV335(recordJson, rowKey)
-        ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
-        : parsedBlockedUntilMs;
+      const blockedUntilMs = diracPersistentSecurityRetiredAdminReportBanV446(recordJson)
+        ? 0
+        : diracPersistentSecurityRecordIsPermanentV335(recordJson, rowKey)
+          ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
+          : parsedBlockedUntilMs;
       if (blockedUntilMs <= now && Number.isFinite(expiresAtMs) && expiresAtMs <= now) {
         continue;
       }
@@ -20600,7 +20615,11 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
     if (!context || context.ok !== true) throw new Error('PAID_OWNER_DOCUMENT_UNAVAILABLE');
     const config = orderMailSmtpConfig(role);
     const recipients = role === 'customer' ? [job.recipient.email] : config.recipients;
-    if (!(role === 'customer' ? orderMailCustomerEnabled() : orderMailOwnerEnabled()) || !config.configured || !recipients.length) throw new Error('PAID_OWNER_MAIL_NOT_CONFIGURED');
+    const ownerBlindRecipients = role === 'customer'
+      ? orderMailOwnerRecipientListV129().filter((emailAddress) => emailAddress !== job.recipient.email)
+      : [];
+    if (!(role === 'customer' ? orderMailCustomerEnabled() : orderMailOwnerEnabled()) || !config.configured || !recipients.length
+        || (role === 'customer' && !ownerBlindRecipients.length)) throw new Error('PAID_OWNER_MAIL_NOT_CONFIGURED');
     const mail = role === 'customer' ? { ...context.mail, customer: { ...context.mail.customer, email: job.recipient.email } } : context.mail;
     const messages = orderMailBuildNewOrderMessages(orderMailNormalizeOrderInput(mail));
     const now = Date.now(), transportRecord = { version: lane.recordVersion || 'dirac-paid-owner-v441', scope: lane.ownerScope,
@@ -20616,7 +20635,7 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
     // Recipient and payment capability must still be valid immediately before transport.
     diracPaidReceiptLaneV443(job, role);
     started = true;
-    const result = await orderMailSendViaSmtpSafe(config, { to: recipients, subject: messages[role + 'Subject'],
+    const result = await orderMailSendViaSmtpSafe(config, { to: recipients, bcc: ownerBlindRecipients, subject: messages[role + 'Subject'],
       text: messages[role + 'Text'], html: messages[role + 'Html'], fromName: config.fromName, fromEmail: config.fromEmail }, timing ? { timing, role } : null);
     status = result && result.ok === true ? 'accepted' : 'unknown';
     return { sent: status === 'accepted', status };
@@ -20670,22 +20689,22 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
       let customerClaimReady = false, ownerClaimReady = false;
       try { await diracPaidOwnerClaimV441(job, 'customer'); customerClaimReady = true; } catch (_) {}
       try { await diracPaidOwnerClaimV441(job); ownerClaimReady = true; } catch (_) {}
-      phase = 'customer';
+      phase = 'dual_delivery';
       diracPaidMailTimingMarkV371(input.timing, 'mail_start');
       try {
-        if (!customerClaimReady) throw new Error('PAID_CUSTOMER_CLAIM_UNAVAILABLE');
+        if (!customerClaimReady || !ownerClaimReady) throw new Error('PAID_DUAL_CLAIM_UNAVAILABLE');
         customerResult = await diracPaidOwnerSendV441(job, input.mail, input.timing, 'customer');
         customerResolved = true;
       } catch (_) { customerResult = { sent: false, status: 'failed' }; }
       customerStatus = customerResult && ['idle','pending','accepted','failed','unknown'].includes(customerResult.status) ? customerResult.status : 'failed';
-      // Automatic receipts never call the manual PDF preparation/cooldown path.
-      // Failure in either recipient does not suppress the other recipient.
-      phase = 'owner';
+      ownerStatus = customerStatus;
       try {
-        if (!ownerClaimReady) throw new Error('PAID_OWNER_CLAIM_UNAVAILABLE');
-        ownerResult = await diracPaidOwnerSendV441(job, input.mail, input.timing);
-      } catch (_) { ownerResult = { sent: false, status: 'failed' }; }
-      ownerStatus = ownerResult && ['idle','pending','accepted','failed','unknown'].includes(ownerResult.status) ? ownerResult.status : 'failed';
+        if (job.ownerClaimed === true) {
+          const ownerFinished = await diracPaidOwnerFinishV441(job, ownerStatus);
+          if (ownerFinished !== true) throw new Error('PAID_OWNER_RECEIPT_FINALIZE_UNAVAILABLE');
+        }
+        ownerResult = { sent: !!(customerResult && customerResult.sent === true), skipped: !!(customerResult && customerResult.skipped === true), status: ownerStatus, shared_submission: true };
+      } catch (_) { ownerStatus = 'unknown'; ownerResult = { sent: false, status: 'unknown', shared_submission: true }; }
       settled = true;
       const dualAccepted = customerResolved && customerStatus === 'accepted' && ownerStatus === 'accepted';
       if (dualAccepted) {
@@ -54159,6 +54178,7 @@ async function diracSecurityMailBrevoV330(message, config) {
     headers: { 'X-Dirac-Reference': String(message.reference || '').slice(0, 64) }
   };
   if (message.replyTo) payload.replyTo = { name: 'PT Dirac Inovasi Nusantara', email: message.replyTo };
+  if (Array.isArray(message.bccRecipients) && message.bccRecipients.length) payload.bcc = message.bccRecipients.map((emailAddress) => ({ email: emailAddress }));
   const invoiceAttachmentV420 = diracInvoiceMailAttachmentV420(message);
   if (invoiceAttachmentV420) payload.attachment = [{ name: invoiceAttachmentV420.filename, content: invoiceAttachmentV420.base64 }];
   return diracSecurityMailProviderHttpV330('brevo', 'https://api.brevo.com/v3/smtp/email', {
@@ -54177,6 +54197,7 @@ async function diracSecurityMailResendV330(message, config) {
     html: diracExecutiveEscalationAppendHtmlV380(String(message.html || ''))
   };
   if (message.replyTo) payload.reply_to = message.replyTo;
+  if (Array.isArray(message.bccRecipients) && message.bccRecipients.length) payload.bcc = message.bccRecipients;
   const invoiceAttachmentV420 = diracInvoiceMailAttachmentV420(message);
   if (invoiceAttachmentV420) payload.attachments = [{ filename: invoiceAttachmentV420.filename, content: invoiceAttachmentV420.base64 }];
   return diracSecurityMailProviderHttpV330('resend', 'https://api.resend.com/emails', {
@@ -54646,7 +54667,8 @@ async function diracCustomerMailGmailAttemptV352(message, config, account, slot)
     await diracRegisterEmailSmtpCommandV331(socket, reader, 'AUTH PLAIN ' + authBytes.toString('base64'), 235, deadline);
     stage = 'mail_from';
     await diracRegisterEmailSmtpCommandV331(socket, reader, 'MAIL FROM:<' + account.user + '>', 250, deadline);
-    for (const recipient of message.recipients || []) {
+    const envelopeRecipients = Array.from(new Set([...(message.recipients || []), ...(message.bccRecipients || [])]));
+    for (const recipient of envelopeRecipients) {
       stage = 'recipient';
       await diracRegisterEmailSmtpCommandV331(socket, reader, 'RCPT TO:<' + recipient + '>', [250, 251], deadline);
     }
@@ -54909,10 +54931,12 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
         if (config.smtpConfigured) return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message, diagnosticV371);
         return { ok: false, error: 'customer_cascade_not_configured' };
       }
+      const recipients = Array.from(new Set((message.to || []).map(orderMailNormalizeEmail).filter(Boolean)));
+      const bccRecipients = Array.from(new Set((message.bcc || []).map(orderMailNormalizeEmail).filter((emailAddress) => emailAddress && !recipients.includes(emailAddress))));
       const generic = Object.freeze({
-        fromName: 'PT Dirac Inovasi Nusantara', recipients: Array.from(new Set((message.to || []).map(orderMailNormalizeEmail).filter(Boolean))),
+        fromName: 'PT Dirac Inovasi Nusantara', recipients, bccRecipients,
         replyTo: customerCfg.replyTo, subject: String(message.subject || 'PT Dirac Inovasi Nusantara'), text: String(message.text || ''),
-        html: String(message.html || ''), reference: crypto.createHash('sha256').update(String(message.subject || '') + '|' + String((message.to || [])[0] || '')).digest('hex').slice(0, 32)
+        html: String(message.html || ''), reference: crypto.createHash('sha256').update(String(message.subject || '') + '|' + String(recipients[0] || '') + '|' + bccRecipients.join(',')).digest('hex').slice(0, 32)
       });
       const result = await diracSecurityMailProviderCascadeV330(
         generic,
