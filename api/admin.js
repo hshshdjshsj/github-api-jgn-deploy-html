@@ -61,6 +61,7 @@ const ORDER_SELECT = Object.freeze({
   laboratorium: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
   domain: 'id,customer_id,customer_name,customer_email,customer_whatsapp,domain_name,total_price,currency,payment_status,order_status,created_at'
 });
+const DOMAIN_ORDER_COMPAT_SELECT = 'id,customer_id,domain_name,total_price,payment_status,order_status,created_at';
 const SHIPMENT_PREFIX = 's2s-admin-shipment-v406:';
 const SHIPMENT_SELECT = 'security_key,record_json,blocked_until_ms,expires_at,updated_at';
 const ACCESS_BLOCK_SELECT = 'security_key,record_json,blocked_until_ms,expires_at';
@@ -1016,16 +1017,19 @@ function orderPublic(row, kind) {
   const total = Number(row.total === undefined ? row.total_price : row.total); if (!Number.isFinite(total)) fail('ADMIN_ORDER_RECORD_INVALID', 503);
   return { id: row.id, kind, order_id: String(row.order_id || (kind === 'domain' ? 'DOM-' + row.id.slice(0, 8).toUpperCase() : row.id)), customer_id: row.customer_id, customer_name: String(row.customer_name || '').slice(0, 160), customer_email: String(row.customer_email || '').slice(0, 254), customer_phone: String(row.customer_phone || row.customer_whatsapp || '').slice(0, 40), shipping_address: String(row.shipping_address || '').slice(0, 600), service_type: kind === 'domain' ? 'domain' : String(row.service_type || '').slice(0, 60), domain_name: String(row.domain_name || '').slice(0, 254), total, currency: String(row.currency || 'IDR').slice(0, 8), payment_method: String(row.payment_method || '').slice(0, 80), payment_status: String(row.payment_status || '').slice(0, 40), order_status: String(row.order_status || '').slice(0, 40), created_at: row.created_at };
 }
+function domainOrderUndefinedColumn(result) { return !!(result && result.ok === false && result.status === 400 && result.data && String(result.data.code || '') === '42703'); }
 async function businessOrders(body) {
   const kind = String(body.kind || 'regular'), offsetRaw = String(body.offset || '0'); if (!Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 50000) fail('ADMIN_PAGE_INVALID', 400);
-  const table = kind === 'domain' ? 'domain_orders' : 'orders', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + '&order=created_at.desc,id.desc&limit=41&offset=' + Number(offsetRaw), result = await dbFetch(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
+  const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&order=created_at.desc,id.desc&limit=41&offset=' + Number(offsetRaw), path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await dbFetch(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
+  if (kind === 'domain' && domainOrderUndefinedColumn(result)) result = await dbFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(DOMAIN_ORDER_COMPAT_SELECT) + suffix, { method: 'GET' });
   if (!result.ok || !Array.isArray(result.data) || result.data.length > 41) fail('ADMIN_DATA_UNAVAILABLE', 503); const rows = result.data, orders = rows.slice(0, 40).map(row => orderPublic(row, kind)), keys = orders.map(row => shipmentKey(kind, row.id));
   let shipments = []; if (keys.length) { const shipped = await dbFetch('/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=in.(' + keys.map(encodeURIComponent).join(',') + ')&limit=' + keys.length, { method: 'GET' }, 'security'); if (!shipped.ok || !Array.isArray(shipped.data) || shipped.data.length > keys.length) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); shipments = shipped.data; }
   const map = new Map(); shipments.forEach(row => { if (!keys.includes(row && row.security_key) || map.has(row.security_key)) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); const value = validateShipmentRow(row, row.security_key), order = orders.find(item => item.id === (value && value.order_id)); if (!value || !order || order.customer_id !== value.customer_id) fail('ADMIN_SHIPMENT_OWNER_MISMATCH', 503); map.set(row.security_key, value); });
   return { ok: true, kind, offset: Number(offsetRaw), has_more: rows.length === 41, orders: orders.map(row => ({ ...row, shipment: shipmentPublic(map.get(shipmentKey(kind, row.id))) })), time: new Date().toISOString() };
 }
 async function loadOrder(kind, id) {
-  const table = kind === 'domain' ? 'domain_orders' : 'orders', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + '&id=eq.' + encodeURIComponent(id) + '&limit=2', result = await dbFetch(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
+  const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&id=eq.' + encodeURIComponent(id) + '&limit=2', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await dbFetch(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
+  if (kind === 'domain' && domainOrderUndefinedColumn(result)) result = await dbFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(DOMAIN_ORDER_COMPAT_SELECT) + suffix, { method: 'GET' });
   if (!result.ok || !Array.isArray(result.data)) fail('ADMIN_DATA_UNAVAILABLE', 503); if (result.data.length !== 1 || result.data[0].id !== id) fail('ADMIN_ORDER_NOT_FOUND', 404); return orderPublic(result.data[0], kind);
 }
 async function loadShipment(key) {

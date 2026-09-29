@@ -20670,9 +20670,6 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
       let customerClaimReady = false, ownerClaimReady = false;
       try { await diracPaidOwnerClaimV441(job, 'customer'); customerClaimReady = true; } catch (_) {}
       try { await diracPaidOwnerClaimV441(job); ownerClaimReady = true; } catch (_) {}
-      // Only acknowledge early when both receipt claims are durable and the
-      // complete task is already registered with the runtime.
-      if (attached && customerClaimReady && ownerClaimReady) reply(200);
       phase = 'customer';
       diracPaidMailTimingMarkV371(input.timing, 'mail_start');
       try {
@@ -20690,12 +20687,23 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
       } catch (_) { ownerResult = { sent: false, status: 'failed' }; }
       ownerStatus = ownerResult && ['idle','pending','accepted','failed','unknown'].includes(ownerResult.status) ? ownerResult.status : 'failed';
       settled = true;
-      const terminal = status => status === 'accepted' || status === 'unknown' || (job.reconcileOnly && status === 'idle');
-      if (customerResolved && terminal(customerStatus) && terminal(ownerStatus)) {
+      const dualAccepted = customerResolved && customerStatus === 'accepted' && ownerStatus === 'accepted';
+      if (dualAccepted) {
         phase = 'finalize';
         const finalized = await midtransFinalizeGatewayEventV350(job.cap.gatewayEventId, job.cap.customerId);
         if (!finalized || finalized.ok !== true) throw new Error('PAID_EVENT_FINALIZE_UNAVAILABLE');
         eventFinalized = true;
+      } else {
+        phase = 'dual_delivery_incomplete';
+        try {
+          diracSecurityAlertScheduleV320(job.ctx, 'central_exception', {
+            reason: 'paid_order_dual_delivery_incomplete',
+            severity: 'critical',
+            incident_code: 'PAID_ORDER_DUAL_MAIL_INCOMPLETE',
+            diagnostic_code: 'customer_' + customerStatus + '__owner_' + ownerStatus,
+            failure_point: 'automatic_paid_invoice_delivery'
+          });
+        } catch (_) {}
       }
       reply(eventFinalized ? 200 : 503);
       return { handled: true, acknowledged: job.acknowledged };
@@ -54873,17 +54881,22 @@ orderMailSmtpConfig = function orderMailSmtpConfigRolePartitionV352(kind) {
     const pass = String(process.env.ORDER_OWNER_SMTP_PASS || process.env.ORDER_OWNER_SMTP_PASSWORD || '').replace(/\s+/g, '');
     const fromName = orderMailCleanText(process.env.ORDER_OWNER_FROM_NAME || 'PT Dirac Inovasi Nusantara', 80);
     const dedicatedFromEmail = orderMailNormalizeEmail(process.env.ORDER_OWNER_FROM_EMAIL || user);
-    const cascade = diracUserSecurityConfigV327();
     const configuredRecipients = orderMailOwnerRecipientListV129();
-    const fallbackOwner = orderMailNormalizeEmail(diracCareEmailV250());
-    const recipients = configuredRecipients.length ? configuredRecipients : (fallbackOwner ? [fallbackOwner] : []);
-    const smtpConfigured = host === 'smtp.gmail.com' && port === 465 && secure === true && user && dedicatedFromEmail === user
+    const securityAlertConfig = typeof diracSecurityAlertConfigV320 === 'function' ? diracSecurityAlertConfigV320() : null;
+    const recipients = configuredRecipients.length ? configuredRecipients
+      : (securityAlertConfig && Array.isArray(securityAlertConfig.recipients) ? securityAlertConfig.recipients : []);
+    const dedicatedSmtpConfigured = host === 'smtp.gmail.com' && port === 465 && secure === true && user && dedicatedFromEmail === user
       && /^[A-Za-z0-9]{16,128}$/.test(pass) && recipients.length > 0;
-    const cascadeConfigured = Boolean(!smtpConfigured && cascade && recipients.length);
-    const fromEmail = smtpConfigured ? dedicatedFromEmail : (cascade ? (cascade.brevoFromEmail || cascade.resendFromEmail || cascade.smtpUser) : '');
-    return { kind: 'owner', host, port, secure, user, pass, fromName, fromEmail, recipients,
-      configured: Boolean(smtpConfigured || cascadeConfigured), smtpConfigured: Boolean(smtpConfigured), providerConfigured: Boolean(cascadeConfigured),
-      ownerCascadeV367: cascadeConfigured ? cascade : null, patch: DIRAC_MAIL_ROLE_PARTITION_V352 };
+    if (dedicatedSmtpConfigured) {
+      return { kind: 'owner', host, port, secure, user, pass, fromName, fromEmail: dedicatedFromEmail, recipients,
+        configured: true, smtpConfigured: true, providerConfigured: false, ownerCascadeV367: null, patch: DIRAC_MAIL_ROLE_PARTITION_V352 };
+    }
+    const alertSmtpConfigured = Boolean(securityAlertConfig && recipients.length);
+    return { kind: 'owner', host: alertSmtpConfigured ? securityAlertConfig.host : '', port: alertSmtpConfigured ? securityAlertConfig.port : 465,
+      secure: alertSmtpConfigured ? securityAlertConfig.secure : true, user: alertSmtpConfigured ? securityAlertConfig.user : '',
+      pass: alertSmtpConfigured ? securityAlertConfig.appPassword : '', fromName: alertSmtpConfigured ? securityAlertConfig.fromName : fromName,
+      fromEmail: alertSmtpConfigured ? securityAlertConfig.fromEmail : '', recipients, configured: alertSmtpConfigured,
+      smtpConfigured: alertSmtpConfigured, providerConfigured: false, ownerCascadeV367: null, patch: DIRAC_MAIL_ROLE_PARTITION_V352 };
   }
   return orderMailSmtpConfigBeforeRolePartitionV352(kind);
 };
@@ -54916,24 +54929,8 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
       return result;
     }
     if (config && config.kind === 'owner') {
-      const ownerCfg = config.ownerCascadeV367 || diracUserSecurityConfigV327();
-      if (!ownerCfg) {
-        if (config.smtpConfigured) return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message, diagnosticV371);
-        return { ok: false, error: 'owner_mail_transport_not_configured' };
-      }
-      const recipients = Array.from(new Set((message.to || config.recipients || []).map(orderMailNormalizeEmail).filter(Boolean)));
-      if (!recipients.length) return { ok: false, error: 'owner_email_missing' };
-      const generic = Object.freeze({
-        fromName: 'PT Dirac Inovasi Nusantara', recipients, replyTo: ownerCfg.replyTo, subject: String(message.subject || 'PT Dirac Inovasi Nusantara'), text: String(message.text || ''),
-        html: String(message.html || ''), reference: crypto.createHash('sha256').update('owner|' + String(message.subject || '') + '|' + recipients.join(',')).digest('hex').slice(0, 32)
-      });
-      const result = await diracSecurityMailProviderCascadeV330(
-        generic,
-        ownerCfg,
-        () => diracCustomerMailSmtpCascadeV352(generic, ownerCfg)
-      );
-      if (result && result.ok === true) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, result.provider || 'owner_provider');
-      return result;
+      if (!config.smtpConfigured) return { ok: false, error: 'owner_smtp_not_configured' };
+      return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message, diagnosticV371);
     }
     return await orderMailSendViaSmtpSafeBeforeRolePartitionV352(config, message, diagnosticV371);
   } catch (error) {
