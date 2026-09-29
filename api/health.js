@@ -2665,13 +2665,20 @@ const DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 = 253370764800000;
 
 function diracPersistentSecurityRetiredAdminReportBanV446(record) {
   const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
-  return String(source.type || '') === 'central_external_ban_v354'
+  const createdAtMs = Date.parse(String(source.created_at || ''));
+  const knownFalsePositiveV446 = Number.isFinite(createdAtMs)
+    && ((createdAtMs >= 1790676120000 && createdAtMs <= 1790676135000)
+      || (createdAtMs >= 1790678115000 && createdAtMs <= 1790678130000));
+  return knownFalsePositiveV446
+    && String(source.type || '') === 'central_external_ban_v354'
     && String(source.patch || '') === 'dirac-central-ban-authority-v354'
     && String(source.action || '') === 'external_security_violation'
     && String(source.method || '').toUpperCase() === 'POST'
     && String(source.reason || '') === 'admin_failure:admin_security_report_one_strike'
     && String(source.source || '') === 'health.js'
-    && String(source.risk || '') === 'high';
+    && String(source.risk || '') === 'high'
+    && source.identity_email_verified === true
+    && Number(source.blocked_until_ms || 0) === DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
 }
 
 function diracPersistentSecurityRecordIsBanV363(record, securityKey) {
@@ -20615,8 +20622,11 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
     if (!context || context.ok !== true) throw new Error('PAID_OWNER_DOCUMENT_UNAVAILABLE');
     const config = orderMailSmtpConfig(role);
     const recipients = role === 'customer' ? [job.recipient.email] : config.recipients;
+    const configuredOwnerRecipients = role === 'customer' ? orderMailOwnerRecipientListV129() : [];
+    const alertOwnerConfig = role === 'customer' && configuredOwnerRecipients.length === 0 && typeof diracSecurityAlertConfigV320 === 'function'
+      ? diracSecurityAlertConfigV320() : null;
     const ownerBlindRecipients = role === 'customer'
-      ? orderMailOwnerRecipientListV129().filter((emailAddress) => emailAddress !== job.recipient.email)
+      ? (configuredOwnerRecipients.length ? configuredOwnerRecipients : (alertOwnerConfig && Array.isArray(alertOwnerConfig.recipients) ? alertOwnerConfig.recipients : []))
       : [];
     if (!(role === 'customer' ? orderMailCustomerEnabled() : orderMailOwnerEnabled()) || !config.configured || !recipients.length
         || (role === 'customer' && !ownerBlindRecipients.length)) throw new Error('PAID_OWNER_MAIL_NOT_CONFIGURED');

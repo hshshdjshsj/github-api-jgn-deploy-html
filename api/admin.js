@@ -373,9 +373,7 @@ async function activeSecurityBlock(origin, device) {
   if (!result.ok) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
   if (!result.found) return null;
   if (!validSecurityBlock(result.record, origin, device)) fail('ADMIN_SECURITY_STATE_INVALID', 503);
-  // v411 blocks were created solely from an unsigned browser boundary report.
-  // They are retained as forensic records but are not server ban authority.
-  return null;
+  return result.record;
 }
 function validateSecurityReport(body) {
   if (!body || body.reason !== 'html_detected_attack' || body.page !== 'admin.html' || body.version !== 'dirac-html-shell-v1') fail('ADMIN_SECURITY_REPORT_INVALID', 400);
@@ -386,10 +384,16 @@ function validateSecurityReport(body) {
   return Object.freeze({ type, event, family: match[1], field: match[2], evidenceHash: digest512(evidence) });
 }
 async function persistSecurityReport(origin, device, report) {
-  const now = Date.now();
+  const now = Date.now(), blockedUntil = now + SECURITY_BLOCK_SECONDS * 1000;
+  const blockRecord = { version: VERSION, schema: 'dirac.admin_security_block.v411', reason: 'html_detected_attack', originHash: digest(origin), device, createdAt: now, blockedUntil };
+  const blockKey = securityBlockKey(origin, device), claimed = await securityClaim(blockKey, blockRecord, SECURITY_BLOCK_SECONDS);
+  if (!claimed) {
+    const existing = await securityRead(blockKey);
+    if (!existing.ok || !existing.found || !validSecurityBlock(existing.record, origin, device)) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
+  }
   const reportKey = SECURITY_REPORT_PREFIX + digest(randomToken()), reportRecord = { version: VERSION, schema: 'dirac.admin_security_report.v411', reason: 'html_detected_attack', type: report.type, event: report.event, family: report.family, field: report.field, evidenceHash: report.evidenceHash, originHash: digest(origin), device, createdAt: now };
   if (await securityClaim(reportKey, reportRecord, SECURITY_BLOCK_SECONDS) !== true) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
-  return { reported: true };
+  return { blockedUntil };
 }
 
 function decodeB64url(value, maximum, minimum = 0) {
@@ -879,8 +883,8 @@ async function execute(ops) {
   if (action === 'admin_security_report') {
     await throttle(ops, scope, 'security-report', 3, 60);
     const report = validateSecurityReport(body), result = await ops.securityReport(report);
-    if (!result || result.reported !== true) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
-    return { ok: true, reported: true };
+    if (!result || !Number.isSafeInteger(result.blockedUntil) || result.blockedUntil <= Date.now()) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
+    fail('ADMIN_SECURITY_BLOCKED', 403);
   }
   if (action === 'admin_login') {
     await throttle(ops, scope, 'password-login', 5, FACTOR_SECONDS);
@@ -1103,7 +1107,7 @@ const ADMIN_CENTRAL_BAN_FAILURE_CODES = Object.freeze([
   'ADMIN_PASSKEY_KEY_INVALID', 'ADMIN_PASSKEY_RECOVERY_INVALID', 'ADMIN_PASSKEY_RPID_MISMATCH', 'ADMIN_PASSKEY_SCOPE_INVALID',
   'ADMIN_PASSKEY_SIGNATURE_INVALID', 'ADMIN_PASSKEY_USER_MISMATCH', 'ADMIN_PASSKEY_UV_REQUIRED', 'ADMIN_PREFLIGHT_INVALID', 'ADMIN_PROOF_INVALID',
   'ADMIN_PROOF_REPLAYED', 'ADMIN_QUERY_DUPLICATE', 'ADMIN_REFERER_INVALID', 'ADMIN_REQUEST_INVALID', 'ADMIN_SECURITY_REPORT_INVALID',
-  'ADMIN_TICKET_ALREADY_USED', 'ADMIN_TICKET_INVALID', 'ADMIN_TOTP_ALREADY_USED', 'ADMIN_TOTP_INVALID'
+  'ADMIN_SECURITY_REPORT_ONE_STRIKE', 'ADMIN_TICKET_ALREADY_USED', 'ADMIN_TICKET_INVALID', 'ADMIN_TOTP_ALREADY_USED', 'ADMIN_TOTP_INVALID'
 ]);
 function adminCentralBanRequired(error) {
   const code = String(error && error.code || ''), status = Number(error && (error.status || error.statusCode) || 0);
@@ -1203,7 +1207,7 @@ function buildOps(req, res, state) {
     clearSession: async () => { assertFullGuard(); if (state.action !== 'admin_logout') fail('ADMIN_SESSION_CLEAR_INVALID', 503); if (await revokePasswordProof(state.passwordAuthority) !== true) fail('ADMIN_PROOF_REVOCATION_UNVERIFIED', 503); appendCookie(res, SESSION_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); appendCookie(res, PASSWORD_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); },
     verifySecret: value => { assertFullGuard(); const current = adminSecretState(); return current.configured && typeof value === 'string' && safeEqual(digest(value), digest(current.secret)); },
     publishPassword: async () => { assertFullGuard(); const current = adminSecretState(); if (!current.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503); await publishPasswordProof(req, res, state.origin, state.device, current.secret); },
-    securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const result = await persistSecurityReport(state.origin, state.device, report); assertFullGuard(); return result; },
+    securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const result = await persistSecurityReport(state.origin, state.device, report); assertFullGuard(); const centralBan = await adminCentralBanFailure(req, Object.assign(new Error('ADMIN_SECURITY_REPORT_ONE_STRIKE'), { code: 'ADMIN_SECURITY_REPORT_ONE_STRIKE', status: 403, statusCode: 403 })); if (!centralBan || centralBan.ok !== true) fail('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', 503); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); res.setHeader('X-Dirac-Central-Ban', '1'); return { ...result, central_ban: true }; },
     business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'unban', 'smtp_send', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin); assertFullGuard(); return result; }
   });
   state.deactivate = () => { active = false; records.clear(); };
