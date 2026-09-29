@@ -54881,22 +54881,9 @@ orderMailSmtpConfig = function orderMailSmtpConfigRolePartitionV352(kind) {
     const pass = String(process.env.ORDER_OWNER_SMTP_PASS || process.env.ORDER_OWNER_SMTP_PASSWORD || '').replace(/\s+/g, '');
     const fromName = orderMailCleanText(process.env.ORDER_OWNER_FROM_NAME || 'PT Dirac Inovasi Nusantara', 80);
     const dedicatedFromEmail = orderMailNormalizeEmail(process.env.ORDER_OWNER_FROM_EMAIL || user);
-    const configuredRecipients = orderMailOwnerRecipientListV129();
-    const securityAlertConfig = typeof diracSecurityAlertConfigV320 === 'function' ? diracSecurityAlertConfigV320() : null;
-    const securityRecipients = securityAlertConfig && Array.isArray(securityAlertConfig.recipients) ? securityAlertConfig.recipients : [];
-    const canonicalAdminRecipient = orderMailNormalizeEmail(DIRAC_ADMIN_OWNER_EMAIL_V405);
-    const ownerRecipient = canonicalAdminRecipient || configuredRecipients[0] || securityRecipients[0] || '';
-    const recipients = ownerRecipient ? [ownerRecipient] : [];
-    const securitySender = orderMailNormalizeEmail(securityAlertConfig && securityAlertConfig.user || '');
-    const alertSmtpConfigured = Boolean(securityAlertConfig && recipients.length && securitySender && securitySender !== ownerRecipient);
-    if (alertSmtpConfigured) {
-      return { kind: 'owner', host: securityAlertConfig.host, port: securityAlertConfig.port,
-        secure: securityAlertConfig.secure, user: securityAlertConfig.user, pass: securityAlertConfig.appPassword,
-        fromName: securityAlertConfig.fromName, fromEmail: securityAlertConfig.fromEmail, recipients,
-        configured: true, smtpConfigured: true, providerConfigured: false, ownerCascadeV367: null, patch: DIRAC_MAIL_ROLE_PARTITION_V352 };
-    }
+    const recipients = orderMailParseEmailList(process.env.ORDER_OWNER_EMAIL || '');
     const dedicatedSmtpConfigured = host === 'smtp.gmail.com' && port === 465 && secure === true && user && dedicatedFromEmail === user
-      && user !== ownerRecipient && /^[A-Za-z0-9]{16,128}$/.test(pass) && recipients.length > 0;
+      && /^[A-Za-z0-9]{16,128}$/.test(pass) && recipients.length > 0;
     if (dedicatedSmtpConfigured) {
       return { kind: 'owner', host, port, secure, user, pass, fromName, fromEmail: dedicatedFromEmail, recipients,
         configured: true, smtpConfigured: true, providerConfigured: false, ownerCascadeV367: null, patch: DIRAC_MAIL_ROLE_PARTITION_V352 };

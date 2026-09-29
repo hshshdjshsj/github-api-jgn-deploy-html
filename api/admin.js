@@ -3,6 +3,8 @@
 // Standalone administrator endpoint. The browser page is handled entirely by this module.
 const crypto = require('node:crypto');
 const tls = require('node:tls');
+const ADMIN_STANDALONE_FETCH = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
+if (!ADMIN_STANDALONE_FETCH) throw new Error('ADMIN_FETCH_UNAVAILABLE');
 
 const ADMIN_EMAIL = 'dinzganteng888999@gmail.com';
 const VERSION = 'dirac-admin-v405';
@@ -274,7 +276,7 @@ async function dbFetch(path, options = {}, target = '') {
     const headers = { apikey: creds.service, Authorization: 'Bearer ' + creds.service, Accept: 'application/json' };
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
     if (options.prefer) headers.Prefer = options.prefer;
-    const response = await fetch(creds.url + cleanPath, { method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), redirect: 'error', signal: controller.signal });
+    const response = await ADMIN_STANDALONE_FETCH(creds.url + cleanPath, { method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), redirect: 'error', signal: controller.signal });
     const raw = await response.text();
     if (Buffer.byteLength(raw, 'utf8') > MAX_RESPONSE_BYTES) fail('ADMIN_DATABASE_RESPONSE_INVALID', 503);
     let data = null; if (raw) { try { data = JSON.parse(raw); } catch (_) { fail('ADMIN_DATABASE_RESPONSE_INVALID', 503); } }
@@ -779,7 +781,7 @@ async function sendCustomerProviderHttp(config, message) {
   const controller = typeof AbortController === 'function' ? new AbortController() : null, timer = controller ? setTimeout(() => controller.abort(), config.timeout) : null;
   let response = null;
   try {
-    response = await fetch(target, { method: 'POST', headers, body: serialized, redirect: 'error', signal: controller ? controller.signal : undefined });
+    response = await ADMIN_STANDALONE_FETCH(target, { method: 'POST', headers, body: serialized, redirect: 'error', signal: controller ? controller.signal : undefined });
     const accepted = response && [200, 201, 202].includes(Number(response.status)) ? message.recipients.length : 0;
     return { ok: accepted === message.recipients.length, accepted, provider: config.provider, status: Number(response && response.status || 0) };
   } catch (_) { return { ok: false, accepted: 0, provider: config.provider, status: 0 }; }
