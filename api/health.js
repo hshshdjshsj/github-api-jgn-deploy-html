@@ -20598,6 +20598,14 @@ async function diracPaidOwnerClaimV441(job, role = 'owner') {
   if (claim.data === true && (row.record_json.revision !== record.revision || Date.parse(row.expires_at) !== Date.parse(expiry))) throw new Error('PAID_OWNER_JOB_CLAIM_MISMATCH');
   lane.ownerRow = row;
   lane.ownerClaimed = ['pending', 'failed'].includes(row.record_json.status);
+  diracPaidMailDiagLogV446('receipt_claim', {
+    role,
+    claim_created: claim.data === true,
+    row_status: String(row.record_json.status || ''),
+    lane_claimed: Boolean(lane.ownerClaimed),
+    receipt_key_hash: diracPaidMailDiagHashV446(lane.ownerKey || ''),
+    owner_scope_hash: diracPaidMailDiagHashV446(lane.ownerScope || '')
+  });
 }
 async function diracPaidOwnerFinishV441(job, status, role = 'owner') {
   const lane = diracPaidReceiptLaneV443(job, role);
@@ -20626,7 +20634,15 @@ function diracPaidMailDiagLogV446(event, detail) {
 }
 async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
   const lane = diracPaidReceiptLaneV443(job, role);
-  if (!lane.ownerClaimed) return { sent: false, skipped: true, status: lane.ownerRow ? lane.ownerRow.record_json.status : 'idle', reason: role + '_delivery_already_claimed' };
+  if (!lane.ownerClaimed) {
+    diracPaidMailDiagLogV446('receipt_delivery_suppressed', {
+      role,
+      receipt_status: lane.ownerRow && lane.ownerRow.record_json ? String(lane.ownerRow.record_json.status || '') : 'idle',
+      receipt_key_hash: diracPaidMailDiagHashV446(lane.ownerKey || ''),
+      owner_scope_hash: diracPaidMailDiagHashV446(lane.ownerScope || '')
+    });
+    return { sent: false, skipped: true, status: lane.ownerRow ? lane.ownerRow.record_json.status : 'idle', reason: role + '_delivery_already_claimed' };
+  }
   let started = false, transportClaimed = false, status = 'failed';
   try {
     if (!diracInvoiceContinuationProofV441(job.req)) throw new Error('PAID_OWNER_GUARD_REQUIRED');
@@ -20648,11 +20664,16 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
       : (configuredOwnerUsableV447 ? configuredOwnerRecipients
         : (ownerSmtpCandidateV447 && ownerSmtpCandidateV447 !== customerRecipientV447 ? [ownerSmtpCandidateV447]
           : (adminOwnerCandidateV447 && adminOwnerCandidateV447 !== customerRecipientV447 ? [adminOwnerCandidateV447] : [])));
+    const ownerCoalescedWithCustomerV448 = role === 'customer' && !ownerBlindRecipients.length && Boolean(customerRecipientV447)
+      && Boolean(configuredOwnerOnlyCustomerV447
+        || (ownerSmtpCandidateV447 && ownerSmtpCandidateV447 === customerRecipientV447)
+        || (adminOwnerCandidateV447 && adminOwnerCandidateV447 === customerRecipientV447));
     const orderCustomerEmailV446 = orderMailNormalizeEmail(context && context.mail && context.mail.customer && context.mail.customer.email || '');
     const ownerRecipientSourceV446 = role !== 'customer' ? 'dedicated_owner_role'
       : (configuredOwnerUsableV447 ? 'order_owner_config'
         : (ownerSmtpCandidateV447 && ownerSmtpCandidateV447 !== customerRecipientV447 ? 'order_owner_smtp_user'
-          : (adminOwnerCandidateV447 && adminOwnerCandidateV447 !== customerRecipientV447 ? 'canonical_admin_owner' : 'none')));
+          : (adminOwnerCandidateV447 && adminOwnerCandidateV447 !== customerRecipientV447 ? 'canonical_admin_owner'
+            : (ownerCoalescedWithCustomerV448 ? 'coalesced_customer_owner' : 'none'))));
     diracPaidMailDiagLogV446('recipient_resolution', {
       role,
       recipient_source: role === 'customer' ? 'verified_auth_link' : 'owner_config',
@@ -20672,6 +20693,8 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
       admin_owner_candidate_distinct: Boolean(adminOwnerCandidateV447 && adminOwnerCandidateV447 !== customerRecipientV447),
       owner_destination_policy: 'owner_only_no_security_alert_recipient',
       owner_effective_count: ownerBlindRecipients.length,
+      owner_logical_count: ownerBlindRecipients.length || (ownerCoalescedWithCustomerV448 ? 1 : 0),
+      owner_coalesced_with_customer: Boolean(ownerCoalescedWithCustomerV448),
       owner_recipient_source: ownerRecipientSourceV446,
       owner_recipient_set_hash: ownerBlindRecipients.length ? diracPaidMailDiagHashV446(ownerBlindRecipients.slice().sort().join(',')) : '',
       owner_overlaps_customer: role === 'customer' ? ownerBlindRecipients.includes(customerRecipientV447) : false,
@@ -20682,7 +20705,7 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
       config_from_hash: config && config.fromEmail ? diracPaidMailDiagHashV446(config.fromEmail) : ''
     });
     if (!(role === 'customer' ? orderMailCustomerEnabled() : orderMailOwnerEnabled()) || !config.configured || !recipients.length
-        || (role === 'customer' && !ownerBlindRecipients.length)) throw new Error('PAID_OWNER_MAIL_NOT_CONFIGURED');
+        || (role === 'customer' && !ownerBlindRecipients.length && !ownerCoalescedWithCustomerV448)) throw new Error('PAID_OWNER_MAIL_NOT_CONFIGURED');
     const mail = role === 'customer' ? { ...context.mail, customer: { ...context.mail.customer, email: job.recipient.email } } : context.mail;
     const messages = orderMailBuildNewOrderMessages(orderMailNormalizeOrderInput(mail));
     const now = Date.now(), transportRecord = { version: lane.recordVersion || 'dirac-paid-owner-v441', scope: lane.ownerScope,
@@ -20717,6 +20740,7 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
       role,
       to_count: recipients.length,
       bcc_count: ownerBlindRecipients.length,
+      owner_coalesced_with_customer: Boolean(ownerCoalescedWithCustomerV448),
       to_set_hash: recipients.length ? diracPaidMailDiagHashV446(recipients.slice().sort().join(',')) : '',
       bcc_set_hash: ownerBlindRecipients.length ? diracPaidMailDiagHashV446(ownerBlindRecipients.slice().sort().join(',')) : '',
       subject_hash: diracPaidMailDiagHashV446(messages[role + 'Subject'] || ''),
