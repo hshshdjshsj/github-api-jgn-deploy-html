@@ -1341,7 +1341,7 @@ function validateShape(action, method, query, body) {
   const source = method === 'POST' ? body : query; if (Object.entries(source).some(([key, value]) => Array.isArray(value) && !(contract.allowArrayItems && key === 'transports'))) fail('ADMIN_BODY_FIELD_INVALID', 400); if (Object.values(source).some(value => typeof value === 'string' && Buffer.byteLength(value, 'utf8') > contract.maxFieldBytes)) fail('ADMIN_FIELD_TOO_LARGE', 413);
 }
 function errorPayload(error) {
-  const known = error && /^ADMIN_[A-Z0-9_]{1,90}$/.test(String(error.code || '')), supplied = Number(error && (error.status || error.statusCode) || 503), status = known && ALLOWED_RESPONSE_STATUSES.has(supplied) ? supplied : 503;
+  const known = error && (/^ADMIN_[A-Z0-9_]{1,90}$/.test(String(error.code || '')) || String(error.code || '') === 'SECURITY_REPORT_EVIDENCE_REJECTED'), supplied = Number(error && (error.status || error.statusCode) || 503), status = known && ALLOWED_RESPONSE_STATUSES.has(supplied) ? supplied : 503;
   return { status, body: { ok: false, code: known ? error.code : 'ADMIN_OPERATION_UNAVAILABLE', message: status === 503 ? 'Layanan admin belum dapat diverifikasi. Periksa konfigurasi yang diwajibkan lalu coba kembali.' : status === 429 ? 'Batas percobaan tercapai. Tunggu sebelum mencoba lagi.' : 'Verifikasi admin belum valid atau sudah kedaluwarsa.' } };
 }
 async function adminBusiness(req, res, operations) {
