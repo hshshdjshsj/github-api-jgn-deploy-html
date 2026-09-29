@@ -20652,29 +20652,20 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
     if (!context || context.ok !== true) throw new Error('PAID_OWNER_DOCUMENT_UNAVAILABLE');
     const config = orderMailSmtpConfig(role);
     const recipients = role === 'customer' ? [job.recipient.email] : config.recipients;
-    const configuredOwnerRecipients = role === 'customer' ? orderMailOwnerRecipientListV129() : [];
+    const configuredOwnerRecipients = role === 'customer' ? orderMailParseEmailList(process.env.ORDER_OWNER_EMAIL || '') : [];
     const customerRecipientV447 = role === 'customer' ? orderMailNormalizeEmail(job.recipient && job.recipient.email || '') : '';
     const configuredOwnerOnlyCustomerV447 = role === 'customer' && configuredOwnerRecipients.length === 1
       && configuredOwnerRecipients[0] === customerRecipientV447;
     const configuredOwnerUsableV447 = role === 'customer' && configuredOwnerRecipients.length > 0 && !configuredOwnerOnlyCustomerV447;
-    const ownerSmtpCandidateV447 = role === 'customer'
-      ? orderMailNormalizeEmail(process.env.ORDER_OWNER_SMTP_USER || process.env.ORDER_OWNER_FROM_EMAIL || '') : '';
-    const adminOwnerCandidateV447 = role === 'customer'
-      ? orderMailNormalizeEmail(typeof DIRAC_ADMIN_OWNER_EMAIL_V405 === 'string' ? DIRAC_ADMIN_OWNER_EMAIL_V405 : '') : '';
-    const ownerBlindRecipients = role !== 'customer' ? []
-      : (configuredOwnerUsableV447 ? configuredOwnerRecipients
-        : (ownerSmtpCandidateV447 && ownerSmtpCandidateV447 !== customerRecipientV447 ? [ownerSmtpCandidateV447]
-          : (adminOwnerCandidateV447 && adminOwnerCandidateV447 !== customerRecipientV447 ? [adminOwnerCandidateV447] : [])));
+    const ownerSmtpCandidateV447 = '';
+    const adminOwnerCandidateV447 = '';
+    const ownerBlindRecipients = role !== 'customer' ? [] : (configuredOwnerUsableV447 ? configuredOwnerRecipients : []);
     const ownerCoalescedWithCustomerV448 = role === 'customer' && !ownerBlindRecipients.length && Boolean(customerRecipientV447)
-      && Boolean(configuredOwnerOnlyCustomerV447
-        || (ownerSmtpCandidateV447 && ownerSmtpCandidateV447 === customerRecipientV447)
-        || (adminOwnerCandidateV447 && adminOwnerCandidateV447 === customerRecipientV447));
+      && Boolean(configuredOwnerOnlyCustomerV447);
     const orderCustomerEmailV446 = orderMailNormalizeEmail(context && context.mail && context.mail.customer && context.mail.customer.email || '');
     const ownerRecipientSourceV446 = role !== 'customer' ? 'dedicated_owner_role'
-      : (configuredOwnerUsableV447 ? 'order_owner_config'
-        : (ownerSmtpCandidateV447 && ownerSmtpCandidateV447 !== customerRecipientV447 ? 'order_owner_smtp_user'
-          : (adminOwnerCandidateV447 && adminOwnerCandidateV447 !== customerRecipientV447 ? 'canonical_admin_owner'
-            : (ownerCoalescedWithCustomerV448 ? 'coalesced_customer_owner' : 'none'))));
+      : (configuredOwnerUsableV447 ? 'order_owner_email_env'
+        : (ownerCoalescedWithCustomerV448 ? 'order_owner_email_env_coalesced' : 'none'));
     diracPaidMailDiagLogV446('recipient_resolution', {
       role,
       recipient_source: role === 'customer' ? 'verified_auth_link' : 'owner_config',
@@ -20692,7 +20683,9 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
       admin_owner_candidate_present: Boolean(adminOwnerCandidateV447),
       admin_owner_candidate_hash: adminOwnerCandidateV447 ? diracPaidMailDiagHashV446(adminOwnerCandidateV447) : '',
       admin_owner_candidate_distinct: Boolean(adminOwnerCandidateV447 && adminOwnerCandidateV447 !== customerRecipientV447),
-      owner_destination_policy: 'owner_only_no_security_alert_recipient',
+      owner_destination_policy: 'explicit_order_owner_email_only',
+      owner_explicit_env_name: 'ORDER_OWNER_EMAIL',
+      owner_explicit_env_present: Boolean(String(process.env.ORDER_OWNER_EMAIL || '').trim()),
       owner_effective_count: ownerBlindRecipients.length,
       owner_logical_count: ownerBlindRecipients.length || (ownerCoalescedWithCustomerV448 ? 1 : 0),
       owner_coalesced_with_customer: Boolean(ownerCoalescedWithCustomerV448),
