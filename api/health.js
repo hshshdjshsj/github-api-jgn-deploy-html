@@ -20674,7 +20674,18 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
     const context = await orderMailBuildPaidInvoiceContextFromBackend(input.tx, 'midtrans', input.paidAt, input.paidOrder, null,
       orderMailPaymentDescriptorV374('midtrans', input.paymentEvidence, input.webhookPayload));
     if (!context || context.ok !== true) throw new Error('PAID_OWNER_DOCUMENT_UNAVAILABLE');
-    const config = orderMailSmtpConfig(role);
+    const configuredRoleConfigV449 = orderMailSmtpConfig(role);
+    const ownerCustomerRecipientV449 = role === 'owner' ? orderMailNormalizeEmail(job.recipient && job.recipient.email || '') : '';
+    const ownerRecipientCollisionV449 = role === 'owner' && Boolean(ownerCustomerRecipientV449)
+      && Array.isArray(configuredRoleConfigV449.recipients) && configuredRoleConfigV449.recipients.includes(ownerCustomerRecipientV449);
+    const ownerRecipientsV449 = ownerRecipientCollisionV449 ? [] : configuredRoleConfigV449.recipients;
+    const customerProviderConfigV449 = role === 'owner' && !configuredRoleConfigV449.configured ? orderMailSmtpConfig('customer') : null;
+    const ownerProviderFallbackV449 = role === 'owner' && !configuredRoleConfigV449.configured
+      && Boolean(customerProviderConfigV449 && customerProviderConfigV449.configured)
+      && ownerRecipientsV449.length > 0;
+    const config = ownerProviderFallbackV449
+      ? { ...customerProviderConfigV449, kind: 'customer', recipients: ownerRecipientsV449, ownerProviderFallbackV449: true }
+      : { ...configuredRoleConfigV449, recipients: ownerRecipientsV449 };
     const recipients = role === 'customer' ? [job.recipient.email] : config.recipients;
     const configuredOwnerRecipients = role === 'customer' ? orderMailParseEmailList(process.env.ORDER_OWNER_EMAIL || '') : [];
     const customerRecipientV447 = role === 'customer' ? orderMailNormalizeEmail(job.recipient && job.recipient.email || '') : '';
@@ -20683,7 +20694,7 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
     const configuredOwnerUsableV447 = role === 'customer' && configuredOwnerRecipients.length > 0 && !configuredOwnerOnlyCustomerV447;
     const ownerSmtpCandidateV447 = '';
     const adminOwnerCandidateV447 = '';
-    const ownerBlindRecipients = role !== 'customer' ? [] : (configuredOwnerUsableV447 ? configuredOwnerRecipients : []);
+    const ownerBlindRecipients = [];
     const ownerCoalescedWithCustomerV448 = role === 'customer' && !ownerBlindRecipients.length && Boolean(customerRecipientV447)
       && Boolean(configuredOwnerOnlyCustomerV447);
     const orderCustomerEmailV446 = orderMailNormalizeEmail(context && context.mail && context.mail.customer && context.mail.customer.email || '');
@@ -20722,8 +20733,7 @@ async function diracPaidOwnerSendV441(job, input, timing, role = 'owner') {
       config_provider_configured: Boolean(config && config.providerConfigured),
       config_from_hash: config && config.fromEmail ? diracPaidMailDiagHashV446(config.fromEmail) : ''
     });
-    if (!(role === 'customer' ? orderMailCustomerEnabled() : orderMailOwnerEnabled()) || !config.configured || !recipients.length
-        || (role === 'customer' && !ownerBlindRecipients.length && !ownerCoalescedWithCustomerV448)) throw new Error('PAID_OWNER_MAIL_NOT_CONFIGURED');
+    if (!(role === 'customer' ? orderMailCustomerEnabled() : (orderMailOwnerEnabled() || ownerProviderFallbackV449)) || !config.configured || !recipients.length) throw new Error('PAID_OWNER_MAIL_NOT_CONFIGURED');
     const mail = role === 'customer' ? { ...context.mail, customer: { ...context.mail.customer, email: job.recipient.email } } : context.mail;
     const messages = orderMailBuildNewOrderMessages(orderMailNormalizeOrderInput(mail));
     const now = Date.now(), transportRecord = { version: lane.recordVersion || 'dirac-paid-owner-v441', scope: lane.ownerScope,
@@ -20846,14 +20856,24 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
         customerResolved = true;
       } catch (_) { customerResult = { sent: false, status: 'failed' }; }
       customerStatus = customerResult && ['idle','pending','accepted','failed','unknown'].includes(customerResult.status) ? customerResult.status : 'failed';
-      ownerStatus = customerStatus;
       try {
-        if (job.ownerClaimed === true) {
-          const ownerFinished = await diracPaidOwnerFinishV441(job, ownerStatus);
-          if (ownerFinished !== true) throw new Error('PAID_OWNER_RECEIPT_FINALIZE_UNAVAILABLE');
+        const ownerConfigForDispatchV449 = orderMailSmtpConfig('owner');
+        const ownerRecipientsForDispatchV449 = ownerConfigForDispatchV449 && Array.isArray(ownerConfigForDispatchV449.recipients)
+          ? ownerConfigForDispatchV449.recipients : [];
+        const ownerCoalescesWithCustomerV449 = ownerRecipientsForDispatchV449.length === 1
+          && orderMailNormalizeEmail(ownerRecipientsForDispatchV449[0]) === orderMailNormalizeEmail(job.recipient && job.recipient.email || '');
+        if (ownerCoalescesWithCustomerV449) {
+          ownerStatus = customerStatus;
+          if (job.ownerClaimed === true) {
+            const ownerFinished = await diracPaidOwnerFinishV441(job, ownerStatus);
+            if (ownerFinished !== true) throw new Error('PAID_OWNER_RECEIPT_FINALIZE_UNAVAILABLE');
+          }
+          ownerResult = { sent: !!(customerResult && customerResult.sent === true), skipped: true, status: ownerStatus, coalesced_with_customer: true };
+        } else {
+          ownerResult = await diracPaidOwnerSendV441(job, input.mail, input.timing, 'owner');
+          ownerStatus = ownerResult && ['idle','pending','accepted','failed','unknown'].includes(ownerResult.status) ? ownerResult.status : 'failed';
         }
-        ownerResult = { sent: !!(customerResult && customerResult.sent === true), skipped: !!(customerResult && customerResult.skipped === true), status: ownerStatus, shared_submission: true };
-      } catch (_) { ownerStatus = 'unknown'; ownerResult = { sent: false, status: 'unknown', shared_submission: true }; }
+      } catch (_) { ownerStatus = 'unknown'; ownerResult = { sent: false, status: 'unknown' }; }
       settled = true;
       const dualAccepted = customerResolved && customerStatus === 'accepted' && ownerStatus === 'accepted';
       if (dualAccepted) {
