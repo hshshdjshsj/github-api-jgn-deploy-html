@@ -2682,6 +2682,19 @@ function diracPersistentSecurityRetiredAdminReportBanV446(record) {
     && Number(source.blocked_until_ms || 0) === DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
 }
 
+function diracPersistentSecurityRetiredSecurityReportMirrorBanV453(record) {
+  const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
+  const createdAtMs = Date.parse(String(source.created_at || ''));
+  return Number.isFinite(createdAtMs)
+    && createdAtMs >= 1790696438000 && createdAtMs <= 1790696445000
+    && String(source.type || '') === 'central_guard_transient_lockout_v335'
+    && String(source.action || '') === 'security_report'
+    && String(source.method || '').toUpperCase() === 'POST'
+    && String(source.reason || '') === 'html_security_report'
+    && String(source.source || '') === 'dirac-central-security-guard-v146'
+    && Number(source.blocked_until_ms || source.blockedUntilMs || 0) === DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335;
+}
+
 function diracPersistentSecurityRecordIsBanV363(record, securityKey) {
   const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
   const type = String(source.type || '').trim();
@@ -2822,6 +2835,7 @@ async function readPersistentSecurityJsonStrictV194(securityKey) {
       return { ok: false, found: false, record: null };
     }
     const blockedUntilMs = diracPersistentSecurityRetiredAdminReportBanV446(recordJson)
+        || diracPersistentSecurityRetiredSecurityReportMirrorBanV453(recordJson)
       ? 0
       : diracPersistentSecurityRecordIsPermanentV335(recordJson, key)
         ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
@@ -2885,6 +2899,7 @@ async function readPersistentSecurityJsonManyStrictV194(securityKeys) {
       }
       seen.add(rowKey);
       const blockedUntilMs = diracPersistentSecurityRetiredAdminReportBanV446(recordJson)
+          || diracPersistentSecurityRetiredSecurityReportMirrorBanV453(recordJson)
         ? 0
         : diracPersistentSecurityRecordIsPermanentV335(recordJson, rowKey)
           ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
@@ -12080,23 +12095,32 @@ function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, opt
         const priorPassportV353 = stageIndexV353 === 15
           ? (1n << BigInt(stageIndexV353)) - 1n
           : -1n;
-        centralFailureMirrorGuardPassedV353 = Boolean(
-          stageIndexV353 === 15
+        const deviceFailureMirrorV353 = stageIndexV353 === 15
           && BigInt(ctx && ctx.passport || 0n) === priorPassportV353
-          && ctx.req === mirrorCapabilityV353.req
-          && ctx.res
-          && ctx.executionPhaseV211 === 'guard'
           && ctx.currentStageV211 === 'device binding'
           && ctx.failedStageV211 === 'device binding'
           && ctx.failureReasonV211 === 'device_consistency_changed'
           && ((ctx.action === 'customer_session_handoff_issue' && ctx.method === 'POST')
             || (ctx.action === 'domain_dashboard_me' && ctx.method === 'GET'))
+          && mirrorCapabilityV353.reason === ctx.failureReasonV211
+          && mirrorCapabilityV353.stage === ctx.failedStageV211;
+        const securityReportTerminalMirrorV453 = stageIndexV353 === SECURITY_PIPELINE.length - 1
+          && BigInt(ctx && ctx.passport || 0n) === DIRAC_V202_ALL_CHECKPOINTS
+          && ctx.currentStageV211 === 'integrity'
+          && !ctx.failedStageV211 && !ctx.failureReasonV211
+          && ctx.terminalBlockReason === 'html_security_report'
+          && ctx.action === 'security_report' && ctx.method === 'POST'
+          && mirrorCapabilityV353.reason === 'html_security_report'
+          && mirrorCapabilityV353.stage === '';
+        centralFailureMirrorGuardPassedV353 = Boolean(
+          (deviceFailureMirrorV353 || securityReportTerminalMirrorV453)
+          && ctx.req === mirrorCapabilityV353.req
+          && ctx.res
+          && ctx.executionPhaseV211 === 'guard'
           && ctx.classification === 'browser'
           && ctx.authentication === 'browser'
           && mirrorCapabilityV353.requestId === String(ctx.requestId || '')
           && mirrorCapabilityV353.action === ctx.action
-          && mirrorCapabilityV353.reason === ctx.failureReasonV211
-          && mirrorCapabilityV353.stage === ctx.failedStageV211
           && mirrorCapabilityV353.stageIndex === stageIndexV353
         );
       } catch (_) {
@@ -63470,13 +63494,14 @@ function diracCentralSecurityReportGuardV146(req, ctx) {
   const allowed = new Set(['xss', 'dom_xss', 'sql_injection', 'csrf', 'clickjacking', 'prototype_pollution', 'open_redirect', 'tamper_detected', 'html_detected_attack']);
   if (!allowed.has(reason)) return { ok: false, reason: 'security_report_reason_invalid' };
   const evidenceV441 = String(body.evidence || '');
-  if (/^family=restricted_keyword;field=[a-z0-9_-]{1,64};source=html_boundary(?:;sample=|$)/.test(evidenceV441)) {
-    return { ok: false, reason: 'security_report_evidence_unconfirmed', directCode: 'SECURITY_REPORT_EVIDENCE_REJECTED' };
-  }
+  const rejectedV441 = { ok: false, reason: 'security_report_evidence_unconfirmed', directCode: 'SECURITY_REPORT_EVIDENCE_REJECTED' };
+  if (/^family=restricted_keyword;field=[a-z0-9_-]{1,64};source=html_boundary(?:;sample=|$)/.test(evidenceV441)) return rejectedV441;
+  if (reason === 'html_detected_attack'
+      && /^(?:url_guard|input_guard)$/.test(String(body.type || ''))
+      && /^family=[a-z0-9_-]{1,64};field=[a-z0-9_-]{1,64};source=html_boundary$/.test(evidenceV441)) return rejectedV441;
   if (reason === 'html_detected_attack' && body.type === 'input_guard'
       && evidenceV441.includes(';source=html_boundary;sample=')) {
     const sampleV441 = /^family=([a-z0-9_-]{1,64});field=([a-z0-9_-]{1,64});source=html_boundary;sample=([\s\S]{1,768})$/.exec(evidenceV441);
-    const rejectedV441 = { ok: false, reason: 'security_report_evidence_unconfirmed', directCode: 'SECURITY_REPORT_EVIDENCE_REJECTED' };
     if (!sampleV441 || sampleV441[1] === 'restricted_keyword') return rejectedV441;
     // A browser label alone is not attack evidence. Re-evaluate the bounded
     // sample with the same independent detector used for ordinary API inputs.
