@@ -61873,19 +61873,26 @@ async function diracCustomerShipmentProjectV406(req, orders) {
   if (rejected.length) return orders.map(order => ({ ...order, shipment_data_ready: false }));
   const results = outcomes.map(outcome => outcome.value);
   const shipments = new Map();
+  const ownerMismatchKeys = new Set();
   for (const row of results.flat()) {
     const key = row && row.security_key;
     const parent = parents.get(key);
     const value = parent && diracAdminValidateShipmentRowV406(row, key);
-    if (!keys.includes(key) || shipments.has(key) || !value
-        || value.customer_id !== owner.customerIds[0] || value.customer_id !== parent.customerId
+    if (!keys.includes(key) || shipments.has(key) || ownerMismatchKeys.has(key) || !value
         || value.order_id !== parent.id || value.order_kind !== parent.kind) {
       throw diracAdminBusinessErrorV406('SHIPMENT_RECORD_OWNER_MISMATCH');
     }
+    if (value.customer_id !== owner.customerIds[0] || value.customer_id !== parent.customerId) {
+      ownerMismatchKeys.add(key);
+      continue;
+    }
     shipments.set(key, value);
   }
-  return orders.map((order, index) => ({ ...order, shipment_data_ready: true,
-    shipment: diracAdminShipmentPublicV406(shipments.get(keys[index])) }));
+  return orders.map((order, index) => {
+    const key = keys[index];
+    return { ...order, shipment_data_ready: !ownerMismatchKeys.has(key),
+      shipment: ownerMismatchKeys.has(key) ? undefined : diracAdminShipmentPublicV406(shipments.get(key)) };
+  });
 }
 
 async function diracAdminMonitorV406(req, res) {
