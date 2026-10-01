@@ -58,10 +58,11 @@ const CONTRACTS = Object.freeze({
   admin_blocks: get(['offset']),
   admin_unban: post(['block_id', 'approval'], ['block_id', 'approval']),
   admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
+  admin_local_authorize: post(['purpose', 'content_sha256', 'approval'], ['purpose', 'content_sha256', 'approval']),
   admin_monitor: get()
 });
 const ACTIONS = Object.freeze(Object.keys(CONTRACTS));
-const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_smtp_send: 'smtp_send' });
+const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize' });
 const ORDER_SELECT = Object.freeze({
   regular: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
   laboratorium: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
@@ -638,6 +639,10 @@ function verifyAssertion({ credential, rpId, passkey }) {
 
 function approvalPayload(action, body) {
   const value = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  if (action === 'admin_local_authorize') {
+    if (!['document_preview', 'document_pdf', 'document_png', 'document_print', 'theme_save'].includes(value.purpose) || typeof value.content_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.content_sha256)) fail('ADMIN_LOCAL_AUTHORIZATION_INVALID', 400);
+    return { action, purpose: value.purpose, content_sha256: value.content_sha256 };
+  }
   if (action === 'admin_shipment_update') return { action, review_ack: value.review_ack || '', review_reason: value.review_reason || '', kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, tracking_number: value.tracking_number, courier: value.courier, status: value.status, location: value.location || '', origin: value.origin || '', destination: value.destination || '', estimated_delivery: value.estimated_delivery || '', description: value.description || '', ...(value.tracking_options === undefined ? {} : { tracking_options: shipmentOptionsV450(value.tracking_options) }) };
   if (action === 'admin_shipment_cancel') return { action, review_ack: value.review_ack || '', review_reason: value.review_reason || '', kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, description: value.description || '' };
   if (action === 'admin_unban') return { action, block_id: value.block_id };
@@ -1182,7 +1187,7 @@ async function execute(ops) {
     const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); return { ok: true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_logout') { const active = await session(ops, scope, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
-  await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_smtp_send: 'smtp_send', admin_monitor: 'monitor' }[action];
+  await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_monitor: 'monitor' }[action];
   if (!operation) fail('ADMIN_ACTION_INVALID', 400);
   if (Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS, action)) { const approval = await ticket(ops, scope, body.approval, 'action-approval'); if (approval.value.operation !== action || approval.value.payloadHash !== approvalPayloadHash(action, body)) fail('ADMIN_ACTION_APPROVAL_MISMATCH', 403); await consume(ops, approval); }
   if (action === 'admin_smtp_send') { await throttle(ops, scope, 'smtp-send-minute', 2, 60); await throttle(ops, scope, 'smtp-send-hour', 5, 3600); }
@@ -1548,7 +1553,7 @@ function adminCentralBanRequired(error) {
 }
 function adminGuardSelfTest() {
   try {
-    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_unban','admin_smtp_send','admin_monitor'];
+    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_unban','admin_smtp_send','admin_local_authorize','admin_monitor'];
     return Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && ACTIONS.length === expected.length && expected.every((name, index) => ACTIONS[index] === name && Object.isFrozen(CONTRACTS[name]) && Object.isFrozen(CONTRACTS[name].methods) && Object.isFrozen(CONTRACTS[name].allowed) && Object.isFrozen(CONTRACTS[name].required))
       && exactToken(randomToken()) && PASSWORD_COOKIE.startsWith('__Host-') && SESSION_COOKIE.startsWith('__Host-') && adminSecretState().configured === true;
   } catch (_) { return false; }
@@ -1559,7 +1564,7 @@ async function businessMonitor() {
   let rows = [], ready = false; try { const result = await dbFetch('/rest/v1/security_customer_events?select=id,event_type,status,risk_level,description,created_at&order=created_at.desc&limit=20', { method: 'GET' }); if (result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; } } catch (_) { ready = false; }
   const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Guard internal handler admin mandiri yang menangani permintaan ini.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [] };
 }
-async function business(operation, body, origin, assertContext) { if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'unban') return businessUnban(body); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
+async function business(operation, body, origin, assertContext) { if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'unban') return businessUnban(body); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
 
 function adminCentralBanReason(error) {
   const raw = String(error && error.code || 'admin_failure').trim().toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');
@@ -1674,7 +1679,7 @@ function buildOps(req, res, state) {
     verifySecret: value => { assertFullGuard(); const current = adminSecretState(); return current.configured && typeof value === 'string' && safeEqual(digest(value), digest(current.secret)); },
     publishPassword: async () => { assertFullGuard(); const current = adminSecretState(); if (!current.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503); await publishPasswordProof(req, res, state.origin, state.device, current.secret); },
     securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const centralBan = await adminCentralBanFailure(req, Object.assign(new Error('ADMIN_SECURITY_REPORT_ONE_STRIKE'), { code: 'ADMIN_SECURITY_REPORT_ONE_STRIKE', status: 403, statusCode: 403 })); if (!centralBan || centralBan.ok !== true) fail('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', 503); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); res.setHeader('X-Dirac-Central-Ban', '1'); return { blockedUntil: centralBan.blocked_until_ms, central_ban: true }; },
-    business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'unban', 'smtp_send', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
+    business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'unban', 'smtp_send', 'local_authorize', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
   });
   state.deactivate = () => { active = false; records.clear(); };
   return ops;
