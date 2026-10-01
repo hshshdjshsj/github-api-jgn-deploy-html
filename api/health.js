@@ -61851,6 +61851,88 @@ async function diracCustomerShipmentReadBatchV406(ctx, keys) {
   } finally { DIRAC_ADMIN_BUSINESS_FETCH_V406.delete(options); }
 }
 
+function diracCustomerShipmentDiagnosticDigestV455(value) {
+  return typeof value === 'string' && value
+    ? crypto.createHash('sha256').update(value).digest('hex').slice(0, 20) : '';
+}
+
+function diracCustomerShipmentDiagnosticProbeV455(callback) {
+  try { callback(); return true; } catch (_) { return false; }
+}
+
+function diracCustomerShipmentDiagnosticV455(ctx, row, expectedKey, parent, owner, value, reason) {
+  const record = row && row.record_json && typeof row.record_json === 'object' && !Array.isArray(row.record_json)
+    ? row.record_json : null;
+  const returnedKey = row && typeof row.security_key === 'string' ? row.security_key : '';
+  const ownerId = owner && Array.isArray(owner.customerIds) && owner.customerIds.length === 1 ? owner.customerIds[0] : '';
+  const eventCount = record && Array.isArray(record.events) ? record.events.length : -1;
+  const receiptHistoryCount = record && Array.isArray(record.receipt_history) ? record.receipt_history.length : -1;
+  const recordKind = record && ['regular', 'laboratorium', 'domain'].includes(record.order_kind) ? record.order_kind : 'invalid';
+  const state = record && ['active', 'cancelled'].includes(record.state) ? record.state : 'invalid';
+  const status = record && ['prepared', 'shipped', 'in_transit', 'delivered', 'cancelled'].includes(record.status) ? record.status : 'invalid';
+  const diagnostic = {
+    patch: 'dirac-customer-shipment-integrity-quarantine-v455',
+    event: 'shipment_record_integrity_diagnostic',
+    reason: String(reason || 'unknown').slice(0, 80),
+    request_id: String(ctx && ctx.requestId || '').slice(0, 96),
+    expected_key_digest: diracCustomerShipmentDiagnosticDigestV455(expectedKey),
+    returned_key_digest: diracCustomerShipmentDiagnosticDigestV455(returnedKey),
+    key_exact: Boolean(expectedKey && returnedKey === expectedKey),
+    parent_present: Boolean(parent),
+    expected_kind: parent && ['regular', 'laboratorium', 'domain'].includes(parent.kind) ? parent.kind : 'invalid',
+    record_kind: recordKind,
+    validator_ok: Boolean(value),
+    row_shape: {
+      object: Boolean(row && typeof row === 'object' && !Array.isArray(row)),
+      blocked_zero: Boolean(row && Number(row.blocked_until_ms) === 0),
+      updated_at_valid: Boolean(row && diracAdminShipmentTimestampV407(row.updated_at) !== null),
+      expires_at_valid_future: Boolean(row && Number.isFinite(Date.parse(row.expires_at)) && Date.parse(row.expires_at) > Date.now())
+    },
+    record_shape: {
+      object: Boolean(record),
+      schema_ok: Boolean(record && record.schema === 'dirac.admin_shipment.v406'),
+      state,
+      status,
+      state_status_consistent: Boolean(record && (record.state === 'cancelled') === (record.status === 'cancelled')),
+      customer_uuid: Boolean(record && customerSecurityLooksLikeUuid(record.customer_id)),
+      updated_by_uuid: Boolean(record && customerSecurityLooksLikeUuid(record.updated_by)),
+      revision_valid: Boolean(record && Number.isSafeInteger(record.revision) && record.revision >= 1),
+      record_updated_at_valid: Boolean(record && diracAdminShipmentTimestampV407(record.updated_at) !== null),
+      row_record_time_match: Boolean(record && row && diracAdminShipmentTimestampV407(record.updated_at) !== null
+        && diracAdminShipmentTimestampV407(record.updated_at) === diracAdminShipmentTimestampV407(row.updated_at)),
+      events_array: Boolean(record && Array.isArray(record.events)),
+      event_count: eventCount,
+      order_id_uuid: Boolean(record && customerSecurityLooksLikeUuid(record.order_id)),
+      order_id_matches_parent: Boolean(record && parent && record.order_id === parent.id),
+      order_kind_matches_parent: Boolean(record && parent && record.order_kind === parent.kind),
+      customer_matches_owner: Boolean(record && ownerId && record.customer_id === ownerId),
+      customer_matches_parent: Boolean(record && parent && record.customer_id === parent.customerId),
+      customer_digest: diracCustomerShipmentDiagnosticDigestV455(record && record.customer_id),
+      owner_digest: diracCustomerShipmentDiagnosticDigestV455(ownerId),
+      order_digest: diracCustomerShipmentDiagnosticDigestV455(record && record.order_id),
+      parent_order_digest: diracCustomerShipmentDiagnosticDigestV455(parent && parent.id),
+      journey_present: Boolean(record && Object.prototype.hasOwnProperty.call(record, 'journey')),
+      receipt_present: Boolean(record && Object.prototype.hasOwnProperty.call(record, 'receipt')),
+      receipt_history_count: receiptHistoryCount,
+      delivery_ref_present: Boolean(record && Object.prototype.hasOwnProperty.call(record, 'delivery_ref')),
+      automation_present: Boolean(record && Object.prototype.hasOwnProperty.call(record, 'automation')),
+      key_contract_ok: Boolean(record && diracCustomerShipmentDiagnosticProbeV455(() => {
+        if (diracAdminShipmentKeyV406(record.order_kind, record.order_id) !== expectedKey) throw new Error('key');
+      })),
+      tracking_format_ok: Boolean(record && /^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(String(record.tracking_number || ''))),
+      courier_text_ok: Boolean(record && diracCustomerShipmentDiagnosticProbeV455(() => diracAdminBusinessTextV406(record.courier, 80, true))),
+      location_text_ok: Boolean(record && diracCustomerShipmentDiagnosticProbeV455(() => diracAdminBusinessTextV406(record.location, 160))),
+      origin_text_ok: Boolean(record && diracCustomerShipmentDiagnosticProbeV455(() => diracAdminBusinessTextV406(record.origin, 600))),
+      destination_text_ok: Boolean(record && diracCustomerShipmentDiagnosticProbeV455(() => diracAdminBusinessTextV406(record.destination, 600))),
+      estimated_delivery_ok: Boolean(record && (record.estimated_delivery === '' || (/^\d{4}-\d{2}-\d{2}$/.test(String(record.estimated_delivery || ''))
+        && Number.isFinite(Date.parse(record.estimated_delivery))))),
+      journey_validator_ok: Boolean(record && diracCustomerShipmentDiagnosticProbeV455(() => diracShipmentJourneyV452(record.journey))),
+      receipt_extras_validator_ok: Boolean(record && diracCustomerShipmentDiagnosticProbeV455(() => diracReceiptDataV453().validate(record)))
+    }
+  };
+  try { console.error('[dirac-shipment-diagnostic-v455] ' + JSON.stringify(diagnostic)); } catch (_) {}
+}
+
 async function diracCustomerShipmentProjectV406(req, orders) {
   if (!diracCustomerShipmentRequestedV406(req)) return orders;
   const owner = diracCustomerShipmentOwnerV406(req);
@@ -61874,24 +61956,45 @@ async function diracCustomerShipmentProjectV406(req, orders) {
   const results = outcomes.map(outcome => outcome.value);
   const shipments = new Map();
   const ownerMismatchKeys = new Set();
+  const integrityQuarantineKeys = new Set();
   for (const row of results.flat()) {
     const key = row && row.security_key;
     const parent = parents.get(key);
-    const value = parent && diracAdminValidateShipmentRowV406(row, key);
-    if (!keys.includes(key) || shipments.has(key) || ownerMismatchKeys.has(key) || !value
-        || value.order_id !== parent.id || value.order_kind !== parent.kind) {
+    if (!keys.includes(key) || !parent) {
+      diracCustomerShipmentDiagnosticV455(ctx, row, key, parent, owner, null, 'unexpected_key');
       throw diracAdminBusinessErrorV406('SHIPMENT_RECORD_OWNER_MISMATCH');
     }
+    if (shipments.has(key) || ownerMismatchKeys.has(key) || integrityQuarantineKeys.has(key)) {
+      diracCustomerShipmentDiagnosticV455(ctx, row, key, parent, owner, null, 'duplicate_key');
+      throw diracAdminBusinessErrorV406('SHIPMENT_RECORD_OWNER_MISMATCH');
+    }
+    const value = diracAdminValidateShipmentRowV406(row, key);
+    if (!value || value.order_id !== parent.id || value.order_kind !== parent.kind) {
+      diracCustomerShipmentDiagnosticV455(ctx, row, key, parent, owner, value, !value ? 'validator_rejected' : 'parent_contract_mismatch');
+      integrityQuarantineKeys.add(key);
+      continue;
+    }
     if (value.customer_id !== owner.customerIds[0] || value.customer_id !== parent.customerId) {
+      diracCustomerShipmentDiagnosticV455(ctx, row, key, parent, owner, value, 'customer_owner_mismatch');
       ownerMismatchKeys.add(key);
       continue;
     }
     shipments.set(key, value);
   }
+  if (ownerMismatchKeys.size || integrityQuarantineKeys.size) {
+    try { console.error('[dirac-shipment-diagnostic-v455] ' + JSON.stringify({
+      patch: 'dirac-customer-shipment-integrity-quarantine-v455', event: 'shipment_projection_quarantine_summary',
+      request_id: String(ctx && ctx.requestId || '').slice(0, 96), order_count: orders.length,
+      shipment_row_count: results.reduce((count, rows) => count + (Array.isArray(rows) ? rows.length : 0), 0),
+      valid_shipment_count: shipments.size, owner_mismatch_count: ownerMismatchKeys.size,
+      integrity_quarantine_count: integrityQuarantineKeys.size, response_mode: 'orders_200_without_untrusted_shipment_payload'
+    })); } catch (_) {}
+  }
   return orders.map((order, index) => {
     const key = keys[index];
-    return { ...order, shipment_data_ready: !ownerMismatchKeys.has(key),
-      shipment: ownerMismatchKeys.has(key) ? undefined : diracAdminShipmentPublicV406(shipments.get(key)) };
+    const unavailable = ownerMismatchKeys.has(key) || integrityQuarantineKeys.has(key);
+    return { ...order, shipment_data_ready: !unavailable,
+      shipment: unavailable ? undefined : diracAdminShipmentPublicV406(shipments.get(key)) };
   });
 }
 
