@@ -913,23 +913,60 @@ function customerMailText(message) {
   return rows.join('\n');
 }
 function customerMailHtml(message) {
-  if (message.shipmentNotice === true) return '<!doctype html><html lang="id"><head><meta charset="utf-8"></head><body style="font-family:Arial,Helvetica,sans-serif;line-height:1.65;color:#182230;background:#f7f9fc;padding:24px"><main style="max-width:640px;margin:auto;background:#fff;padding:28px;border:1px solid #dce3eb;border-radius:12px"><h1 style="font-size:22px">' + mailEscape(message.subject) + '</h1><p>' + mailEscape(message.body).replace(/\n/g, '<br>') + '</p><p><a href="' + mailEscape(shipmentCustomerOriginV450(message.origin) + '/cekresi.html') + '">Lihat pengiriman melalui akun Anda</a></p></main></body></html>';
-  const parts = mailOriginParts(message.origin), subject = mailEscape(message.subject), kind = mailEscape(customerMailKindLabel(message.kind));
-  const body = String(message.body || '').replace(/\r\n?/g, '\n').split(/\n[ \t]*\n/).filter(Boolean).map((paragraph, index) =>
-    '<p style="margin:' + (index ? '16px' : '0') + ' 0 0;font-size:15px;line-height:1.8;color:#24354b;word-break:break-word;overflow-wrap:anywhere">' + mailEscape(paragraph).replace(/\n/g, '<br>') + '</p>').join('');
+  // Same corporate shell for correspondence and shipment notices. Every surface
+  // declares its own background; Gmail text blending is scoped to this email only.
+  const parts = mailOriginParts(message.origin), subject = mailEscape(message.subject);
+  const shipment = message.shipmentNotice === true ? message.shipmentDetails : null;
+  const surface = color => 'background-color:' + color + ';background-image:linear-gradient(' + color + ',' + color + ');';
+  const ink = 'color:#ffffff!important;-webkit-text-fill-color:#ffffff;';
+  const blend = html => '<div class="mail-screen"><div class="mail-difference">' + html + '</div></div>';
+  const paragraph = value => '<p style="margin:0 0 16px;font-size:15px;line-height:1.75;word-break:break-word;overflow-wrap:anywhere;' + ink + '">' + mailEscape(value).replace(/\n/g, '<br>') + '</p>';
+  const label = value => '<p style="margin:0 0 8px;font-size:11px;font-weight:700;letter-spacing:1px;line-height:1.5;' + ink + '">' + mailEscape(value) + '</p>';
+  const fact = (title, value) => '<tr><td bgcolor="#162235" style="padding:12px 16px;border-bottom:1px solid #33465f;' + surface('#162235') + '">' + blend(label(title) + '<p style="margin:0;font-size:15px;line-height:1.6;word-break:break-word;overflow-wrap:anywhere;' + ink + '">' + mailEscape(value || 'Belum dicatat') + '</p>') + '</td></tr>';
+  const table = rows => '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;table-layout:fixed">' + rows + '</table>';
+  const privateKind = ['invoice', 'proforma', 'receipt', 'delivery'].includes(message.kind);
+  const heading = shipment ? shipment.title : message.subject;
+  const kind = shipment ? 'PEMBARUAN PENGIRIMAN' : customerMailKindLabel(message.kind);
   const siteUrl = mailEscape(parts.siteUrl || ''), supportEmail = mailEscape(parts.supportEmail || '');
-  const attachment = message.attachment ? '<tr><td style="padding:0 28px 24px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;border:1px solid #33465f;background:#162235"><tr><td style="padding:14px 18px;font-size:12px;line-height:1.6;color:#b9c8dc"><strong style="color:#e4c98d">DOKUMEN TERLAMPIR</strong><br><span style="font-size:14px;color:#f8fafc;word-break:break-word">' + mailEscape(message.attachment.name) + '</span><br>Periksa dokumen sebelum menindaklanjuti.</td></tr></table></td></tr>' : '';
-  const site = siteUrl ? '<a href="' + siteUrl + '" style="display:inline-block;padding:12px 18px;background:#7dd3fc;border-radius:8px;color:#082032;text-decoration:none;font-size:13px;font-weight:700">Kunjungi situs perusahaan</a>' : '';
-  return '<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body bgcolor="#0B1220" style="margin:0;padding:0;background:#0b1220;font-family:Arial,Helvetica,sans-serif"><div style="display:none;max-height:0;overflow:hidden;opacity:0">' + subject + ' · PT Dirac Inovasi Nusantara</div>'
-    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0b1220;border-collapse:collapse"><tr><td align="center" style="padding:24px 12px"><table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:640px;background:#111827;border:1px solid #273449;border-radius:16px;border-spacing:0;overflow:hidden">'
-    + '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="46%" bgcolor="#22B8CF" height="4"></td><td width="34%" bgcolor="#4E8FD1" height="4"></td><td width="20%" bgcolor="#D2A640" height="4"></td></tr></table></td></tr>'
-    + '<tr><td style="padding:28px;color:#f8fafc"><p style="margin:0 0 10px;font-size:10px;letter-spacing:2px;color:#7dd3fc;font-weight:700">KORESPONDENSI PERUSAHAAN</p><p style="margin:0;font-size:19px;line-height:1.5;font-weight:700">PT DIRAC INOVASI NUSANTARA</p><p style="margin:16px 0 0;font-size:12px;color:#e4c98d">' + kind + '</p></td></tr>'
-    + '<tr><td style="padding:0 20px 24px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#fffefd;border-top:3px solid #b48b42;border-collapse:collapse"><tr><td style="padding:26px 24px 20px;border-bottom:1px solid #ddd9d0"><p style="margin:0 0 8px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#647084">PERIHAL</p><h1 style="margin:0;font-size:22px;line-height:1.45;color:#142d4e;word-break:break-word;overflow-wrap:anywhere">' + subject + '</h1></td></tr><tr><td style="padding:24px">' + body + '</td></tr></table></td></tr>'
-    + attachment + '<tr><td style="padding:0 28px 24px">' + site + '</td></tr><tr><td style="padding:22px 28px;border-top:1px solid #273449;background:#0f172a;color:#b9c8dc;font-size:12px;line-height:1.8"><strong style="color:#7dd3fc;letter-spacing:1px;font-size:10px">KONTAK RESMI</strong><br>'
-    + (siteUrl ? '<a href="' + siteUrl + '" style="color:#9bdcff;text-decoration:none">' + siteUrl + '</a><br>' : '')
-    + (supportEmail ? '<a href="mailto:' + supportEmail + '" style="color:#9bdcff;text-decoration:none">' + supportEmail + '</a><br>' : '')
-    + 'WhatsApp: <a href="https://wa.me/6287892523968" style="color:#9bdcff;text-decoration:none">+62 878-9252-3968</a></td></tr><tr><td style="background:#0f172a"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + adminSocialGridHtml() + '</table></td></tr>'
-    + '<tr><td style="padding:18px 28px 24px;background:#0f172a;border-top:1px solid #1e2a3a;color:#aebdd1;font-size:11px;line-height:1.7">Balas email ini untuk klarifikasi. Untuk komunikasi penawaran, Anda dapat meminta penghentian pesan serupa.<br><span style="color:#7f8da3">&copy; ' + String(new Date().getUTCFullYear()) + ' PT Dirac Inovasi Nusantara.</span></td></tr></table></td></tr></table></body></html>';
+  const target = shipment ? mailEscape(shipmentCustomerOriginV450(message.origin) + '/cekresi.html') : siteUrl;
+  let content = '';
+  if (shipment) {
+    const journey = shipmentJourneyV452(shipment.journey);
+    const status = { prepared: 'Belum dikirim', shipped: 'Diserahkan ke kurir', in_transit: 'Dalam perjalanan', delivered: 'Diterima', cancelled: 'Dibatalkan' }[shipment.status] || 'Status belum tersedia';
+    content = blend(paragraph('Halo ' + shipment.customerName + ',') + paragraph(shipment.title + '.'))
+      + table(fact('NOMOR RESI', shipment.trackingNumber) + fact('NOMOR PESANAN', shipment.orderCode) + fact('KURIR', shipment.courier) + fact('STATUS YANG DICATAT', status)
+        + fact('TITIK LAPORAN TERAKHIR', journey ? journey.stops[journey.position] : shipment.location)
+        + (journey && journey.position < journey.stops.length - 1 && shipment.status !== 'delivered' ? fact('TITIK BERIKUTNYA · RENCANA', journey.stops[journey.position + 1]) : '')
+        + (journey && journey.eta_start && shipment.status !== 'delivered' ? fact('ESTIMASI PETUGAS · BUKAN JAMINAN', journey.eta_start + ' s.d. ' + journey.eta_end) : ''));
+    if (shipment.description) content += '<div style="padding-top:20px">' + blend(label('KETERANGAN TERAKHIR') + paragraph(shipment.description)) + '</div>';
+    if (journey) {
+      const route = journey.stops.map((stop, index) => '<tr><td width="32" valign="top" bgcolor="#162235" style="width:32px;padding:9px 0 9px 12px;border-left:3px solid ' + (index === journey.position ? '#D2A640' : '#33465f') + ';' + surface('#162235') + '">' + blend('<span style="font-size:12px;line-height:1.7;' + ink + '">' + String(index + 1).padStart(2, '0') + '</span>') + '</td><td bgcolor="#162235" style="padding:9px 12px;' + surface('#162235') + '">' + blend('<p style="margin:0;font-size:13px;line-height:1.6;word-break:break-word;overflow-wrap:anywhere;' + ink + '">' + mailEscape(stop) + (index === journey.position ? '<br><strong style="font-size:11px;' + ink + '">TITIK LAPORAN TERAKHIR</strong>' : '') + '</p>') + '</td></tr>').join('');
+      content += blend(label('URUTAN RENCANA RUTE')) + table(route);
+    }
+    content += '<div style="padding-top:20px">' + blend(paragraph('Status dan estimasi dicatat manual oleh petugas. Urutan rencana bukan bukti bahwa semua titik sudah dilalui, dan bukan pelacakan GPS atau data langsung kurir.')) + '</div>';
+  } else {
+    content = blend(String(message.body || '').replace(/\r\n?/g, '\n').split(/\n[ \t]*\n/).filter(Boolean).map(paragraph).join(''));
+  }
+  const attachment = message.attachment ? '<tr><td class="mail-pad" bgcolor="#111827" style="padding:0 24px 20px;' + surface('#111827') + '">' + table(fact('DOKUMEN TERLAMPIR', message.attachment.name)) + '</td></tr>' : '';
+  const social = adminSocialGridHtml().replace(/color:#(?:7dd3fc|d7e3f4)/g, ink).replace(/text-decoration:none/g, 'text-decoration:underline');
+  const footerNote = shipment ? 'Notifikasi ini terkait pesanan Anda. Balas email untuk meminta bantuan. Jangan kirim password, OTP, atau secret.'
+    : privateKind ? 'Dokumen ini ditujukan untuk penerima yang tercantum. Balas email ini untuk klarifikasi transaksi.'
+    : 'Balas email ini untuk klarifikasi. Untuk komunikasi penawaran, Anda dapat meminta penghentian pesan serupa.';
+  return '<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><meta name="supported-color-schemes" content="dark"><style>u+.dirac-customer-mail .mail-screen{background:#000;mix-blend-mode:screen}u+.dirac-customer-mail .mail-difference{background:#000;mix-blend-mode:difference}@media screen and (max-width:480px){.mail-outer{padding:12px 8px!important}.mail-pad{padding-left:16px!important;padding-right:16px!important}.mail-cta{display:block!important;text-align:center!important}}</style></head>'
+    + '<body class="dirac-customer-mail" bgcolor="#0B1220" style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;' + surface('#0b1220') + '"><div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all">' + subject + ' · PT Dirac Inovasi Nusantara</div>'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0B1220" style="width:100%;border-collapse:collapse;' + surface('#0b1220') + '"><tr><td class="mail-outer" align="center" style="padding:24px 12px"><table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" bgcolor="#111827" style="width:100%;max-width:640px;table-layout:fixed;border:1px solid #33465f;border-radius:14px;border-spacing:0;overflow:hidden;' + surface('#111827') + '">'
+    + '<tr><td>' + table('<tr><td width="46%" height="4" bgcolor="#22B8CF" style="height:4px;font-size:0;line-height:0">&nbsp;</td><td width="34%" height="4" bgcolor="#4E8FD1" style="height:4px;font-size:0;line-height:0">&nbsp;</td><td width="20%" height="4" bgcolor="#D2A640" style="height:4px;font-size:0;line-height:0">&nbsp;</td></tr>') + '</td></tr>'
+    + '<tr><td class="mail-pad" bgcolor="#111827" style="padding:24px;border-bottom:1px solid #33465f;' + surface('#111827') + '">' + blend(label('KORESPONDENSI PERUSAHAAN') + '<p style="margin:0;font-size:17px;font-weight:700;line-height:1.5;' + ink + '">PT DIRAC INOVASI NUSANTARA</p>') + '</td></tr>'
+    + '<tr><td class="mail-pad" bgcolor="#111827" style="padding:22px 24px 18px;' + surface('#111827') + '">' + blend(label(kind) + '<h1 style="margin:0;font-size:21px;line-height:1.45;word-break:break-word;overflow-wrap:anywhere;' + ink + '">' + mailEscape(heading) + '</h1>') + '</td></tr>'
+    + '<tr><td class="mail-pad" bgcolor="#111827" style="padding:4px 24px 8px;' + surface('#111827') + '">' + content + '</td></tr>' + attachment
+    + (target ? '<tr><td class="mail-pad" bgcolor="#111827" style="padding:8px 24px 24px;' + surface('#111827') + '">' + table('<tr><td bgcolor="#0B6F88" style="padding:0;border-radius:8px;' + surface('#0b6f88') + '">' + blend('<a class="mail-cta" href="' + target + '" style="display:block;padding:14px 18px;font-size:14px;line-height:1.5;font-weight:700;text-align:center;text-decoration:none;' + ink + '">' + (shipment ? 'Lihat rincian pengiriman' : 'Kunjungi situs perusahaan') + '</a>') + '</td></tr>') + '</td></tr>' : '')
+    + '<tr><td class="mail-pad" bgcolor="#0F172A" style="padding:22px 24px 12px;border-top:1px solid #33465f;' + surface('#0f172a') + '">' + blend(label('KONTAK RESMI')
+      + '<p style="margin:0;font-size:12px;line-height:1.9;word-break:break-word;overflow-wrap:anywhere;' + ink + '">'
+      + (siteUrl ? '<a href="' + siteUrl + '" style="text-decoration:underline;' + ink + '">' + siteUrl + '</a><br>' : '')
+      + (supportEmail ? '<a href="mailto:' + supportEmail + '" style="text-decoration:underline;' + ink + '">' + supportEmail + '</a><br>' : '')
+      + 'WhatsApp: <a href="https://wa.me/6287892523968" style="text-decoration:underline;' + ink + '">+62 878-9252-3968</a></p>') + '</td></tr>'
+    + '<tr><td bgcolor="#0F172A" style="' + surface('#0f172a') + '">' + blend(table(social)) + '</td></tr>'
+    + '<tr><td class="mail-pad" bgcolor="#0F172A" style="padding:20px 24px;border-top:1px solid #33465f;' + surface('#0f172a') + '">' + blend('<p style="margin:0;font-size:11px;line-height:1.8;' + ink + '">' + mailEscape(footerNote) + '<br>&copy; ' + String(new Date().getUTCFullYear()) + ' PT Dirac Inovasi Nusantara.</p>') + '</td></tr></table></td></tr></table></body></html>';
 }
 function customerMailMime(config, message) {
   const mixed = 'dirac-customer-mixed-' + crypto.randomBytes(16).toString('hex'), alternative = 'dirac-customer-alt-' + crypto.randomBytes(16).toString('hex');
@@ -1538,7 +1575,7 @@ function shipmentMessageV450(value, order, origin, stage) {
   const latest = value.events[value.events.length - 1], journey = shipmentJourneyV452(value.journey);
   const routeNote = journey ? 'Rencana rute: ' + journey.stops.join(' → ') + '\nTitik terakhir dilaporkan admin: ' + journey.stops[journey.position] + (journey.position < journey.stops.length - 1 ? '\nTitik berikutnya (rencana): ' + journey.stops[journey.position + 1] : '') + (journey.eta_start && stage !== 'delivered' ? '\nEstimasi admin: ' + journey.eta_start + ' s.d. ' + journey.eta_end : '') + '\nSumber: input admin, bukan pelacakan GPS atau API.' : '';
   const body = ['Halo ' + String(order.customer_name || 'Pelanggan').replace(/[\r\n]/g, ' ').slice(0, 160) + ',', '', label + '.', 'Nomor pesanan: ' + order.order_id, 'Kurir: ' + value.courier, 'Nomor resi: ' + value.tracking_number, value.location ? 'Lokasi terakhir: ' + value.location : '', latest ? 'Keterangan terakhir: ' + latest.description : '', routeNote, '', 'Lihat rincian melalui akun Anda: ' + link, '', 'Notifikasi otomatis terkait pesanan Anda. Balas email ini untuk bantuan.'].filter(line => line !== '').join('\n');
-  return { provider: 'auto', recipients: [order.customer_email], subject: label + ' | ' + value.tracking_number, body, kind: 'delivery', attachment: null, origin: site, shipmentNotice: true };
+  return { provider: 'auto', recipients: [order.customer_email], subject: label + ' | ' + value.tracking_number, body, kind: 'delivery', attachment: null, origin: site, shipmentNotice: true, shipmentDetails: { title: label, customerName: String(order.customer_name || 'Pelanggan').replace(/[\r\n]/g, ' ').slice(0, 160), orderCode: order.order_id, courier: value.courier, trackingNumber: value.tracking_number, status: value.status, location: value.location, description: latest ? latest.description : '', journey } };
 }
 async function shipmentNotifyV450(row, stage, order, origin, database, send, assertContext) {
   const value = JSON.parse(JSON.stringify(row.record_json));

@@ -30409,7 +30409,7 @@ async function diracUniversalPesananReadOrders(req, res) {
     .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
     .slice(0, 120);
 
-  const decoratedOrders = await diracCustomerShipmentProjectV406(req, await diracUniversalPesananDecorateOrders(allOrders));
+  const decoratedOrders = await diracUniversalPesananDecorateOrders(await diracCustomerShipmentProjectV406(req, allOrders));
   const summary = myOrdersBuildSummary(decoratedOrders);
   const gatewayConfigured = diracUniversalPesananGatewayConfigured();
 
