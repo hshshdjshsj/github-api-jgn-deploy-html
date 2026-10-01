@@ -52,7 +52,7 @@ const CONTRACTS = Object.freeze({
   admin_passkey_recovery_verify: post(['ticket', ...PASSKEY_FIELDS], ['ticket', 'credential'], 98304),
   admin_totp_verify: post(['ticket', 'code'], ['ticket', 'code']),
   admin_logout: post([]),
-  admin_orders: get(['kind', 'offset']),
+  admin_orders: get(['kind', 'offset', 'view', 'from', 'until']),
   admin_shipment_update: post(['kind', 'order_id', 'expected_revision', 'tracking_number', 'courier', 'status', 'location', 'origin', 'destination', 'estimated_delivery', 'description', 'tracking_options', 'review_ack', 'review_reason', 'approval'], ['kind', 'order_id', 'expected_revision', 'tracking_number', 'courier', 'status', 'approval']),
   admin_shipment_cancel: post(['kind', 'order_id', 'expected_revision', 'description', 'review_ack', 'review_reason', 'approval'], ['kind', 'order_id', 'expected_revision', 'approval']),
   admin_blocks: get(['offset']),
@@ -141,8 +141,10 @@ function base32(buffer) {
 function totp(secret, counter) {
   const message = Buffer.alloc(8); message.writeBigUInt64BE(BigInt(counter));
   const hash = crypto.createHmac('sha1', secret).update(message).digest();
-  const index = hash[hash.length - 1] & 15;
-  return String((hash.readUInt32BE(index) & 0x7fffffff) % 1000000).padStart(6, '0');
+  try {
+    const index = hash[hash.length - 1] & 15;
+    return String((hash.readUInt32BE(index) & 0x7fffffff) % 1000000).padStart(6, '0');
+  } finally { hash.fill(0); message.fill(0); }
 }
 function encryptionKey(ops) {
   const key = ops.deriveKey('totp-storage');
@@ -159,16 +161,17 @@ function seal(ops, value, context) {
   } finally { key.fill(0); }
 }
 function open(ops, value, context) {
-  const key = encryptionKey(ops);
+  const key = encryptionKey(ops); let plaintext = null, tail = null;
   try {
     if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)) fail('ADMIN_STATE_INVALID', 503);
     const parts = value.split('.').map(v => decodeB64url(v, 64));
     if (parts[0].length !== 12 || parts[1].length !== 32 || parts[2].length !== 16) fail('ADMIN_STATE_INVALID', 503);
     const decipher = crypto.createDecipheriv('aes-256-gcm', key, parts[0]);
     decipher.setAAD(Buffer.from(VERSION + ':' + context)); decipher.setAuthTag(parts[2]);
-    return Buffer.concat([decipher.update(parts[1]), decipher.final()]);
+    plaintext = decipher.update(parts[1]); tail = decipher.final();
+    return Buffer.concat([plaintext, tail]);
   } catch (error) { if (error && error.code === 'ADMIN_SECRET_UNAVAILABLE') throw error; fail('ADMIN_STATE_INVALID', 503); }
-  finally { key.fill(0); }
+  finally { key.fill(0); if (plaintext) plaintext.fill(0); if (tail) tail.fill(0); }
 }
 
 function cleanHost(value) {
@@ -580,6 +583,21 @@ function readCbor(buffer, start = 0, depth = 0) {
   if (major === 7) { if (add === 20) return { value: false, offset }; if (add === 21) return { value: true, offset }; if (add === 22) return { value: null, offset }; fail('ADMIN_PASSKEY_CBOR_INVALID', 400); }
   fail('ADMIN_PASSKEY_CBOR_INVALID', 400);
 }
+// V457: enforce the algorithms advertised to authenticators, including RS256 >= 2048 bits.
+function adminPasskeyPublicKeyV457(jwk, status) {
+  let key;
+  try {
+    if (!jwk || typeof jwk !== 'object' || Array.isArray(jwk)
+        || ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'].some(name => Object.prototype.hasOwnProperty.call(jwk, name))) throw new Error();
+    key = crypto.createPublicKey({ key: jwk, format: 'jwk' });
+    const ec = jwk.kty === 'EC' && jwk.crv === 'P-256' && (!jwk.alg || jwk.alg === 'ES256')
+      && key.asymmetricKeyType === 'ec' && key.asymmetricKeyDetails.namedCurve === 'prime256v1';
+    const rsa = jwk.kty === 'RSA' && (!jwk.alg || jwk.alg === 'RS256') && key.asymmetricKeyType === 'rsa'
+      && key.asymmetricKeyDetails.modulusLength >= 2048 && key.asymmetricKeyDetails.modulusLength <= 8192;
+    if (!ec && !rsa) throw new Error();
+  } catch (_) { fail('ADMIN_PASSKEY_KEY_INVALID', status); }
+  return key;
+}
 function coseToJwk(map) {
   if (!(map instanceof Map)) fail('ADMIN_PASSKEY_KEY_INVALID', 400);
   const kty = map.get(1), alg = map.get(3);
@@ -590,10 +608,10 @@ function coseToJwk(map) {
     jwk = { kty: 'EC', crv: 'P-256', x: x.toString('base64url'), y: y.toString('base64url'), alg: 'ES256', ext: true, key_ops: ['verify'] };
   } else if (kty === 3 && alg === -257) {
     const n = map.get(-1), e = map.get(-2);
-    if (!Buffer.isBuffer(n) || n.length < 64 || n.length > 1024 || !Buffer.isBuffer(e) || e.length < 1 || e.length > 8) fail('ADMIN_PASSKEY_KEY_INVALID', 400);
+    if (!Buffer.isBuffer(n) || n.length < 256 || n.length > 1024 || !Buffer.isBuffer(e) || e.length < 1 || e.length > 8) fail('ADMIN_PASSKEY_KEY_INVALID', 400);
     jwk = { kty: 'RSA', n: n.toString('base64url'), e: e.toString('base64url'), alg: 'RS256', ext: true, key_ops: ['verify'] };
   } else fail('ADMIN_PASSKEY_ALGORITHM_INVALID', 403);
-  try { crypto.createPublicKey({ key: jwk, format: 'jwk' }); } catch (_) { fail('ADMIN_PASSKEY_KEY_INVALID', 400); }
+  adminPasskeyPublicKeyV457(jwk, 400);
   return jwk;
 }
 function parseAuthData(bytes, rpId, registration) {
@@ -629,7 +647,7 @@ function verifyAssertion({ credential, rpId, passkey }) {
   const parsed = parseAuthData(authData, rpId, false);
   if (parsed.backupEligible !== !!passkey.backupEligible) fail('ADMIN_PASSKEY_BACKUP_STATE_INVALID', 403);
   const client = decodeB64url(credential.response.clientDataJSON, 8192, 1), signed = Buffer.concat([authData, crypto.createHash('sha256').update(client).digest()]);
-  let key; try { key = crypto.createPublicKey({ key: passkey.publicKeyJwk, format: 'jwk' }); } catch (_) { fail('ADMIN_PASSKEY_KEY_INVALID', 503); }
+  const key = adminPasskeyPublicKeyV457(passkey.publicKeyJwk, 503);
   let ok = false; try { ok = crypto.verify('sha256', signed, key, signature); } catch (_) { ok = false; }
   if (!ok) fail('ADMIN_PASSKEY_SIGNATURE_INVALID', 403);
   const previous = Number(passkey.signCount || 0), current = parsed.signCount;
@@ -896,12 +914,22 @@ function customerMailText(message) {
 }
 function customerMailHtml(message) {
   if (message.shipmentNotice === true) return '<!doctype html><html lang="id"><head><meta charset="utf-8"></head><body style="font-family:Arial,Helvetica,sans-serif;line-height:1.65;color:#182230;background:#f7f9fc;padding:24px"><main style="max-width:640px;margin:auto;background:#fff;padding:28px;border:1px solid #dce3eb;border-radius:12px"><h1 style="font-size:22px">' + mailEscape(message.subject) + '</h1><p>' + mailEscape(message.body).replace(/\n/g, '<br>') + '</p><p><a href="' + mailEscape(shipmentCustomerOriginV450(message.origin) + '/cekresi.html') + '">Lihat pengiriman melalui akun Anda</a></p></main></body></html>';
-  const parts = mailOriginParts(message.origin), subject = mailEscape(message.subject), body = mailEscape(message.body).replace(/\n/g, '<br>'), kind = mailEscape(customerMailKindLabel(message.kind));
-  const siteUrl = mailEscape(parts.siteUrl || ''), supportEmail = mailEscape(parts.supportEmail || ''), attachment = message.attachment ? mailEscape(message.attachment.name) : '';
-  const siteBlock = siteUrl ? '<tr><td style="padding:0 28px 24px"><a href="' + siteUrl + '" style="display:inline-block;padding:12px 18px;border-radius:9px;background:#7dd3fc;color:#082032;text-decoration:none;font-size:13px;font-weight:800">Buka situs resmi</a></td></tr>' : '';
-  const supportBlock = supportEmail ? '<a href="mailto:' + supportEmail + '" style="color:#9bdcff;text-decoration:none">' + supportEmail + '</a>' : 'Kanal kontak resmi perusahaan';
-  const attachmentBlock = attachment ? '<tr><td style="padding:0 28px 22px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#162235" style="width:100%;border-collapse:separate;border-spacing:0;background:#162235;border:1px solid #2a3b54;border-radius:10px"><tr><td style="padding:14px 16px;font-size:12px;line-height:1.6;color:#b9c8dc"><span style="display:block;font-size:10px;font-weight:800;letter-spacing:.12em;color:#7dd3fc">LAMPIRAN</span><strong style="display:block;margin-top:4px;color:#f8fafc;font-size:13px">' + attachment + '</strong></td></tr></table></td></tr>' : '';
-  return '<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><meta name="supported-color-schemes" content="dark"></head><body bgcolor="#0B1220" style="margin:0;padding:0;background:#0b1220;color:#f8fafc;font-family:Arial,Helvetica,sans-serif"><div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent">' + subject + ' · PT Dirac Inovasi Nusantara</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#0B1220" style="width:100%;border-collapse:collapse;background:#0b1220"><tr><td align="center" style="padding:26px 12px"><table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" bgcolor="#111827" style="width:100%;max-width:640px;border-collapse:separate;border-spacing:0;background:#111827;border:1px solid #273449;border-radius:16px;overflow:hidden"><tr><td style="padding:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse"><tr><td width="46%" bgcolor="#22B8CF" style="height:4px;line-height:4px;font-size:0;background:#22b8cf">&nbsp;</td><td width="34%" bgcolor="#4E8FD1" style="height:4px;line-height:4px;font-size:0;background:#4e8fd1">&nbsp;</td><td width="20%" bgcolor="#D2A640" style="height:4px;line-height:4px;font-size:0;background:#d2a640">&nbsp;</td></tr></table></td></tr><tr><td bgcolor="#111827" style="padding:28px 28px 24px;background:#111827;color:#f8fafc"><div style="font-size:10px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#7dd3fc">KOMUNIKASI RESMI</div><div style="margin-top:8px;font-size:14px;line-height:1.4;font-weight:800;letter-spacing:.025em;color:#f8fafc">PT DIRAC INOVASI NUSANTARA</div><div style="margin-top:18px"><span style="display:inline-block;padding:5px 9px;border:1px solid #33465f;border-radius:999px;background:#162235;color:#b9c8dc;font-size:10px;line-height:1.3;font-weight:700">' + kind + '</span></div><h1 style="margin:10px 0 0;font-size:25px;line-height:1.28;font-weight:800;color:#ffffff">' + subject + '</h1></td></tr><tr><td bgcolor="#111827" style="padding:4px 28px 24px;background:#111827"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#151F2E" style="width:100%;border-collapse:separate;border-spacing:0;background:#151f2e;border:1px solid #273449;border-radius:12px"><tr><td style="padding:22px 20px;font-size:15px;line-height:1.78;color:#dbe7f5">' + body + '</td></tr></table></td></tr>' + attachmentBlock + siteBlock + '<tr><td bgcolor="#0F172A" style="padding:20px 28px;background:#0f172a;border-top:1px solid #273449"><div style="font-size:10px;line-height:1.4;font-weight:800;letter-spacing:.14em;color:#7dd3fc">KONTAK RESMI</div><div style="margin-top:9px;font-size:12px;line-height:1.8;color:#aebdd1">Website: ' + (siteUrl ? '<a href="' + siteUrl + '" style="color:#9bdcff;text-decoration:none">' + siteUrl + '</a>' : 'situs resmi perusahaan') + '<br>Email: ' + supportBlock + '<br>WhatsApp: <a href="https://wa.me/6287892523968" style="color:#9bdcff;text-decoration:none">+62 878-9252-3968</a></div></td></tr><tr><td bgcolor="#0F172A" style="padding:0;background:#0f172a"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse">' + adminSocialGridHtml() + '</table></td></tr><tr><td bgcolor="#0F172A" style="padding:16px 28px 24px;background:#0f172a;color:#7f8da3;font-size:10px;line-height:1.7;border-top:1px solid #1e2a3a">Pesan ini dikirim melalui kanal resmi PT Dirac Inovasi Nusantara. Balas email ini bila Anda memerlukan klarifikasi atau ingin menghentikan komunikasi penawaran serupa.<br><span style="color:#64748b">&copy; ' + String(new Date().getUTCFullYear()) + ' PT Dirac Inovasi Nusantara.</span></td></tr></table></td></tr></table></body></html>';
+  const parts = mailOriginParts(message.origin), subject = mailEscape(message.subject), kind = mailEscape(customerMailKindLabel(message.kind));
+  const body = String(message.body || '').replace(/\r\n?/g, '\n').split(/\n[ \t]*\n/).filter(Boolean).map((paragraph, index) =>
+    '<p style="margin:' + (index ? '16px' : '0') + ' 0 0;font-size:15px;line-height:1.8;color:#24354b;word-break:break-word;overflow-wrap:anywhere">' + mailEscape(paragraph).replace(/\n/g, '<br>') + '</p>').join('');
+  const siteUrl = mailEscape(parts.siteUrl || ''), supportEmail = mailEscape(parts.supportEmail || '');
+  const attachment = message.attachment ? '<tr><td style="padding:0 28px 24px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;border:1px solid #33465f;background:#162235"><tr><td style="padding:14px 18px;font-size:12px;line-height:1.6;color:#b9c8dc"><strong style="color:#e4c98d">DOKUMEN TERLAMPIR</strong><br><span style="font-size:14px;color:#f8fafc;word-break:break-word">' + mailEscape(message.attachment.name) + '</span><br>Periksa dokumen sebelum menindaklanjuti.</td></tr></table></td></tr>' : '';
+  const site = siteUrl ? '<a href="' + siteUrl + '" style="display:inline-block;padding:12px 18px;background:#7dd3fc;border-radius:8px;color:#082032;text-decoration:none;font-size:13px;font-weight:700">Kunjungi situs perusahaan</a>' : '';
+  return '<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body bgcolor="#0B1220" style="margin:0;padding:0;background:#0b1220;font-family:Arial,Helvetica,sans-serif"><div style="display:none;max-height:0;overflow:hidden;opacity:0">' + subject + ' · PT Dirac Inovasi Nusantara</div>'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0b1220;border-collapse:collapse"><tr><td align="center" style="padding:24px 12px"><table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:640px;background:#111827;border:1px solid #273449;border-radius:16px;border-spacing:0;overflow:hidden">'
+    + '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="46%" bgcolor="#22B8CF" height="4"></td><td width="34%" bgcolor="#4E8FD1" height="4"></td><td width="20%" bgcolor="#D2A640" height="4"></td></tr></table></td></tr>'
+    + '<tr><td style="padding:28px;color:#f8fafc"><p style="margin:0 0 10px;font-size:10px;letter-spacing:2px;color:#7dd3fc;font-weight:700">KORESPONDENSI PERUSAHAAN</p><p style="margin:0;font-size:19px;line-height:1.5;font-weight:700">PT DIRAC INOVASI NUSANTARA</p><p style="margin:16px 0 0;font-size:12px;color:#e4c98d">' + kind + '</p></td></tr>'
+    + '<tr><td style="padding:0 20px 24px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#fffefd;border-top:3px solid #b48b42;border-collapse:collapse"><tr><td style="padding:26px 24px 20px;border-bottom:1px solid #ddd9d0"><p style="margin:0 0 8px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#647084">PERIHAL</p><h1 style="margin:0;font-size:22px;line-height:1.45;color:#142d4e;word-break:break-word;overflow-wrap:anywhere">' + subject + '</h1></td></tr><tr><td style="padding:24px">' + body + '</td></tr></table></td></tr>'
+    + attachment + '<tr><td style="padding:0 28px 24px">' + site + '</td></tr><tr><td style="padding:22px 28px;border-top:1px solid #273449;background:#0f172a;color:#b9c8dc;font-size:12px;line-height:1.8"><strong style="color:#7dd3fc;letter-spacing:1px;font-size:10px">KONTAK RESMI</strong><br>'
+    + (siteUrl ? '<a href="' + siteUrl + '" style="color:#9bdcff;text-decoration:none">' + siteUrl + '</a><br>' : '')
+    + (supportEmail ? '<a href="mailto:' + supportEmail + '" style="color:#9bdcff;text-decoration:none">' + supportEmail + '</a><br>' : '')
+    + 'WhatsApp: <a href="https://wa.me/6287892523968" style="color:#9bdcff;text-decoration:none">+62 878-9252-3968</a></td></tr><tr><td style="background:#0f172a"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + adminSocialGridHtml() + '</table></td></tr>'
+    + '<tr><td style="padding:18px 28px 24px;background:#0f172a;border-top:1px solid #1e2a3a;color:#aebdd1;font-size:11px;line-height:1.7">Balas email ini untuk klarifikasi. Untuk komunikasi penawaran, Anda dapat meminta penghentian pesan serupa.<br><span style="color:#7f8da3">&copy; ' + String(new Date().getUTCFullYear()) + ' PT Dirac Inovasi Nusantara.</span></td></tr></table></td></tr></table></body></html>';
 }
 function customerMailMime(config, message) {
   const mixed = 'dirac-customer-mixed-' + crypto.randomBytes(16).toString('hex'), alternative = 'dirac-customer-alt-' + crypto.randomBytes(16).toString('hex');
@@ -1140,8 +1168,8 @@ async function execute(ops) {
       if (!verified || verified.ok !== true || verified.credentialId !== credential.id || !verified.publicKeyJwk) fail('ADMIN_PASSKEY_INVALID', 403); passkey = { credentialId: verified.credentialId, publicKeyJwk: verified.publicKeyJwk, signCount: verified.signCount, backupEligible: verified.backupEligible };
       const secret = crypto.randomBytes(32);
       try {
-        const encrypted = seal(ops, secret, configKey(scope)), manualKey = base32(secret), label = 'DIRAC ' + scope.rpId + ':' + ADMIN_EMAIL;
-        provisioning = { secret: manualKey, uri: 'otpauth://totp/' + encodeURIComponent(label) + '?secret=' + manualKey + '&issuer=' + encodeURIComponent('DIRAC ' + scope.rpId) + '&algorithm=SHA1&digits=6&period=30' };
+        const encrypted = seal(ops, secret, configKey(scope));
+        provisioning = { secret: base32(secret) };
         const pending = { version: VERSION, owner: scope.owner, origin: scope.origin, enrollmentState: 'pending_totp', revision: randomToken(), passkey, userHandle: proof.userHandle, totp: encrypted, createdAt: Date.now() };
         if (await ops.claim(configKey(scope), pending, PENDING_ENROLLMENT_SECONDS) !== true) fail('ADMIN_ALREADY_ENROLLED', 409); enrolled = pending;
       } finally { secret.fill(0); }
@@ -1150,10 +1178,10 @@ async function execute(ops) {
       if (handle !== null && handle !== undefined && handle !== '' && handle !== enrolled.userHandle) fail('ADMIN_PASSKEY_USER_MISMATCH', 403); const verified = await ops.verifyAssertion({ credential, clientData, rpId: scope.rpId, passkey: enrolled.passkey });
       if (!verified || verified.ok !== true) fail('ADMIN_PASSKEY_INVALID', 403); passkey = { ...enrolled.passkey, signCount: verified.signCount }; const next = { ...enrolled, passkey, revision: randomToken() };
       if (await ops.replace(configKey(scope), enrolled.revision, next, next.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS) !== true) fail('ADMIN_PASSKEY_STATE_CHANGED', 409); enrolled = next;
-      if (enrolled.enrollmentState === 'pending_totp') { const secret = open(ops, enrolled.totp, configKey(scope)); try { const manualKey = base32(secret), label = 'DIRAC ' + scope.rpId + ':' + ADMIN_EMAIL; provisioning = { secret: manualKey, uri: 'otpauth://totp/' + encodeURIComponent(label) + '?secret=' + manualKey + '&issuer=' + encodeURIComponent('DIRAC ' + scope.rpId) + '&algorithm=SHA1&digits=6&period=30' }; } finally { secret.fill(0); } }
+      if (enrolled.enrollmentState === 'pending_totp') { const secret = open(ops, enrolled.totp, configKey(scope)); try { provisioning = { secret: base32(secret) }; } finally { secret.fill(0); } }
     }
     await consume(ops, entry); const pending = enrolled.enrollmentState === 'pending_totp';
-    const token = await issue(ops, scope, 'totp', { enroll: pending, totp: enrolled.totp, revision: enrolled.revision }); return { ok: true, ticket: token, stage: 'totp', enrollment: pending ? provisioning : null, period: 30 };
+    const token = await issue(ops, scope, 'totp', { enroll: pending, totpBinding: digest(enrolled.totp), revision: enrolled.revision }); return { ok: true, ticket: token, stage: 'totp', enrollment: pending ? provisioning : null, period: 30 };
   }
   if (action === 'admin_passkey_recovery_start') {
     const recoveryState = adminPasskeyRecoverySecretState(); if (!recoveryState.configured) fail('ADMIN_PASSKEY_RECOVERY_NOT_CONFIGURED', 503);
@@ -1179,10 +1207,14 @@ async function execute(ops) {
   if (action === 'admin_totp_verify') {
     const entry = await ticket(ops, scope, body.ticket, 'totp'); await throttle(ops, scope, 'totp-verify', 5, FACTOR_SECONDS);
     if (typeof body.code !== 'string' || !/^[0-9]{6}$/.test(body.code)) fail('ADMIN_TOTP_INVALID', 401); const proof = entry.value, enrolled = await config(ops, scope);
-    if (!enrolled || enrolled.revision !== proof.revision || enrolled.totp !== proof.totp || (proof.enroll ? enrolled.enrollmentState !== 'pending_totp' : enrolled.enrollmentState !== 'active')) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409);
-    const secret = open(ops, proof.totp, configKey(scope)); let accepted = null;
+    // Existing short-lived tickets remain valid only with their exact encrypted value; new tickets carry a digest.
+    const bound = enrolled && (Object.prototype.hasOwnProperty.call(proof, 'totpBinding')
+      ? typeof proof.totpBinding === 'string' && /^[a-f0-9]{64}$/.test(proof.totpBinding) && safeEqual(digest(enrolled.totp), proof.totpBinding)
+      : typeof proof.totp === 'string' && safeEqual(enrolled.totp, proof.totp));
+    if (!enrolled || enrolled.revision !== proof.revision || !bound || (proof.enroll ? enrolled.enrollmentState !== 'pending_totp' : enrolled.enrollmentState !== 'active')) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409);
+    const secret = open(ops, enrolled.totp, configKey(scope)); let accepted = null;
     try { const current = Math.floor(Date.now() / 30000), match = [current, current - 1, current + 1].find(counter => safeEqual(totp(secret, counter), body.code)); accepted = Number.isSafeInteger(match) ? match : null; } finally { secret.fill(0); }
-    if (accepted === null) fail('ADMIN_TOTP_INVALID', 401); if (await ops.claim(PREFIX + 'totp-used:' + digest(scope.owner + ':' + scope.origin + ':' + proof.totp + ':' + accepted), { version: VERSION }, 120) !== true) fail('ADMIN_TOTP_ALREADY_USED', 409); await consume(ops, entry);
+    if (accepted === null) fail('ADMIN_TOTP_INVALID', 401); if (await ops.claim(PREFIX + 'totp-used:' + digest(scope.owner + ':' + scope.origin + ':' + enrolled.totp + ':' + accepted), { version: VERSION }, 120) !== true) fail('ADMIN_TOTP_ALREADY_USED', 409); await consume(ops, entry);
     if (proof.enroll) { const active = { ...enrolled, enrollmentState: 'active', revision: randomToken(), activatedAt: Date.now() }; if (await ops.replace(configKey(scope), enrolled.revision, active, ENROLLMENT_SECONDS) !== true) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409); }
     const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); return { ok: true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
   }
@@ -1340,7 +1372,48 @@ function orderPublic(row, kind) {
   return { id: row.id, kind, order_id: String(row.order_id || (kind === 'domain' ? 'DOM-' + row.id.slice(0, 8).toUpperCase() : row.id)), customer_id: row.customer_id, customer_name: String(row.customer_name || '').slice(0, 160), customer_email: String(row.customer_email || '').slice(0, 254), customer_phone: String(row.customer_phone || row.customer_whatsapp || '').slice(0, 40), shipping_address: String(row.shipping_address || '').slice(0, 600), service_type: kind === 'domain' ? 'domain' : String(row.service_type || '').slice(0, 60), domain_name: String(row.domain_name || '').slice(0, 254), total, currency: String(row.currency || 'IDR').slice(0, 8), payment_method: String(row.payment_method || '').slice(0, 80), payment_status: String(row.payment_status || '').slice(0, 40), order_status: String(row.order_status || '').slice(0, 40), created_at: row.created_at };
 }
 function domainOrderUndefinedColumn(result) { return !!(result && result.ok === false && result.status === 400 && result.data && String(result.data.code || '') === '42703'); }
+// V456: bounded, read-only operational summaries. No shipment/customer payload is fetched.
+async function businessSummaryV456(body) {
+  const kind = String(body.kind || 'regular'), rawOffset = String(body.offset || '0');
+  const from = String(body.from || ''), until = String(body.until || '');
+  const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+  const start = Date.parse(from), end = Date.parse(until);
+  if (body.view !== 'summary' || !Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(rawOffset) || Number(rawOffset) > 49800 || Number(rawOffset) % 200 !== 0) fail('ADMIN_SUMMARY_RANGE_INVALID', 400);
+  if (!iso.test(from) || !iso.test(until) || !Number.isFinite(start) || !Number.isFinite(end) || new Date(start).toISOString() !== from || new Date(end).toISOString() !== until || start < Date.UTC(1999, 11, 31, 10) || start >= end || end > Date.now() + 60000) fail('ADMIN_SUMMARY_RANGE_INVALID', 400);
+  const table = kind === 'domain' ? 'domain_orders' : 'orders';
+  const select = kind === 'domain' ? 'id,total_price,currency,payment_status,created_at' : 'id,total,payment_status,created_at';
+  const suffix = '&created_at=gte.' + encodeURIComponent(from) + '&created_at=lt.' + encodeURIComponent(until) + '&order=created_at.desc,id.desc&limit=201&offset=' + Number(rawOffset);
+  let result = await dbFetch('/rest/v1/' + table + '?select=' + encodeURIComponent(select) + suffix, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
+  let implicitCurrency = kind !== 'domain';
+  if (kind === 'domain' && domainOrderUndefinedColumn(result)) {
+    result = await dbFetch('/rest/v1/domain_orders?select=' + encodeURIComponent('id,total_price,payment_status,created_at') + suffix, { method: 'GET' });
+    implicitCurrency = true;
+  }
+  if (!result.ok || !Array.isArray(result.data) || result.data.length > 201) fail('ADMIN_DATA_UNAVAILABLE', 503);
+  const seen = new Set(); let lastTime = Infinity;
+  const totals = result.data.slice(0, 200).reduce((out, row) => {
+    if (!row || typeof row !== 'object' || !isUuid(row.id) || seen.has(row.id)) fail('ADMIN_SUMMARY_DATA_INVALID', 503);
+    const time = Date.parse(row.created_at), raw = kind === 'domain' ? row.total_price : row.total;
+    if ((typeof raw !== 'number' && typeof raw !== 'string') || !/^[0-9]+(?:\.[0-9]{1,2})?$/.test(String(raw))) fail('ADMIN_SUMMARY_DATA_INVALID', 503);
+    const minor = Math.round(Number(raw) * 100), currency = implicitCurrency || row.currency == null || row.currency === '' ? 'IDR' : String(row.currency).toUpperCase();
+    if (!Number.isFinite(time) || time < start || time >= end || time > lastTime || !Number.isSafeInteger(minor) || minor < 0 || !/^[A-Z]{3}$/.test(currency) || (row.payment_status != null && (typeof row.payment_status !== 'string' || row.payment_status.length > 80))) fail('ADMIN_SUMMARY_DATA_INVALID', 503);
+    seen.add(row.id); lastTime = time;
+    const status = String(row.payment_status || '').trim().toLowerCase();
+    const paid = ['paid', 'sudah bayar'].includes(status), refunded = ['refunded', 'refund'].includes(status), open = ['unpaid', 'pending', 'created', 'belum bayar'].includes(status);
+    out.orders += 1; out.paid += Number(paid); out.refunded += Number(refunded); out.open += Number(open); out.other += Number(!paid && !refunded && !open);
+    if (kind === 'domain' && (implicitCurrency || row.currency == null || row.currency === '')) out.implicit_idr += 1;
+    if (currency !== 'IDR') out.non_idr += 1;
+    else {
+      out.paid_minor += paid ? minor : 0; out.refunded_minor += refunded ? minor : 0; out.open_minor += open ? minor : 0;
+      if (![out.paid_minor, out.refunded_minor, out.open_minor].every(Number.isSafeInteger)) fail('ADMIN_SUMMARY_DATA_INVALID', 503);
+    }
+    return out;
+  }, { orders: 0, paid: 0, refunded: 0, open: 0, other: 0, non_idr: 0, implicit_idr: 0, paid_minor: 0, refunded_minor: 0, open_minor: 0 });
+  return { ok: true, view: 'summary', kind, offset: Number(rawOffset), page_size: 200, from, until, has_more: result.data.length === 201, totals, time: new Date().toISOString() };
+}
+
 async function businessOrders(body) {
+  if (body.view !== undefined || body.from !== undefined || body.until !== undefined) return businessSummaryV456(body);
   const kind = String(body.kind || 'regular'), offsetRaw = String(body.offset || '0'); if (!Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 50000) fail('ADMIN_PAGE_INVALID', 400);
   const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&order=created_at.desc,id.desc&limit=41&offset=' + Number(offsetRaw), path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await dbFetch(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
   if (kind === 'domain' && domainOrderUndefinedColumn(result)) result = await dbFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(DOMAIN_ORDER_COMPAT_SELECT) + suffix, { method: 'GET' });
