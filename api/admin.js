@@ -319,11 +319,26 @@ function validateDurableEnrollment(key, value) {
   try { crypto.createPublicKey({ key: jwk, format: 'jwk' }); } catch (_) { fail('ADMIN_ENROLLMENT_INVALID', 503); }
   return value.enrollmentState === state ? value : { ...value, enrollmentState: state };
 }
+// v454: keep the same fail-closed storage contract; log only non-secret DB diagnostics.
+function assertPasskeyStoreResultV454(result, operation) {
+  if (result.ok && Array.isArray(result.data) && result.data.length <= 1) return;
+  const value = result.data && !Array.isArray(result.data) && typeof result.data === 'object' ? result.data.code : null;
+  const databaseCode = typeof value === 'string' && (value.length === 5 || value.length === 8) && /^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(value) ? value : 'UNAVAILABLE';
+  try {
+    console.error('[dirac-admin-passkey-store-v454]', JSON.stringify({
+      event: 'admin_passkey_store_failed',
+      operation: ['read', 'claim', 'replace'].includes(operation) ? operation : 'unknown',
+      http_status: Number.isInteger(result.status) && result.status >= 0 && result.status <= 599 ? result.status : 0,
+      database_code: databaseCode
+    }));
+  } catch (_) {}
+  fail('ADMIN_PASSKEY_STORE_UNAVAILABLE', 503);
+}
 async function durableEnrollmentRead(key, migrate = true) {
   if (!enrollmentKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503);
   const result = await dbFetch('/rest/v1/' + ADMIN_PASSKEY_TABLE + '?select=' + ADMIN_PASSKEY_SELECT + '&security_key=eq.' + encodeURIComponent(key) + '&limit=2', { method: 'GET' }, 'security');
   // Never turn a missing table, failed query, or damaged row into "register a new passkey".
-  if (!result.ok || !Array.isArray(result.data) || result.data.length > 1) fail('ADMIN_PASSKEY_STORE_UNAVAILABLE', 503);
+  assertPasskeyStoreResultV454(result, 'read');
   if (result.data.length) {
     const row = result.data[0];
     if (!row || row.security_key !== key || !row.record_json || row.revision !== row.record_json.revision) fail('ADMIN_ENROLLMENT_INVALID', 503);
@@ -348,7 +363,7 @@ async function durableEnrollmentClaim(key, value) {
     method: 'POST', prefer: 'resolution=ignore-duplicates,return=representation',
     body: { security_key: key, revision: record.revision, record_json: record, updated_at: new Date().toISOString() }
   }, 'security');
-  if (!result.ok || !Array.isArray(result.data) || result.data.length > 1) fail('ADMIN_PASSKEY_STORE_UNAVAILABLE', 503);
+  assertPasskeyStoreResultV454(result, 'claim');
   if (!result.data.length) return false;
   if (result.data[0].security_key !== key || result.data[0].revision !== record.revision) fail('ADMIN_PASSKEY_WRITE_UNVERIFIED', 503);
   return true;
@@ -1633,7 +1648,7 @@ async function replaceEnrollment(records, key, expectedRevision, record, ttl) {
   // Compare-and-swap on a revision, not a timestamp; enrollment has no TTL.
   const path = '/rest/v1/' + ADMIN_PASSKEY_TABLE + '?security_key=eq.' + encodeURIComponent(key) + '&revision=eq.' + encodeURIComponent(expectedRevision) + '&select=security_key,revision';
   const result = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { revision: next.revision, record_json: next, updated_at: new Date().toISOString() } }, 'security');
-  if (!result.ok || !Array.isArray(result.data) || result.data.length > 1) fail('ADMIN_PASSKEY_STORE_UNAVAILABLE', 503);
+  assertPasskeyStoreResultV454(result, 'replace');
   if (!result.data.length) return false;
   if (result.data[0].security_key !== key || result.data[0].revision !== next.revision) fail('ADMIN_PASSKEY_WRITE_UNVERIFIED', 503);
   records.set(key, { revision: next.revision });
