@@ -30391,9 +30391,10 @@ async function diracUniversalPesananReadOrders(req, res) {
     });
   }
 
+  const shipmentView = diracCustomerShipmentRequestedV406(req);
   const [genericOrders, domainOrders] = await Promise.all([
     myOrdersFetchGenericOrders(owner, userEmail),
-    myOrdersFetchDomainOrders(owner, userEmail)
+    shipmentView ? Promise.resolve({ ok: true, error: '', orders: [] }) : myOrdersFetchDomainOrders(owner, userEmail)
   ]);
   if (!genericOrders || genericOrders.ok !== true) {
     const ambiguous = genericOrders && genericOrders.error === 'ORDER_DATABASE_AMBIGUOUS';
@@ -30405,7 +30406,11 @@ async function diracUniversalPesananReadOrders(req, res) {
         : 'Sumber pesanan belum dapat diverifikasi secara lengkap. Silakan coba lagi.'
     });
   }
-  const allOrders = [...genericOrders.orders, ...domainOrders.orders]
+  const sourceOrders = shipmentView
+    ? genericOrders.orders.filter(order => order && order.type === 'standard_order'
+      && ['parfum', 'laboratorium'].includes(String(order.service_type || '').trim().toLowerCase()))
+    : [...genericOrders.orders, ...domainOrders.orders];
+  const allOrders = sourceOrders
     .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
     .slice(0, 120);
 
