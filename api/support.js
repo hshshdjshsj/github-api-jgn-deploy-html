@@ -2001,10 +2001,11 @@ async function actionMonitorRun(req, res) {
     if (error instanceof PublicError && error.code === 'RATE_LIMITED') return json(res, 200, { ok: true, code: 'MONITOR_RUN_SKIPPED', reason: 'overlap_or_duplicate' });
     throw error;
   }
+  const shipments = { ok: true, disabled: true, reason: 'manual_only', checked: 0, failed: 0, notified: 0 };
   let targets = await rpc('support_monitor_targets', {});
   if (targets && Array.isArray(targets.targets)) targets = targets.targets;
   if (!Array.isArray(targets) || targets.length > 16) throw new PublicError(503, 'MONITOR_TARGETS_INVALID', 'Daftar target monitor tidak valid.');
-  if (!targets.length) return json(res, 200, { ok: true, code: 'MONITOR_RUN_COMPLETE', checked: 0, failed: 0, changed: 0, results: [] });
+  if (!targets.length) return json(res, 200, { ok: true, code: 'MONITOR_RUN_COMPLETE', checked: 0, failed: 0, changed: 0, results: [], shipments });
   const results = [];
   for (let index = 0; index < targets.length; index += 4) {
     const batch = targets.slice(index, index + 4);
@@ -2024,7 +2025,7 @@ async function actionMonitorRun(req, res) {
       results.push({ id: row.targetId, ok: stale ? true : row.value.ok, skipped: stale, changed: databaseState.changed === true, latencyMs: row.value.latencyMs, statusCode: row.value.statusCode });
     });
   }
-  return json(res, 200, { ok: true, code: 'MONITOR_RUN_COMPLETE', checked: results.length, skipped: results.filter((item) => item.skipped).length, failed: results.filter((item) => !item.ok).length, changed: results.filter((item) => item.changed).length, results });
+  return json(res, 200, { ok: true, code: 'MONITOR_RUN_COMPLETE', checked: results.length, skipped: results.filter((item) => item.skipped).length, failed: results.filter((item) => !item.ok).length, changed: results.filter((item) => item.changed).length, results, shipments });
 }
 
 /* ============================================================

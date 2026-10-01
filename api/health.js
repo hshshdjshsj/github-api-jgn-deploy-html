@@ -40847,6 +40847,8 @@ async function diracBolaIdorV128InspectSupabaseAccess(path, options = {}) {
   if (!rawPath || !rawPath.startsWith('/rest/v1/')) return { ok: true };
 
   const table = diracBolaIdorV128ExtractRestTable(rawPath);
+  const receiptDecisionV453 = diracReceiptDbDecisionV453(diracCentralCurrentContextV149(), rawPath, options, String(options.method || 'GET').toUpperCase());
+  if (receiptDecisionV453.relevant) return receiptDecisionV453.ok ? { ok: true, guarded: 'shipment_receipt_exact_operation_v453' } : diracBolaIdorV128BuildBlockDecision(receiptDecisionV453.reason, { source: 'supabase', table });
   const invoiceDecisionV440 = diracInvoiceDbDecisionV440(diracCentralCurrentContextV149(), rawPath, options, String(options.method || 'GET').toUpperCase());
   if (invoiceDecisionV440.relevant) return invoiceDecisionV440.ok ? { ok: true, guarded: 'invoice_exact_operation_v440' } : diracBolaIdorV128BuildBlockDecision(invoiceDecisionV440.reason, { source: 'supabase', table });
   const paidContinuationV441 = diracInvoiceContinuationDbDecisionV441(diracCentralCurrentContextV149(), rawPath, options, String(options.method || 'GET').toUpperCase());
@@ -55392,6 +55394,7 @@ const DIRAC_CENTRAL_VERIFIED_OWNER_CONTEXT_PATCH_V215 = 'dirac-central-verified-
 const DIRAC_CENTRAL_VERIFIED_OWNER_CONTEXTS_V215 = new WeakMap();
 const DIRAC_CENTRAL_VERIFIED_OWNER_ACTIONS_V217 = Object.freeze([
   'domain_dashboard_me',
+  'customer_shipment_receipt',
   'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock',
   'domain_checkout',
   'domain_orders',
@@ -57267,6 +57270,7 @@ function diracCentralRateProfileV221(action) {
   const clean = String(action || '');
   const legacy = Math.max(1, Number(diracCentralDistributedRateLimitMaxV146(clean) || 1));
   if (DIRAC_CENTRAL_ADMIN_ACTIONS_V146.has(clean)) return { burst: Math.min(4, legacy), sustained: Math.min(legacy, 10), concurrent: 2 };
+  if (diracReceiptActionV453(clean)) return { burst: Math.min(4, legacy), sustained: Math.min(legacy, 10), concurrent: 2 };
   if (diracInvoiceActionV440(clean)) return { burst: Math.min(4, legacy), sustained: Math.min(legacy, 10), concurrent: 2 };
   if (/login|register/.test(clean)) return { burst: Math.min(6, legacy), sustained: Math.min(legacy, 12), concurrent: 3 };
   if (/mfa|passkey|recovery|email_verify/.test(clean)) return { burst: Math.min(5, legacy), sustained: Math.min(legacy, 10), concurrent: 3 };
@@ -59236,6 +59240,7 @@ const DIRAC_CENTRAL_ACTION_ALIASES_V146 = Object.freeze({
 });
 
 const DIRAC_CENTRAL_ACTIVE_ACTIONS_V146 = new Set([
+  'customer_shipment_receipt',
   'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock',
   'domain_health',
   'hostinger_check',
@@ -59368,6 +59373,7 @@ for (const action of require('./admin.js').__diracAdminActionsV405) {
   if (action !== 'admin_entry' && action !== 'admin_login') DIRAC_CENTRAL_ADMIN_ACTIONS_V146.add(action);
 }
 const DIRAC_CENTRAL_SENSITIVE_ACTIONS_V146 = new Set([
+  'customer_shipment_receipt',
   'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock',
   'domain_logout',
   'domain_checkout',
@@ -60971,7 +60977,7 @@ const DIRAC_PTDIN_REQUESTS_V402 = new WeakMap();
 const DIRAC_PTDIN_ACTIONS_V402 = Object.freeze([
   'domain_health', 'domain_dashboard_me', 'domain_logout', 'my_orders',
   'domain_orders', 'customer_security_overview', 'customer_security_account_request', 'create_payment',
-  'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock'
+  'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock', 'customer_shipment_receipt'
 ]);
 const DIRAC_PTDIN_SOURCE_PATHS_V402 = Object.freeze([
   '/cekresi.html', '/detail-domain.html', '/detail-parfum.html', '/detail-project.html',
@@ -61385,7 +61391,7 @@ function diracAdminBusinessDigestV406(path, options) {
 }
 
 function diracAdminShipmentKeyV406(kind, id) {
-  if (!Object.prototype.hasOwnProperty.call(DIRAC_ADMIN_ORDER_SELECT_V406, kind)
+  if ((!Object.prototype.hasOwnProperty.call(DIRAC_ADMIN_ORDER_SELECT_V406, kind) && kind !== 'laboratorium')
       || !customerSecurityLooksLikeUuid(id)) throw diracAdminBusinessErrorV406('ADMIN_ORDER_ID_INVALID', 400);
   return DIRAC_ADMIN_SHIPMENT_PREFIX_V406 + kind + ':' + String(id).toLowerCase();
 }
@@ -61427,7 +61433,7 @@ function diracAdminBusinessPathV406(operation, input) {
   }
   const keys = value.keys;
   if (!Array.isArray(keys) || !keys.length || keys.length > 80 || new Set(keys).size !== keys.length
-      || keys.some(key => !/^s2s-admin-shipment-v406:(regular|domain):[a-f0-9-]{36}$/.test(key)
+      || keys.some(key => !/^s2s-admin-shipment-v406:(regular|laboratorium|domain):[a-f0-9-]{36}$/.test(key)
         || !customerSecurityLooksLikeUuid(key.split(':')[2]))) return '';
   const base = '/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(DIRAC_ADMIN_SHIPMENT_SELECT_V406);
   if (operation === 'shipments') {
@@ -61503,6 +61509,21 @@ function diracAdminBusinessTextV406(value, maximum, required = false) {
   return value.trim();
 }
 
+// Manual shipment data only. This validator performs no network or database I/O.
+function diracShipmentJourneyV452(input) {
+  if (input === undefined || input === null) return null;
+  const invalid = () => { throw Object.assign(new Error('ADMIN_SHIPMENT_JOURNEY_INVALID'), { code: 'ADMIN_SHIPMENT_JOURNEY_INVALID', status: 400, statusCode: 400 }); };
+  const keys = ['version', 'source', 'stops', 'position', 'phase', 'observed_at', 'eta_start', 'eta_end'];
+  if (typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== keys.length || Object.keys(input).some(key => !keys.includes(key)) || input.version !== 452 || input.source !== 'admin') invalid();
+  if (!Array.isArray(input.stops) || input.stops.length < 2 || input.stops.length > 12 || input.stops.some(stop => typeof stop !== 'string' || !stop.trim() || stop !== stop.trim() || stop.length > 80 || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(stop))) invalid();
+  if (!Number.isSafeInteger(input.position) || input.position < 0 || input.position >= input.stops.length || !['prepared', 'handed_over', 'linehaul', 'at_hub', 'sorting', 'out_for_delivery', 'delayed', 'delivered'].includes(input.phase)) invalid();
+  if ((input.phase === 'delivered') !== (input.position === input.stops.length - 1) || (['prepared', 'handed_over'].includes(input.phase) && input.position !== 0)) invalid();
+  const observed = typeof input.observed_at === 'string' ? Date.parse(input.observed_at) : NaN;
+  if (!Number.isFinite(observed) || observed < 946684800000 || new Date(observed).toISOString() !== input.observed_at) invalid();
+  const validDay = value => typeof value === 'string' && (/^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(Date.parse(value)).toISOString().slice(0, 10) === value);
+  if (!((input.eta_start === '' && input.eta_end === '') || (validDay(input.eta_start) && validDay(input.eta_end) && input.eta_start <= input.eta_end && Date.parse(input.eta_end) <= observed + 366 * 86400000))) invalid();
+  return { version: 452, source: 'admin', stops: input.stops.slice(), position: input.position, phase: input.phase, observed_at: input.observed_at, eta_start: input.eta_start, eta_end: input.eta_end };
+}
 function diracAdminValidateShipmentRowV406(row, key) {
   if (!row || typeof row !== 'object' || Array.isArray(row) || row.security_key !== key
       || Number(row.blocked_until_ms) !== 0 || diracAdminShipmentTimestampV407(row.updated_at) === null
@@ -61521,6 +61542,8 @@ function diracAdminValidateShipmentRowV406(row, key) {
       || diracAdminShipmentTimestampV407(value.updated_at) !== diracAdminShipmentTimestampV407(row.updated_at)
       || !Array.isArray(value.events) || value.events.length < 1 || value.events.length > 50) return null;
   try {
+    diracReceiptDataV453().validate(value);
+    diracShipmentJourneyV452(value.journey);
     if (diracAdminShipmentKeyV406(value.order_kind, value.order_id) !== key) return null;
     if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(value.tracking_number)) return null;
     diracAdminBusinessTextV406(value.courier, 80, true);
@@ -61540,12 +61563,11 @@ function diracAdminValidateShipmentRowV406(row, key) {
 }
 
 function diracAdminShipmentPublicV406(value) {
-  return value ? { tracking_number: value.tracking_number, courier: value.courier,
+  return value ? { kind: value.order_kind, receipt: diracReceiptDataV453().receipt(value), delivery_ref: diracReceiptDataV453().deliveryRef(value), ...(value.journey ? { journey: diracShipmentJourneyV452(value.journey) } : {}), tracking_number: value.tracking_number, courier: value.courier,
     state: value.state, status: value.status, location: value.location, origin: value.origin,
     destination: value.destination, estimated_delivery: value.estimated_delivery,
     updated_at: value.updated_at, revision: value.revision,
-    events: value.events.map(event => ({ timestamp: event.timestamp, status: event.status,
-      description: event.description, location: event.location })) } : null;
+    events: value.events.map(event => diracReceiptDataV453().event(event, false)) } : null;
 }
 
 function diracAdminOrderPublicV406(row, kind) {
@@ -61771,8 +61793,9 @@ function diracCustomerShipmentRegisterParentsV406(kind, rows) {
     if (!row || !customerSecurityLooksLikeUuid(row.id) || row.customer_id !== owner.customerIds[0]) {
       throw diracAdminBusinessErrorV406('SHIPMENT_PARENT_OWNER_MISMATCH');
     }
-    const key = diracAdminShipmentKeyV406(kind, row.id);
-    parentMap.set(key, Object.freeze({ key, kind, id: row.id, customerId: row.customer_id }));
+    const shipmentKind = kind === 'regular' && row.order_database === 'security' ? 'laboratorium' : kind;
+    const key = diracAdminShipmentKeyV406(shipmentKind, row.id);
+    parentMap.set(key, Object.freeze({ key, kind: shipmentKind, id: row.id, customerId: row.customer_id }));
   }
   if (parentMap.size > 160) throw diracAdminBusinessErrorV406('SHIPMENT_PARENT_LIMIT_INVALID');
   DIRAC_CUSTOMER_SHIPMENT_PARENTS_V406.set(ctx.req, parentMap);
@@ -61833,7 +61856,7 @@ async function diracCustomerShipmentProjectV406(req, orders) {
   if (orders.some(order => !order || !['standard_order', 'domain_order'].includes(order.type))) {
     throw diracAdminBusinessErrorV406('SHIPMENT_ORDER_KIND_INVALID');
   }
-  const keys = orders.map(order => diracAdminShipmentKeyV406(order.type === 'domain_order' ? 'domain' : 'regular', order.id));
+  const keys = orders.map(order => diracAdminShipmentKeyV406(order.type === 'domain_order' ? 'domain' : order.order_database === 'security' ? 'laboratorium' : 'regular', order.id));
   if (!parents || new Set(keys).size !== keys.length || keys.some(key => !parents.has(key))) {
     throw diracAdminBusinessErrorV406('SHIPMENT_PARENT_SCOPE_INVALID');
   }
@@ -61899,7 +61922,8 @@ function diracCentralPtdinSourceV402(req, action) {
     return page.protocol === 'https:' && !page.port && !page.username && !page.password
       && page.origin.toLowerCase() === expectedOrigin && !page.search && !page.hash
       && DIRAC_PTDIN_SOURCE_PATHS_V402.includes(page.pathname)
-      && (!diracInvoiceActionV440(entry.action) || page.pathname === '/invoice.html');
+      && (!diracInvoiceActionV440(entry.action) || page.pathname === '/invoice.html')
+      && (!diracReceiptActionV453(entry.action) || page.pathname === '/cekresi.html');
   } catch (_) { return false; }
 }
 
@@ -61925,11 +61949,117 @@ async function diracCentralPtdinEntryV402(req, res) {
     req.originalUrl = req.url;
     return await module.exports(req, res);
   } finally {
-    DIRAC_PTDIN_REQUESTS_V402.delete(req);
+    DIRAC_PTDIN_REQUESTS_V402.delete(req); DIRAC_RECEIPT_OWNERS_V453.delete(req);
     DIRAC_INVOICE_OWNERS_V440.delete(req); DIRAC_INVOICE_RESPONSES_V440.delete(req); DIRAC_INVOICE_RECIPIENTS_V440.delete(req);
     req.url = originalUrl;
     if (hadOriginalUrl) req.originalUrl = originalOriginalUrl; else delete req.originalUrl;
   }
+}
+
+// V453: receipt writes stay inside the existing PT entry and all 30 central stages.
+const DIRAC_RECEIPT_OWNERS_V453 = new WeakMap();
+const DIRAC_RECEIPT_FETCH_V453 = new WeakMap();
+const DIRAC_RECEIPT_WRITES_V453 = new WeakMap();
+const DIRAC_RECEIPT_ACCESS_V453 = new WeakMap();
+function diracReceiptActionV453(action) { return action === 'customer_shipment_receipt'; }
+function diracReceiptDataV453() {
+  const shared = diracAdminModuleV405().__diracShipmentDataV453;
+  if (!shared || !Object.isFrozen(shared) || typeof shared.buildReceipt !== 'function' || typeof shared.validateRow !== 'function') throw new Error('SHIPMENT_RECEIPT_MODULE_INVALID');
+  return shared;
+}
+function diracReceiptInputV453(ctx, source) {
+  if (!diracReceiptActionV453(ctx && ctx.action)) return { ok: true };
+  const bad = { ok: false, reason: 'shipment_receipt_input_invalid_v453' };
+  if (!source || typeof source !== 'object' || Array.isArray(source) || Object.keys(source).some(key => !['action','order_id','kind','expected_revision','delivery_ref','tracking_number','outcome','quantity','note'].includes(key)) || (Object.prototype.hasOwnProperty.call(source, 'action') && source.action !== ctx.action) || typeof source.order_id !== 'string' || !customerSecurityLooksLikeUuid(source.order_id)
+      || !['regular','laboratorium','domain'].includes(source.kind) || !Number.isSafeInteger(source.expected_revision) || source.expected_revision < 1
+      || typeof source.delivery_ref !== 'string' || !/^[a-f0-9]{64}$/.test(source.delivery_ref)
+      || typeof source.tracking_number !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(source.tracking_number)
+      || !['received','issue','not_received'].includes(source.outcome) || typeof source.note !== 'string' || source.note.length > 300
+      || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(source.note)
+      || (source.quantity !== null && (!Number.isSafeInteger(source.quantity) || source.quantity < 0 || source.quantity > 1000000))
+      || (source.outcome === 'received' && source.quantity === 0) || (source.outcome === 'not_received' && source.quantity !== 0)
+      || (source.outcome !== 'received' && source.note.trim().length < 10)) return bad;
+  return { ok: true };
+}
+async function diracReceiptStage26V453(req, ctx, owner, ids) {
+  const source = ctx.body; let passport = false;
+  try { passport = BigInt(ctx.passport || 0n) === 0x3ffffffn; } catch (_) { passport = false; }
+  if (!passport || ctx.method !== 'POST' || ctx.currentStageV211 !== 'IDOR/BOLA' || ctx.currentStageIndexV211 !== 26 || ctx.executionPhaseV211 !== 'guard'
+      || !diracReceiptActionV453(ctx.action) || !diracCentralPtdinSourceV402(req, ctx.action) || !owner || owner.ok !== true || owner.customerIds.length !== 1
+      || !diracReceiptInputV453(ctx, source).ok || ids.length !== 1 || ids[0].key !== 'order_id' || ids[0].value !== source.order_id) return { ok: false, reason: 'shipment_receipt_owner_scope_invalid_v453' };
+  const database = source.kind === 'domain' ? 'domain' : source.kind === 'laboratorium' ? 'security' : 'commerce';
+  const rows = await diracCentralFetchOwnerRowsV194(source.kind === 'domain' ? 'domain_orders' : 'orders', [source.order_id], ['id'], source.kind === 'domain' ? '' : database);
+  if (!Array.isArray(rows) || rows.length !== 1 || String(rows[0].id) !== source.order_id || String(rows[0].customer_id) !== owner.customerIds[0]) return { ok: false, reason: 'shipment_receipt_order_owner_mismatch_v453' };
+  DIRAC_RECEIPT_OWNERS_V453.set(req, Object.freeze({ req, ctx, userId: owner.authUserId, customerId: owner.customerIds[0], orderId: source.order_id, kind: source.kind, orderDatabase: database, inputDigest: diracCentralStableJsonV148(source), expiresAt: Date.now() + 60000 }));
+  ctx.__diracCentralOwnerBoundObjectValuesV194 = new Set([source.order_id]);
+  return { ok: true, guarded: 'shipment_receipt_exact_owned_order_v453' };
+}
+function diracReceiptContextV453(ctx) {
+  const proof = ctx && ctx.req && DIRAC_RECEIPT_OWNERS_V453.get(ctx.req);
+  if (!proof || !Object.isFrozen(proof) || proof.ctx !== ctx || proof.req !== ctx.req || Date.now() >= proof.expiresAt
+      || !diracReceiptActionV453(ctx.action) || ctx.method !== 'POST' || diracCentralCurrentContextV149() !== ctx
+      || !diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) || !diracCentralPtdinSourceV402(ctx.req, ctx.action)
+      || diracCentralStableJsonV148(ctx.body) !== proof.inputDigest || !diracReceiptInputV453(ctx, ctx.body).ok) return false;
+  const owner = diracCentralOwnerFromVerifiedContextV215(ctx.req, proof.userId);
+  return Boolean(owner && owner.ok === true && owner.authUserId === proof.userId && owner.customerIds.length === 1 && owner.customerIds[0] === proof.customerId);
+}
+function diracReceiptDbDecisionV453(ctx, path, options, method) {
+  const permit = options && DIRAC_RECEIPT_FETCH_V453.get(options);
+  if (!permit) return { relevant: false };
+  const proof = ctx && ctx.req && DIRAC_RECEIPT_OWNERS_V453.get(ctx.req);
+  const ok = diracReceiptContextV453(ctx) && DIRAC_RECEIPT_ACCESS_V453.get(ctx.req) === proof && proof === permit.proof && permit.ctx === ctx && permit.req === ctx.req
+    && options.auth === 'service' && options.db === 'security' && path === permit.path && method === permit.method
+    && ['GET','PATCH'].includes(method) && Date.now() < permit.expiresAt
+    && permit.digest === diracAdminBusinessDigestV406(path, options);
+  return { relevant: true, ok: Boolean(ok), reason: 'shipment_receipt_exact_capability_invalid_v453' };
+}
+async function diracReceiptFetchV453(ctx, proof, key, oldRow, newRow) {
+  if (!diracReceiptContextV453(ctx) || DIRAC_RECEIPT_ACCESS_V453.get(ctx.req) !== proof || DIRAC_RECEIPT_OWNERS_V453.get(ctx.req) !== proof
+      || key !== 's2s-admin-shipment-v406:' + proof.kind + ':' + proof.orderId) throw Object.assign(new Error('SHIPMENT_RECEIPT_CONTEXT_REQUIRED'), { status: 403 });
+  const fields = 'security_key,record_json,blocked_until_ms,expires_at,updated_at';
+  let path = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(key) + '&select=' + encodeURIComponent(fields), options;
+  if (!newRow) { path += '&limit=1'; options = { method: 'GET', auth: 'service', db: 'security' }; }
+  else {
+    const shared = diracReceiptDataV453(), previous = shared.validateRow(oldRow, key), value = shared.validateRow(newRow, key);
+    if (!previous || !value || value.customer_id !== proof.customerId || previous.customer_id !== proof.customerId
+        || value.order_id !== proof.orderId || value.order_kind !== proof.kind || newRow.updated_at === oldRow.updated_at
+        || DIRAC_RECEIPT_WRITES_V453.get(newRow) !== proof) throw Object.assign(new Error('SHIPMENT_RECEIPT_WRITE_INVALID'), { status: 403 });
+    path += '&updated_at=eq.' + encodeURIComponent(oldRow.updated_at);
+    options = { method: 'PATCH', auth: 'service', db: 'security', prefer: 'return=representation', body: newRow };
+  }
+  DIRAC_RECEIPT_FETCH_V453.set(options, Object.freeze({ ctx, req: ctx.req, proof, path, method: options.method, digest: diracAdminBusinessDigestV406(path, options), expiresAt: Date.now() + 30000 }));
+  try { const result = await supabaseFetch(path, options); if (!diracReceiptContextV453(ctx)) throw Object.assign(new Error('SHIPMENT_RECEIPT_CONTEXT_REQUIRED'), { status: 403 }); return result; }
+  finally { DIRAC_RECEIPT_FETCH_V453.delete(options); }
+}
+async function diracReceiptDispatchV453(req, res, ctx) {
+  const cors = setCors(req, res, { isDomainAction: true });
+  if (!cors.allowed || !diracReceiptContextV453(ctx)) return res.status(403).json({ ok: false, code: 'SHIPMENT_RECEIPT_CONTEXT_REQUIRED' });
+  try {
+    const proof = DIRAC_RECEIPT_OWNERS_V453.get(req), access = await requireDomainDashboardAccess(req, res);
+    if (!access) return;
+    if (!diracReceiptContextV453(ctx) || !access.user || access.user.id !== proof.userId || !access.mfa || access.mfa.ok !== true || !access.protectedLock) return res.status(403).json({ ok: false, code: 'SHIPMENT_RECEIPT_SESSION_REQUIRED' });
+    DIRAC_RECEIPT_ACCESS_V453.set(req, proof);
+    const shared = diracReceiptDataV453(), key = 's2s-admin-shipment-v406:' + proof.kind + ':' + proof.orderId;
+    const loaded = await diracReceiptFetchV453(ctx, proof, key, null, null);
+    if (!loaded || loaded.ok !== true || !Array.isArray(loaded.data)) throw Object.assign(new Error('SHIPMENT_RECEIPT_STORAGE_UNAVAILABLE'), { status: 503 });
+    if (!loaded.data.length) throw Object.assign(new Error('SHIPMENT_RECEIPT_NOT_FOUND'), { status: 409 });
+    if (loaded.data.length !== 1 || !shared.validateRow(loaded.data[0], key)) throw Object.assign(new Error('SHIPMENT_RECEIPT_RECORD_INVALID'), { status: 503 });
+    const built = shared.buildReceipt(loaded.data[0], proof, ctx.body); let row = built.row;
+    if (!built.unchanged) {
+      DIRAC_RECEIPT_WRITES_V453.set(row, proof);
+      let saved; try { saved = await diracReceiptFetchV453(ctx, proof, key, loaded.data[0], row); } finally { DIRAC_RECEIPT_WRITES_V453.delete(row); }
+      if (!saved || saved.ok !== true || !Array.isArray(saved.data)) throw Object.assign(new Error('SHIPMENT_RECEIPT_WRITE_UNCONFIRMED'), { status: 503 });
+      if (!saved.data.length) throw Object.assign(new Error('SHIPMENT_RECEIPT_VERSION_CONFLICT'), { status: 409 });
+      if (saved.data.length !== 1 || !shared.validateRow(saved.data[0], key) || diracCentralStableJsonV148(saved.data[0].record_json) !== diracCentralStableJsonV148(row.record_json)) throw Object.assign(new Error('SHIPMENT_RECEIPT_WRITE_UNCONFIRMED'), { status: 503 });
+      row = saved.data[0];
+    }
+    const value = row.record_json;
+    return res.status(200).json({ ok: true, unchanged: built.unchanged, receipt: shared.receipt(value), revision: value.revision, delivery_ref: shared.deliveryRef(value), updated_at: value.updated_at, event: shared.event(value.events[value.events.length - 1], false) });
+  } catch (error) {
+    const code = /^SHIPMENT_[A-Z0-9_]+$/.test(String(error && (error.code || error.message) || '')) ? String(error.code || error.message) : 'SHIPMENT_RECEIPT_UNAVAILABLE';
+    const status = [400,403,409,503].includes(error && error.status) ? error.status : 503;
+    return res.status(status).json({ ok: false, code });
+  } finally { DIRAC_RECEIPT_ACCESS_V453.delete(req); }
 }
 
 // V440 invoice operations use private request/DB capabilities after all central stages.
@@ -62278,11 +62408,12 @@ async function diracCentralPtdinDispatchV402(req, res, ctx) {
     }
   };
   assertContext();
-  if (req.method === 'OPTIONS' && diracInvoiceActionV440(ctx.action)) {
+  if (req.method === 'OPTIONS' && (diracInvoiceActionV440(ctx.action) || diracReceiptActionV453(ctx.action))) {
     const cors = setCors(req, res, { isDomainAction: true });
     return res.status(cors.allowed && ctx.preflightValidatedV221 === true ? 200 : 403).end();
   }
   if (req.method === 'OPTIONS') return __diracV202CompiledDispatcher(req, res);
+  if (diracReceiptActionV453(ctx.action)) return diracReceiptDispatchV453(req, res, ctx);
   if (diracInvoiceActionV440(ctx.action)) return diracInvoiceDispatchV440(req, res, ctx);
   const ptdin = require('./ptdin.js');
   if (!Object.isFrozen(ptdin) || ptdin.__diracPtdinCentralGuardedBusinessV402 !== true
@@ -62342,6 +62473,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
     return role === 'auth' && diracCentralAdminSourceV405(req, clean) && contract && contract.methods.includes(expectedMethod)
       ? { ok: true } : { ok: false, reason: 'admin_source_action_contract_invalid_v405' };
   }
+  if (diracReceiptActionV453(clean) && !(req && DIRAC_PTDIN_REQUESTS_V402.has(req))) return { ok: false, reason: 'shipment_receipt_private_pt_entry_required_v453' };
   if (diracInvoiceActionV440(clean) && !(req && DIRAC_PTDIN_REQUESTS_V402.has(req))) return { ok: false, reason: 'invoice_private_pt_entry_required_v440' };
   if (req && DIRAC_PTDIN_REQUESTS_V402.has(req)) {
     const contract = diracCentralContractForActionV146(clean);
@@ -63500,6 +63632,7 @@ function diracCentralContractGuardV146(req, ctx) {
     return { ok: false, reason: 'ptdin_contract_enum_invalid' };
   }
   if (ctx.method === 'GET' && contract.mutation) return { ok: false, reason: 'mutation_get_rejected' };
+  if (diracReceiptActionV453(ctx.action)) return diracReceiptInputV453(ctx, source);
   if (diracInvoiceActionV440(ctx.action)) return diracInvoiceInputV440(ctx, source);
   return { ok: true };
 }
@@ -63837,6 +63970,7 @@ async function diracCentralIdorBolaGuardV146(req, ctx) {
       ctx.__diracCentralCheckoutOwnerAuthUserIdV196 = ctx.__diracCentralVerifiedOwnerAuthUserIdV217;
     }
   }
+  if (diracReceiptActionV453(ctx.action)) return diracReceiptStage26V453(req, ctx, owner, ids);
   if (diracInvoiceActionV440(ctx.action)) return diracInvoiceStage26V440(req, ctx, owner, ids);
   const allowedCustomers = new Set(owner.customerIds.map(String));
   const requestedCustomer = ids.filter((item) => item.key === 'customer_id').map((item) => item.value).filter(diracCentralLooksLikeUuidV146);
@@ -64613,6 +64747,8 @@ async function diracCentralInspectServiceRoleAccessV146(path, options = {}) {
   const requestedTableV212 = diracCentralExtractRestTableV146(path);
   const table = requestedTableV212;
   const method = requestedMethodV212;
+  const receiptDecisionV453 = diracReceiptDbDecisionV453(ctx, path, options, method);
+  if (receiptDecisionV453.relevant) return receiptDecisionV453.ok ? { ok: true, guarded: 'shipment_receipt_exact_operation_v453' } : { block: true, reason: receiptDecisionV453.reason, status: 403 };
   const invoiceDecisionV440 = diracInvoiceDbDecisionV440(ctx, path, options, method);
   if (invoiceDecisionV440.relevant) return invoiceDecisionV440.ok ? { ok: true, guarded: 'invoice_exact_operation_v440' } : { block: true, reason: invoiceDecisionV440.reason, status: 403 };
   const paidContinuationV441 = diracInvoiceContinuationDbDecisionV441(ctx, path, options, method);
@@ -68319,6 +68455,7 @@ function diracCentralContractForActionV146(action) {
     domain_logout: postOnly,
     domain_checkout: { ...postOnly, required: ['domain'] },
     checkout_order: { ...postOnly, allowed: commonPost.concat(['service_type', 'product_title', 'total', 'payment_method', 'customer_address', 'customer_note', 'source', 'shipping_mode', 'product_id', 'title', 'qty', 'client_price', 'client_subtotal']) },
+    customer_shipment_receipt: { methods: ['POST'], allowed: ['order_id', 'kind', 'expected_revision', 'delivery_ref', 'tracking_number', 'outcome', 'quantity', 'note'], required: ['order_id', 'kind', 'expected_revision', 'delivery_ref', 'tracking_number', 'outcome', 'quantity', 'note'], maxBodyBytes: 4096, maxFieldBytes: 1200, mutation: true },
     invoice_email_status: { methods: ['GET'], allowed: ['order_id', 'kind'], required: ['order_id', 'kind'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: false },
     invoice_email_send: { methods: ['POST'], allowed: ['order_id', 'kind'], required: ['order_id', 'kind'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: true },
     invoice_email_unlock: { methods: ['POST'], allowed: ['order_id', 'kind', 'file_id', 'code', 'file_sha256'], required: ['order_id', 'kind', 'file_id', 'code', 'file_sha256'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: true },

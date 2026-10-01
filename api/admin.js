@@ -9,6 +9,10 @@ if (!ADMIN_STANDALONE_FETCH) throw new Error('ADMIN_FETCH_UNAVAILABLE');
 const ADMIN_EMAIL = 'dinzganteng888999@gmail.com';
 const VERSION = 'dirac-admin-v405';
 const PREFIX = 's2s-admin-v405:';
+// v449: durable enrollment is separate from expiring authentication tickets.
+const ADMIN_PASSKEY_TABLE = 'dirac_admin_passkeys';
+const ADMIN_PASSKEY_SELECT = 'security_key,revision,record_json';
+const ADMIN_BAN_OUTCOMES = new WeakMap();
 const PASSWORD_VERSION = 'dirac-admin-password-v411';
 const PASSWORD_PREFIX = 's2s-admin-v411:password:';
 const PAGE_NONCE_PREFIX = 's2s-admin-v411:page-nonce:';
@@ -49,8 +53,8 @@ const CONTRACTS = Object.freeze({
   admin_totp_verify: post(['ticket', 'code'], ['ticket', 'code']),
   admin_logout: post([]),
   admin_orders: get(['kind', 'offset']),
-  admin_shipment_update: post(['kind', 'order_id', 'expected_revision', 'tracking_number', 'courier', 'status', 'location', 'origin', 'destination', 'estimated_delivery', 'description', 'approval'], ['kind', 'order_id', 'expected_revision', 'tracking_number', 'courier', 'status', 'approval']),
-  admin_shipment_cancel: post(['kind', 'order_id', 'expected_revision', 'description', 'approval'], ['kind', 'order_id', 'expected_revision', 'approval']),
+  admin_shipment_update: post(['kind', 'order_id', 'expected_revision', 'tracking_number', 'courier', 'status', 'location', 'origin', 'destination', 'estimated_delivery', 'description', 'tracking_options', 'review_ack', 'review_reason', 'approval'], ['kind', 'order_id', 'expected_revision', 'tracking_number', 'courier', 'status', 'approval']),
+  admin_shipment_cancel: post(['kind', 'order_id', 'expected_revision', 'description', 'review_ack', 'review_reason', 'approval'], ['kind', 'order_id', 'expected_revision', 'approval']),
   admin_blocks: get(['offset']),
   admin_unban: post(['block_id', 'approval'], ['block_id', 'approval']),
   admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
@@ -295,6 +299,61 @@ async function securityRead(key) {
   if (!row || row.security_key !== key || !Number.isFinite(expires) || !row.record_json || typeof row.record_json !== 'object' || Array.isArray(row.record_json)) return { ok: false };
   return expires <= Date.now() ? { ok: true, found: false } : { ok: true, found: true, record: row.record_json, expiresAt: row.expires_at };
 }
+
+function enrollmentKey(key) { return typeof key === 'string' && /^s2s-admin-v405:enrollment:[a-f0-9]{64}$/.test(key); }
+function validateDurableEnrollment(key, value) {
+  if (!enrollmentKey(key) || !value || typeof value !== 'object' || Array.isArray(value)) fail('ADMIN_ENROLLMENT_INVALID', 503);
+  const state = value.enrollmentState === undefined ? 'active' : value.enrollmentState, passkey = value.passkey;
+  if (value.version !== VERSION || value.owner !== digest(ADMIN_EMAIL + ':' + ADMIN_USER_ID) || typeof value.origin !== 'string'
+      || key !== configKey({ owner: value.owner, origin: value.origin }) || !exactToken(value.revision) || !exactToken(value.userHandle)
+      || !['active', 'pending_totp'].includes(state) || !passkey || typeof passkey !== 'object' || Array.isArray(passkey)
+      || typeof passkey.credentialId !== 'string' || !/^[A-Za-z0-9_-]{22,1364}$/.test(passkey.credentialId)
+      || !Number.isSafeInteger(passkey.signCount) || passkey.signCount < 0 || passkey.signCount > 4294967295
+      || typeof value.totp !== 'string' || !/^[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{22}$/.test(value.totp)
+      || Buffer.byteLength(JSON.stringify(value), 'utf8') > 16384) fail('ADMIN_ENROLLMENT_INVALID', 503);
+  let origin; try { origin = new URL(value.origin); } catch (_) { fail('ADMIN_ENROLLMENT_INVALID', 503); }
+  if (origin.origin !== value.origin || origin.username || origin.password || (origin.protocol !== 'https:' && !loopbackHost(origin.hostname))) fail('ADMIN_ENROLLMENT_INVALID', 503);
+  const jwk = passkey.publicKeyJwk;
+  if (!jwk || typeof jwk !== 'object' || Array.isArray(jwk) || !['EC', 'RSA'].includes(jwk.kty)
+      || ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'].some(name => Object.prototype.hasOwnProperty.call(jwk, name))) fail('ADMIN_ENROLLMENT_INVALID', 503);
+  try { crypto.createPublicKey({ key: jwk, format: 'jwk' }); } catch (_) { fail('ADMIN_ENROLLMENT_INVALID', 503); }
+  return value.enrollmentState === state ? value : { ...value, enrollmentState: state };
+}
+async function durableEnrollmentRead(key, migrate = true) {
+  if (!enrollmentKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503);
+  const result = await dbFetch('/rest/v1/' + ADMIN_PASSKEY_TABLE + '?select=' + ADMIN_PASSKEY_SELECT + '&security_key=eq.' + encodeURIComponent(key) + '&limit=2', { method: 'GET' }, 'security');
+  // Never turn a missing table, failed query, or damaged row into "register a new passkey".
+  if (!result.ok || !Array.isArray(result.data) || result.data.length > 1) fail('ADMIN_PASSKEY_STORE_UNAVAILABLE', 503);
+  if (result.data.length) {
+    const row = result.data[0];
+    if (!row || row.security_key !== key || !row.record_json || row.revision !== row.record_json.revision) fail('ADMIN_ENROLLMENT_INVALID', 503);
+    return { ok: true, found: true, record: validateDurableEnrollment(key, row.record_json) };
+  }
+  if (migrate) {
+    // One-time, same-origin import; never overwrite a newer durable enrollment.
+    // Expired/deleted legacy rows are NOT silently resurrected.
+    const legacy = await securityRead(key);
+    if (!legacy || legacy.ok !== true) fail('ADMIN_PASSKEY_MIGRATION_UNAVAILABLE', 503);
+    if (legacy.found === true) {
+      const record = validateDurableEnrollment(key, legacy.record);
+      if (await durableEnrollmentClaim(key, record)) return { ok: true, found: true, record };
+      return durableEnrollmentRead(key, false);
+    }
+  }
+  return { ok: true, found: false };
+}
+async function durableEnrollmentClaim(key, value) {
+  const record = validateDurableEnrollment(key, value);
+  const result = await dbFetch('/rest/v1/' + ADMIN_PASSKEY_TABLE + '?on_conflict=security_key&select=security_key,revision', {
+    method: 'POST', prefer: 'resolution=ignore-duplicates,return=representation',
+    body: { security_key: key, revision: record.revision, record_json: record, updated_at: new Date().toISOString() }
+  }, 'security');
+  if (!result.ok || !Array.isArray(result.data) || result.data.length > 1) fail('ADMIN_PASSKEY_STORE_UNAVAILABLE', 503);
+  if (!result.data.length) return false;
+  if (result.data[0].security_key !== key || result.data[0].revision !== record.revision) fail('ADMIN_PASSKEY_WRITE_UNVERIFIED', 503);
+  return true;
+}
+
 async function securityClaim(key, record, ttl) {
   if (!/^[A-Za-z0-9:._-]{1,500}$/.test(String(key || '')) || !record || typeof record !== 'object' || Array.isArray(record) || !Number.isSafeInteger(ttl) || ttl < 60 || ttl > ENROLLMENT_SECONDS) fail('ADMIN_STORAGE_CLAIM_INVALID', 503);
   const result = await dbFetch('/rest/v1/rpc/dirac_central_atomic_claim_record_v230', { method: 'POST', body: { p_table_name: 'dirac_s2s_security', p_security_key: key, p_record_json: record, p_expires_at: new Date(Date.now() + ttl * 1000).toISOString() } }, 'security');
@@ -564,8 +623,8 @@ function verifyAssertion({ credential, rpId, passkey }) {
 
 function approvalPayload(action, body) {
   const value = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
-  if (action === 'admin_shipment_update') return { action, kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, tracking_number: value.tracking_number, courier: value.courier, status: value.status, location: value.location || '', origin: value.origin || '', destination: value.destination || '', estimated_delivery: value.estimated_delivery || '', description: value.description || '' };
-  if (action === 'admin_shipment_cancel') return { action, kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, description: value.description || '' };
+  if (action === 'admin_shipment_update') return { action, review_ack: value.review_ack || '', review_reason: value.review_reason || '', kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, tracking_number: value.tracking_number, courier: value.courier, status: value.status, location: value.location || '', origin: value.origin || '', destination: value.destination || '', estimated_delivery: value.estimated_delivery || '', description: value.description || '', ...(value.tracking_options === undefined ? {} : { tracking_options: shipmentOptionsV450(value.tracking_options) }) };
+  if (action === 'admin_shipment_cancel') return { action, review_ack: value.review_ack || '', review_reason: value.review_reason || '', kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, description: value.description || '' };
   if (action === 'admin_unban') return { action, block_id: value.block_id };
   if (action === 'admin_smtp_send') return { action, provider: value.provider, recipient_count: value.recipient_count, recipients_sha256: value.recipients_sha256, subject_sha256: value.subject_sha256, body_sha256: value.body_sha256, document_kind: value.document_kind, attachment_name: value.attachment_name || '', attachment_type: value.attachment_type || '', attachment_sha256: value.attachment_sha256 || '', legal_confirm: value.legal_confirm === true };
   fail('ADMIN_ACTION_APPROVAL_OPERATION_INVALID', 400);
@@ -736,7 +795,7 @@ function adminSmtpDocumentKind(value) {
 }
 function adminSmtpProvider(value) {
   const provider = String(value || '').trim().toLowerCase();
-  if (!['google', 'mailjet', 'brevo', 'resend'].includes(provider)) fail('ADMIN_SMTP_PROVIDER_INVALID', 400);
+  if (!['auto', 'google', 'mailjet', 'brevo', 'resend'].includes(provider)) fail('ADMIN_SMTP_PROVIDER_INVALID', 400);
   return provider;
 }
 function customerMailProviderConfig(provider) {
@@ -806,6 +865,7 @@ function customerMailKindLabel(kind) {
   return 'Dokumen perusahaan';
 }
 function customerMailText(message) {
+  if (message.shipmentNotice === true) return String(message.body || '');
   const parts = mailOriginParts(message.origin), rows = [String(message.body || ''), '', '---', 'PT Dirac Inovasi Nusantara', customerMailKindLabel(message.kind)];
   if (parts.siteUrl) rows.push('Website: ' + parts.siteUrl);
   if (parts.supportEmail) rows.push('Email: ' + parts.supportEmail);
@@ -815,6 +875,7 @@ function customerMailText(message) {
   return rows.join('\n');
 }
 function customerMailHtml(message) {
+  if (message.shipmentNotice === true) return '<!doctype html><html lang="id"><head><meta charset="utf-8"></head><body style="font-family:Arial,Helvetica,sans-serif;line-height:1.65;color:#182230;background:#f7f9fc;padding:24px"><main style="max-width:640px;margin:auto;background:#fff;padding:28px;border:1px solid #dce3eb;border-radius:12px"><h1 style="font-size:22px">' + mailEscape(message.subject) + '</h1><p>' + mailEscape(message.body).replace(/\n/g, '<br>') + '</p><p><a href="' + mailEscape(shipmentCustomerOriginV450(message.origin) + '/cekresi.html') + '">Lihat pengiriman melalui akun Anda</a></p></main></body></html>';
   const parts = mailOriginParts(message.origin), subject = mailEscape(message.subject), body = mailEscape(message.body).replace(/\n/g, '<br>'), kind = mailEscape(customerMailKindLabel(message.kind));
   const siteUrl = mailEscape(parts.siteUrl || ''), supportEmail = mailEscape(parts.supportEmail || ''), attachment = message.attachment ? mailEscape(message.attachment.name) : '';
   const siteBlock = siteUrl ? '<tr><td style="padding:0 28px 24px"><a href="' + siteUrl + '" style="display:inline-block;padding:12px 18px;border-radius:9px;background:#7dd3fc;color:#082032;text-decoration:none;font-size:13px;font-weight:800">Buka situs resmi</a></td></tr>' : '';
@@ -858,35 +919,73 @@ async function sendCustomerProviderHttp(config, message) {
   try {
     response = await ADMIN_STANDALONE_FETCH(target, { method: 'POST', headers, body: serialized, redirect: 'error', signal: controller ? controller.signal : undefined });
     const accepted = response && [200, 201, 202].includes(Number(response.status)) ? message.recipients.length : 0;
-    return { ok: accepted === message.recipients.length, accepted, provider: config.provider, status: Number(response && response.status || 0) };
+    const status = Number(response && response.status || 0);
+    // A lost response, 408/409, or 5xx can follow acceptance. Never resend that blindly.
+    return { ok: accepted === message.recipients.length, accepted, provider: config.provider, status, safeToFallback: accepted === 0 && [400, 401, 402, 403, 404, 405, 406, 413, 415, 422, 429].includes(status) };
   } catch (_) { return { ok: false, accepted: 0, provider: config.provider, status: 0 }; }
   finally {
     if (timer) clearTimeout(timer);
     if (response && response.body && typeof response.body.cancel === 'function' && response.body.locked !== true) { try { await Promise.resolve(response.body.cancel()).catch(() => false); } catch (_) {} }
   }
 }
-async function sendCustomerMail(message) {
-  const config = customerMailProviderConfig(message.provider); if (!config) return { ok: false, accepted: 0, provider: message.provider, configurationUnavailable: true };
+async function sendCustomerMailProviderV451(message) {
+  const configured = customerMailProviderConfig(message.provider); if (!configured) return { ok: false, accepted: 0, provider: message.provider, configurationUnavailable: true, safeToFallback: true };
+  const config = message.mailFailoverV451 === true ? { ...configured, timeout: 8000 } : configured;
   if (config.transport === 'api') return sendCustomerProviderHttp(config, message);
-  let socket = null, reader = null, auth = null;
+  let socket = null, reader = null, auth = null, shipmentDeadline = null, bodySubmitted = false;
   try {
     socket = tls.connect({ host: config.host, port: config.port, servername: config.host, rejectUnauthorized: true });
+    if (message.shipmentNotice === true || message.mailFailoverV451 === true) shipmentDeadline = setTimeout(() => socket.destroy(new Error('SMTP_TIMEOUT')), message.mailFailoverV451 === true ? 12000 : 20000);
     await new Promise((resolve, reject) => { const timer = setTimeout(() => { socket.destroy(); reject(Object.assign(new Error('SMTP_TIMEOUT'), { code: 'SMTP_TIMEOUT' })); }, config.timeout); socket.once('secureConnect', () => { clearTimeout(timer); resolve(); }); socket.once('error', error => { clearTimeout(timer); reject(error); }); });
     reader = smtpReader(socket); await smtpCommand(socket, reader, null, 220, config.timeout);
     const ehlo = message && message.origin ? new URL(message.origin).hostname : 'localhost'; await smtpCommand(socket, reader, 'EHLO ' + ehlo, 250, config.timeout);
     auth = Buffer.from('\0' + config.user + '\0' + config.password, 'utf8'); await smtpCommand(socket, reader, 'AUTH PLAIN ' + auth.toString('base64'), 235, config.timeout);
     await smtpCommand(socket, reader, 'MAIL FROM:<' + config.from + '>', 250, config.timeout);
     const rcpt = async index => { if (index >= message.recipients.length) return; await smtpCommand(socket, reader, 'RCPT TO:<' + message.recipients[index] + '>', [250, 251], config.timeout); return rcpt(index + 1); };
-    await rcpt(0); await smtpCommand(socket, reader, 'DATA', 354, config.timeout); await smtpCommand(socket, reader, dotStuff(customerMailMime(config, message)) + '\r\n.', 250, config.timeout);
+    await rcpt(0); await smtpCommand(socket, reader, 'DATA', 354, config.timeout);
+    const data = dotStuff(customerMailMime(config, message)) + '\r\n.'; bodySubmitted = true;
+    await smtpCommand(socket, reader, data, 250, config.timeout);
     try { socket.write('QUIT\r\n'); } catch (_) {} return { ok: true, accepted: message.recipients.length, provider: config.provider, status: 250 };
-  } catch (_) { return { ok: false, accepted: 0, provider: config.provider, status: 0 }; }
-  finally { if (auth) auth.fill(0); if (reader) reader.close(); try { if (socket) socket.destroy(); } catch (_) {} }
+  } catch (error) {
+    const code = Number(error && error.smtpCode || 0), rejected = error && error.code === 'SMTP_REJECTED' && Number.isInteger(code) && code >= 400 && code < 600;
+    return { ok: false, accepted: 0, provider: config.provider, status: code, safeToFallback: !bodySubmitted || rejected === true };
+  }
+  finally { if (shipmentDeadline) clearTimeout(shipmentDeadline); if (auth) auth.fill(0); if (reader) reader.close(); try { if (socket) socket.destroy(); } catch (_) {} }
 }
-async function businessSmtpSend(body, origin) {
+// v451: four forward-only attempts. No retry, recursion, polling, or new credentials.
+function customerMailConfiguredV451(provider) {
+  return provider === 'auto'
+    ? !!(customerMailProviderConfig('mailjet') || customerMailProviderConfig('brevo') || customerMailProviderConfig('resend') || customerMailProviderConfig('google'))
+    : !!customerMailProviderConfig(provider);
+}
+function customerMailAcceptedV451(result, requested, count) {
+  return !!(result && result.ok === true && result.accepted === count && (requested === 'auto'
+    ? ['mailjet', 'brevo', 'resend', 'google'].includes(result.provider)
+    : result.provider === requested));
+}
+async function sendCustomerMail(message, assertContext) {
+  if (typeof assertContext === 'function') assertContext();
+  if (message.provider !== 'auto') return sendCustomerMailProviderV451(message);
+  let configured = false;
+  const attempt = async provider => {
+    if (typeof assertContext === 'function') assertContext();
+    const result = await sendCustomerMailProviderV451({ ...message, provider, mailFailoverV451: true });
+    if (typeof assertContext === 'function') assertContext();
+    if (result && result.configurationUnavailable !== true) configured = true;
+    if (customerMailAcceptedV451(result, provider, message.recipients.length)) return { ...result, requested_provider: 'auto' };
+    if (result && result.ok === false && result.accepted === 0 && result.safeToFallback === true) return null;
+    return { ok: false, accepted: 0, provider, requested_provider: 'auto', status: Number(result && result.status || 0), safeToFallback: false };
+  };
+  const mailjet = await attempt('mailjet'); if (mailjet) return mailjet;
+  const brevo = await attempt('brevo'); if (brevo) return brevo;
+  const resend = await attempt('resend'); if (resend) return resend;
+  const google = await attempt('google'); if (google) return google;
+  return { ok: false, accepted: 0, provider: 'auto', configurationUnavailable: !configured, safeToFallback: false };
+}
+async function businessSmtpSend(body, origin, assertContext) {
   if (!body || body.legal_confirm !== true) fail('ADMIN_SMTP_LEGAL_CONFIRMATION_REQUIRED', 400);
   const provider = adminSmtpProvider(body.provider), kind = adminSmtpDocumentKind(body.document_kind), recipients = adminSmtpRecipients(body.recipients, body.recipient_count, body.recipients_sha256, kind), subject = adminSmtpSubject(body.subject, body.subject_sha256), content = adminSmtpBody(body.body_text, body.body_sha256), attachment = adminSmtpAttachment(body);
-  const result = await sendCustomerMail({ origin, provider, recipients, subject, body: content, kind, attachment });
-  try { if (result && result.configurationUnavailable === true) fail('ADMIN_SMTP_CONFIGURATION_UNAVAILABLE', 503); if (!result || result.ok !== true || result.accepted !== recipients.length || result.provider !== provider) fail('ADMIN_SMTP_DELIVERY_UNCONFIRMED', 503); return { ok: true, accepted: result.accepted, provider, document_kind: kind, attachment: !!attachment }; }
+  try { const result = await sendCustomerMail({ origin, provider, recipients, subject, body: content, kind, attachment }, assertContext); if (result && result.configurationUnavailable === true) fail('ADMIN_SMTP_CONFIGURATION_UNAVAILABLE', 503); if (!customerMailAcceptedV451(result, provider, recipients.length)) fail('ADMIN_SMTP_DELIVERY_UNCONFIRMED', 503); return { ok: true, accepted: result.accepted, provider: result.provider, requested_provider: provider, document_kind: kind, attachment: !!attachment }; }
   finally { if (attachment && attachment.bytes) attachment.bytes.fill(0); }
 }
 
@@ -971,7 +1070,7 @@ async function execute(ops) {
     const nonceTarget = body._dirac_page_nonce_for;
     if (typeof nonceTarget === 'string' && Object.prototype.hasOwnProperty.call(CONTRACTS, nonceTarget) && CONTRACTS[nonceTarget].methods.includes('POST')) return { ok: true };
     const [enrolled, active] = await Promise.all([config(ops, scope), session(ops, scope, false)]);
-    return { ok: true, email: ADMIN_EMAIL, enrolled: !!enrolled, authenticated: !!active, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: null, persistent_session: !!active, action_email_required: false, action_passkey_required: true };
+    return { ok: true, email: ADMIN_EMAIL, enrolled: !!enrolled, enrollment_state: enrolled ? enrolled.enrollmentState : 'none', passkey_storage: ADMIN_PASSKEY_TABLE, authenticated: !!active, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: null, persistent_session: !!active, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_email_start') {
     await throttle(ops, scope, 'email-start-minute', 1, 60); await throttle(ops, scope, 'email-start-hour', 5, 3600);
@@ -1075,20 +1174,146 @@ async function execute(ops) {
   ops.assertFullGuard(); return ops.business(operation, body);
 }
 
+// V453: bounded shipment review, change summaries and signed customer receipts.
+const SHIPMENT_CHANGE_FIELDS_V453 = Object.freeze(['tracking_number', 'courier', 'status', 'location', 'route', 'phase', 'eta_start', 'eta_end']);
+function shipmentSnapshotV453(value) {
+  const v = value || {}, j = v.journey || {};
+  return { tracking_number: v.tracking_number || '', courier: v.courier || '', status: v.status || '', location: v.location || '', route: Array.isArray(j.stops) ? j.stops.join(' → ') : '', phase: j.phase || '', eta_start: j.eta_start || '', eta_end: j.eta_end || v.estimated_delivery || '' };
+}
+function shipmentRisksV453(previous, next) {
+  const p = previous || {}, n = next || {}, before = shipmentSnapshotV453(p), after = shipmentSnapshotV453(n), rank = { prepared: 0, shipped: 1, in_transit: 2, delivered: 3 };
+  const sameRoute = p.journey && n.journey && JSON.stringify(p.journey.stops) === JSON.stringify(n.journey.stops);
+  return [
+    p.tracking_number && before.tracking_number !== after.tracking_number ? 'TRACKING_CHANGED' : '',
+    p.courier && before.courier !== after.courier ? 'COURIER_CHANGED' : '',
+    before.route && before.route !== after.route ? 'ROUTE_CHANGED' : '',
+    (Number.isInteger(rank[p.status]) && Number.isInteger(rank[n.status]) && rank[n.status] < rank[p.status]) || (sameRoute && n.journey.position < p.journey.position) ? 'BACKWARD' : '',
+    ['eta_start', 'eta_end'].some(key => before[key] && after[key] && Math.abs(Date.parse(after[key]) - Date.parse(before[key])) > 2 * 86400000) ? 'ETA_SHIFT' : '',
+    n.status === 'delivered' && (!p.status || p.status === 'prepared') ? 'DELIVERED_WITHOUT_TRANSIT' : '',
+    p.status === 'delivered' && n.status !== 'delivered' ? 'DELIVERY_REOPENED' : '',
+    n.status === 'cancelled' ? 'CANCELLED' : ''
+  ].filter(Boolean).sort();
+}
+function shipmentChangesV453(previous, next) {
+  const before = shipmentSnapshotV453(previous), after = shipmentSnapshotV453(next);
+  return SHIPMENT_CHANGE_FIELDS_V453.filter(field => before[field] !== after[field]).map(field => ({ field, before: before[field], after: after[field] }));
+}
+function shipmentReviewV453(body, current, next) {
+  const codes = shipmentRisksV453(current, next), ack = body.review_ack === undefined ? '' : body.review_ack, reason = body.review_reason === undefined ? '' : body.review_reason;
+  if (typeof ack !== 'string' || ack.length > 220 || typeof reason !== 'string' || reason.length > 300) fail('ADMIN_SHIPMENT_REVIEW_INVALID', 400);
+  const clean = businessText(reason, 300);
+  if (ack !== codes.join(',') || (codes.length && clean.length < 10) || (!codes.length && clean)) fail('ADMIN_SHIPMENT_REVIEW_REQUIRED', 409);
+  return codes.length ? { codes, reason: clean } : null;
+}
+function shipmentDeliveryRefV453(value) {
+  if (!value || value.state !== 'active' || value.status !== 'delivered') return '';
+  if (value.delivery_ref !== undefined) { if (!/^[a-f0-9]{64}$/.test(value.delivery_ref)) fail('SHIPMENT_RECEIPT_INVALID', 503); return value.delivery_ref; }
+  const last = (value.events || []).filter(event => event.status === 'delivered').slice(-1)[0];
+  return digest(stableJson(['delivery-v453', value.order_kind, value.order_id, value.customer_id, value.tracking_number, value.courier, last ? last.timestamp : value.updated_at]));
+}
+function shipmentReceiptMacV453(receipt) {
+  const data = { ...receipt }; delete data.mac;
+  const key = deriveSecret('shipment-customer-receipt-v453');
+  try { return crypto.createHmac('sha256', key).update(stableJson(data)).digest('hex'); } finally { key.fill(0); }
+}
+function shipmentReceiptCheckV453(receipt, value) {
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) || Object.keys(receipt).sort().join(',') !== 'auth_user_id,confirmed_at,courier,customer_id,delivery_ref,mac,note,order_id,order_kind,outcome,quantity,sequence,tracking_number,version' || receipt.version !== 453 || !['received', 'issue', 'not_received'].includes(receipt.outcome) || !isUuid(receipt.auth_user_id) || receipt.customer_id !== value.customer_id || receipt.order_id !== value.order_id || receipt.order_kind !== value.order_kind || !/^[a-f0-9]{64}$/.test(String(receipt.delivery_ref || '')) || !/^[a-f0-9]{64}$/.test(String(receipt.mac || '')) || !Number.isSafeInteger(receipt.sequence) || receipt.sequence < 1 || receipt.sequence > 5 || !/^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(String(receipt.tracking_number || '')) || shipmentTimestamp(receipt.confirmed_at) === null || Date.parse(receipt.confirmed_at) > Date.now() + 60000) fail('SHIPMENT_RECEIPT_INVALID', 503);
+  businessText(receipt.courier, 80, true); businessText(receipt.note, 300);
+  if ((receipt.quantity !== null && (!Number.isSafeInteger(receipt.quantity) || receipt.quantity < 0 || receipt.quantity > 1000000)) || (receipt.outcome === 'received' && receipt.quantity === 0) || (receipt.outcome === 'not_received' && receipt.quantity !== 0) || (receipt.outcome !== 'received' && receipt.note.length < 10) || !safeEqual(receipt.mac, shipmentReceiptMacV453(receipt))) fail('SHIPMENT_RECEIPT_INVALID', 503);
+  return receipt;
+}
+function shipmentExtrasCheckV453(value) {
+  if (value.delivery_ref !== undefined && !/^[a-f0-9]{64}$/.test(String(value.delivery_ref))) fail('SHIPMENT_RECEIPT_INVALID', 503);
+  if (value.receipt !== undefined) shipmentReceiptCheckV453(value.receipt, value);
+  if (value.receipt_history !== undefined && (!Array.isArray(value.receipt_history) || value.receipt_history.length > 20 || value.receipt_history.some(receipt => !shipmentReceiptCheckV453(receipt, value)))) fail('SHIPMENT_RECEIPT_INVALID', 503);
+  if (value.events.some(event => {
+    if (event.revision !== undefined && (!Number.isSafeInteger(event.revision) || event.revision < 1 || event.revision > value.revision)) return true;
+    if (event.review !== undefined && (!event.review || Object.keys(event.review).sort().join(',') !== 'codes,reason' || !Array.isArray(event.review.codes) || !event.review.codes.length || event.review.codes.length > 8 || new Set(event.review.codes).size !== event.review.codes.length || event.review.codes.some(code => !['TRACKING_CHANGED','COURIER_CHANGED','ROUTE_CHANGED','BACKWARD','ETA_SHIFT','DELIVERED_WITHOUT_TRANSIT','DELIVERY_REOPENED','CANCELLED'].includes(code)) || typeof event.review.reason !== 'string' || event.review.reason.length < 10 || event.review.reason.length > 300 || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(event.review.reason))) return true;
+    if (event.actor !== undefined && !['admin', 'customer'].includes(event.actor)) return true;
+    if (event.changes !== undefined && (!Array.isArray(event.changes) || event.changes.length > 8 || event.changes.some(change => !change || Object.keys(change).sort().join(',') !== 'after,before,field' || !SHIPMENT_CHANGE_FIELDS_V453.includes(change.field) || typeof change.before !== 'string' || typeof change.after !== 'string' || change.before.length > 1020 || change.after.length > 1020 || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(change.before + change.after)))) return true;
+    return false;
+  })) fail('SHIPMENT_CHANGE_RECORD_INVALID', 503);
+  return true;
+}
+function shipmentReceiptPublicV453(value) {
+  const receipt = value && value.receipt; if (!receipt) return null;
+  shipmentReceiptCheckV453(receipt, value);
+  return { outcome: receipt.outcome, quantity: receipt.quantity, note: receipt.note, confirmed_at: receipt.confirmed_at, sequence: receipt.sequence, tracking_number: receipt.tracking_number, courier: receipt.courier, current: receipt.delivery_ref === shipmentDeliveryRefV453(value) };
+}
+function shipmentEventPublicV453(event, admin) {
+  return { timestamp: event.timestamp, status: event.status, description: event.description, location: event.location, ...(event.revision === undefined ? {} : { revision: event.revision }), ...(event.actor ? { actor: event.actor } : {}), ...(event.changes ? { changes: event.changes.map(change => ({ field: change.field, before: change.before, after: change.after })) } : {}), ...(admin && event.review ? { review: event.review } : {}) };
+}
+function shipmentPreserveReceiptV453(previous, next) {
+  if (previous) { shipmentExtrasCheckV453(previous); if (previous.receipt) next.receipt = JSON.parse(JSON.stringify(previous.receipt)); if (previous.receipt_history) next.receipt_history = JSON.parse(JSON.stringify(previous.receipt_history)); }
+  if (next.state === 'active' && next.status === 'delivered') next.delivery_ref = previous && previous.tracking_number === next.tracking_number && previous.courier === next.courier && previous.state === 'active' && previous.status === 'delivered' ? shipmentDeliveryRefV453(previous) : digest(stableJson(['delivery-v453', next.order_kind, next.order_id, next.customer_id, next.tracking_number, next.courier, next.updated_at]));
+}
+function shipmentReceiptBuildV453(row, owner, input) {
+  const previous = validateShipmentRow(row, row.security_key); if (!previous) fail('SHIPMENT_RECEIPT_RECORD_INVALID', 503);
+  shipmentExtrasCheckV453(previous);
+  if (!owner || owner.customerId !== previous.customer_id || owner.orderId !== previous.order_id || owner.kind !== previous.order_kind || !isUuid(owner.userId)) fail('SHIPMENT_RECEIPT_OWNER_MISMATCH', 403);
+  if (previous.state !== 'active' || previous.status !== 'delivered') fail('SHIPMENT_RECEIPT_NOT_DELIVERED', 409);
+  const deliveryRef = shipmentDeliveryRefV453(previous), prior = previous.receipt && previous.receipt.delivery_ref === deliveryRef ? previous.receipt : null;
+  const note = businessText(input.note, 300), outcome = input.outcome, quantity = input.quantity;
+  if (!['received', 'issue', 'not_received'].includes(outcome) || (quantity !== null && (!Number.isSafeInteger(quantity) || quantity < 0 || quantity > 1000000)) || (outcome === 'received' && quantity === 0) || (outcome === 'not_received' && quantity !== 0) || (outcome !== 'received' && note.length < 10)) fail('SHIPMENT_RECEIPT_INPUT_INVALID', 400);
+  if (input.delivery_ref !== deliveryRef || input.tracking_number !== previous.tracking_number) fail('SHIPMENT_RECEIPT_VERSION_CONFLICT', 409);
+  if (prior && prior.outcome === outcome && prior.quantity === quantity && prior.note === note) return { row, unchanged: true };
+  if (!Number.isSafeInteger(input.expected_revision) || input.expected_revision !== previous.revision) fail('SHIPMENT_RECEIPT_VERSION_CONFLICT', 409);
+  if (previous.automation && shipmentAutomationV450(previous).lease_until_ms > Date.now()) fail('SHIPMENT_BUSY', 409);
+  if (prior && prior.sequence >= 5) fail('SHIPMENT_RECEIPT_LIMIT', 409);
+  const next = JSON.parse(JSON.stringify(previous)), now = Math.max(Date.now(), Date.parse(row.updated_at) + 1), timestamp = new Date(now).toISOString();
+  const receipt = { version: 453, customer_id: owner.customerId, auth_user_id: owner.userId, order_id: owner.orderId, order_kind: owner.kind, delivery_ref: deliveryRef, tracking_number: previous.tracking_number, courier: previous.courier, outcome, quantity, note, sequence: prior ? prior.sequence + 1 : 1, confirmed_at: timestamp };
+  receipt.mac = shipmentReceiptMacV453(receipt);
+  if (previous.receipt) next.receipt_history = (previous.receipt_history || []).concat([previous.receipt]).slice(-20);
+  next.receipt = receipt; next.delivery_ref = deliveryRef; next.revision += 1; next.updated_at = timestamp;
+  next.events = next.events.slice(-49).concat([{ timestamp, status: previous.status, location: previous.location, description: { received: 'Pelanggan mengonfirmasi penerimaan paket.', issue: 'Pelanggan melaporkan selisih atau kondisi barang.', not_received: 'Pelanggan menyatakan paket belum diterima.' }[outcome], revision: next.revision, actor: 'customer' }]);
+  const saved = { security_key: row.security_key, record_json: next, blocked_until_ms: 0, updated_at: timestamp, expires_at: row.expires_at };
+  if (!validateShipmentRow(saved, saved.security_key)) fail('SHIPMENT_RECEIPT_RECORD_INVALID', 503);
+  return { row: saved, unchanged: false };
+}
+
 function shipmentKey(kind, id) { if (!Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !isUuid(id)) fail('ADMIN_ORDER_ID_INVALID', 400); return SHIPMENT_PREFIX + kind + ':' + String(id).toLowerCase(); }
 function shipmentTimestamp(value) {
   if (typeof value !== 'string') return null; const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?(?:Z|\+00:00)$/.exec(value); if (!match) return null;
   const ms = Date.parse(match[1] + 'Z'); if (!Number.isFinite(ms) || new Date(ms).toISOString().slice(0, 19) !== match[1]) return null; return BigInt(ms) * 1000n + BigInt((match[2] || '').padEnd(6, '0'));
 }
 function businessText(value, maximum, required = false) { if (typeof value !== 'string' || value.length > maximum || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(value) || (required && !value.trim())) fail('ADMIN_SHIPMENT_TEXT_INVALID', 400); return value.trim(); }
+// Manual shipment data only. This validator performs no network or database I/O.
+function shipmentJourneyV452(input) {
+  if (input === undefined || input === null) return null;
+  const invalid = () => { throw Object.assign(new Error('ADMIN_SHIPMENT_JOURNEY_INVALID'), { code: 'ADMIN_SHIPMENT_JOURNEY_INVALID', status: 400, statusCode: 400 }); };
+  const keys = ['version', 'source', 'stops', 'position', 'phase', 'observed_at', 'eta_start', 'eta_end'];
+  if (typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== keys.length || Object.keys(input).some(key => !keys.includes(key)) || input.version !== 452 || input.source !== 'admin') invalid();
+  if (!Array.isArray(input.stops) || input.stops.length < 2 || input.stops.length > 12 || input.stops.some(stop => typeof stop !== 'string' || !stop.trim() || stop !== stop.trim() || stop.length > 80 || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(stop))) invalid();
+  if (!Number.isSafeInteger(input.position) || input.position < 0 || input.position >= input.stops.length || !['prepared', 'handed_over', 'linehaul', 'at_hub', 'sorting', 'out_for_delivery', 'delayed', 'delivered'].includes(input.phase)) invalid();
+  if ((input.phase === 'delivered') !== (input.position === input.stops.length - 1) || (['prepared', 'handed_over'].includes(input.phase) && input.position !== 0)) invalid();
+  const observed = typeof input.observed_at === 'string' ? Date.parse(input.observed_at) : NaN;
+  if (!Number.isFinite(observed) || observed < 946684800000 || new Date(observed).toISOString() !== input.observed_at) invalid();
+  const validDay = value => typeof value === 'string' && (/^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(Date.parse(value)).toISOString().slice(0, 10) === value);
+  if (!((input.eta_start === '' && input.eta_end === '') || (validDay(input.eta_start) && validDay(input.eta_end) && input.eta_start <= input.eta_end && Date.parse(input.eta_end) <= observed + 366 * 86400000))) invalid();
+  return { version: 452, source: 'admin', stops: input.stops.slice(), position: input.position, phase: input.phase, observed_at: input.observed_at, eta_start: input.eta_start, eta_end: input.eta_end };
+}
+function shipmentJourneyApplyV452(options, cancel, current, next) {
+  const prior = current.value && shipmentJourneyV452(current.value.journey);
+  const explicit = options && Object.prototype.hasOwnProperty.call(options, 'journey');
+  const sameShipment = current.value && next.tracking_number === current.value.tracking_number && next.courier === current.value.courier;
+  const journey = cancel ? prior : explicit ? options.journey : sameShipment ? prior : null;
+  if (!journey) return;
+  if (!cancel) {
+    const expected = { prepared: 'prepared', handed_over: 'shipped', linehaul: 'in_transit', at_hub: 'in_transit', sorting: 'in_transit', out_for_delivery: 'in_transit', delayed: 'in_transit', delivered: 'delivered' }[journey.phase];
+    if (next.status !== expected || Date.parse(journey.observed_at) > Date.now() + 60000 || (sameShipment && prior && Date.parse(journey.observed_at) < Date.parse(prior.observed_at))) fail('ADMIN_SHIPMENT_JOURNEY_CONFLICT', 400);
+    next.location = journey.stops[journey.position];
+    next.estimated_delivery = journey.eta_end;
+  }
+  next.journey = journey;
+}
 function validateShipmentRow(row, key) {
   if (!row || typeof row !== 'object' || Array.isArray(row) || row.security_key !== key || Number(row.blocked_until_ms) !== 0 || shipmentTimestamp(row.updated_at) === null || !Number.isFinite(Date.parse(row.expires_at)) || Date.parse(row.expires_at) <= Date.now()) return null;
   const value = row.record_json;
   if (!value || typeof value !== 'object' || Array.isArray(value) || value.schema !== 'dirac.admin_shipment.v406' || !['active', 'cancelled'].includes(value.state) || !isUuid(value.customer_id) || !isUuid(value.updated_by) || !Number.isSafeInteger(value.revision) || value.revision < 1 || !['prepared', 'shipped', 'in_transit', 'delivered', 'cancelled'].includes(value.status) || (value.state === 'cancelled') !== (value.status === 'cancelled') || shipmentTimestamp(value.updated_at) === null || shipmentTimestamp(value.updated_at) !== shipmentTimestamp(row.updated_at) || !Array.isArray(value.events) || value.events.length < 1 || value.events.length > 50) return null;
-  try { if (shipmentKey(value.order_kind, value.order_id) !== key || !/^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(value.tracking_number)) return null; businessText(value.courier, 80, true); businessText(value.location, 160); businessText(value.origin, 600); businessText(value.destination, 600); if (value.estimated_delivery !== '' && (!/^\d{4}-\d{2}-\d{2}$/.test(value.estimated_delivery) || !Number.isFinite(Date.parse(value.estimated_delivery)))) return null; const invalidEvent = value.events.some(event => { if (!event || typeof event !== 'object' || Array.isArray(event) || !Number.isFinite(Date.parse(event.timestamp)) || typeof event.status !== 'string') return true; businessText(event.description, 300, true); businessText(event.location, 160); return false; }); if (invalidEvent) return null; } catch (_) { return null; }
+  try { shipmentExtrasCheckV453(value); shipmentJourneyV452(value.journey); if (shipmentKey(value.order_kind, value.order_id) !== key || !/^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(value.tracking_number)) return null; businessText(value.courier, 80, true); businessText(value.location, 160); businessText(value.origin, 600); businessText(value.destination, 600); if (value.estimated_delivery !== '' && (!/^\d{4}-\d{2}-\d{2}$/.test(value.estimated_delivery) || !Number.isFinite(Date.parse(value.estimated_delivery)))) return null; const invalidEvent = value.events.some(event => { if (!event || typeof event !== 'object' || Array.isArray(event) || !Number.isFinite(Date.parse(event.timestamp)) || typeof event.status !== 'string') return true; businessText(event.description, 300, true); businessText(event.location, 160); return false; }); if (invalidEvent) return null; } catch (_) { return null; }
   return value;
 }
-function shipmentPublic(value) { return value ? { tracking_number: value.tracking_number, courier: value.courier, state: value.state, status: value.status, location: value.location, origin: value.origin, destination: value.destination, estimated_delivery: value.estimated_delivery, updated_at: value.updated_at, revision: value.revision, events: value.events.map(event => ({ timestamp: event.timestamp, status: event.status, description: event.description, location: event.location })) } : null; }
+function shipmentPublic(value) { return value ? { kind: value.order_kind, receipt: shipmentReceiptPublicV453(value), delivery_ref: shipmentDeliveryRefV453(value), ...(value.journey ? { journey: shipmentJourneyV452(value.journey) } : {}), ...(value.automation ? { automation: shipmentAutomationPublicV450(value) } : {}), tracking_number: value.tracking_number, courier: value.courier, state: value.state, status: value.status, location: value.location, origin: value.origin, destination: value.destination, estimated_delivery: value.estimated_delivery, updated_at: value.updated_at, revision: value.revision, events: value.events.map(event => shipmentEventPublicV453(event, true)) } : null; }
 function orderPublic(row, kind) {
   if (!row || !isUuid(row.id) || !isUuid(row.customer_id)) fail('ADMIN_ORDER_RECORD_INVALID', 503);
   const total = Number(row.total === undefined ? row.total_price : row.total); if (!Number.isFinite(total)) fail('ADMIN_ORDER_RECORD_INVALID', 503);
@@ -1104,25 +1329,142 @@ async function businessOrders(body) {
   const map = new Map(); shipments.forEach(row => { if (!keys.includes(row && row.security_key) || map.has(row.security_key)) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); const value = validateShipmentRow(row, row.security_key), order = orders.find(item => item.id === (value && value.order_id)); if (!value || !order || order.customer_id !== value.customer_id) fail('ADMIN_SHIPMENT_OWNER_MISMATCH', 503); map.set(row.security_key, value); });
   return { ok: true, kind, offset: Number(offsetRaw), has_more: rows.length === 41, orders: orders.map(row => ({ ...row, shipment: shipmentPublic(map.get(shipmentKey(kind, row.id))) })), time: new Date().toISOString() };
 }
-async function loadOrder(kind, id) {
-  const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&id=eq.' + encodeURIComponent(id) + '&limit=2', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await dbFetch(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
-  if (kind === 'domain' && domainOrderUndefinedColumn(result)) result = await dbFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(DOMAIN_ORDER_COMPAT_SELECT) + suffix, { method: 'GET' });
+async function loadOrder(kind, id, database = dbFetch) {
+  const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&id=eq.' + encodeURIComponent(id) + '&limit=2', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await database(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
+  if (kind === 'domain' && domainOrderUndefinedColumn(result)) result = await database('/rest/v1/domain_orders?select=' + encodeURIComponent(DOMAIN_ORDER_COMPAT_SELECT) + suffix, { method: 'GET' });
   if (!result.ok || !Array.isArray(result.data)) fail('ADMIN_DATA_UNAVAILABLE', 503); if (result.data.length !== 1 || result.data[0].id !== id) fail('ADMIN_ORDER_NOT_FOUND', 404); return orderPublic(result.data[0], kind);
 }
 async function loadShipment(key) {
   const result = await dbFetch('/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=eq.' + encodeURIComponent(key) + '&limit=2', { method: 'GET' }, 'security');
   if (!result.ok || !Array.isArray(result.data) || result.data.length > 1) fail('ADMIN_DATA_UNAVAILABLE', 503); if (!result.data.length) return { row: null, value: null }; const value = validateShipmentRow(result.data[0], key); if (!value) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); return { row: result.data[0], value };
 }
-async function businessShipment(body, cancel) {
+async function businessShipment(body, cancel, origin, assertContext) {
   const kind = String(body.kind || ''), id = String(body.order_id || ''), key = shipmentKey(kind, id), revision = body.expected_revision; if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER) fail('ADMIN_REVISION_INVALID', 400);
   const order = await loadOrder(kind, id), current = await loadShipment(key); if (current.value && current.value.customer_id !== order.customer_id) fail('ADMIN_SHIPMENT_OWNER_MISMATCH', 503); if (revision !== (current.value ? current.value.revision : 0)) fail('ADMIN_VERSION_CONFLICT', 409); if (cancel && (!current.value || current.value.state === 'cancelled')) fail('ADMIN_SHIPMENT_NOT_ACTIVE', 409);
   const description = businessText(body.description || (cancel ? 'Resi dibatalkan oleh admin.' : 'Informasi pengiriman diperbarui oleh admin.'), 300, true), status = cancel ? 'cancelled' : String(body.status || ''); if (!['prepared', 'shipped', 'in_transit', 'delivered', 'cancelled'].includes(status) || (!cancel && status === 'cancelled')) fail('ADMIN_SHIPMENT_STATUS_INVALID', 400);
   const tracking = cancel ? current.value.tracking_number : String(body.tracking_number || '').trim(); if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(tracking)) fail('ADMIN_TRACKING_NUMBER_INVALID', 400);
   const now = Math.max(Date.now(), current.row ? Date.parse(current.row.updated_at) + 1 : 0), timestamp = new Date(now).toISOString(), value = { schema: 'dirac.admin_shipment.v406', order_kind: kind, order_id: id, customer_id: order.customer_id, revision: revision + 1, state: cancel ? 'cancelled' : 'active', tracking_number: tracking, courier: cancel ? current.value.courier : businessText(body.courier, 80, true), status, location: cancel ? current.value.location : businessText(body.location || '', 160), origin: cancel ? current.value.origin : businessText(body.origin || '', 600), destination: cancel ? current.value.destination : businessText(body.destination || order.shipping_address || '', 600), estimated_delivery: cancel ? current.value.estimated_delivery : String(body.estimated_delivery || ''), events: (current.value ? current.value.events : []).slice(-49), updated_at: timestamp, updated_by: ADMIN_USER_ID };
-  value.events.push({ timestamp, status, description, location: value.location }); const row = { security_key: key, record_json: value, blocked_until_ms: 0, expires_at: new Date(now + ENROLLMENT_SECONDS * 1000).toISOString(), updated_at: timestamp }; if (!validateShipmentRow(row, key)) fail('ADMIN_SHIPMENT_RECORD_INVALID', 400);
+  const mailStage = await prepareShipmentV450(body, cancel, current, value, order, origin);
+  const review = shipmentReviewV453(body, current.value, value); shipmentPreserveReceiptV453(current.value, value);
+  value.events.push({ timestamp, status, description, location: value.location, revision: value.revision, actor: 'admin', changes: shipmentChangesV453(current.value, value), ...(review ? { review } : {}) }); const row = { security_key: key, record_json: value, blocked_until_ms: 0, expires_at: new Date(now + ENROLLMENT_SECONDS * 1000).toISOString(), updated_at: timestamp }; if (!validateShipmentRow(row, key)) fail('ADMIN_SHIPMENT_RECORD_INVALID', 400);
   let path, method, bodyValue; if (!current.row) { path = '/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT); method = 'POST'; bodyValue = [row]; } else { path = '/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=eq.' + encodeURIComponent(key) + '&updated_at=eq.' + encodeURIComponent(current.row.updated_at); method = 'PATCH'; bodyValue = row; }
-  const result = await dbFetch(path, { method, prefer: 'return=representation', body: bodyValue }, 'security'); if (!result.ok || !Array.isArray(result.data) || result.data.length !== 1) fail('ADMIN_VERSION_CONFLICT', 409); const confirmed = validateShipmentRow(result.data[0], key); if (!confirmed || stableJson(confirmed) !== stableJson(value)) fail('ADMIN_SHIPMENT_WRITE_UNVERIFIED', 503); return { ok: true, shipment: shipmentPublic(confirmed) };
+  const result = await dbFetch(path, { method, prefer: 'return=representation', body: bodyValue }, 'security'); if (!result.ok || !Array.isArray(result.data) || result.data.length !== 1) fail('ADMIN_VERSION_CONFLICT', 409); const confirmed = validateShipmentRow(result.data[0], key); if (!confirmed || stableJson(confirmed) !== stableJson(value)) fail('ADMIN_SHIPMENT_WRITE_UNVERIFIED', 503);
+  if (mailStage) { const notice = await shipmentNotifyV450(result.data[0], mailStage, order, origin, dbFetch, sendCustomerMail, assertContext); return { ok: true, shipment: shipmentPublic(notice.row.record_json), shipment_notification: notice.notification }; }
+  return { ok: true, shipment: shipmentPublic(confirmed) };
 }
+/* Shipment notices use manual updates only. Legacy signed state remains readable.
+ * No carrier API, worker queue, new table, or new environment variable is used. */
+const SHIPMENT_LEASE_V450 = 180000;
+const SHIPMENT_OPTION_KEYS_V450 = Object.freeze(['enabled', 'courier_code', 'tracking_id', 'smtp_provider', 'mode', 'journey']);
+function shipmentOptionsV450(input) {
+  if (input === undefined) return null;
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !SHIPMENT_OPTION_KEYS_V450.includes(key)) || typeof input.enabled !== 'boolean') fail('SHIPMENT_OPTIONS_INVALID', 400);
+  if (input.mode !== undefined && input.mode !== 'manual') fail('SHIPMENT_OPTIONS_INVALID', 400);
+  const fields = ['courier_code', 'tracking_id', 'smtp_provider'];
+  if (fields.some(key => input[key] !== undefined && typeof input[key] !== 'string')) fail('SHIPMENT_OPTIONS_INVALID', 400);
+  const out = { enabled: input.enabled, mode: 'manual', courier_code: String(input.courier_code || 'manual').trim(), tracking_id: String(input.tracking_id || '').trim(), smtp_provider: String(input.smtp_provider || 'auto').trim() };
+  if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(out.courier_code) || !/^[A-Za-z0-9._-]{0,120}$/.test(out.tracking_id) || !['auto', 'google', 'mailjet', 'brevo', 'resend'].includes(out.smtp_provider)) fail('SHIPMENT_OPTIONS_INVALID', 400);
+  if (input.journey !== undefined) out.journey = shipmentJourneyV452(input.journey);
+  return out;
+}
+function shipmentIntegrationKeyV450(purpose) {
+  const material = deriveSecret('shipment-v450-' + purpose);
+  try { return crypto.createHash('sha256').update(material).digest(); } finally { material.fill(0); }
+}
+function shipmentMacV450(value) {
+  const metadata = { ...value.automation }; delete metadata.mac;
+  const key = shipmentIntegrationKeyV450('state');
+  try { return crypto.createHmac('sha256', key).update(stableJson({ order_id: value.order_id, order_kind: value.order_kind, customer_id: value.customer_id, tracking_number: value.tracking_number, courier: value.courier, ...(value.journey ? { journey: shipmentJourneyV452(value.journey) } : {}), automation: metadata })).digest('hex'); } finally { key.fill(0); }
+}
+function shipmentSignV450(value) { if (value.automation) value.automation.mac = shipmentMacV450(value); return value; }
+function shipmentAutomationV450(value) {
+  const a = value && value.automation; if (a === undefined) return null;
+  if (!a || a.version !== 450 || typeof a.enabled !== 'boolean' || typeof a.polling !== 'boolean' || !/^[a-f0-9]{64}$/.test(String(a.generation || '')) || !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(String(a.courier_code || '')) || !/^[A-Za-z0-9._-]{0,120}$/.test(String(a.tracking_id || '')) || !['auto', 'google', 'mailjet', 'brevo', 'resend'].includes(a.smtp_provider) || (a.mode !== undefined && !['api', 'manual'].includes(a.mode)) || (a.mode === 'manual' && a.polling) || !a.mail || !['initial', 'transit', 'delivered'].every(stage => ['pending', 'claimed', 'accepted', 'uncertain', 'skipped'].includes(a.mail[stage])) || !['next_check_ms', 'last_attempt_ms', 'last_check_ms', 'lease_until_ms'].every(name => Number.isSafeInteger(a[name]) && a[name] >= 0) || !/^[A-Z0-9_]{0,80}$/.test(a.last_error || '') || !/^[a-f0-9]{64}$/.test(String(a.mac || '')) || !safeEqual(a.mac, shipmentMacV450(value))) fail('SHIPMENT_STATE_INVALID', 503);
+  return a;
+}
+function shipmentAutomationPublicV450(value) {
+  const a = shipmentAutomationV450(value); if (!a) return null;
+  const expiredClaim = a.lease_until_ms <= Date.now();
+  return { enabled: a.enabled, polling: false, mode: 'manual', courier_code: a.courier_code, tracking_id: a.tracking_id, smtp_provider: a.smtp_provider, next_check_ms: null, last_attempt_ms: a.last_attempt_ms || null, last_check_ms: a.last_check_ms || null, last_error: a.last_error || '', provider_status: String(a.provider_status || '').slice(0, 80), mail: Object.fromEntries(['initial', 'transit', 'delivered'].map(stage => [stage, expiredClaim && a.mail[stage] === 'claimed' ? 'uncertain' : a.mail[stage]])) };
+}
+function shipmentStageV450(value, firstSave) {
+  const a = value.automation; if (!a || !a.enabled || value.state !== 'active') return '';
+  if (value.status === 'delivered') { if (a.mail.initial === 'pending') a.mail.initial = 'skipped'; if (a.mail.transit === 'pending') a.mail.transit = 'skipped'; return a.mail.delivered === 'pending' ? 'delivered' : ''; }
+  if (a.mail.initial === 'pending') return 'initial';
+  return !firstSave && value.status === 'in_transit' && a.mail.transit === 'pending' ? 'transit' : '';
+}
+function shipmentCustomerOriginV450(origin) {
+  let url; try { url = new URL(origin); } catch (_) { fail('SHIPMENT_ORIGIN_INVALID', 503); }
+  if (url.protocol !== 'https:' || url.port || url.username || url.password || url.pathname !== '/' || url.search || url.hash || !/^pt\.(?:[a-z0-9-]+\.)+[a-z]{2,63}$/.test(url.hostname)) fail('SHIPMENT_ORIGIN_INVALID', 503);
+  return url.origin;
+}
+async function prepareShipmentV450(body, cancel, current, next, order, origin) {
+  const previous = current.value ? shipmentAutomationV450(current.value) : null, options = cancel ? null : shipmentOptionsV450(body.tracking_options);
+  if (previous && previous.lease_until_ms > Date.now()) fail('SHIPMENT_BUSY', 409);
+  shipmentJourneyApplyV452(options, cancel, current, next);
+  if (!previous && (!options || !options.enabled)) return '';
+  if (previous && !options) {
+    if (!cancel && (next.tracking_number !== current.value.tracking_number || next.courier !== current.value.courier)) fail('SHIPMENT_OPTIONS_REQUIRED', 409);
+    next.automation = JSON.parse(JSON.stringify(previous));
+  } else if (options && options.enabled) {
+    if (!isEmail(order.customer_email)) fail('SHIPMENT_CUSTOMER_EMAIL_REQUIRED', 409);
+    if (!customerMailConfiguredV451('auto')) fail('SHIPMENT_SMTP_NOT_CONFIGURED', 503);
+    // Keep the existing generation and mail receipts when converting an API row.
+    const sameShipment = previous && current.value.tracking_number === next.tracking_number && current.value.courier === next.courier;
+    const generation = sameShipment ? previous.generation : digest([next.order_kind, next.order_id, next.tracking_number, next.courier, options.courier_code, options.tracking_id].join('\0'));
+    next.automation = sameShipment ? JSON.parse(JSON.stringify(previous)) : { version: 450, generation, enabled: true, polling: false, mode: 'manual', courier_code: options.courier_code, tracking_id: options.tracking_id, smtp_provider: 'auto', next_check_ms: 0, last_attempt_ms: 0, last_check_ms: 0, lease_until_ms: 0, last_error: '', provider_status: '', mail: { initial: 'pending', transit: 'pending', delivered: 'pending' } };
+    next.automation.enabled = true; next.automation.smtp_provider = 'auto';
+  } else { next.automation = JSON.parse(JSON.stringify(previous)); next.automation.enabled = false; }
+  const a = next.automation;
+  if (cancel) a.enabled = false;
+  a.mode = 'manual'; a.polling = false; a.next_check_ms = 0;
+  const stage = shipmentStageV450(next, !previous);
+  if (stage) { a.mail[stage] = 'claimed'; a.lease_until_ms = Date.now() + SHIPMENT_LEASE_V450; }
+  shipmentSignV450(next); return stage;
+}
+function shipmentNextRowV450(row, value) {
+  const now = Math.max(Date.now(), Date.parse(row.updated_at) + 1);
+  if (!Number.isFinite(now) || !Number.isSafeInteger(value.revision) || value.revision >= Number.MAX_SAFE_INTEGER) fail('SHIPMENT_STATE_INVALID', 503);
+  value.revision += 1; value.updated_at = new Date(now).toISOString(); shipmentSignV450(value);
+  return { security_key: row.security_key, record_json: value, blocked_until_ms: 0, expires_at: row.expires_at, updated_at: value.updated_at };
+}
+async function shipmentCasV450(row, value, database) {
+  const next = shipmentNextRowV450(row, value);
+  if (!validateShipmentRow(next, next.security_key) || !shipmentAutomationV450(value)) fail('SHIPMENT_STATE_INVALID', 503);
+  const path = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(row.security_key) + '&updated_at=eq.' + encodeURIComponent(row.updated_at) + '&select=' + encodeURIComponent(SHIPMENT_SELECT);
+  const write = await database(path, { method: 'PATCH', body: next, prefer: 'return=representation' }, 'security');
+  if (!write.ok || !Array.isArray(write.data)) fail('SHIPMENT_WRITE_UNCONFIRMED', 503);
+  if (!write.data.length) return null;
+  if (write.data.length !== 1 || !validateShipmentRow(write.data[0], row.security_key) || stableJson(write.data[0].record_json) !== stableJson(next.record_json)) fail('SHIPMENT_WRITE_UNCONFIRMED', 503);
+  return write.data[0];
+}
+function shipmentMessageV450(value, order, origin, stage) {
+  const site = shipmentCustomerOriginV450(origin), link = site + '/cekresi.html';
+  const label = { initial: 'Nomor resi pesanan Anda telah dicatat', transit: 'Paket Anda sedang dalam perjalanan', delivered: 'Paket Anda telah diterima' }[stage];
+  if (!label || !isEmail(order.customer_email) || order.customer_id !== value.customer_id || order.id !== value.order_id) fail('SHIPMENT_OWNER_MISMATCH', 503);
+  const latest = value.events[value.events.length - 1], journey = shipmentJourneyV452(value.journey);
+  const routeNote = journey ? 'Rencana rute: ' + journey.stops.join(' → ') + '\nTitik terakhir dilaporkan admin: ' + journey.stops[journey.position] + (journey.position < journey.stops.length - 1 ? '\nTitik berikutnya (rencana): ' + journey.stops[journey.position + 1] : '') + (journey.eta_start && stage !== 'delivered' ? '\nEstimasi admin: ' + journey.eta_start + ' s.d. ' + journey.eta_end : '') + '\nSumber: input admin, bukan pelacakan GPS atau API.' : '';
+  const body = ['Halo ' + String(order.customer_name || 'Pelanggan').replace(/[\r\n]/g, ' ').slice(0, 160) + ',', '', label + '.', 'Nomor pesanan: ' + order.order_id, 'Kurir: ' + value.courier, 'Nomor resi: ' + value.tracking_number, value.location ? 'Lokasi terakhir: ' + value.location : '', latest ? 'Keterangan terakhir: ' + latest.description : '', routeNote, '', 'Lihat rincian melalui akun Anda: ' + link, '', 'Notifikasi otomatis terkait pesanan Anda. Balas email ini untuk bantuan.'].filter(line => line !== '').join('\n');
+  return { provider: 'auto', recipients: [order.customer_email], subject: label + ' | ' + value.tracking_number, body, kind: 'delivery', attachment: null, origin: site, shipmentNotice: true };
+}
+async function shipmentNotifyV450(row, stage, order, origin, database, send, assertContext) {
+  const value = JSON.parse(JSON.stringify(row.record_json));
+  if (!stage || !shipmentAutomationV450(value) || value.automation.mail[stage] !== 'claimed') fail('SHIPMENT_NOTIFICATION_INVALID', 503);
+  let outcome = 'uncertain';
+  try { assertContext(); const message = shipmentMessageV450(value, order, origin, stage), result = await send(message, assertContext); assertContext(); if (customerMailAcceptedV451(result, message.provider, 1)) outcome = 'accepted'; } catch (_) { outcome = 'uncertain'; }
+  value.automation.mail[stage] = outcome; value.automation.lease_until_ms = 0;
+  if (outcome === 'uncertain') value.automation.last_error = 'SHIPMENT_SMTP_UNCONFIRMED';
+  try { const updated = await shipmentCasV450(row, value, database); if (updated) return { row: updated, notification: outcome }; } catch (_) { /* Do not resubmit an ambiguous SMTP transaction. */ }
+  return { row, notification: 'uncertain' };
+}
+async function shipmentDailyV450(req, transport) {
+  const passport = req && Object.getOwnPropertyDescriptor(req, '__diracSupportCentralSecurityGuardPassedV146');
+  const secret = String(process.env.CRON_SECRET || ''), supplied = String(req && req.headers && req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!passport || passport.value !== true || passport.writable !== false || passport.configurable !== false || req.diracSupportAction !== 'monitor_run' || !['GET', 'POST'].includes(String(req.method || '').toUpperCase()) || Buffer.byteLength(secret) < 32 || !safeEqual(secret, supplied) || !transport || typeof transport.assert !== 'function' || typeof transport.request !== 'function') fail('SHIPMENT_FULL_GUARD_REQUIRED', 403);
+  transport.assert();
+  return { ok: true, disabled: true, reason: 'manual_only', checked: 0, failed: 0, notified: 0, notification_uncertain: 0, batch_full: false };
+}
+
 function accessBlockKey(blockId) { return isUuid(blockId) ? 'customer-access-block-v325:event:' + String(blockId).toLowerCase() : ''; }
 function accessBlockDigest(scope, value) { const cleanScope = String(scope || '').toLowerCase(), clean = String(value || '').trim().toLowerCase(); if (cleanScope === 'account' ? !isUuid(clean) : !['ip', 'device'].includes(cleanScope) || !/^[a-f0-9]{64}$/.test(clean)) return ''; const key = deriveSecret('customer-access-block-v325-key'); try { return crypto.createHmac('sha256', key).update(['v325', cleanScope, clean].join('\0')).digest('hex'); } finally { key.fill(0); } }
 function accessBlockStorageKeys(record) {
@@ -1173,6 +1515,7 @@ async function businessUnban(body) {
   const path = '/rest/v1/dirac_persistent_bans?security_key=in.(' + row.storage_keys.map(encodeURIComponent).join(',') + ')&blocked_until_ms=gt.' + now + '&select=' + encodeURIComponent(ACCESS_BLOCK_SELECT), patched = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { record_json: next, blocked_until_ms: now } }, 'security'); if (!patched.ok || !Array.isArray(patched.data) || patched.data.length !== row.storage_keys.length) fail('ADMIN_BLOCK_REVOCATION_UNVERIFIED', 503); const returned = patched.data.map(item => validateAccessBlock(item, false)); if (returned.some(item => !item || item.block_id !== id || item.state !== 'revoked') || returned.map(item => item.security_key).sort().some((item, index) => item !== row.storage_keys[index])) fail('ADMIN_BLOCK_REVOCATION_UNVERIFIED', 503); return { ok: true, affected_rows: 1, time: new Date().toISOString() };
 }
 const ADMIN_CENTRAL_BAN_FAILURE_CODES = Object.freeze([
+  'ADMIN_BODY_FIELD_INVALID', 'ADMIN_BODY_REQUIRED_FIELD', 'ADMIN_QUERY_FIELD_INVALID', 'ADMIN_FIELD_TOO_LARGE',
   'ADMIN_ACTION_APPROVAL_MISMATCH', 'ADMIN_ACTION_MISMATCH', 'ADMIN_BODY_FRAMING_INVALID', 'ADMIN_BODY_INVALID', 'ADMIN_BODY_KEY_INVALID',
   'ADMIN_BODY_TOO_COMPLEX', 'ADMIN_BODY_TOO_LARGE', 'ADMIN_CLIENT_HEADERS_INVALID', 'ADMIN_CONTENT_TYPE_INVALID', 'ADMIN_CREDENTIALS_INVALID',
   'ADMIN_EMAIL_CODE_INVALID', 'ADMIN_ENCODING_INVALID', 'ADMIN_FIXED_OWNER_REQUIRED', 'ADMIN_METHOD_NOT_ALLOWED', 'ADMIN_ORIGIN_INVALID',
@@ -1201,7 +1544,7 @@ async function businessMonitor() {
   let rows = [], ready = false; try { const result = await dbFetch('/rest/v1/security_customer_events?select=id,event_type,status,risk_level,description,created_at&order=created_at.desc&limit=20', { method: 'GET' }); if (result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; } } catch (_) { ready = false; }
   const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Guard internal handler admin mandiri yang menangani permintaan ini.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [] };
 }
-async function business(operation, body, origin) { if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false); if (operation === 'shipment_cancel') return businessShipment(body, true); if (operation === 'blocks') return businessBlocks(body); if (operation === 'unban') return businessUnban(body); if (operation === 'smtp_send') return businessSmtpSend(body, origin); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
+async function business(operation, body, origin, assertContext) { if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'unban') return businessUnban(body); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
 
 function adminCentralBanReason(error) {
   const raw = String(error && error.code || 'admin_failure').trim().toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');
@@ -1210,7 +1553,7 @@ function adminCentralBanReason(error) {
 function adminCentralBanAuthority() {
   try {
     const central = require('./health.js'), authority = central && central.__diracCentralBanAuthorityV354;
-    return authority && authority.version === 'dirac-central-ban-authority-v354' && typeof authority.ban === 'function' ? authority : null;
+    return authority && authority.version === 'dirac-central-ban-authority-v354' && typeof authority.ban === 'function' && typeof authority.check === 'function' ? authority : null;
   } catch (_) { return null; }
 }
 function adminCentralBanDiagnosticV445(req, error, required, outcome) {
@@ -1235,33 +1578,66 @@ function adminCentralBanDiagnosticV445(req, error, required, outcome) {
   } catch (_) {}
 }
 async function adminCentralBanFailure(req, error) {
+  // A security report writes its ban inside execute(); the outer catch must reuse
+  // that result, not lose its acknowledgement or perform a second ban write.
+  if (req && ADMIN_BAN_OUTCOMES.has(req)) return ADMIN_BAN_OUTCOMES.get(req);
   const required = adminCentralBanRequired(error);
   if (!required) {
     const skipped = Object.freeze({ ok: true, skipped: true });
     adminCentralBanDiagnosticV445(req, error, false, skipped);
     return skipped;
   }
+  const pending = (async () => {
+    let outcome;
+    try {
+      const authority = adminCentralBanAuthority();
+      const result = authority ? await authority.ban(req, adminCentralBanReason(error), 10 * 365 * 24 * 60 * 60) : null;
+      outcome = result && result.ok === true && result.blocked === true && Number.isSafeInteger(result.blocked_until_ms) && result.blocked_until_ms > Date.now()
+        ? result : Object.freeze({ ok: false, reason: String(result && result.reason || 'central_ban_write_unverified') });
+    } catch (_) { outcome = Object.freeze({ ok: false, reason: 'central_ban_write_exception' }); }
+    adminCentralBanDiagnosticV445(req, error, true, outcome);
+    return outcome;
+  })();
+  if (req && typeof req === 'object') ADMIN_BAN_OUTCOMES.set(req, pending);
+  return pending;
+}
+async function enforceAdminCentralBan(req) {
   const authority = adminCentralBanAuthority();
-  if (!authority) {
-    const unavailable = Object.freeze({ ok: false, reason: 'central_ban_authority_unavailable' });
-    adminCentralBanDiagnosticV445(req, error, true, unavailable);
-    return unavailable;
+  let result; try { result = authority ? await authority.check(req) : null; } catch (_) { result = null; }
+  if (!result || result.ok !== true || typeof result.blocked !== 'boolean') fail('ADMIN_CENTRAL_BAN_CHECK_UNAVAILABLE', 503);
+  if (result.blocked) {
+    if (!Number.isSafeInteger(result.blocked_until_ms) || result.blocked_until_ms <= Date.now()) fail('ADMIN_CENTRAL_BAN_CHECK_UNAVAILABLE', 503);
+    ADMIN_BAN_OUTCOMES.set(req, Promise.resolve(result));
+    fail('ADMIN_SECURITY_BLOCKED', 403);
   }
-  try {
-    const result = await authority.ban(req, adminCentralBanReason(error), 10 * 365 * 24 * 60 * 60);
-    const finalResult = result && typeof result === 'object' ? result : Object.freeze({ ok: false, reason: 'central_ban_result_invalid' });
-    adminCentralBanDiagnosticV445(req, error, true, finalResult);
-    return finalResult;
-  } catch (_) {
-    const failed = Object.freeze({ ok: false, reason: 'central_ban_write_exception' });
-    adminCentralBanDiagnosticV445(req, error, true, failed);
-    return failed;
+}
+function adminBanResponse(res, error, centralBan) {
+  if (!centralBan || centralBan.ok !== true) {
+    const unavailable = errorPayload({ code: 'ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', status: 503 });
+    unavailable.body.central_ban = false; unavailable.body.ban_persisted = false;
+    return res.status(unavailable.status).json(unavailable.body);
   }
+  const result = errorPayload(error), confirmed = centralBan.skipped !== true && centralBan.blocked === true;
+  if (confirmed) {
+    res.setHeader('X-Dirac-Central-Ban', '1');
+    res.setHeader('Retry-After', String(Math.max(1, Math.ceil((centralBan.blocked_until_ms - Date.now()) / 1000))));
+  }
+  result.body.central_ban = confirmed; result.body.ban_persisted = confirmed;
+  return res.status(result.status).json(result.body);
 }
 function allowedAdminKey(key) { return typeof key === 'string' && /^s2s-admin-v405:(?:ticket:[a-f0-9]{64}(?::used)?|enrollment:[a-f0-9]{64}|totp-used:[a-f0-9]{64}|rate:[a-f0-9]{64})$/.test(key); }
 async function replaceEnrollment(records, key, expectedRevision, record, ttl) {
-  const previous = records.get(key), expectedTtl = record && record.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS; if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'enrollment:') || !previous || previous.revision !== expectedRevision || !record || record.version !== VERSION || record.revision === expectedRevision || ttl !== expectedTtl) fail('ADMIN_STORAGE_COMPARE_INVALID', 503);
-  const expiresAt = new Date(Math.max(Date.now() + ttl * 1000, Date.parse(previous.expiresAt) + 1)).toISOString(), path = '/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(key) + '&expires_at=eq.' + encodeURIComponent(previous.expiresAt) + '&select=security_key,expires_at'; const result = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { record_json: record, expires_at: expiresAt } }, 'security'); return !!(result.ok && Array.isArray(result.data) && result.data.length === 1 && result.data[0].security_key === key && Date.parse(result.data[0].expires_at) === Date.parse(expiresAt));
+  const previous = records.get(key), expectedTtl = record && record.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS;
+  if (!enrollmentKey(key) || !previous || previous.revision !== expectedRevision || !record || record.revision === expectedRevision || ttl !== expectedTtl) fail('ADMIN_STORAGE_COMPARE_INVALID', 503);
+  const next = validateDurableEnrollment(key, record);
+  // Compare-and-swap on a revision, not a timestamp; enrollment has no TTL.
+  const path = '/rest/v1/' + ADMIN_PASSKEY_TABLE + '?security_key=eq.' + encodeURIComponent(key) + '&revision=eq.' + encodeURIComponent(expectedRevision) + '&select=security_key,revision';
+  const result = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { revision: next.revision, record_json: next, updated_at: new Date().toISOString() } }, 'security');
+  if (!result.ok || !Array.isArray(result.data) || result.data.length > 1) fail('ADMIN_PASSKEY_STORE_UNAVAILABLE', 503);
+  if (!result.data.length) return false;
+  if (result.data[0].security_key !== key || result.data[0].revision !== next.revision) fail('ADMIN_PASSKEY_WRITE_UNVERIFIED', 503);
+  records.set(key, { revision: next.revision });
+  return true;
 }
 function buildOps(req, res, state) {
   const records = new Map(), secretState = adminSecretState(), identity = Object.freeze({ email: ADMIN_EMAIL, userId: ADMIN_USER_ID, active: true, role: 'owner', origin: state.origin, binding: secretState.configured ? scopeBinding(state.origin, state.device, secretState.secret) : digest('unconfigured:' + state.origin + ':' + state.device) });
@@ -1269,8 +1645,8 @@ function buildOps(req, res, state) {
   const ops = Object.freeze({
     version: VERSION, action: state.action, method: state.method, identity, body: state.body, assertFullGuard,
     deriveKey: purpose => { assertFullGuard(); if (purpose !== 'totp-storage') fail('ADMIN_KEY_PURPOSE_INVALID', 503); const key = deriveSecret('admin-v405-totp-storage'); try { return crypto.createHmac('sha256', key).update(ADMIN_USER_ID).digest(); } finally { key.fill(0); } },
-    read: async key => { assertFullGuard(); if (!allowedAdminKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503); const result = await securityRead(key); assertFullGuard(); if (result.ok && result.found) records.set(key, { revision: result.record.revision, expiresAt: result.expiresAt }); return result; },
-    claim: async (key, record, ttl) => { assertFullGuard(); if (!allowedAdminKey(key) || !record || record.version !== VERSION) fail('ADMIN_STORAGE_CLAIM_INVALID', 503); const result = await securityClaim(key, record, ttl); assertFullGuard(); return result; },
+    read: async key => { assertFullGuard(); if (!allowedAdminKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503); const result = enrollmentKey(key) ? await durableEnrollmentRead(key) : await securityRead(key); assertFullGuard(); if (result.ok && result.found) records.set(key, { revision: result.record.revision, expiresAt: result.expiresAt }); return result; },
+    claim: async (key, record, ttl) => { assertFullGuard(); if (!allowedAdminKey(key) || !record || record.version !== VERSION) fail('ADMIN_STORAGE_CLAIM_INVALID', 503); const result = enrollmentKey(key) ? await durableEnrollmentClaim(key, record) : await securityClaim(key, record, ttl); assertFullGuard(); if (result && enrollmentKey(key)) records.set(key, { revision: record.revision }); return result; },
     replace: async (key, expectedRevision, record, ttl) => { assertFullGuard(); const result = await replaceEnrollment(records, key, expectedRevision, record, ttl); assertFullGuard(); return result; },
     takeRate: async (key, limit, seconds) => { assertFullGuard(); const actionPasskeyHourly = state.action === 'admin_action_passkey_start' && limit === 30 && seconds === 3600; if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'rate:') || !Number.isInteger(limit) || limit < 1 || (limit > 5 && !actionPasskeyHourly) || ![60, 600, 3600].includes(seconds)) fail('ADMIN_RATE_CONTRACT_INVALID', 503); const result = await atomicRate(key, limit, seconds); assertFullGuard(); return result; },
     mail: async message => { assertFullGuard(); const loginMail = state.action === 'admin_email_start' && message && message.kind === 'login' && message.operation === ''; if (!loginMail || message.to !== ADMIN_EMAIL || !validAdminEmailCode(message.code) || !/^[a-f0-9]{24}$/.test(message.reference) || !Number.isSafeInteger(message.expiresAt) || message.expiresAt <= Date.now() || message.expiresAt > Date.now() + EMAIL_CODE_SECONDS * 1000 + 5000) fail('ADMIN_MAIL_CONTRACT_INVALID', 503); const result = await sendAdminMail({ ...message, origin: state.origin }); assertFullGuard(); return result; },
@@ -1282,15 +1658,15 @@ function buildOps(req, res, state) {
     clearSession: async () => { assertFullGuard(); if (state.action !== 'admin_logout') fail('ADMIN_SESSION_CLEAR_INVALID', 503); if (await revokePasswordProof(state.passwordAuthority) !== true) fail('ADMIN_PROOF_REVOCATION_UNVERIFIED', 503); appendCookie(res, SESSION_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); appendCookie(res, PASSWORD_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); },
     verifySecret: value => { assertFullGuard(); const current = adminSecretState(); return current.configured && typeof value === 'string' && safeEqual(digest(value), digest(current.secret)); },
     publishPassword: async () => { assertFullGuard(); const current = adminSecretState(); if (!current.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503); await publishPasswordProof(req, res, state.origin, state.device, current.secret); },
-    securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const result = await persistSecurityReport(state.origin, state.device, report); assertFullGuard(); const centralBan = await adminCentralBanFailure(req, Object.assign(new Error('ADMIN_SECURITY_REPORT_ONE_STRIKE'), { code: 'ADMIN_SECURITY_REPORT_ONE_STRIKE', status: 403, statusCode: 403 })); if (!centralBan || centralBan.ok !== true) fail('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', 503); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); res.setHeader('X-Dirac-Central-Ban', '1'); return { ...result, central_ban: true }; },
-    business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'unban', 'smtp_send', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin); assertFullGuard(); return result; }
+    securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const centralBan = await adminCentralBanFailure(req, Object.assign(new Error('ADMIN_SECURITY_REPORT_ONE_STRIKE'), { code: 'ADMIN_SECURITY_REPORT_ONE_STRIKE', status: 403, statusCode: 403 })); if (!centralBan || centralBan.ok !== true) fail('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', 503); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); res.setHeader('X-Dirac-Central-Ban', '1'); return { blockedUntil: centralBan.blocked_until_ms, central_ban: true }; },
+    business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'unban', 'smtp_send', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
   });
   state.deactivate = () => { active = false; records.clear(); };
   return ops;
 }
 
 function setCommonHeaders(res, origin) {
-  res.setHeader('Cache-Control', 'no-store, max-age=0'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0'); res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'same-origin'); res.setHeader('Vary', 'Origin'); res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Access-Control-Allow-Credentials', 'true'); res.setHeader('Access-Control-Expose-Headers', 'X-Dirac-CSRF-Token, X-Dirac-Page-Nonce'); res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, max-age=0'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0'); res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'same-origin'); res.setHeader('Vary', 'Origin'); res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Access-Control-Allow-Credentials', 'true'); res.setHeader('Access-Control-Expose-Headers', 'X-Dirac-CSRF-Token, X-Dirac-Page-Nonce, X-Dirac-Central-Ban, Retry-After'); res.setHeader('Content-Type', 'application/json; charset=utf-8');
 }
 function queryObject(query) { const out = {}; query.forEach((value, key) => { if (Object.prototype.hasOwnProperty.call(out, key)) fail('ADMIN_QUERY_DUPLICATE', 400); out[key] = value; }); return out; }
 async function readJsonBody(req, maximum) {
@@ -1341,16 +1717,14 @@ function validateShape(action, method, query, body) {
   const source = method === 'POST' ? body : query; if (Object.entries(source).some(([key, value]) => Array.isArray(value) && !(contract.allowArrayItems && key === 'transports'))) fail('ADMIN_BODY_FIELD_INVALID', 400); if (Object.values(source).some(value => typeof value === 'string' && Buffer.byteLength(value, 'utf8') > contract.maxFieldBytes)) fail('ADMIN_FIELD_TOO_LARGE', 413);
 }
 function errorPayload(error) {
-  const known = error && (/^ADMIN_[A-Z0-9_]{1,90}$/.test(String(error.code || '')) || String(error.code || '') === 'SECURITY_REPORT_EVIDENCE_REJECTED'), supplied = Number(error && (error.status || error.statusCode) || 503), status = known && ALLOWED_RESPONSE_STATUSES.has(supplied) ? supplied : 503;
+  const known = error && (/^ADMIN_[A-Z0-9_]{1,90}$/.test(String(error.code || '')) || String(error.code || '') === 'SECURITY_REPORT_EVIDENCE_REJECTED' || ['SHIPMENT_BUSY', 'SHIPMENT_CONFIG_REQUIRED', 'SHIPMENT_SMTP_NOT_CONFIGURED', 'SHIPMENT_CUSTOMER_EMAIL_REQUIRED', 'SHIPMENT_TRACKING_ID_REQUIRED', 'SHIPMENT_ENDPOINT_INVALID', 'SHIPMENT_CONFIG_INVALID', 'SHIPMENT_OPTIONS_INVALID', 'SHIPMENT_OPTIONS_REQUIRED', 'SHIPMENT_STATE_INVALID', 'SHIPMENT_CONFIG_WRITE_UNCONFIRMED', 'SHIPMENT_CONFIG_UNAVAILABLE'].includes(String(error.code || ''))), supplied = Number(error && (error.status || error.statusCode) || 503), status = known && ALLOWED_RESPONSE_STATUSES.has(supplied) ? supplied : 503;
   return { status, body: { ok: false, code: known ? error.code : 'ADMIN_OPERATION_UNAVAILABLE', message: status === 503 ? 'Layanan admin belum dapat diverifikasi. Periksa konfigurasi yang diwajibkan lalu coba kembali.' : status === 429 ? 'Batas percobaan tercapai. Tunggu sebelum mencoba lagi.' : 'Verifikasi admin belum valid atau sudah kedaluwarsa.' } };
 }
 async function adminBusiness(req, res, operations) {
   try { return res.status(200).json(await execute(operations)); }
   catch (error) {
     const centralBan = await adminCentralBanFailure(req, error);
-    if (!centralBan || centralBan.ok !== true) { const unavailable = errorPayload(Object.assign(new Error('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE'), { code: 'ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', status: 503, statusCode: 503 })); return res.status(unavailable.status).json(unavailable.body); }
-    if (centralBan.skipped !== true) { try { res.setHeader('X-Dirac-Central-Ban', '1'); } catch (_) {} }
-    const result = errorPayload(error); return res.status(result.status).json(result.body);
+    return adminBanResponse(res, error, centralBan);
   }
 }
 async function adminHandler(req, res) {
@@ -1366,6 +1740,9 @@ async function adminHandler(req, res) {
       if (requested !== 'POST' || !CONTRACTS[action].methods.includes('POST') || headers.some(header => !allowedHeaders.has(header))) fail('ADMIN_PREFLIGHT_INVALID', 403);
       res.setHeader('Access-Control-Allow-Methods', 'POST'); res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token, X-Dirac-CSRF-Token, X-Dirac-Page-Nonce'); res.setHeader('Access-Control-Max-Age', '600'); return res.status(204).end();
     }
+    // Nonces and logout do not grant access; avoid an extra DB read for each nonce bootstrap.
+    // All substantive admin requests (including reports) consult the SAME central authority.
+    if (adminSecretState().configured && !['admin_entry', 'admin_logout'].includes(action)) await enforceAdminCentralBan(req);
     const device = deviceFingerprint(req, origin);
     if (adminSecretState().configured && !['admin_entry', 'admin_security_report', 'admin_logout'].includes(action)) {
       const blocked = await activeSecurityBlock(origin, device);
@@ -1394,19 +1771,19 @@ async function adminHandler(req, res) {
   } catch (error) {
     const centralBan = await adminCentralBanFailure(req, error);
     try { if (origin) setCommonHeaders(res, origin); else { res.setHeader('Cache-Control', 'no-store'); res.setHeader('Content-Type', 'application/json; charset=utf-8'); res.setHeader('X-Content-Type-Options', 'nosniff'); } } catch (_) {}
-    if (!centralBan || centralBan.ok !== true) { const unavailable = errorPayload(Object.assign(new Error('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE'), { code: 'ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', status: 503, statusCode: 503 })); return res.status(unavailable.status).json(unavailable.body); }
-    if (centralBan.skipped !== true) { try { res.setHeader('X-Dirac-Central-Ban', '1'); } catch (_) {} }
-    const result = errorPayload(error); return res.status(result.status).json(result.body);
+    return adminBanResponse(res, error, centralBan);
   }
 }
 Object.defineProperties(adminHandler, {
   config: { value: Object.freeze({ api: Object.freeze({ bodyParser: false }) }), enumerable: true },
   __diracAdminBusinessV405: { value: adminBusiness },
+  __diracShipmentDailyV450: { value: shipmentDailyV450 },
+  __diracShipmentDataV453: { value: Object.freeze({ validate: shipmentExtrasCheckV453, validateRow: validateShipmentRow, receipt: shipmentReceiptPublicV453, deliveryRef: shipmentDeliveryRefV453, event: shipmentEventPublicV453, buildReceipt: shipmentReceiptBuildV453 }) },
   __diracAdminContractsV405: { value: CONTRACTS },
   __diracAdminActionsV405: { value: ACTIONS },
   __diracAdminEmailV405: { value: ADMIN_EMAIL },
   __diracAdminVersionV405: { value: VERSION },
   __diracAdminStandaloneV411: { value: true },
-  __diracAdminSelfTestV411: { value: Object.freeze({ ok: true, healthDependency: false, adminTableDependency: false, newEnvironmentNames: true }) }
+  __diracAdminSelfTestV411: { value: Object.freeze({ ok: true, healthDependency: true, adminTableDependency: true, newEnvironmentNames: false, durablePasskeyTable: ADMIN_PASSKEY_TABLE }) }
 });
 module.exports = Object.freeze(adminHandler);
