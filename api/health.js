@@ -61930,7 +61930,7 @@ function diracCustomerShipmentDiagnosticV455(ctx, row, expectedKey, parent, owne
       receipt_extras_validator_ok: Boolean(record && diracCustomerShipmentDiagnosticProbeV455(() => diracReceiptDataV453().validate(record)))
     }
   };
-  try { console.error('[dirac-shipment-diagnostic-v455] ' + JSON.stringify(diagnostic)); } catch (_) {}
+  try { console.error('[dirac-shipment-diagnostic-v455] ' + JSON.stringify(diagnostic)); } catch (diagnosticErrorV455) { void diagnosticErrorV455; }
 }
 
 async function diracCustomerShipmentProjectV406(req, orders) {
@@ -61988,7 +61988,7 @@ async function diracCustomerShipmentProjectV406(req, orders) {
       shipment_row_count: results.reduce((count, rows) => count + (Array.isArray(rows) ? rows.length : 0), 0),
       valid_shipment_count: shipments.size, owner_mismatch_count: ownerMismatchKeys.size,
       integrity_quarantine_count: integrityQuarantineKeys.size, response_mode: 'orders_200_without_untrusted_shipment_payload'
-    })); } catch (_) {}
+    })); } catch (diagnosticSummaryErrorV455) { void diagnosticSummaryErrorV455; }
   }
   return orders.map((order, index) => {
     const key = keys[index];
