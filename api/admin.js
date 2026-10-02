@@ -1365,6 +1365,10 @@ function shipmentTimestamp(value) {
   if (typeof value !== 'string') return null; const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?(?:Z|\+00:00)$/.exec(value); if (!match) return null;
   const ms = Date.parse(match[1] + 'Z'); if (!Number.isFinite(ms) || new Date(ms).toISOString().slice(0, 19) !== match[1]) return null; return BigInt(ms) * 1000n + BigInt((match[2] || '').padEnd(6, '0'));
 }
+function shipmentEnvelopeTimeV457(recordUpdatedAt, rowUpdatedAt) {
+  const recordTime = shipmentTimestamp(recordUpdatedAt), rowTime = shipmentTimestamp(rowUpdatedAt);
+  return recordTime !== null && rowTime !== null && rowTime >= recordTime && rowTime - recordTime <= 5000000n;
+}
 function businessText(value, maximum, required = false) { if (typeof value !== 'string' || value.length > maximum || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(value) || (required && !value.trim())) fail('ADMIN_SHIPMENT_TEXT_INVALID', 400); return value.trim(); }
 // Manual shipment data only. This validator performs no network or database I/O.
 function shipmentJourneyV452(input) {
@@ -1398,7 +1402,7 @@ function shipmentJourneyApplyV452(options, cancel, current, next) {
 function validateShipmentRow(row, key) {
   if (!row || typeof row !== 'object' || Array.isArray(row) || row.security_key !== key || Number(row.blocked_until_ms) !== 0 || shipmentTimestamp(row.updated_at) === null || !Number.isFinite(Date.parse(row.expires_at)) || Date.parse(row.expires_at) <= Date.now()) return null;
   const value = row.record_json;
-  if (!value || typeof value !== 'object' || Array.isArray(value) || value.schema !== 'dirac.admin_shipment.v406' || !['active', 'cancelled'].includes(value.state) || !isUuid(value.customer_id) || !isUuid(value.updated_by) || !Number.isSafeInteger(value.revision) || value.revision < 1 || !['prepared', 'shipped', 'in_transit', 'delivered', 'cancelled'].includes(value.status) || (value.state === 'cancelled') !== (value.status === 'cancelled') || shipmentTimestamp(value.updated_at) === null || shipmentTimestamp(value.updated_at) !== shipmentTimestamp(row.updated_at) || !Array.isArray(value.events) || value.events.length < 1 || value.events.length > 50) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.schema !== 'dirac.admin_shipment.v406' || !['active', 'cancelled'].includes(value.state) || !isUuid(value.customer_id) || !isUuid(value.updated_by) || !Number.isSafeInteger(value.revision) || value.revision < 1 || !['prepared', 'shipped', 'in_transit', 'delivered', 'cancelled'].includes(value.status) || (value.state === 'cancelled') !== (value.status === 'cancelled') || shipmentTimestamp(value.updated_at) === null || !shipmentEnvelopeTimeV457(value.updated_at, row.updated_at) || !Array.isArray(value.events) || value.events.length < 1 || value.events.length > 50) return null;
   try { shipmentExtrasCheckV453(value); shipmentJourneyV452(value.journey); if (shipmentKey(value.order_kind, value.order_id) !== key || !/^[A-Za-z0-9][A-Za-z0-9 ._-]{2,99}$/.test(value.tracking_number)) return null; businessText(value.courier, 80, true); businessText(value.location, 160); businessText(value.origin, 600); businessText(value.destination, 600); if (value.estimated_delivery !== '' && (!/^\d{4}-\d{2}-\d{2}$/.test(value.estimated_delivery) || !Number.isFinite(Date.parse(value.estimated_delivery)))) return null; const invalidEvent = value.events.some(event => { if (!event || typeof event !== 'object' || Array.isArray(event) || !Number.isFinite(Date.parse(event.timestamp)) || typeof event.status !== 'string') return true; businessText(event.description, 300, true); businessText(event.location, 160); return false; }); if (invalidEvent) return null; } catch (_) { return null; }
   return value;
 }

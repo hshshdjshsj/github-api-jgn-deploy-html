@@ -61413,6 +61413,12 @@ function diracAdminShipmentTimestampV407(value) {
   return BigInt(wholeMilliseconds) * 1000n + BigInt((match[2] || '').padEnd(6, '0'));
 }
 
+function diracAdminShipmentEnvelopeTimeV457(recordUpdatedAt, rowUpdatedAt) {
+  const recordTime = diracAdminShipmentTimestampV407(recordUpdatedAt);
+  const rowTime = diracAdminShipmentTimestampV407(rowUpdatedAt);
+  return recordTime !== null && rowTime !== null && rowTime >= recordTime && rowTime - recordTime <= 5000000n;
+}
+
 function diracAdminBusinessPathV406(operation, input) {
   const value = input || {};
   if (operation === 'blocks') {
@@ -61544,7 +61550,7 @@ function diracAdminValidateShipmentRowV406(row, key) {
       || !['prepared', 'shipped', 'in_transit', 'delivered', 'cancelled'].includes(value.status)
       || (value.state === 'cancelled') !== (value.status === 'cancelled')
       || diracAdminShipmentTimestampV407(value.updated_at) === null
-      || diracAdminShipmentTimestampV407(value.updated_at) !== diracAdminShipmentTimestampV407(row.updated_at)
+      || !diracAdminShipmentEnvelopeTimeV457(value.updated_at, row.updated_at)
       || !Array.isArray(value.events) || value.events.length < 1 || value.events.length > 50) return null;
   try {
     diracReceiptDataV453().validate(value);
@@ -61898,8 +61904,12 @@ function diracCustomerShipmentDiagnosticV455(ctx, row, expectedKey, parent, owne
       updated_by_uuid: Boolean(record && customerSecurityLooksLikeUuid(record.updated_by)),
       revision_valid: Boolean(record && Number.isSafeInteger(record.revision) && record.revision >= 1),
       record_updated_at_valid: Boolean(record && diracAdminShipmentTimestampV407(record.updated_at) !== null),
-      row_record_time_match: Boolean(record && row && diracAdminShipmentTimestampV407(record.updated_at) !== null
-        && diracAdminShipmentTimestampV407(record.updated_at) === diracAdminShipmentTimestampV407(row.updated_at)),
+      row_record_time_match: Boolean(record && row && diracAdminShipmentEnvelopeTimeV457(record.updated_at, row.updated_at)),
+      row_record_time_delta_us: (() => {
+        const recordTime = record ? diracAdminShipmentTimestampV407(record.updated_at) : null;
+        const rowTime = row ? diracAdminShipmentTimestampV407(row.updated_at) : null;
+        return typeof recordTime === 'bigint' && typeof rowTime === 'bigint' ? String(rowTime - recordTime) : '';
+      })(),
       events_array: Boolean(record && Array.isArray(record.events)),
       event_count: eventCount,
       order_id_uuid: Boolean(record && customerSecurityLooksLikeUuid(record.order_id)),
