@@ -91,6 +91,13 @@ function adminEmailCode() {
 function validAdminEmailCode(value) { return typeof value === 'string' && value.length >= EMAIL_CODE_MIN && value.length <= EMAIL_CODE_MAX && /^[A-Za-z0-9_-]+$/.test(value) && /[A-Za-z]/.test(value) && /[0-9]/.test(value); }
 function exactToken(value) { return typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value); }
 function safeEqual(a, b) { const aa = Buffer.from(String(a)), bb = Buffer.from(String(b)); return aa.length === bb.length && crypto.timingSafeEqual(aa, bb); }
+function maskedAdminEmail() {
+  const value = String(ADMIN_EMAIL || '').trim().toLowerCase(), split = value.lastIndexOf('@');
+  if (split <= 0 || split >= value.length - 1) return 'a***@***';
+  const local = value.slice(0, split), domain = value.slice(split + 1), dot = domain.lastIndexOf('.'), host = dot > 0 ? domain.slice(0, dot) : domain, suffix = dot > 0 ? domain.slice(dot) : '';
+  return local.slice(0, 1) + '*'.repeat(Math.max(3, Math.min(12, local.length - 2))) + (local.length > 1 ? local.slice(-1) : '') + '@' + host.slice(0, 1) + '***' + suffix;
+}
+const ADMIN_EMAIL_MASKED = maskedAdminEmail();
 function isUuid(value) { return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String(value || '').trim().toLowerCase()); }
 function isEmail(value) { return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(String(value || '').trim().toLowerCase()); }
 function stableJson(value) {
@@ -105,6 +112,8 @@ function syntheticAdminUuid() {
   return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
 }
 const ADMIN_USER_ID = syntheticAdminUuid();
+const ADMIN_OWNER_V466 = digest('dirac-admin-fixed-owner-v466');
+function legacyAdminOwnerV466() { return digest(ADMIN_EMAIL + ':' + ADMIN_USER_ID); }
 
 function isProduction() { return String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production'; }
 function rootSecret() {
@@ -163,8 +172,9 @@ function seal(ops, value, context) {
     return [nonce, encrypted, cipher.getAuthTag()].map(v => v.toString('base64url')).join('.');
   } finally { key.fill(0); }
 }
-function open(ops, value, context) {
-  const key = encryptionKey(ops); let plaintext = null, tail = null;
+function open(ops, value, context, keyPurpose = 'totp-storage') {
+  const key = keyPurpose === 'totp-storage' ? encryptionKey(ops) : ops.deriveKey(keyPurpose); let plaintext = null, tail = null;
+  if (!Buffer.isBuffer(key) || key.length !== 32) fail('ADMIN_SECRET_UNAVAILABLE', 503);
   try {
     if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)) fail('ADMIN_STATE_INVALID', 503);
     const parts = value.split('.').map(v => decodeB64url(v, 64));
@@ -311,12 +321,16 @@ function enrollmentKey(key) { return typeof key === 'string' && /^s2s-admin-v405
 function validateDurableEnrollment(key, value) {
   if (!enrollmentKey(key) || !value || typeof value !== 'object' || Array.isArray(value)) fail('ADMIN_ENROLLMENT_INVALID', 503);
   const state = value.enrollmentState === undefined ? 'active' : value.enrollmentState, passkey = value.passkey;
-  if (value.version !== VERSION || value.owner !== digest(ADMIN_EMAIL + ':' + ADMIN_USER_ID) || typeof value.origin !== 'string'
+  const ownerValidV466 = value.owner === ADMIN_OWNER_V466 || value.owner === legacyAdminOwnerV466();
+  if (value.version !== VERSION || !ownerValidV466 || typeof value.origin !== 'string'
       || key !== configKey({ owner: value.owner, origin: value.origin }) || !exactToken(value.revision) || !exactToken(value.userHandle)
       || !['active', 'pending_totp'].includes(state) || !passkey || typeof passkey !== 'object' || Array.isArray(passkey)
       || typeof passkey.credentialId !== 'string' || !/^[A-Za-z0-9_-]{22,1364}$/.test(passkey.credentialId)
       || !Number.isSafeInteger(passkey.signCount) || passkey.signCount < 0 || passkey.signCount > 4294967295
       || typeof value.totp !== 'string' || !/^[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{22}$/.test(value.totp)
+      || (value.factorGuardV466 !== undefined && (typeof value.factorGuardV466 !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(value.factorGuardV466)))
+      || (value.totpKeyV466 !== undefined && value.totpKeyV466 !== true)
+      || (value.legacyConfigKeyV466 !== undefined && (typeof value.legacyConfigKeyV466 !== 'string' || !/^s2s-admin-v405:enrollment:[a-f0-9]{64}$/.test(value.legacyConfigKeyV466)))
       || Buffer.byteLength(JSON.stringify(value), 'utf8') > 16384) fail('ADMIN_ENROLLMENT_INVALID', 503);
   let origin; try { origin = new URL(value.origin); } catch (_) { fail('ADMIN_ENROLLMENT_INVALID', 503); }
   if (origin.origin !== value.origin || origin.username || origin.password || (origin.protocol !== 'https:' && !loopbackHost(origin.hostname))) fail('ADMIN_ENROLLMENT_INVALID', 503);
@@ -1143,15 +1157,49 @@ function checkOperations(ops) {
   if (origin.origin !== identity.origin || origin.username || origin.password || (origin.protocol !== 'https:' && !loopbackHost(origin.hostname))) fail('ADMIN_ORIGIN_INVALID', 403);
   if (!ACTIONS.includes(ops.action) || !CONTRACTS[ops.action].methods.includes(ops.method)) fail('ADMIN_ACTION_INVALID', 400);
   if (['read', 'claim', 'replace', 'takeRate', 'deriveKey', 'mail', 'recoveryAlert', 'verifyRegistration', 'verifyAssertion', 'readSession', 'setSession', 'clearSession', 'verifySecret', 'publishPassword', 'securityReport', 'business'].some(name => typeof ops[name] !== 'function')) fail('ADMIN_OPERATION_UNAVAILABLE', 503);
-  return { owner: digest(ADMIN_EMAIL + ':' + identity.userId), binding: identity.binding, origin: identity.origin, rpId: origin.hostname };
+  return { owner: ADMIN_OWNER_V466, binding: identity.binding, origin: identity.origin, rpId: origin.hostname };
 }
 function configKey(scope) { return PREFIX + 'enrollment:' + digest(scope.owner + ':' + scope.origin); }
 async function stored(ops, key) { ops.assertFullGuard(); const result = await ops.read(key); ops.assertFullGuard(); if (!result || result.ok !== true) fail('ADMIN_STORE_UNAVAILABLE', 503); return result.found === true ? result.record : null; }
 async function config(ops, scope) {
-  const value = await stored(ops, configKey(scope)); if (!value) return null;
+  const key = configKey(scope); let value = await stored(ops, key);
+  if (!value) {
+    const legacyOwner = legacyAdminOwnerV466(), legacyKey = configKey({ owner: legacyOwner, origin: scope.origin });
+    if (legacyKey !== key) {
+      const legacy = await stored(ops, legacyKey);
+      if (legacy) {
+        const migrated = { ...legacy, owner: scope.owner, revision: randomToken(), legacyConfigKeyV466: legacyKey };
+        if (await ops.claim(key, migrated, migrated.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS) === true) value = migrated;
+        else value = await stored(ops, key);
+      }
+    }
+  }
+  if (!value) return null;
   const enrollmentState = value.enrollmentState === undefined ? 'active' : value.enrollmentState;
   if (value.version !== VERSION || value.owner !== scope.owner || value.origin !== scope.origin || !exactToken(value.revision) || !value.passkey || !exactToken(value.userHandle) || !Number.isSafeInteger(value.passkey.signCount) || value.passkey.signCount < 0 || typeof value.totp !== 'string' || !['active', 'pending_totp'].includes(enrollmentState)) fail('ADMIN_ENROLLMENT_INVALID', 503);
   return value.enrollmentState === enrollmentState ? value : { ...value, enrollmentState };
+}
+// v466: bind the fixed admin destination, both admin-only environment secrets, and the encrypted TOTP state.
+// The binding contains no raw secret and may only be created/refreshed after a successful passkey ceremony.
+function adminFactorGuardV466(enrolled) {
+  const primary = adminSecretState(), recovery = adminPasskeyRecoverySecretState();
+  if (!primary.configured || !recovery.configured || !enrolled || typeof enrolled.totp !== 'string') fail('ADMIN_FACTOR_GUARD_UNAVAILABLE', 503);
+  const key = deriveSecret('admin-factor-immutability-v466');
+  try {
+    return crypto.createHmac('sha512', key).update(stableJson({ version: 466, owner: ADMIN_OWNER_V466, email: ADMIN_EMAIL, admin_secret: secretBinding(primary.secret), recovery_secret: secretBinding(recovery.secret), totp: digest(enrolled.totp), totp_key: enrolled.totpKeyV466 === true ? 466 : 405 })).digest('base64url');
+  } finally { key.fill(0); }
+}
+function sealAdminFactorGuardV466(enrolled) { return { ...enrolled, factorGuardV466: adminFactorGuardV466(enrolled) }; }
+function assertAdminFactorGuardV466(enrolled) {
+  if (!enrolled || typeof enrolled.factorGuardV466 !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(enrolled.factorGuardV466) || !safeEqual(enrolled.factorGuardV466, adminFactorGuardV466(enrolled))) fail('ADMIN_FACTOR_GUARD_MISMATCH', 403);
+  return true;
+}
+function totpKeyPurposeV466(enrolled) { return enrolled && enrolled.totpKeyV466 === true ? 'totp-storage' : 'totp-storage-legacy'; }
+function migrateTotpKeyAfterPasskeyV466(ops, scope, enrolled) {
+  if (!enrolled || enrolled.totpKeyV466 === true) return enrolled;
+  const legacyContext = typeof enrolled.legacyConfigKeyV466 === 'string' ? enrolled.legacyConfigKeyV466 : configKey(scope);
+  const secret = open(ops, enrolled.totp, legacyContext, 'totp-storage-legacy');
+  try { const next = { ...enrolled, totp: seal(ops, secret, configKey(scope)), totpKeyV466: true }; delete next.legacyConfigKeyV466; return next; } finally { secret.fill(0); }
 }
 async function issue(ops, scope, stage, values = {}, seconds = FACTOR_SECONDS) {
   const token = randomToken(), now = Date.now(); const record = { version: VERSION, owner: scope.owner, binding: scope.binding, origin: scope.origin, stage, ...values, expiresAt: now + seconds * 1000 };
@@ -1164,9 +1212,9 @@ async function ticket(ops, scope, token, stage) {
 }
 async function consume(ops, entry) { const remaining = Math.max(60, Math.ceil((entry.value.expiresAt - Date.now()) / 1000)); if (await ops.claim(entry.key + ':used', { version: VERSION, usedAt: Date.now() }, remaining) !== true) fail('ADMIN_TICKET_ALREADY_USED', 409); }
 async function throttle(ops, scope, name, limit, seconds) { if (await ops.takeRate(PREFIX + 'rate:' + digest(scope.owner + ':' + scope.origin + ':' + name), limit, seconds) !== true) fail('ADMIN_RATE_LIMITED', 429); }
-async function session(ops, scope, must = true) {
+async function session(ops, scope, must = true, enforceFactorGuard = true) {
   const raw = ops.readSession(); if (!exactToken(raw)) { if (must) fail('ADMIN_THREE_FACTORS_REQUIRED', 401); return null; }
-  try { const entry = await ticket(ops, scope, raw, 'session'); if (entry.value.factors !== 'email+passkey+totp') fail('ADMIN_THREE_FACTORS_REQUIRED', 401); return entry; }
+  try { const entry = await ticket(ops, scope, raw, 'session'); if (entry.value.factors !== 'email+passkey+totp') fail('ADMIN_THREE_FACTORS_REQUIRED', 401); if (enforceFactorGuard) assertAdminFactorGuardV466(await config(ops, scope)); return entry; }
   catch (error) { if (!must && [401, 409].includes(error.status)) return null; throw error; }
 }
 function validateClientData(credential, proof, scope) {
@@ -1182,7 +1230,7 @@ async function adminPasskeyRecoveryTicket(ops, scope, token) {
 }
 async function adminVerifyRecoveryTotp(ops, scope, enrolled, code) {
   if (!enrolled || enrolled.enrollmentState !== 'active' || typeof code !== 'string' || !/^[0-9]{6}$/.test(code)) fail('ADMIN_TOTP_INVALID', 401);
-  const secret = open(ops, enrolled.totp, configKey(scope)); let accepted = null;
+  const secret = open(ops, enrolled.totp, configKey(scope), totpKeyPurposeV466(enrolled)); let accepted = null;
   try {
     const current = Math.floor(Date.now() / 30000);
     if (safeEqual(totp(secret, current), code)) accepted = current;
@@ -1197,7 +1245,7 @@ async function execute(ops) {
   if (ops.method === 'HEAD') return { ok: true };
   if (action === 'admin_entry') {
     const configured = adminSecretState().configured;
-    return { ok: true, email: ADMIN_EMAIL, credentials_required: true, credentials_configured: configured, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30 };
+    return { ok: true, email: ADMIN_EMAIL_MASKED, credentials_required: true, credentials_configured: configured, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30 };
   }
   if (action === 'admin_security_report') {
     await throttle(ops, scope, 'security-report', 3, 60);
@@ -1207,21 +1255,21 @@ async function execute(ops) {
   }
   if (action === 'admin_login') {
     await throttle(ops, scope, 'password-login', 5, FACTOR_SECONDS);
-    if (String(body.email || '').trim().toLowerCase() !== ADMIN_EMAIL || typeof body.password !== 'string' || body.password.length > 4096 || !ops.verifySecret(body.password)) fail('ADMIN_CREDENTIALS_INVALID', 401);
+    if (String(body.email || '').trim().toLowerCase() !== ADMIN_EMAIL_MASKED || typeof body.password !== 'string' || body.password.length > 4096 || !ops.verifySecret(body.password)) fail('ADMIN_CREDENTIALS_INVALID', 401);
     await ops.publishPassword();
-    return { ok: true, stage: 'email', credentials_verified: true, email: ADMIN_EMAIL };
+    return { ok: true, stage: 'email', credentials_verified: true, email: ADMIN_EMAIL_MASKED };
   }
   if (action === 'admin_status') {
     const nonceTarget = body._dirac_page_nonce_for;
     if (typeof nonceTarget === 'string' && Object.prototype.hasOwnProperty.call(CONTRACTS, nonceTarget) && CONTRACTS[nonceTarget].methods.includes('POST')) return { ok: true };
     const [enrolled, active] = await Promise.all([config(ops, scope), session(ops, scope, false)]);
-    return { ok: true, email: ADMIN_EMAIL, enrolled: !!enrolled, enrollment_state: enrolled ? enrolled.enrollmentState : 'none', passkey_storage: ADMIN_PASSKEY_TABLE, authenticated: !!active, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: null, persistent_session: !!active, action_email_required: false, action_passkey_required: true };
+    return { ok: true, email: ADMIN_EMAIL_MASKED, enrolled: !!enrolled, enrollment_state: enrolled ? enrolled.enrollmentState : 'none', passkey_storage: ADMIN_PASSKEY_TABLE, authenticated: !!active, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: null, persistent_session: !!active, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_email_start') {
     await throttle(ops, scope, 'email-start-minute', 1, 60); await throttle(ops, scope, 'email-start-hour', 5, 3600);
     const code = adminEmailCode(), codeLength = code.length, salt = randomToken(), reference = crypto.randomBytes(12).toString('hex');
     const token = await issue(ops, scope, 'email', { salt, codeHash: digest(salt + ':' + code), reference, codeLength }, EMAIL_CODE_SECONDS); const delivered = await ops.mail({ to: ADMIN_EMAIL, code, reference, expiresAt: Date.now() + EMAIL_CODE_SECONDS * 1000, kind: 'login', operation: '' });
-    if (!delivered || delivered.ok !== true) fail('ADMIN_EMAIL_DELIVERY_UNCONFIRMED', 503); return { ok: true, ticket: token, stage: 'email', email: ADMIN_EMAIL, code_length: codeLength, min_chars: EMAIL_CODE_MIN, max_chars: EMAIL_CODE_MAX, expires_in: EMAIL_CODE_SECONDS, one_time: true };
+    if (!delivered || delivered.ok !== true) fail('ADMIN_EMAIL_DELIVERY_UNCONFIRMED', 503); return { ok: true, ticket: token, stage: 'email', email: ADMIN_EMAIL_MASKED, code_length: codeLength, min_chars: EMAIL_CODE_MIN, max_chars: EMAIL_CODE_MAX, expires_in: EMAIL_CODE_SECONDS, one_time: true };
   }
   if (action === 'admin_email_verify') {
     const entry = await ticket(ops, scope, body.ticket, 'email'); await throttle(ops, scope, 'email-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
@@ -1245,7 +1293,7 @@ async function execute(ops) {
     if (handle !== null && handle !== undefined && handle !== '' && handle !== enrolled.userHandle) fail('ADMIN_PASSKEY_USER_MISMATCH', 403);
     const verified = await ops.verifyAssertion({ credential, clientData, rpId: scope.rpId, passkey: enrolled.passkey });
     if (!verified || verified.ok !== true) fail('ADMIN_PASSKEY_INVALID', 403);
-    const next = { ...enrolled, passkey: { ...enrolled.passkey, signCount: verified.signCount }, revision: randomToken() };
+    const next = sealAdminFactorGuardV466({ ...migrateTotpKeyAfterPasskeyV466(ops, scope, enrolled), passkey: { ...enrolled.passkey, signCount: verified.signCount }, revision: randomToken() });
     if (await ops.replace(configKey(scope), enrolled.revision, next, ENROLLMENT_SECONDS) !== true) fail('ADMIN_PASSKEY_STATE_CHANGED', 409);
     await consume(ops, entry); const approval = await issue(ops, scope, 'action-approval', { operation: proof.operation, payloadHash: proof.payloadHash }, EMAIL_CODE_SECONDS);
     return { ok: true, approval, operation: proof.operation, expires_in: EMAIL_CODE_SECONDS, one_time: true };
@@ -1254,7 +1302,7 @@ async function execute(ops) {
     const entry = await ticket(ops, scope, body.ticket, 'passkey-start'), enrolled = await config(ops, scope); await consume(ops, entry);
     const challenge = randomToken(), userHandle = enrolled ? enrolled.userHandle : randomToken(), mode = enrolled ? 'authentication' : 'registration';
     const token = await issue(ops, scope, 'passkey', { challenge, mode, userHandle, revision: enrolled ? enrolled.revision : null });
-    const publicKey = mode === 'registration' ? { challenge, rp: { id: scope.rpId, name: 'PT DIRAC INOVASI NUSANTARA' }, user: { id: userHandle, name: ADMIN_EMAIL, displayName: 'Administrator DIRAC' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, attestation: 'none' } : { challenge, rpId: scope.rpId, userVerification: 'required', timeout: 60000, allowCredentials: [{ id: enrolled.passkey.credentialId, type: 'public-key' }] };
+    const publicKey = mode === 'registration' ? { challenge, rp: { id: scope.rpId, name: 'PT DIRAC INOVASI NUSANTARA' }, user: { id: userHandle, name: ADMIN_EMAIL_MASKED, displayName: 'Administrator DIRAC' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, attestation: 'none' } : { challenge, rpId: scope.rpId, userVerification: 'required', timeout: 60000, allowCredentials: [{ id: enrolled.passkey.credentialId, type: 'public-key' }] };
     return { ok: true, ticket: token, stage: 'passkey', mode, publicKey };
   }
   if (action === 'admin_passkey_verify') {
@@ -1267,15 +1315,15 @@ async function execute(ops) {
       try {
         const encrypted = seal(ops, secret, configKey(scope));
         provisioning = { secret: base32(secret) };
-        const pending = { version: VERSION, owner: scope.owner, origin: scope.origin, enrollmentState: 'pending_totp', revision: randomToken(), passkey, userHandle: proof.userHandle, totp: encrypted, createdAt: Date.now() };
+        const pending = sealAdminFactorGuardV466({ version: VERSION, owner: scope.owner, origin: scope.origin, enrollmentState: 'pending_totp', revision: randomToken(), passkey, userHandle: proof.userHandle, totp: encrypted, totpKeyV466: true, createdAt: Date.now() });
         if (await ops.claim(configKey(scope), pending, PENDING_ENROLLMENT_SECONDS) !== true) fail('ADMIN_ALREADY_ENROLLED', 409); enrolled = pending;
       } finally { secret.fill(0); }
     } else {
       if (!enrolled || proof.revision !== enrolled.revision || credential.id !== enrolled.passkey.credentialId) fail('ADMIN_PASSKEY_STATE_CHANGED', 409); const handle = credential.response.userHandle;
       if (handle !== null && handle !== undefined && handle !== '' && handle !== enrolled.userHandle) fail('ADMIN_PASSKEY_USER_MISMATCH', 403); const verified = await ops.verifyAssertion({ credential, clientData, rpId: scope.rpId, passkey: enrolled.passkey });
-      if (!verified || verified.ok !== true) fail('ADMIN_PASSKEY_INVALID', 403); passkey = { ...enrolled.passkey, signCount: verified.signCount }; const next = { ...enrolled, passkey, revision: randomToken() };
+      if (!verified || verified.ok !== true) fail('ADMIN_PASSKEY_INVALID', 403); passkey = { ...enrolled.passkey, signCount: verified.signCount }; const next = sealAdminFactorGuardV466({ ...migrateTotpKeyAfterPasskeyV466(ops, scope, enrolled), passkey, revision: randomToken() });
       if (await ops.replace(configKey(scope), enrolled.revision, next, next.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS) !== true) fail('ADMIN_PASSKEY_STATE_CHANGED', 409); enrolled = next;
-      if (enrolled.enrollmentState === 'pending_totp') { const secret = open(ops, enrolled.totp, configKey(scope)); try { provisioning = { secret: base32(secret) }; } finally { secret.fill(0); } }
+      if (enrolled.enrollmentState === 'pending_totp') { const secret = open(ops, enrolled.totp, configKey(scope), totpKeyPurposeV466(enrolled)); try { provisioning = { secret: base32(secret) }; } finally { secret.fill(0); } }
     }
     await consume(ops, entry); const pending = enrolled.enrollmentState === 'pending_totp';
     const token = await issue(ops, scope, 'totp', { enroll: pending, totpBinding: digest(enrolled.totp), revision: enrolled.revision }); return { ok: true, ticket: token, stage: 'totp', enrollment: pending ? provisioning : null, period: 30 };
@@ -1285,12 +1333,13 @@ async function execute(ops) {
     const entry = await adminPasskeyRecoveryTicket(ops, scope, body.ticket), enrolled = await config(ops, scope);
     await throttle(ops, scope, 'passkey-recovery-hour', 2, 3600);
     if (!enrolled || enrolled.enrollmentState !== 'active' || !verifyAdminPasskeyRecoverySecret(body.recovery_secret)) fail('ADMIN_PASSKEY_RECOVERY_INVALID', 403);
+    assertAdminFactorGuardV466(enrolled);
     await adminVerifyRecoveryTotp(ops, scope, enrolled, body.totp_code);
     await consume(ops, entry);
     const reference = crypto.randomBytes(12).toString('hex'), delivered = await ops.recoveryAlert({ to: ADMIN_EMAIL, kind: 'recovery', event: 'started', reference, origin: scope.origin });
     if (!delivered || delivered.ok !== true) fail('ADMIN_EMAIL_DELIVERY_UNCONFIRMED', 503);
     const challenge = randomToken(), token = await issue(ops, scope, 'passkey-recovery', { challenge, mode: 'registration', userHandle: enrolled.userHandle, revision: enrolled.revision, reference }, FACTOR_SECONDS);
-    return { ok: true, ticket: token, stage: 'passkey-recovery', mode: 'registration', publicKey: { challenge, rp: { id: scope.rpId, name: 'PT DIRAC INOVASI NUSANTARA' }, user: { id: enrolled.userHandle, name: ADMIN_EMAIL, displayName: 'Administrator DIRAC' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, attestation: 'none' }, alert_reference: reference };
+    return { ok: true, ticket: token, stage: 'passkey-recovery', mode: 'registration', publicKey: { challenge, rp: { id: scope.rpId, name: 'PT DIRAC INOVASI NUSANTARA' }, user: { id: enrolled.userHandle, name: ADMIN_EMAIL_MASKED, displayName: 'Administrator DIRAC' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, attestation: 'none' }, alert_reference: reference };
   }
   if (action === 'admin_passkey_recovery_verify') {
     const entry = await ticket(ops, scope, body.ticket, 'passkey-recovery'); await throttle(ops, scope, 'passkey-recovery-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
@@ -1309,13 +1358,14 @@ async function execute(ops) {
       ? typeof proof.totpBinding === 'string' && /^[a-f0-9]{64}$/.test(proof.totpBinding) && safeEqual(digest(enrolled.totp), proof.totpBinding)
       : typeof proof.totp === 'string' && safeEqual(enrolled.totp, proof.totp));
     if (!enrolled || enrolled.revision !== proof.revision || !bound || (proof.enroll ? enrolled.enrollmentState !== 'pending_totp' : enrolled.enrollmentState !== 'active')) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409);
-    const secret = open(ops, enrolled.totp, configKey(scope)); let accepted = null;
+    assertAdminFactorGuardV466(enrolled);
+    const secret = open(ops, enrolled.totp, configKey(scope), totpKeyPurposeV466(enrolled)); let accepted = null;
     try { const current = Math.floor(Date.now() / 30000), match = [current, current - 1, current + 1].find(counter => safeEqual(totp(secret, counter), body.code)); accepted = Number.isSafeInteger(match) ? match : null; } finally { secret.fill(0); }
     if (accepted === null) fail('ADMIN_TOTP_INVALID', 401); if (await ops.claim(PREFIX + 'totp-used:' + digest(scope.owner + ':' + scope.origin + ':' + enrolled.totp + ':' + accepted), { version: VERSION }, 120) !== true) fail('ADMIN_TOTP_ALREADY_USED', 409); await consume(ops, entry);
     if (proof.enroll) { const active = { ...enrolled, enrollmentState: 'active', revision: randomToken(), activatedAt: Date.now() }; if (await ops.replace(configKey(scope), enrolled.revision, active, ENROLLMENT_SECONDS) !== true) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409); }
     const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); return { ok: true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
   }
-  if (action === 'admin_logout') { const active = await session(ops, scope, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
+  if (action === 'admin_logout') { const active = await session(ops, scope, false, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
   await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
   if (!operation) fail('ADMIN_ACTION_INVALID', 400);
   if (Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS, action)) { const approval = await ticket(ops, scope, body.approval, 'action-approval'); if (approval.value.operation !== action || approval.value.payloadHash !== approvalPayloadHash(action, body)) fail('ADMIN_ACTION_APPROVAL_MISMATCH', 403); await consume(ops, approval); }
@@ -1989,7 +2039,7 @@ function buildOps(req, res, state) {
   let active = true; const assertFullGuard = () => { if (!active || state.req !== req || state.method !== String(req.method || '').toUpperCase() || state.action !== state.currentAction || state.origin !== sourceOrigin(req) || state.device !== deviceFingerprint(req, state.origin)) fail('ADMIN_FULL_GUARD_REQUIRED', 503); };
   const ops = Object.freeze({
     version: VERSION, action: state.action, method: state.method, identity, body: state.body, assertFullGuard,
-    deriveKey: purpose => { assertFullGuard(); if (purpose !== 'totp-storage') fail('ADMIN_KEY_PURPOSE_INVALID', 503); const key = deriveSecret('admin-v405-totp-storage'); try { return crypto.createHmac('sha256', key).update(ADMIN_USER_ID).digest(); } finally { key.fill(0); } },
+    deriveKey: purpose => { assertFullGuard(); if (!['totp-storage', 'totp-storage-legacy'].includes(purpose)) fail('ADMIN_KEY_PURPOSE_INVALID', 503); const key = deriveSecret('admin-v405-totp-storage'); try { return crypto.createHmac('sha256', key).update(purpose === 'totp-storage' ? ADMIN_OWNER_V466 : ADMIN_USER_ID).digest(); } finally { key.fill(0); } },
     read: async key => { assertFullGuard(); if (!allowedAdminKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503); const result = enrollmentKey(key) ? await durableEnrollmentRead(key) : await securityRead(key); assertFullGuard(); if (result.ok && result.found) records.set(key, { revision: result.record.revision, expiresAt: result.expiresAt }); return result; },
     claim: async (key, record, ttl) => { assertFullGuard(); if (!allowedAdminKey(key) || !record || record.version !== VERSION) fail('ADMIN_STORAGE_CLAIM_INVALID', 503); const result = enrollmentKey(key) ? await durableEnrollmentClaim(key, record) : await securityClaim(key, record, ttl); assertFullGuard(); if (result && enrollmentKey(key)) records.set(key, { revision: record.revision }); return result; },
     replace: async (key, expectedRevision, record, ttl) => { assertFullGuard(); const result = await replaceEnrollment(records, key, expectedRevision, record, ttl); assertFullGuard(); return result; },
