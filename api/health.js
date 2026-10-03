@@ -12103,6 +12103,15 @@ function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, opt
             || (ctx.action === 'domain_dashboard_me' && ctx.method === 'GET'))
           && mirrorCapabilityV353.reason === ctx.failureReasonV211
           && mirrorCapabilityV353.stage === ctx.failedStageV211;
+        const rejectedCheckpointMirrorV353 = Number.isInteger(stageIndexV353)
+          && stageIndexV353 >= 0 && stageIndexV353 < SECURITY_PIPELINE.length && stageIndexV353 !== 15
+          && BigInt(ctx && ctx.passport || 0n) === (1n << BigInt(stageIndexV353)) - 1n
+          && ctx.currentStageV211 === SECURITY_PIPELINE[stageIndexV353].name
+          && ctx.failedStageV211 === ctx.currentStageV211
+          && Boolean(ctx.failureReasonV211)
+          && mirrorCapabilityV353.reason === ctx.failureReasonV211
+          && mirrorCapabilityV353.stage === ctx.failedStageV211
+          && diracCentralGuardPhaseValidV211(ctx);
         const securityReportTerminalMirrorV453 = stageIndexV353 === SECURITY_PIPELINE.length - 1
           && BigInt(ctx && ctx.passport || 0n) === DIRAC_V202_ALL_CHECKPOINTS
           && ctx.currentStageV211 === 'integrity'
@@ -12112,12 +12121,16 @@ function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, opt
           && mirrorCapabilityV353.reason === 'html_security_report'
           && mirrorCapabilityV353.stage === '';
         centralFailureMirrorGuardPassedV353 = Boolean(
-          (deviceFailureMirrorV353 || securityReportTerminalMirrorV453)
+          (deviceFailureMirrorV353 || rejectedCheckpointMirrorV353 || securityReportTerminalMirrorV453)
           && ctx.req === mirrorCapabilityV353.req
           && ctx.res
           && ctx.executionPhaseV211 === 'guard'
-          && ctx.classification === 'browser'
-          && ctx.authentication === 'browser'
+          && ((ctx.classification === 'browser' && ctx.authentication === 'browser')
+            || (ctx.policy && ctx.policy === ACTION_POLICY[ctx.action]
+              && ['browser', 'admin'].includes(ctx.classification)
+              && ctx.classification === diracCentralClassifyActionV146(ctx.action)
+              && ['public', 'customer', 'admin'].includes(ctx.authentication)
+              && ctx.authentication === ctx.policy.authentication))
           && mirrorCapabilityV353.requestId === String(ctx.requestId || '')
           && mirrorCapabilityV353.action === ctx.action
           && mirrorCapabilityV353.stageIndex === stageIndexV353
@@ -20138,7 +20151,7 @@ function midtransPaymentTransitionAllowedV350(currentStatus, targetStatus) {
     cancelled: new Set(['cancelled']),
     failed: new Set(['failed'])
   };
-  return Boolean(target && allowed[current] && allowed[current].has(target));
+  return Boolean(target && Object.prototype.hasOwnProperty.call(allowed, current) && allowed[current].has(target));
 }
 
 function midtransGrantWebhookCapabilityV350(req, input) {
@@ -56930,6 +56943,7 @@ function diracCentralRawRequestHeaderGuardV228(req, ctx) {
   const upgrade = String(critical.upgrade.values[0] || '').trim();
   const expect = String(critical.expect.values[0] || '').trim();
   if (transferEncoding) return { ok: false, reason: 'transfer_encoding_rejected' };
+  if (critical['content-encoding'].values.length && !['', 'identity'].includes(critical['content-encoding'].values[0].trim().toLowerCase())) return { ok: false, reason: 'content_encoding_rejected' };
   if (transferEncoding && contentLength) return { ok: false, reason: 'content_length_transfer_encoding_conflict' };
   if (upgrade) return { ok: false, reason: 'protocol_upgrade_rejected' };
   if (expect) return { ok: false, reason: 'expect_header_rejected' };
@@ -59993,7 +60007,7 @@ function diracCentralSupabaseRequestCacheKeyV151(path, options = {}) {
   const authMode = String(options && options.auth || 'anon');
   const bearerValueV404 = String(options && options.bearer || 'default');
   const bearerHash = bearerValueV404 === 'default' ? DIRAC_CENTRAL_DEFAULT_BEARER_HASH_V404 : loginSecurityHash(bearerValueV404);
-  return ['supabase-read-v151', method, authMode, bearerHash, rawPath].join('|');
+  return ['supabase-read-v151', method, resolveDiracSupabaseTargetKey(rawPath, options || {}), authMode, bearerHash, rawPath].join('|');
 }
 
 function diracCentralIsRequestCacheableSupabaseReadV151(path) {

@@ -701,8 +701,8 @@ function invoiceVerifiedPagesV464(doc,pages){
     page.push({kind:'rect',x:990,y:1507,w:178,h:178,color:'#ffffff'});
     const cell=178/(qr.size+8);
     for(let row=0;row<qr.size;row++)for(let col=0;col<qr.size;col++)if(qr.data[row*qr.size+col])page.push({kind:'rect',x:990+(col+4)*cell,y:1507+(row+4)*cell,w:cell,h:cell,color:'#000000'});
-    page.push({kind:'rect',x:1064,y:1581,w:30,h:30,color:'#ffffff'});
-    page.push({kind:'logo',x:1068,y:1585,w:22,h:22});
+    page.push({kind:'rect',x:1057,y:1574,w:44,h:44,color:'#ffffff'});
+    page.push({kind:'logo',x:1061,y:1578,w:36,h:36});
   }
   return pages;
 }

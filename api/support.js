@@ -2741,7 +2741,7 @@ async function supportCentralGuardThreatV202(ctx) {
       const authority = await supportCentralBanAuthorityV354();
       const persisted = await authority.ban(ctx.req, 'support_' + name, 15 * 60);
       if (!persisted || persisted.ok !== true) throw new PublicError(503, 'CENTRAL_BAN_PERSISTENCE_FAILED', 'Blokir keamanan pusat tidak dapat dipastikan tersimpan.');
-      const error = new PublicError(403, 'CENTRAL_THREAT_REJECTED', 'Request diblokir oleh pemeriksaan keamanan: ' + name + '.');
+      const error = new PublicError(403, 'CENTRAL_THREAT_REJECTED', 'Request diblokir oleh pemeriksaan keamanan.');
       error.retryAfter = Math.max(1, Math.floor(Number(persisted.ttl_seconds || 15 * 60)));
       throw error;
     }
