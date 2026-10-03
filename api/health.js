@@ -3107,7 +3107,6 @@ function getDomainLoginRateIdentitiesV353(req, email) {
     throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
   }
   return Object.freeze([
-    Object.freeze(account),
     Object.freeze({
       key: 'domain-login-ip:' + ipHash,
       legacyKey: '',
@@ -3293,10 +3292,10 @@ function domainLoginRateDecisionV336(identity, record, now = Date.now()) {
     permanent,
     count: record.count,
     status: permanent ? 423 : 429,
-    code: permanent ? 'LOGIN_ACCOUNT_LOCKED' : 'LOGIN_RATE_LIMITED',
+    code: permanent ? 'LOGIN_ACCESS_BLOCKED' : 'LOGIN_RATE_LIMITED',
     retryAfterSeconds: permanent ? 0 : Math.max(0, Math.ceil((record.blockedUntilMs - now) / 1000)),
     message: permanent
-      ? 'Akun terkunci. Silakan hubungi admin melalui WhatsApp 087892523968 atau email ' + diracSupportEmailV250() + '.'
+      ? 'Perangkat dan jaringan sumber login ini terkunci permanen oleh sistem keamanan. Silakan hubungi admin melalui WhatsApp 087892523968 atau email ' + diracSupportEmailV250() + '.'
       : record.count >= 6
         ? 'Password salah 6 kali. Akun dibatasi selama 24 jam sejak percobaan terakhir. Satu kesalahan berikutnya setelah pembatasan berakhir akan mengunci akun; silakan hubungi admin jika membutuhkan bantuan.'
         : 'Password salah 5 kali. Akun dibatasi selama 1 jam sejak percobaan terakhir. Silakan coba kembali setelah pembatasan berakhir.'
@@ -3308,7 +3307,7 @@ function sendDomainLoginRateDecisionV336(res, decision) {
   return res.status(decision.status || 503).json({
     ok: false,
     code: decision.code || 'LOGIN_SECURITY_STATE_UNAVAILABLE',
-    ...(decision.permanent ? { account_locked: true } : {}),
+    ...(decision.permanent ? { ban_active: true, blocked_scope: 'ip', network_lock: true, device_lock: true } : {}),
     ...(decision.retryAfterSeconds > 0 ? { retry_after_seconds: decision.retryAfterSeconds } : {}),
     message: decision.message || 'Status keamanan akun belum dapat diverifikasi. Silakan coba lagi.'
   });
@@ -63323,7 +63322,16 @@ function diracCentralBrowserSignalGuardV146(req, ctx) {
   if (ch && /chrome|chromium|crios|edg/i.test(ua) && !/Chromium|Google Chrome|Microsoft Edge/i.test(ch)) return { ok: false, reason: 'sec_ch_ua_mismatch' };
   const accept = String(headers.accept || '').toLowerCase();
   const lang = String(headers['accept-language'] || '').toLowerCase();
-  if (!accept || !/(application\/json|\*\/\*|text\/html)/i.test(accept)) return { ok: false, reason: 'accept_header_invalid' };
+  if (ctx.action === 'invoice_document_export' && ctx.method === 'POST') {
+    let expectedInvoiceAcceptV465 = '';
+    try {
+      const rawInvoiceBodyV465 = JSON.parse(String(req && req.__diracRawJsonV221 || ''));
+      expectedInvoiceAcceptV465 = rawInvoiceBodyV465 && typeof rawInvoiceBodyV465 === 'object' && !Array.isArray(rawInvoiceBodyV465)
+        ? (rawInvoiceBodyV465.format === 'png' ? 'image/png' : rawInvoiceBodyV465.format === 'pdf' ? 'application/pdf' : '')
+        : '';
+    } catch (invoiceAcceptParseErrorV465) { return { ok: false, reason: 'accept_header_invalid' }; }
+    if (!expectedInvoiceAcceptV465 || accept.trim() !== expectedInvoiceAcceptV465) return { ok: false, reason: 'accept_header_invalid' };
+  } else if (!accept || !/(application\/json|\*\/\*|text\/html)/i.test(accept)) return { ok: false, reason: 'accept_header_invalid' };
   if (!lang || lang.length > 160) return { ok: false, reason: 'accept_language_invalid' };
   const advanced = diracCentralAdvancedBrowserSignalV146(req, ctx, ua, headers);
   if (!advanced.ok) return advanced;
