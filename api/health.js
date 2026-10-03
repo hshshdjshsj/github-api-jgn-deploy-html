@@ -39991,6 +39991,7 @@ function diracBolaIdorV122InspectStrictSafe(path, options = {}) {
         && /^(orders|domain_orders)$/.test(table)
         && internalOwnerLookupExactOptionsV466
         && method === 'GET' && options.method === 'GET' && options.auth === 'service') {
+      DIRAC_CENTRAL_OWNER_LOOKUP_PERMITS_V357.delete(options);
       return { ok: true, table, method, action: 'invoice_document_export', scoped: true, internal_owner_lookup: 'v466_exact_capability' };
     }
 
@@ -65136,7 +65137,7 @@ function diracCentralIsAuthAuditWriteV331(ctx, table, path, options = {}, method
 function diracCentralIsInternalOwnerLookupV194(ctx, table, path, options, method) {
   const permit = options && DIRAC_CENTRAL_OWNER_LOOKUP_PERMITS_V357.get(options);
   if (!permit) return false;
-  DIRAC_CENTRAL_OWNER_LOOKUP_PERMITS_V357.delete(options);
+  if (String(ctx && ctx.action || '') !== 'invoice_document_export') DIRAC_CENTRAL_OWNER_LOOKUP_PERMITS_V357.delete(options);
   const permitDatabase = String(permit.database || '').trim();
   const exactOptions = permitDatabase
     ? Object.keys(options).sort().join(',') === 'auth,db,method'
