@@ -68357,7 +68357,10 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
     const ttlSeconds = Math.max(60, Math.min(10 * 365 * 24 * 60 * 60, requestedTtl));
     if (!/^[a-z0-9_:-]{3,96}$/.test(reason)) return Object.freeze({ ok: false, reason: 'central_ban_reason_invalid' });
     const identity = diracCentralExternalBanIdentityV404(req);
-    const unique = identity.keys;
+    const deviceNetworkOnly = reason === 'admin_failure:admin_factor_guard_mismatch';
+    const unique = deviceNetworkOnly
+      ? identity.keys.filter((item) => ['ip', 'stable_ip', 'cookie', 'fingerprint', 'network'].includes(String(item && item.type || '')))
+      : identity.keys;
     if (!unique.length) return Object.freeze({ ok: false, reason: 'central_ban_identity_unavailable' });
     const authorityDiagnosticV445 = Object.freeze({
       patch: 'dirac-central-ban-authority-diagnostic-v445',
@@ -68366,7 +68369,7 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
       request_id: String(req && req.__diracCentralRequestIdV211 || '').slice(0, 64),
       reason,
       identity_key_count: unique.length,
-      identity_account_bound: Boolean(identity.email),
+      identity_account_bound: deviceNetworkOnly ? false : Boolean(identity.email),
       first_key_type: String(unique[0] && unique[0].type || '').slice(0, 40)
     });
     try { console.error('[dirac-central-ban-authority-diagnostic-v445] ' + JSON.stringify({ ...authorityDiagnosticV445, event: 'ban_write_requested' })); } catch (diagnosticErrorV445) { diracCentralRecordSuppressedExceptionV221(diagnosticErrorV445); }
@@ -68375,8 +68378,8 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
     const expiresAt = new Date(DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335).toISOString();
     const record = Object.freeze(diracPersistentSecurityDecorateBanRecordV363({
       type: 'central_external_ban_v354',
-      identity_email: identity.email,
-      identity_email_verified: Boolean(identity.email),
+      identity_email: deviceNetworkOnly ? null : identity.email,
+      identity_email_verified: deviceNetworkOnly ? false : Boolean(identity.email),
       patch: DIRAC_CENTRAL_BAN_AUTHORITY_V354,
       action: 'external_security_violation',
       method: String(req && req.method || 'GET').toUpperCase().slice(0, 12),
