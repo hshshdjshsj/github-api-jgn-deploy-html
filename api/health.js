@@ -30394,7 +30394,7 @@ async function diracUniversalPesananReadOrders(req, res) {
   const shipmentView = diracCustomerShipmentRequestedV406(req);
   const [genericOrders, domainOrders] = await Promise.all([
     myOrdersFetchGenericOrders(owner, userEmail),
-    shipmentView ? Promise.resolve({ ok: true, error: '', orders: [] }) : myOrdersFetchDomainOrders(owner, userEmail)
+    (shipmentView && !diracSmartAssistantSourceV464(req)) ? Promise.resolve({ ok: true, error: '', orders: [] }) : myOrdersFetchDomainOrders(owner, userEmail)
   ]);
   if (!genericOrders || genericOrders.ok !== true) {
     const ambiguous = genericOrders && genericOrders.error === 'ORDER_DATABASE_AMBIGUOUS';
@@ -55400,7 +55400,7 @@ const DIRAC_CENTRAL_VERIFIED_OWNER_CONTEXTS_V215 = new WeakMap();
 const DIRAC_CENTRAL_VERIFIED_OWNER_ACTIONS_V217 = Object.freeze([
   'domain_dashboard_me',
   'customer_shipment_receipt',
-  'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock',
+  'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock', 'invoice_document_export',
   'domain_checkout',
   'domain_orders',
   'customer_security_status',
@@ -59246,7 +59246,7 @@ const DIRAC_CENTRAL_ACTION_ALIASES_V146 = Object.freeze({
 
 const DIRAC_CENTRAL_ACTIVE_ACTIONS_V146 = new Set([
   'customer_shipment_receipt',
-  'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock',
+  'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock', 'invoice_document_export',
   'domain_health',
   'hostinger_check',
   'domain_login',
@@ -59379,7 +59379,7 @@ for (const action of require('./admin.js').__diracAdminActionsV405) {
 }
 const DIRAC_CENTRAL_SENSITIVE_ACTIONS_V146 = new Set([
   'customer_shipment_receipt',
-  'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock',
+  'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock', 'invoice_document_export',
   'domain_logout',
   'domain_checkout',
   'checkout_order',
@@ -60982,7 +60982,7 @@ const DIRAC_PTDIN_REQUESTS_V402 = new WeakMap();
 const DIRAC_PTDIN_ACTIONS_V402 = Object.freeze([
   'domain_health', 'domain_dashboard_me', 'domain_logout', 'my_orders',
   'domain_orders', 'customer_security_overview', 'customer_security_account_request', 'create_payment',
-  'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock', 'customer_shipment_receipt'
+  'invoice_email_status', 'invoice_email_send', 'invoice_email_unlock', 'invoice_document_export', 'customer_shipment_receipt'
 ]);
 const DIRAC_PTDIN_SOURCE_PATHS_V402 = Object.freeze([
   '/cekresi.html', '/detail-domain.html', '/detail-parfum.html', '/detail-project.html',
@@ -61775,6 +61775,7 @@ async function diracAdminBusinessBodyV406(req) {
 
 function diracCustomerShipmentRequestedV406(req) {
   try {
+    if (diracSmartAssistantSourceV464(req) && diracCentralPtdinSourceV402(req, 'my_orders')) return true;
     if (!req || String(req.method || '').toUpperCase() !== 'GET'
         || String(req.query && req.query.type || '').trim().toLowerCase() !== 'shipment'
         || diracCentralPtdinSourceV402(req, 'my_orders') !== true) return false;
@@ -62029,12 +62030,25 @@ async function diracAdminMonitorV406(req, res) {
 }
 
 
+// Exact read-only chat source; every authentication, MFA, ownership and DB guard still runs.
+function diracSmartAssistantSourceV464(req) {
+  try {
+    if (!req || String(req.method || '').toUpperCase() !== 'GET' || String(req.query && req.query.action || '') !== 'my_orders'
+        || String(req.query && req.query.type || '') !== 'assistant' || Object.keys(req.query || {}).some(key => !['action','type'].includes(key))) return false;
+    const origin = 'https://cs.' + diracBaseDomainV250(), headers = req.headers || {};
+    const page = new URL(String(headers.referer || headers.referrer || ''));
+    return String(headers.origin || '').trim().toLowerCase() === origin && page.origin === origin && page.protocol === 'https:'
+      && !page.port && !page.username && !page.password && page.pathname === '/chat.html' && !page.search && !page.hash;
+  } catch (_) { return false; }
+}
+
 function diracCentralPtdinSourceV402(req, action) {
   const entry = req && DIRAC_PTDIN_REQUESTS_V402.get(req);
   if (!entry || entry.req !== req || entry.action !== String(action || '')
       || entry.method !== String(req.method || '').toUpperCase()
       || !DIRAC_PTDIN_ACTIONS_V402.includes(entry.action)) return false;
   try {
+    if (entry.action === 'my_orders' && diracSmartAssistantSourceV464(req)) return true;
     const expectedOrigin = 'https://pt.' + diracBaseDomainV250();
     const headers = req.headers || {};
     if (String(headers.origin || '').trim().toLowerCase() !== expectedOrigin) return false;
@@ -62194,7 +62208,7 @@ const DIRAC_INVOICE_RPC_V440 = new WeakMap();
 const DIRAC_INVOICE_RESPONSES_V440 = new WeakMap();
 const DIRAC_INVOICE_RECIPIENTS_V440 = new WeakMap();
 const DIRAC_INVOICE_LIFECYCLES_V440 = new WeakMap();
-function diracInvoiceActionV440(action) { return ['invoice_email_status', 'invoice_email_send', 'invoice_email_unlock'].includes(String(action || '')); }
+function diracInvoiceActionV440(action) { return ['invoice_email_status', 'invoice_email_send', 'invoice_email_unlock', 'invoice_document_export'].includes(String(action || '')); }
 function diracInvoiceSourceV440(req, action) {
   if (!diracInvoiceActionV440(action) || !diracCentralPtdinSourceV402(req, action)) return false;
   try { return new URL(String(req.headers && (req.headers.referer || req.headers.referrer) || '')).pathname === '/invoice.html'; } catch (_) { return false; }
@@ -62203,6 +62217,7 @@ function diracInvoiceInputV440(ctx, source) {
   if (!diracInvoiceActionV440(ctx && ctx.action)) return { ok: true };
   if (!source || typeof source !== 'object' || Array.isArray(source) || !customerSecurityLooksLikeUuid(source.order_id)
       || typeof source.order_id !== 'string' || !['regular', 'domain'].includes(source.kind)) return { ok: false, reason: 'invoice_scope_contract_invalid_v440' };
+  if (ctx.action === 'invoice_document_export' && (!['png','pdf'].includes(source.format) || !Number.isInteger(source.page) || (source.format === 'pdf' ? source.page !== 0 : source.page < 1 || source.page > 64))) return { ok: false, reason: 'invoice_export_contract_invalid_v464' };
   if (ctx.action === 'invoice_email_unlock' && (typeof source.file_id !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(source.file_id)
       || typeof source.code !== 'string' || !/^[0-9]{8}$/.test(source.code) || typeof source.file_sha256 !== 'string'
       || !/^[a-f0-9]{64}$/.test(source.file_sha256))) return { ok: false, reason: 'invoice_retired_contract_invalid_v440' };
@@ -62373,12 +62388,40 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
     knownFiles.add(fileKey(row.record_json.file_id));
     return { ok: true, found: true, record: row.record_json };
   }
+  const documentServiceV464 = require('./admin.js').__diracDocumentAuthenticityV464;
+  const documentOwnerV464 = crypto.createHash('sha256').update('invoice-document-v464:' + scope).digest('hex');
+  async function documentReadV464(key) {
+    assertContext();
+    if (!/^s2s-document-v464:(?:id:DV-[a-f0-9]{48}|file:[a-f0-9]{64})$/.test(key)) throw new Error('INVOICE_DOCUMENT_SCOPE_INVALID');
+    const result = await db('/rest/v1/dirac_s2s_security?select=security_key,record_json,expires_at&security_key=eq.' + encodeURIComponent(key) + '&limit=1', { method:'GET', auth:'service' });
+    if (!result || !result.ok || !Array.isArray(result.data) || result.data.length > 1) throw new Error('INVOICE_DOCUMENT_STORE_UNAVAILABLE');
+    if (!result.data.length) return null;
+    const row = result.data[0];
+    if (!row || row.security_key !== key || !Number.isFinite(Date.parse(row.expires_at)) || Date.parse(row.expires_at) <= Date.now()) throw new Error('INVOICE_DOCUMENT_RECORD_INVALID');
+    return row.record_json;
+  }
+  async function documentClaimV464(key, record) {
+    assertContext();
+    const identity = record && (record.identity || record.seal && record.seal.identity || record);
+    if (!['invoice_email_send','invoice_document_export'].includes(action) || !identity || identity.owner_scope !== documentOwnerV464
+        || !/^s2s-document-v464:(?:id:DV-[a-f0-9]{48}|file:[a-f0-9]{64})$/.test(key)) throw new Error('INVOICE_DOCUMENT_CLAIM_INVALID');
+    const expires = new Date(Date.now() + 100 * 365 * 86400000).toISOString();
+    const result = await db('/rest/v1/dirac_s2s_security?on_conflict=security_key&select=security_key,record_json', {
+      method:'POST', auth:'service', prefer:'resolution=ignore-duplicates,return=representation',
+      body:{ security_key:key,record_json:record,blocked_until_ms:0,expires_at:expires }
+    });
+    assertContext();
+    return !!(result && result.ok && Array.isArray(result.data) && result.data.length === 1 && result.data[0].security_key === key
+      && documentServiceV464.same(result.data[0].record_json,record));
+  }
   async function verifyOwner() { assertContext(); await diracInvoicePaidDataV440(proof, db, false); assertContext(); return true; }
   const operations = Object.freeze({
     version: 'dirac-invoice-v440', action, method: ctx.method, body: source,
     identity: Object.freeze({ userId: proof.userId, customerId: proof.customerId, email, origin, orderDatabase: proof.orderDatabase }), assertFullGuard: assertContext, verifyOwner, read, onPrepared,
     reconcileOnly: continuation && diracInvoiceContinuationStateV441(req).reconcileOnly === true,
     document: async () => { assertContext(); const data = await diracInvoicePaidDataV440(proof, db, true); assertContext(); return ptdin.__diracInvoiceDocumentV440(data, { userId: proof.userId, customerId: proof.customerId, email, origin }, { nib: process.env.DIRAC_INVOICE_NIB, npwp: process.env.DIRAC_INVOICE_NPWP }); },
+    prepareDocument: async (doc) => { assertContext(); if (!doc || doc.id !== proof.orderId || doc.eligible !== true) throw new Error('INVOICE_DOCUMENT_SCOPE_INVALID'); return documentServiceV464.prepare({kind:'invoice',reference:doc.reference,content_sha256:crypto.createHash('sha256').update(JSON.stringify(doc)).digest('hex'),page_count:ptdin.__diracInvoicePageCountV464(doc)},documentOwnerV464,origin,documentClaimV464,assertContext,'/admin.html'); },
+    sealDocument: async (bytes, verification, format, page) => { assertContext(); return documentServiceV464.seal(bytes,verification.identity,format,page,documentOwnerV464,documentReadV464,documentClaimV464,assertContext); },
     storageKey: () => { assertContext(); return crypto.createHmac('sha256', diracCentralRootSecretV146()).update('DIRAC_INVOICE_V440_STORAGE:' + proof.userId + ':' + proof.customerId).digest(); },
     claim: async (key, record, ttl) => {
       assertContext(); if (action !== 'invoice_email_send' || !recordAllowed(key, record)
@@ -68581,6 +68624,7 @@ function diracCentralContractForActionV146(action) {
     domain_checkout: { ...postOnly, required: ['domain'] },
     checkout_order: { ...postOnly, allowed: commonPost.concat(['service_type', 'product_title', 'total', 'payment_method', 'customer_address', 'customer_note', 'source', 'shipping_mode', 'product_id', 'title', 'qty', 'client_price', 'client_subtotal']) },
     customer_shipment_receipt: { methods: ['POST'], allowed: ['order_id', 'kind', 'expected_revision', 'delivery_ref', 'tracking_number', 'outcome', 'quantity', 'note'], required: ['order_id', 'kind', 'expected_revision', 'delivery_ref', 'tracking_number', 'outcome', 'quantity', 'note'], maxBodyBytes: 4096, maxFieldBytes: 1200, mutation: true },
+    invoice_document_export: { methods: ['POST'], allowed: ['order_id','kind','format','page'], required: ['order_id','kind','format','page'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: true },
     invoice_email_status: { methods: ['GET'], allowed: ['order_id', 'kind'], required: ['order_id', 'kind'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: false },
     invoice_email_send: { methods: ['POST'], allowed: ['order_id', 'kind'], required: ['order_id', 'kind'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: true },
     invoice_email_unlock: { methods: ['POST'], allowed: ['order_id', 'kind', 'file_id', 'code', 'file_sha256'], required: ['order_id', 'kind', 'file_id', 'code', 'file_sha256'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: true },

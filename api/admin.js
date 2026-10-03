@@ -59,10 +59,13 @@ const CONTRACTS = Object.freeze({
   admin_unban: post(['block_id', 'approval'], ['block_id', 'approval']),
   admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
   admin_local_authorize: post(['purpose', 'content_sha256', 'approval'], ['purpose', 'content_sha256', 'approval']),
+  admin_document_prepare: post(['document_kind','reference','page_count','content_sha256','approval'], ['document_kind','reference','page_count','content_sha256','approval']),
+  admin_document_seal: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'identity','format','page','raw_sha256','file_base64','approval']), required: Object.freeze(['identity','format','page','raw_sha256','file_base64','approval']), maxBodyBytes: 4250000, maxFieldBytes: 4194304, mutation: true, allowArrayItems: false }),
+  admin_document_verify: get(['file_sha256','document_id']),
   admin_monitor: get()
 });
 const ACTIONS = Object.freeze(Object.keys(CONTRACTS));
-const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize' });
+const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal' });
 const ORDER_SELECT = Object.freeze({
   regular: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
   laboratorium: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
@@ -657,6 +660,18 @@ function verifyAssertion({ credential, rpId, passkey }) {
 
 function approvalPayload(action, body) {
   const value = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  if (action === 'admin_document_prepare') {
+    if (!DOCUMENT_KINDS_V464.includes(value.document_kind) || typeof value.reference !== 'string' || !value.reference || value.reference.length > 253
+        || /[\u0000-\u001f\u007f]/.test(value.reference) || !Number.isInteger(value.page_count) || value.page_count < 1 || value.page_count > 64
+        || typeof value.content_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.content_sha256)) fail('ADMIN_DOCUMENT_META_INVALID',400);
+    return { action, document_kind: value.document_kind, reference: value.reference, page_count: value.page_count, content_sha256: value.content_sha256 };
+  }
+  if (action === 'admin_document_seal') {
+    if (!documentIdentityValidV464(value.identity) || value.identity.owner_scope !== documentAdminScopeV464() || !['png','pdf'].includes(value.format)
+        || !Number.isInteger(value.page) || (value.format === 'png' ? value.page < 1 || value.page > value.identity.page_count : value.page !== 0)
+        || typeof value.raw_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.raw_sha256)) fail('ADMIN_DOCUMENT_SEAL_INVALID',400);
+    return { action, identity: value.identity, format: value.format, page: value.page, raw_sha256: value.raw_sha256 };
+  }
   if (action === 'admin_local_authorize') {
     if (!['document_preview', 'document_pdf', 'document_png', 'document_print', 'theme_save'].includes(value.purpose) || typeof value.content_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.content_sha256)) fail('ADMIN_LOCAL_AUTHORIZATION_INVALID', 400);
     return { action, purpose: value.purpose, content_sha256: value.content_sha256 };
@@ -922,14 +937,23 @@ function customerMailHtml(message) {
   const heading = mailEscape(shipment ? shipment.title : message.subject), preheader = mailEscape(shipment ? shipment.title + ' · ' + shipment.trackingNumber : labelText + ' · ' + message.subject);
   const statusText = shipment ? ({ prepared: 'BELUM DIKIRIM', shipped: 'DISERAHKAN KE KURIR', in_transit: 'DALAM PERJALANAN', delivered: 'DITERIMA', cancelled: 'DIBATALKAN' }[shipment.status] || 'STATUS BELUM TERSEDIA') : labelText.toUpperCase();
   const target = shipment ? mailEscape(shipmentCustomerOriginV450(message.origin) + '/cekresi.html') : '';
-  let detailRows = '', correspondence = '', shipmentNote = '';
+  let detailRows = '', routeTimeline = '', correspondence = '', shipmentNote = '';
   if (shipment) {
     const journey = shipmentJourneyV452(shipment.journey), currentPoint = journey ? journey.stops[journey.position] : shipment.location, nextPoint = journey && journey.position < journey.stops.length - 1 && shipment.status !== 'delivered' ? journey.stops[journey.position + 1] : '';
     const row = (title, value, last) => '<tr><td style="padding:16px 20px;' + (last ? '' : 'border-bottom:1px solid #2c3544;') + '"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.13em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">' + mailEscape(title) + '</div><div style="margin-top:6px;font-size:15px;line-height:1.55;font-weight:700;word-break:break-word;overflow-wrap:anywhere;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">' + mailEscape(value || 'Belum dicatat') + '</div></div></div></td></tr>';
     detailRows = row('NOMOR RESI', shipment.trackingNumber, false) + row('NOMOR PESANAN', shipment.orderCode, false) + row('KURIR', shipment.courier, false) + row('TITIK TERAKHIR', currentPoint, false);
     if (nextPoint) detailRows += row('BERIKUTNYA · RENCANA', nextPoint, false);
     detailRows += journey && journey.eta_start && shipment.status !== 'delivered' ? row('ESTIMASI PETUGAS · BUKAN JAMINAN', journey.eta_start + ' s.d. ' + journey.eta_end, true) : row('STATUS', statusText, true);
+    if (journey) {
+      const routeStop = index => {
+        if (index >= journey.stops.length) return '';
+        const current = index === journey.position, stop = journey.stops[index], number = String(index + 1).padStart(2, '0');
+        return '<tr><td width="58" valign="top" style="width:58px;padding:14px 10px 14px 16px;border-right:1px solid #2c3544;border-left:4px solid ' + (current ? '#9a741f' : '#5276e8') + '"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:13px;line-height:1.45;font-weight:800;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">' + number + '</div></div></div></td><td valign="top" style="padding:14px 16px"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:15px;line-height:1.5;font-weight:700;word-break:break-word;overflow-wrap:anywhere;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">' + mailEscape(stop) + '</div>' + (current ? '<div style="margin-top:5px;font-size:10px;line-height:1.45;font-weight:800;letter-spacing:.12em;color:#f0c86c!important;-webkit-text-fill-color:#f0c86c!important;mso-color-alt:#f0c86c">TITIK LAPORAN TERAKHIR</div>' : '') + '</div></div></td></tr>';
+      };
+      routeTimeline = '<div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="margin:24px 0 11px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">URUTAN RENCANA RUTE</div></div></div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">' + routeStop(0) + routeStop(1) + routeStop(2) + routeStop(3) + routeStop(4) + routeStop(5) + routeStop(6) + routeStop(7) + routeStop(8) + routeStop(9) + routeStop(10) + routeStop(11) + '</table><div class="gmail-blend-screen"><div class="gmail-blend-difference"><p style="margin:11px 0 0;font-size:12px;line-height:1.6;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Titik beraksen emas adalah laporan terakhir yang dicatat admin. Titik lain adalah urutan rencana dan bukan bukti bahwa paket telah melewati lokasi tersebut.</p></div></div>';
+    }
     if (shipment.description) correspondence = '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:22px 0 0;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><tr><td style="padding:18px 20px;border-left:4px solid #148ba4"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.13em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">CATATAN TERBARU</div><div style="margin-top:8px;font-size:14px;line-height:1.65;word-break:break-word;overflow-wrap:anywhere;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">' + mailEscape(shipment.description) + '</div></div></div></td></tr></table>';
+    correspondence = routeTimeline + correspondence;
     shipmentNote = 'Status, titik, dan estimasi dicatat manual oleh petugas. Informasi ini bukan pelacakan GPS atau data langsung dari kurir.';
   } else {
     detailRows = '<tr><td style="padding:20px"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.13em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">ISI KORESPONDENSI</div><div style="margin-top:10px;font-size:15px;line-height:1.72;word-break:break-word;overflow-wrap:anywhere;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">' + mailEscape(String(message.body || '').replace(/\r\n?/g, '\n')).replace(/\n/g, '<br>') + '</div></div></div></td></tr>';
@@ -1292,7 +1316,7 @@ async function execute(ops) {
     const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); return { ok: true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_logout') { const active = await session(ops, scope, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
-  await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_monitor: 'monitor' }[action];
+  await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
   if (!operation) fail('ADMIN_ACTION_INVALID', 400);
   if (Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS, action)) { const approval = await ticket(ops, scope, body.approval, 'action-approval'); if (approval.value.operation !== action || approval.value.payloadHash !== approvalPayloadHash(action, body)) fail('ADMIN_ACTION_APPROVAL_MISMATCH', 403); await consume(ops, approval); }
   if (action === 'admin_smtp_send') { await throttle(ops, scope, 'smtp-send-minute', 2, 60); await throttle(ops, scope, 'smtp-send-hour', 5, 3600); }
@@ -1703,18 +1727,169 @@ function adminCentralBanRequired(error) {
 }
 function adminGuardSelfTest() {
   try {
-    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_unban','admin_smtp_send','admin_local_authorize','admin_monitor'];
+    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_unban','admin_smtp_send','admin_local_authorize','admin_document_prepare','admin_document_seal','admin_document_verify','admin_monitor'];
     return Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && ACTIONS.length === expected.length && expected.every((name, index) => ACTIONS[index] === name && Object.isFrozen(CONTRACTS[name]) && Object.isFrozen(CONTRACTS[name].methods) && Object.isFrozen(CONTRACTS[name].allowed) && Object.isFrozen(CONTRACTS[name].required))
       && exactToken(randomToken()) && PASSWORD_COOKIE.startsWith('__Host-') && SESSION_COOKIE.startsWith('__Host-') && adminSecretState().configured === true;
   } catch (_) { return false; }
 }
 const ADMIN_STATIC_GATE = Object.freeze({ ok: Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && Object.isFrozen(ADMIN_CENTRAL_BAN_FAILURE_CODES) && !ACTIONS.includes('__proto__') && !ACTIONS.includes('constructor') });
 
+// V464: immutable, MAC-authenticated document records in the existing security store.
+// A copied QR identifies the same document; only an exact registered file hash proves integrity.
+const DOCUMENT_VERSION_V464 = 'dirac-document-v464';
+const DOCUMENT_PREFIX_V464 = 's2s-document-v464:';
+const DOCUMENT_MAX_V464 = 3 * 1024 * 1024;
+const DOCUMENT_KINDS_V464 = Object.freeze(['invoice','proforma','quotation','delivery','receipt','statement','cancellation','handover','purchase','authorization','tax_letter','tax_summary','letter']);
+function documentErrorV464(code, status = 503) { fail('ADMIN_DOCUMENT_' + code, status); }
+function documentMacV464(value) {
+  const key = deriveSecret('document-authenticity-v464');
+  try { return crypto.createHmac('sha512', key).update(stableJson(value)).digest('base64url'); }
+  finally { key.fill(0); }
+}
+function documentSignedV464(record) {
+  if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.mac !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(record.mac)) return false;
+  const unsigned = { ...record }; delete unsigned.mac;
+  return safeEqual(record.mac, documentMacV464(unsigned));
+}
+function documentIdentityValidV464(value) {
+  return !!(value && Object.keys(value).sort().join(',') === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version'
+    && value.version === DOCUMENT_VERSION_V464 && /^DV-[a-f0-9]{48}$/.test(value.id)
+    && value.issuer === 'PT Dirac Inovasi Nusantara' && DOCUMENT_KINDS_V464.includes(value.kind)
+    && typeof value.reference === 'string' && value.reference.length >= 1 && value.reference.length <= 253 && !/[\u0000-\u001f\u007f]/.test(value.reference)
+    && /^[a-f0-9]{64}$/.test(value.content_sha256) && /^[a-f0-9]{64}$/.test(value.owner_scope)
+    && Number.isSafeInteger(value.created_at) && value.created_at > 0 && value.created_at <= Date.now() + 1000
+    && Number.isInteger(value.page_count) && value.page_count >= 1 && value.page_count <= 64 && documentSignedV464(value));
+}
+function documentQrV464(identity, origin, route = '/admin.html') {
+  if (!documentIdentityValidV464(identity) || !['/admin.html','/invoice.html'].includes(route)) documentErrorV464('IDENTITY_INVALID');
+  const url = new URL(origin);
+  if ((url.protocol !== 'https:' && !loopbackHost(url.hostname)) || url.origin !== origin || url.username || url.password) documentErrorV464('ORIGIN_INVALID');
+  const code = require('qrcode').create(origin + route + '#verify=' + identity.id, { errorCorrectionLevel: 'M' });
+  if (!code.modules || code.modules.size > 81) documentErrorV464('QR_LIMIT');
+  return { size: code.modules.size, data: Array.from(code.modules.data), quiet: 4 };
+}
+async function documentPrepareV464(meta, ownerScope, origin, claim, assertContext, route = '/admin.html') {
+  assertContext();
+  if (!meta || Object.keys(meta).sort().join(',') !== 'content_sha256,kind,page_count,reference' || !DOCUMENT_KINDS_V464.includes(meta.kind)
+      || typeof meta.reference !== 'string' || meta.reference !== meta.reference.trim() || !meta.reference || meta.reference.length > 253
+      || /[\u0000-\u001f\u007f]/.test(meta.reference) || !/^[a-f0-9]{64}$/.test(meta.content_sha256)
+      || !/^[a-f0-9]{64}$/.test(ownerScope) || !Number.isInteger(meta.page_count) || meta.page_count < 1 || meta.page_count > 64) documentErrorV464('META_INVALID', 400);
+  const value = { version: DOCUMENT_VERSION_V464, id: 'DV-' + crypto.randomBytes(24).toString('hex'), issuer: 'PT Dirac Inovasi Nusantara',
+    owner_scope: ownerScope, kind: meta.kind, reference: meta.reference, content_sha256: meta.content_sha256, page_count: meta.page_count, created_at: Date.now() };
+  const identity = { ...value, mac: documentMacV464(value) };
+  if (await claim(DOCUMENT_PREFIX_V464 + 'id:' + identity.id, identity) !== true) documentErrorV464('IDENTITY_WRITE_UNCONFIRMED');
+  assertContext();
+  return { identity, qr: documentQrV464(identity, origin, route) };
+}
+function documentCrcV464(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function documentPngEndV464(bytes) {
+  if (bytes.length < 45 || !bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) documentErrorV464('PNG_INVALID', 400);
+  let offset = 8, end = -1, header = false, image = false;
+  for (let count = 0; offset + 12 <= bytes.length && count < 10000; count++) {
+    const length = bytes.readUInt32BE(offset), next = offset + length + 12;
+    if (length > DOCUMENT_MAX_V464 || next > bytes.length) documentErrorV464('PNG_INVALID', 400);
+    const type = bytes.toString('ascii', offset + 4, offset + 8);
+    if (bytes.readUInt32BE(next - 4) !== documentCrcV464(bytes.subarray(offset + 4, next - 4))) documentErrorV464('PNG_INVALID', 400);
+    if (type === 'IHDR') { if (header || offset !== 8 || length !== 13 || bytes.readUInt32BE(offset + 8) !== 1240 || bytes.readUInt32BE(offset + 12) !== 1754) documentErrorV464('PNG_INVALID', 400); header = true; }
+    if (type === 'IDAT') image = true;
+    if (type === 'tEXt' && bytes.toString('ascii',offset+8,Math.min(next-4,offset+31)).startsWith('DIRAC-DOCUMENT-V464\0')) documentErrorV464('ALREADY_SEALED', 400);
+    if (type === 'IEND') { if (length !== 0 || next !== bytes.length || !header || !image) documentErrorV464('PNG_INVALID', 400); end = offset; break; }
+    offset = next;
+  }
+  if (end < 0) documentErrorV464('PNG_INVALID', 400);
+  return end;
+}
+function documentBytesV464(base64, maximum = DOCUMENT_MAX_V464) {
+  if (typeof base64 !== 'string' || base64.length < 20 || base64.length > Math.ceil(maximum / 3) * 4 || base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) documentErrorV464('FILE_INVALID', 400);
+  const bytes = Buffer.from(base64, 'base64');
+  if (bytes.length < 10 || bytes.length > maximum || bytes.toString('base64') !== base64) documentErrorV464('FILE_INVALID', 400);
+  return bytes;
+}
+async function documentSealV464(bytes, identity, format, page, ownerScope, read, claim, assertContext) {
+  assertContext();
+  if (!Buffer.isBuffer(bytes) || bytes.length < 10 || bytes.length > DOCUMENT_MAX_V464 || !documentIdentityValidV464(identity)
+      || identity.owner_scope !== ownerScope || !['png','pdf'].includes(format) || !Number.isInteger(page)
+      || (format === 'png' ? page < 1 || page > identity.page_count : page !== 0)) documentErrorV464('SEAL_INVALID', 400);
+  const registered = await read(DOCUMENT_PREFIX_V464 + 'id:' + identity.id);
+  if (!registered || stableJson(registered) !== stableJson(identity)) documentErrorV464('IDENTITY_UNAVAILABLE');
+  assertContext();
+  let pngEnd = -1;
+  if (format === 'png') pngEnd = documentPngEndV464(bytes);
+  else if (!/^%PDF-1\.[47]\n/.test(bytes.subarray(0,9).toString('ascii')) || !/%%EOF\n$/.test(bytes.subarray(-40).toString('ascii')) || bytes.includes(Buffer.from('%DIRAC-DOCUMENT-V464:'))) documentErrorV464('PDF_INVALID', 400);
+  const unsigned = { version: DOCUMENT_VERSION_V464, identity, artifact_id: crypto.randomBytes(24).toString('hex'), format, page,
+    raw_sha256: crypto.createHash('sha256').update(bytes).digest('hex'), raw_bytes: bytes.length, created_at: Date.now() };
+  const seal = { ...unsigned, mac: documentMacV464(unsigned) };
+  const token = Buffer.from(stableJson(seal), 'utf8').toString('base64url');
+  let file;
+  if (format === 'png') {
+    const data = Buffer.from('DIRAC-DOCUMENT-V464\0' + token, 'ascii'), chunk = Buffer.alloc(data.length + 12);
+    chunk.writeUInt32BE(data.length,0); chunk.write('tEXt',4,'ascii'); data.copy(chunk,8); chunk.writeUInt32BE(documentCrcV464(chunk.subarray(4,-4)),chunk.length-4);
+    file = Buffer.concat([bytes.subarray(0,pngEnd),chunk,bytes.subarray(pngEnd)]);
+  } else file = Buffer.concat([bytes, Buffer.from('%DIRAC-DOCUMENT-V464:' + token + '\n','ascii')]);
+  if (file.length > DOCUMENT_MAX_V464) documentErrorV464('FILE_LIMIT', 413);
+  const fileSha = crypto.createHash('sha256').update(file).digest('hex');
+  const data = { version: DOCUMENT_VERSION_V464, file_sha256: fileSha, file_bytes: file.length, seal };
+  const record = { ...data, mac: documentMacV464(data) };
+  if (await claim(DOCUMENT_PREFIX_V464 + 'file:' + fileSha, record) !== true) documentErrorV464('FILE_WRITE_UNCONFIRMED');
+  assertContext();
+  return { file, file_sha256: fileSha, document_id: identity.id, format };
+}
+async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
+  assertContext();
+  const fileSha = input.file_sha256 || '', id = input.document_id || '';
+  if ((!fileSha && !id) || (fileSha && !/^[a-f0-9]{64}$/.test(fileSha)) || (id && !/^DV-[a-f0-9]{48}$/.test(id))) documentErrorV464('VERIFY_INVALID', 400);
+  const record = await read(DOCUMENT_PREFIX_V464 + (fileSha ? 'file:' + fileSha : 'id:' + id));
+  assertContext();
+  if (!record) return { ok: true, verified: false, status: 'unregistered', integrity_verified: false,
+    message: 'Berkas tidak cocok dengan catatan penerbitan. Foto, hasil scan, dokumen lama, atau berkas yang diubah belum dapat diverifikasi; hasil ini tidak menentukan kebenaran isinya.' };
+  if (fileSha) {
+    const seal = record.seal;
+    if (Object.keys(record).sort().join(',') !== 'file_bytes,file_sha256,mac,seal,version' || record.version !== DOCUMENT_VERSION_V464
+        || record.file_sha256 !== fileSha || !Number.isSafeInteger(record.file_bytes) || record.file_bytes < 10 || record.file_bytes > DOCUMENT_MAX_V464
+        || !documentSignedV464(record) || !seal || Object.keys(seal).sort().join(',') !== 'artifact_id,created_at,format,identity,mac,page,raw_bytes,raw_sha256,version'
+        || seal.version !== DOCUMENT_VERSION_V464 || !documentSignedV464(seal) || !/^[a-f0-9]{48}$/.test(seal.artifact_id)
+        || !/^[a-f0-9]{64}$/.test(seal.raw_sha256) || !Number.isSafeInteger(seal.raw_bytes) || seal.raw_bytes < 10 || seal.raw_bytes >= record.file_bytes
+        || !Number.isSafeInteger(seal.created_at) || seal.created_at > Date.now() + 1000 || !['png','pdf'].includes(seal.format)
+        || !documentIdentityValidV464(seal.identity) || !Number.isInteger(seal.page)
+        || (seal.format === 'png' ? seal.page < 1 || seal.page > seal.identity.page_count : seal.page !== 0)) documentErrorV464('RECORD_INVALID');
+    if ((id && seal.identity.id !== id) || (ownerScope && seal.identity.owner_scope !== ownerScope)) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, message: 'ID atau pemilik dokumen tidak cocok.' };
+    return { ok: true, verified: true, status: 'authentic_file', integrity_verified: true, issuer: seal.identity.issuer,
+      document_id: seal.identity.id, reference: seal.identity.reference, kind: seal.identity.kind, format: seal.format, page: seal.page,
+      page_count: seal.identity.page_count, issued_at: new Date(seal.created_at).toISOString(), file_sha256: fileSha,
+      identical_copies_possible: true, message: 'Berkas cocok byte demi byte dengan berkas yang diterbitkan sistem. Salinan identik memakai ID yang sama; QR saja tidak membuktikan keutuhan isi.' };
+  }
+  if (!documentIdentityValidV464(record)) documentErrorV464('RECORD_INVALID');
+  if (ownerScope && record.owner_scope !== ownerScope) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, message: 'Pemilik dokumen tidak cocok.' };
+  return { ok: true, verified: true, status: 'issued_id', integrity_verified: false, issuer: record.issuer, document_id: record.id,
+    reference: record.reference, kind: record.kind, page_count: record.page_count, issued_at: new Date(record.created_at).toISOString(),
+    message: 'ID diterbitkan sistem. Pilih berkas asli untuk memeriksa keutuhan isinya. ID dan QR yang disalin tidak membuktikan bahwa isi dokumen masih asli.' };
+}
+function documentAdminScopeV464() { return digest('document-admin-v464:' + ADMIN_USER_ID); }
+async function businessDocumentV464(operation, body, origin, assertContext) {
+  const read = async key => { assertContext(); const result = await securityRead(key); assertContext(); if (!result || !result.ok) documentErrorV464('STORE_UNAVAILABLE'); return result.found ? result.record : null; };
+  const claim = async (key, record) => { assertContext(); const ok = await securityClaim(key, record, ENROLLMENT_SECONDS); assertContext(); return ok; };
+  if (operation === 'document_verify') return documentVerifyV464(body, read, assertContext);
+  if (operation === 'document_prepare') return { ok: true, verification: await documentPrepareV464({ kind: body.document_kind, reference: body.reference,
+    page_count: body.page_count, content_sha256: body.content_sha256 }, documentAdminScopeV464(), origin, claim, assertContext) };
+  if (operation === 'document_seal') {
+    const bytes = documentBytesV464(body.file_base64), identity = body.identity;
+    if (crypto.createHash('sha256').update(bytes).digest('hex') !== body.raw_sha256) documentErrorV464('HASH_MISMATCH', 400);
+    const result = await documentSealV464(bytes, identity, body.format, body.page, documentAdminScopeV464(), read, claim, assertContext);
+    return { ok: true, file_base64: result.file.toString('base64'), file_sha256: result.file_sha256, document_id: result.document_id, format: result.format };
+  }
+  documentErrorV464('OPERATION_INVALID', 400);
+}
+const DOCUMENT_SERVICE_V464 = Object.freeze({ version: DOCUMENT_VERSION_V464, prepare: documentPrepareV464, seal: documentSealV464, verify: documentVerifyV464, same: (left,right) => stableJson(left) === stableJson(right) });
+
 async function businessMonitor() {
   let rows = [], ready = false; try { const result = await dbFetch('/rest/v1/security_customer_events?select=id,event_type,status,risk_level,description,created_at&order=created_at.desc&limit=20', { method: 'GET' }); if (result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; } } catch (_) { ready = false; }
   const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Guard internal handler admin mandiri yang menangani permintaan ini.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [] };
 }
-async function business(operation, body, origin, assertContext) { if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'unban') return businessUnban(body); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
+async function business(operation, body, origin, assertContext) { if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'unban') return businessUnban(body); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
 
 function adminCentralBanReason(error) {
   const raw = String(error && error.code || 'admin_failure').trim().toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');
@@ -1829,7 +2004,7 @@ function buildOps(req, res, state) {
     verifySecret: value => { assertFullGuard(); const current = adminSecretState(); return current.configured && typeof value === 'string' && safeEqual(digest(value), digest(current.secret)); },
     publishPassword: async () => { assertFullGuard(); const current = adminSecretState(); if (!current.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503); await publishPasswordProof(req, res, state.origin, state.device, current.secret); },
     securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const centralBan = await adminCentralBanFailure(req, Object.assign(new Error('ADMIN_SECURITY_REPORT_ONE_STRIKE'), { code: 'ADMIN_SECURITY_REPORT_ONE_STRIKE', status: 403, statusCode: 403 })); if (!centralBan || centralBan.ok !== true) fail('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', 503); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); res.setHeader('X-Dirac-Central-Ban', '1'); return { blockedUntil: centralBan.blocked_until_ms, central_ban: true }; },
-    business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'unban', 'smtp_send', 'local_authorize', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
+    business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'unban', 'smtp_send', 'local_authorize', 'document_prepare', 'document_seal', 'document_verify', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
   });
   state.deactivate = () => { active = false; records.clear(); };
   return ops;
@@ -1949,6 +2124,7 @@ Object.defineProperties(adminHandler, {
   __diracAdminBusinessV405: { value: adminBusiness },
   __diracShipmentDailyV450: { value: shipmentDailyV450 },
   __diracShipmentDataV453: { value: Object.freeze({ validate: shipmentExtrasCheckV453, validateRow: validateShipmentRow, receipt: shipmentReceiptPublicV453, deliveryRef: shipmentDeliveryRefV453, event: shipmentEventPublicV453, buildReceipt: shipmentReceiptBuildV453 }) },
+  __diracDocumentAuthenticityV464: { value: DOCUMENT_SERVICE_V464 },
   __diracAdminContractsV405: { value: CONTRACTS },
   __diracAdminActionsV405: { value: ACTIONS },
   __diracAdminEmailV405: { value: ADMIN_EMAIL },
