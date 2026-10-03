@@ -1950,10 +1950,22 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
 }
 
 function documentAdminScopeV464() { return digest('document-admin-v464:' + ADMIN_USER_ID); }
+async function documentInvoiceOrderV471(reference, assertContext) {
+  if (!/^ORD-\d{8}-[A-F0-9]{8}$/.test(String(reference || ''))) return null;
+  const suffix = '&order_id=eq.' + encodeURIComponent(reference) + '&limit=2', path = '/rest/v1/orders?select=' + encodeURIComponent(ORDER_SELECT.regular) + suffix;
+  assertContext(); const result = await Promise.all([dbFetch(path, { method: 'GET' }), dbFetch(path, { method: 'GET' }, 'security')]); assertContext();
+  const regular = result[0], laboratory = result[1];
+  if (!regular || !laboratory || !regular.ok || !laboratory.ok || !Array.isArray(regular.data) || !Array.isArray(laboratory.data) || regular.data.length > 1 || laboratory.data.length > 1 || regular.data.length + laboratory.data.length !== 1) return null;
+  try { return orderPublic(regular.data.length ? regular.data[0] : laboratory.data[0], regular.data.length ? 'regular' : 'laboratorium'); } catch (_) { return null; }
+}
 async function businessDocumentV464(operation, body, origin, assertContext) {
   const read = async key => { assertContext(); const result = await securityRead(key); assertContext(); if (!result || !result.ok) documentErrorV464('STORE_UNAVAILABLE'); return result.found ? result.record : null; };
   const claim = async (key, record) => { assertContext(); const ok = await securityClaim(key, record, ENROLLMENT_SECONDS); assertContext(); return ok; };
-  if (operation === 'document_verify') return documentVerifyV464(body, read, assertContext);
+  if (operation === 'document_verify') {
+    const verified = await documentVerifyV464(body, read, assertContext);
+    if (verified && verified.integrity_verified === true && verified.kind === 'invoice') { const order = await documentInvoiceOrderV471(verified.reference, assertContext); if (order) verified.order = order; }
+    return verified;
+  }
   if (operation === 'document_prepare') return { ok: true, verification: await documentPrepareV464({ kind: body.document_kind, reference: body.reference,
     page_count: body.page_count, content_sha256: body.content_sha256 }, documentAdminScopeV464(), origin, claim, assertContext) };
   if (operation === 'document_seal') {
