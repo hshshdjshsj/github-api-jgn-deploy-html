@@ -6,6 +6,8 @@
     "node": "24.x"
   },
   "dependencies": {
-    "argon2": "0.45.1"
+    "@napi-rs/canvas": "1.0.10",
+    "argon2": "0.45.1",
+    "qrcode": "1.5.4"
   }
 }
