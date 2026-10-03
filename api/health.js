@@ -18609,16 +18609,30 @@ async function myOrdersResolveOwner(authUserId, userEmail) {
   const sources = [];
 
   try {
-    const link = await customerSecurityFetchAuthLink(authUserId);
-    if (link && link.ok && Array.isArray(link.data)) {
-      link.data.forEach((row) => {
-        if (row && row.link_status === 'active' && customerSecurityLooksLikeUuid(row.customer_id)) {
-          customerIds.add(String(row.customer_id));
-        }
-      });
-      if (customerIds.size) sources.push('security_customer_auth_links.active');
+    const context = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
+    const verifiedOwner = context && context.req
+      ? diracCentralOwnerFromVerifiedContextV215(context.req, authUserId)
+      : null;
+    if (verifiedOwner && verifiedOwner.ok === true && Array.isArray(verifiedOwner.customerIds)
+        && verifiedOwner.customerIds.length === 1 && customerSecurityLooksLikeUuid(verifiedOwner.customerIds[0])) {
+      customerIds.add(String(verifiedOwner.customerIds[0]));
+      sources.push('central_verified_owner_context_v215');
     }
   } catch (_) {}
+
+  if (!customerIds.size) {
+    try {
+      const link = await customerSecurityFetchAuthLink(authUserId);
+      if (link && link.ok && Array.isArray(link.data)) {
+        link.data.forEach((row) => {
+          if (row && row.link_status === 'active' && customerSecurityLooksLikeUuid(row.customer_id)) {
+            customerIds.add(String(row.customer_id));
+          }
+        });
+        if (customerIds.size) sources.push('security_customer_auth_links.active');
+      }
+    } catch (_) {}
+  }
 
   // Strict ownership mode: customers.email is NOT used as an owner fallback.
   // Orders are shown only when the authenticated backend session has an active
@@ -18668,8 +18682,10 @@ async function myOrdersFetchGenericOrders(owner, userEmail) {
     const ids = owner.customerIds.filter(customerSecurityLooksLikeUuid).map(encodeURIComponent).join(',');
     if (ids) {
       const path = '/rest/v1/orders?select=' + encodeURIComponent(select) + '&customer_id=in.(' + ids + ')&order=created_at.desc&limit=80';
-      await addRowsFromPath(path, 'commerce');
-      await addRowsFromPath(path, 'security');
+      await Promise.all([
+        addRowsFromPath(path, 'commerce'),
+        addRowsFromPath(path, 'security')
+      ]);
     }
   }
 
@@ -18682,8 +18698,10 @@ async function myOrdersFetchGenericOrders(owner, userEmail) {
   const commerceRows = orderRows.filter((row) => row && row.order_database === 'commerce');
   const securityRows = orderRows.filter((row) => row && row.order_database === 'security');
   const customerIds = owner && Array.isArray(owner.customerIds) ? owner.customerIds : [];
-  const commerceItems = await myOrdersFetchOrderItems(commerceRows.map((row) => row.id), customerIds, 'commerce');
-  const securityItems = await myOrdersFetchOrderItems(securityRows.map((row) => row.id), customerIds, 'security');
+  const [commerceItems, securityItems] = await Promise.all([
+    myOrdersFetchOrderItems(commerceRows.map((row) => row.id), customerIds, 'commerce'),
+    myOrdersFetchOrderItems(securityRows.map((row) => row.id), customerIds, 'security')
+  ]);
 
   return {
     ok: errors.length === 0,
@@ -18786,7 +18804,7 @@ function myOrdersNormalizeGenericOrder(row, items) {
 
 async function myOrdersFetchDomainOrders(owner, userEmail) {
   const errors = [];
-  const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status';
+  const select = 'id,customer_id,created_at,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,payment_status';
   const rowsMap = new Map();
 
   async function add(path) {
