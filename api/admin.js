@@ -61,7 +61,7 @@ const CONTRACTS = Object.freeze({
   admin_local_authorize: post(['purpose', 'content_sha256', 'approval'], ['purpose', 'content_sha256', 'approval']),
   admin_document_prepare: post(['document_kind','reference','page_count','content_sha256','approval'], ['document_kind','reference','page_count','content_sha256','approval']),
   admin_document_seal: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'identity','format','page','raw_sha256','file_base64','approval']), required: Object.freeze(['identity','format','page','raw_sha256','file_base64','approval']), maxBodyBytes: 4250000, maxFieldBytes: 4194304, mutation: true, allowArrayItems: false }),
-  admin_document_verify: get(['file_sha256','document_id']),
+  admin_document_verify: get(['file_sha256','document_id','qr_proof']),
   admin_monitor: get()
 });
 const ACTIONS = Object.freeze(Object.keys(CONTRACTS));
@@ -1810,13 +1810,22 @@ function documentIdentityValidV464(value) {
     && Number.isSafeInteger(value.created_at) && value.created_at > 0 && value.created_at <= Date.now() + 1000
     && Number.isInteger(value.page_count) && value.page_count >= 1 && value.page_count <= 64 && documentSignedV464(value));
 }
+const DOCUMENT_QR_VERSION_V470 = 'dirac-document-qr-v470';
+function documentQrProofV470(identity) {
+  if (!documentIdentityValidV464(identity)) documentErrorV464('IDENTITY_INVALID');
+  return crypto.createHash('sha256').update(DOCUMENT_QR_VERSION_V470 + '\n' + identity.id + '\n' + identity.content_sha256 + '\n' + identity.mac).digest('base64url');
+}
+function documentQrProofMatchesV470(identity, proof) {
+  return typeof proof === 'string' && /^[A-Za-z0-9_-]{43}$/.test(proof) && safeEqual(proof, documentQrProofV470(identity));
+}
 function documentQrV464(identity, origin, route = '/admin.html') {
   if (!documentIdentityValidV464(identity) || !['/admin.html','/invoice.html'].includes(route)) documentErrorV464('IDENTITY_INVALID');
   const url = new URL(origin);
   if ((url.protocol !== 'https:' && !loopbackHost(url.hostname)) || url.origin !== origin || url.username || url.password) documentErrorV464('ORIGIN_INVALID');
-  const code = require('qrcode').create(origin + route + '#verify=' + identity.id, { errorCorrectionLevel: 'M' });
+  const proof = documentQrProofV470(identity);
+  const code = require('qrcode').create(origin + route + '#verify=' + identity.id + '&proof=' + proof, { errorCorrectionLevel: 'H' });
   if (!code.modules || code.modules.size > 81) documentErrorV464('QR_LIMIT');
-  return { size: code.modules.size, data: Array.from(code.modules.data), quiet: 4 };
+  return { size: code.modules.size, data: Array.from(code.modules.data), quiet: 4, proof };
 }
 async function documentPrepareV464(meta, ownerScope, origin, claim, assertContext, route = '/admin.html') {
   assertContext();
@@ -1890,12 +1899,29 @@ async function documentSealV464(bytes, identity, format, page, ownerScope, read,
 }
 async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
   assertContext();
-  const fileSha = input.file_sha256 || '', id = input.document_id || '';
-  if ((!fileSha && !id) || (fileSha && !/^[a-f0-9]{64}$/.test(fileSha)) || (id && !/^DV-[a-f0-9]{48}$/.test(id))) documentErrorV464('VERIFY_INVALID', 400);
+  const fileSha = input.file_sha256 || '', id = input.document_id || '', qrProof = input.qr_proof || '';
+  if ((!fileSha && !id) || (fileSha && !/^[a-f0-9]{64}$/.test(fileSha)) || (id && !/^DV-[a-f0-9]{48}$/.test(id)) || (qrProof && !/^[A-Za-z0-9_-]{43}$/.test(qrProof))) documentErrorV464('VERIFY_INVALID', 400);
   const record = await read(DOCUMENT_PREFIX_V464 + (fileSha ? 'file:' + fileSha : 'id:' + id));
   assertContext();
-  if (!record) return { ok: true, verified: false, status: 'unregistered', integrity_verified: false,
-    message: 'Berkas tidak cocok dengan catatan penerbitan. Foto, hasil scan, dokumen lama, atau berkas yang diubah belum dapat diverifikasi; hasil ini tidak menentukan kebenaran isinya.' };
+  if (!record) {
+    if (fileSha && id) {
+      const identity = await read(DOCUMENT_PREFIX_V464 + 'id:' + id);
+      assertContext();
+      if (identity) {
+        if (!documentIdentityValidV464(identity)) documentErrorV464('RECORD_INVALID');
+        if (ownerScope && identity.owner_scope !== ownerScope) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, qr_authentic: false, message: 'Pemilik dokumen tidak cocok.' };
+        const qrAuthentic = documentQrProofMatchesV470(identity, qrProof);
+        return { ok: true, verified: false, status: qrAuthentic ? 'qr_reuse_or_modified_file' : 'unregistered_file_with_id', integrity_verified: false,
+          qr_authentic: qrAuthentic, qr_reuse_suspected: qrAuthentic, issuer: identity.issuer, document_id: identity.id, reference: identity.reference,
+          kind: identity.kind, page_count: identity.page_count, issued_at: new Date(identity.created_at).toISOString(), content_sha256: identity.content_sha256,
+          message: qrAuthentic
+            ? 'QR resmi dikenali, tetapi hash berkas yang diperiksa tidak terdaftar. Ini dapat terjadi pada foto/scan/re-encoding atau QR resmi yang ditempel ke berkas lain. Dokumen ini tidak boleh dianggap asli sampai hash berkas resmi cocok.'
+            : 'Berkas tidak cocok dengan catatan penerbitan. Verification ID ditemukan, tetapi QR kriptografis resmi tidak terbukti dan keutuhan isi tidak terverifikasi.' };
+      }
+    }
+    return { ok: true, verified: false, status: 'unregistered', integrity_verified: false, qr_authentic: false,
+      message: 'Berkas tidak cocok dengan catatan penerbitan. Foto, hasil scan, dokumen lama, atau berkas yang diubah belum dapat diverifikasi; hasil ini tidak menentukan kebenaran isinya.' };
+  }
   if (fileSha) {
     const seal = record.seal;
     if (Object.keys(record).sort().join(',') !== 'file_bytes,file_sha256,mac,seal,version' || record.version !== DOCUMENT_VERSION_V464
@@ -1906,18 +1932,23 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
         || !Number.isSafeInteger(seal.created_at) || seal.created_at > Date.now() + 1000 || !['png','pdf'].includes(seal.format)
         || !documentIdentityValidV464(seal.identity) || !Number.isInteger(seal.page)
         || (seal.format === 'png' ? seal.page < 1 || seal.page > seal.identity.page_count : seal.page !== 0)) documentErrorV464('RECORD_INVALID');
-    if ((id && seal.identity.id !== id) || (ownerScope && seal.identity.owner_scope !== ownerScope)) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, message: 'ID atau pemilik dokumen tidak cocok.' };
-    return { ok: true, verified: true, status: 'authentic_file', integrity_verified: true, issuer: seal.identity.issuer,
+    if ((id && seal.identity.id !== id) || (ownerScope && seal.identity.owner_scope !== ownerScope) || (qrProof && !documentQrProofMatchesV470(seal.identity, qrProof))) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, qr_authentic: false, message: 'ID, QR, atau pemilik dokumen tidak cocok.' };
+    return { ok: true, verified: true, status: 'authentic_file', integrity_verified: true, qr_authentic: qrProof ? true : undefined, issuer: seal.identity.issuer,
       document_id: seal.identity.id, reference: seal.identity.reference, kind: seal.identity.kind, format: seal.format, page: seal.page,
-      page_count: seal.identity.page_count, issued_at: new Date(seal.created_at).toISOString(), file_sha256: fileSha,
-      identical_copies_possible: true, message: 'Berkas cocok byte demi byte dengan berkas yang diterbitkan sistem. Salinan identik memakai ID yang sama; QR saja tidak membuktikan keutuhan isi.' };
+      page_count: seal.identity.page_count, issued_at: new Date(seal.created_at).toISOString(), file_sha256: fileSha, content_sha256: seal.identity.content_sha256,
+      identical_copies_possible: true, message: 'Berkas cocok byte demi byte dengan berkas yang diterbitkan sistem. QR yang disalin ke berkas lain tidak membuat berkas lain menjadi resmi.' };
   }
   if (!documentIdentityValidV464(record)) documentErrorV464('RECORD_INVALID');
-  if (ownerScope && record.owner_scope !== ownerScope) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, message: 'Pemilik dokumen tidak cocok.' };
-  return { ok: true, verified: true, status: 'issued_id', integrity_verified: false, issuer: record.issuer, document_id: record.id,
-    reference: record.reference, kind: record.kind, page_count: record.page_count, issued_at: new Date(record.created_at).toISOString(),
-    message: 'ID diterbitkan sistem. Pilih berkas asli untuk memeriksa keutuhan isinya. ID dan QR yang disalin tidak membuktikan bahwa isi dokumen masih asli.' };
+  if (ownerScope && record.owner_scope !== ownerScope) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, qr_authentic: false, message: 'Pemilik dokumen tidak cocok.' };
+  const qrAuthentic = documentQrProofMatchesV470(record, qrProof);
+  return { ok: true, verified: false, status: qrAuthentic ? 'qr_only_authentic' : 'issued_id', integrity_verified: false, qr_authentic: qrAuthentic,
+    issuer: record.issuer, document_id: record.id, reference: record.reference, kind: record.kind, page_count: record.page_count,
+    issued_at: new Date(record.created_at).toISOString(), content_sha256: record.content_sha256,
+    message: qrAuthentic
+      ? 'QR kriptografis resmi dikenali dan terikat ke identitas dokumen ini, tetapi QR dapat disalin. Dokumen belum boleh dianggap asli sampai hash berkas resmi cocok.'
+      : 'Verification ID terdaftar, tetapi ID saja bukan bukti QR resmi dan bukan bukti keutuhan dokumen. Unggah berkas asli untuk verifikasi.' };
 }
+
 function documentAdminScopeV464() { return digest('document-admin-v464:' + ADMIN_USER_ID); }
 async function businessDocumentV464(operation, body, origin, assertContext) {
   const read = async key => { assertContext(); const result = await securityRead(key); assertContext(); if (!result || !result.ok) documentErrorV464('STORE_UNAVAILABLE'); return result.found ? result.record : null; };

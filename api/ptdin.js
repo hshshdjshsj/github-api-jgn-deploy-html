@@ -690,17 +690,19 @@ const assets = {"logo":{"width":528,"height":528,"rgb":"eNrsnQd4VFXa+O85986kkoSi
 function invoiceVerifiedPagesV464(doc,pages){
   if(!doc.verification)return pages;
   const verification=doc.verification,qr=verification.qr,id=verification.identity&&verification.identity.id;
-  if(!/^DV-[a-f0-9]{48}$/.test(String(id||''))||!qr||!Number.isInteger(qr.size)||qr.size<21||qr.size>81||qr.quiet!==4||!Array.isArray(qr.data)||qr.data.length!==qr.size*qr.size||qr.data.some(v=>v!==0&&v!==1))throw new Error('INVOICE_VERIFICATION_INVALID');
+  if(!/^DV-[a-f0-9]{48}$/.test(String(id||''))||!qr||!Number.isInteger(qr.size)||qr.size<21||qr.size>81||qr.quiet!==4||!Array.isArray(qr.data)||qr.data.length!==qr.size*qr.size||qr.data.some(v=>v!==0&&v!==1)||!/^[A-Za-z0-9_-]{43}$/.test(String(qr.proof||'')))throw new Error('INVOICE_VERIFICATION_INVALID');
   for(const page of pages){
     for(const op of page){
       if(op.kind==='social'&&op.x>=72&&op.y>=1514&&op.y<1600)op.x=72+Math.round((op.x-72)/374)*294;
       if(op.kind==='text'&&op.y>=1514&&op.y<1605&&op.x>=105)op.x=105+Math.round((op.x-105)/374)*294;
     }
     page.push({kind:'text',copy:'Verification ID: '+id,x:72,y:1455,font:'400 13px Arial',color:'#24354b'});
-    page.push({kind:'text',copy:'Periksa ID dan berkas asli melalui QR. QR saja tidak membuktikan keutuhan isi.',x:72,y:1475,font:'400 13px Arial',color:'#647084'});
+    page.push({kind:'text',copy:'QR dapat disalin; status resmi hanya berlaku bila hash berkas asli cocok.',x:72,y:1475,font:'400 13px Arial',color:'#647084'});
     page.push({kind:'rect',x:990,y:1507,w:178,h:178,color:'#ffffff'});
     const cell=178/(qr.size+8);
     for(let row=0;row<qr.size;row++)for(let col=0;col<qr.size;col++)if(qr.data[row*qr.size+col])page.push({kind:'rect',x:990+(col+4)*cell,y:1507+(row+4)*cell,w:cell,h:cell,color:'#000000'});
+    page.push({kind:'rect',x:1064,y:1581,w:30,h:30,color:'#ffffff'});
+    page.push({kind:'logo',x:1068,y:1585,w:22,h:22});
   }
   return pages;
 }
