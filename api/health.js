@@ -39972,6 +39972,28 @@ function diracBolaIdorV122InspectStrictSafe(path, options = {}) {
       return { ok: true, table, method, action: String(centralCtxV213 && centralCtxV213.action || ''), scoped: true, bootstrap: DIRAC_CENTRAL_OWNER_BOOTSTRAP_PATCH_V213 };
     }
 
+    const internalOwnerLookupPermitV466 = DIRAC_CENTRAL_OWNER_LOOKUP_PERMITS_V357.get(options);
+    const internalOwnerLookupDatabaseV466 = String(internalOwnerLookupPermitV466 && internalOwnerLookupPermitV466.database || '').trim();
+    const internalOwnerLookupExactOptionsV466 = internalOwnerLookupDatabaseV466
+      ? Object.keys(options).sort().join(',') === 'auth,db,method'
+        && table === 'orders' && options.db === internalOwnerLookupDatabaseV466 && /^(commerce|security)$/.test(internalOwnerLookupDatabaseV466)
+      : Object.keys(options).sort().join(',') === 'auth,method';
+    if (String(centralCtxV213 && centralCtxV213.action || '') === 'invoice_document_export'
+        && internalOwnerLookupPermitV466 && internalOwnerLookupPermitV466.ctx === centralCtxV213
+        && internalOwnerLookupPermitV466.req === centralCtxV213.req
+        && internalOwnerLookupPermitV466.requestId === String(centralCtxV213.requestId || '')
+        && internalOwnerLookupPermitV466.path === rawPath
+        && Date.now() < Number(internalOwnerLookupPermitV466.expiresAtMs || 0)
+        && diracCentralGatewayContextAllowedV211(centralCtxV213).ok === true
+        && centralCtxV213.executionPhaseV211 === 'guard'
+        && ((centralCtxV213.currentStageV211 === 'body validation' && Number(centralCtxV213.currentStageIndexV211) === 18)
+          || (centralCtxV213.currentStageV211 === 'IDOR/BOLA' && Number(centralCtxV213.currentStageIndexV211) === 26))
+        && /^(orders|domain_orders)$/.test(table)
+        && internalOwnerLookupExactOptionsV466
+        && method === 'GET' && options.method === 'GET' && options.auth === 'service') {
+      return { ok: true, table, method, action: 'invoice_document_export', scoped: true, internal_owner_lookup: 'v466_exact_capability' };
+    }
+
     const trustedCentralCtxV213 = centralCtxV213
       && typeof diracCentralGatewayContextAllowedV211 === 'function'
       && diracCentralGatewayContextAllowedV211(centralCtxV213).ok === true
