@@ -1901,7 +1901,7 @@ async function domainLogin(req, res, preloadedBody) {
     checkDomainLoginRateLimit(req, loginGuard.email)
   ]);
   if (!preAuthAccessBlockV350 || preAuthAccessBlockV350.unavailable) {
-    clearSessionCookies(res);
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
     return res.status(503).json({
       ok: false,
       code: 'LOGIN_PREAUTH_BAN_CHECK_UNAVAILABLE',
@@ -1909,7 +1909,7 @@ async function domainLogin(req, res, preloadedBody) {
     });
   }
   if (preAuthAccessBlockV350.blocked) {
-    clearSessionCookies(res);
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
     return res.status(403).json({
       ok: false,
       code: 'LOGIN_ACCESS_BLOCKED',
@@ -1942,7 +1942,7 @@ async function domainLogin(req, res, preloadedBody) {
     if (diracProviderAuthRejectedAsBannedV472(result)) {
       const bannedExportV472 = await diracTryProviderBannedExportV472(req, loginGuard.email, password).catch(() => null);
       if (bannedExportV472 && bannedExportV472.bundle) {
-        clearSessionCookies(res);
+        customerSecurityBootstrapClearAuthPublicationV332(req, res);
         return res.status(403).json({
           ok: false,
           code: 'LOGIN_ACCESS_BLOCKED',
@@ -1971,7 +1971,7 @@ async function domainLogin(req, res, preloadedBody) {
   }
 
   if (!hasValidDomainSessionTokens(result.data)) {
-    clearSessionCookies(res);
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
     return res.status(502).json({
       ok: false,
       code: 'LOGIN_SESSION_TOKEN_MISSING',
@@ -2007,7 +2007,7 @@ async function domainLogin(req, res, preloadedBody) {
       || !loginResponseUserV321
       || String(loginResponseUserV321.id || '') !== String(canonicalLoginUserV321.id || '')
       || normalizeAuthEmail(loginResponseUserV321.email || '') !== normalizeAuthEmail(canonicalLoginUserV321.email || '')) {
-    clearSessionCookies(res);
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
     return res.status(502).json({
       ok: false,
       code: 'LOGIN_SESSION_IDENTITY_MISMATCH',
@@ -2037,7 +2037,7 @@ async function domainLogin(req, res, preloadedBody) {
     reason_code: publicationLoginBlockV321 && publicationLoginBlockV321.reason
   }, res);
   if (!publicationLoginBlockV321 || publicationLoginBlockV321.ok !== true) {
-    clearSessionCookies(res);
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
     return res.status(503).json({
       ok: false,
       code: 'LOGIN_PUBLICATION_BAN_CHECK_UNAVAILABLE',
@@ -2045,7 +2045,7 @@ async function domainLogin(req, res, preloadedBody) {
     });
   }
   if (publicationLoginBlockV321.blocked) {
-    clearSessionCookies(res);
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
     try {
       diracSecurityAlertScheduleV320(diracCentralCurrentContextV149(), 'account_or_device_ban_enforced', {
         reason: 'active_customer_access_block',
@@ -2081,7 +2081,7 @@ async function domainLogin(req, res, preloadedBody) {
   const finalLoginBlockV357 = await domainLoginEffectiveAccessBlockV320(req, canonicalLoginSessionV321)
     .catch(() => ({ ok: false }));
   if (!finalLoginBlockV357 || finalLoginBlockV357.ok !== true) {
-    clearSessionCookies(res);
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
     return res.status(503).json({
       ok: false,
       code: 'LOGIN_PUBLICATION_BAN_CHECK_UNAVAILABLE',
@@ -2089,7 +2089,7 @@ async function domainLogin(req, res, preloadedBody) {
     });
   }
   if (finalLoginBlockV357.blocked === true) {
-    clearSessionCookies(res);
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
     const finalExportEligibleScopeV472 = ['provider_account','account_settings','account','central_persistent_ban'].includes(String(finalLoginBlockV357.matched_scope || ''));
     const finalDataExportV472 = finalExportEligibleScopeV472
       ? await diracBuildBannedDataExportV472(req, canonicalLoginUserV321, password, true).catch(() => null)
