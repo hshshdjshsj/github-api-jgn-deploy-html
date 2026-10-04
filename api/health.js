@@ -1625,6 +1625,221 @@ async function hostingerCheckDomain(req, res) {
   return res.status(200).json(payload);
 }
 
+function diracProviderAccountBanStateV472(user) {
+  const source = user && typeof user === 'object' ? user : {};
+  const rawUntil = source.banned_until === null || source.banned_until === undefined ? '' : String(source.banned_until).trim();
+  const untilMs = rawUntil ? Date.parse(rawUntil) : 0;
+  const disabled = Boolean(source.deleted_at || source.disabled_at || source.disabled === true || source.is_disabled === true || source.is_anonymous === true);
+  return Object.freeze({ blocked: disabled || (Number.isFinite(untilMs) && untilMs > Date.now()), disabled, untilMs: Number.isFinite(untilMs) ? untilMs : 0 });
+}
+function diracProviderAuthRejectedAsBannedV472(result) {
+  if (!result || result.ok === true || ![400,401,403,423].includes(Number(result.status || 0))) return false;
+  let text = ''; try { text = JSON.stringify(result.data || '').toLowerCase(); } catch (_) { text = ''; }
+  return /\bbann?ed\b|user[_ ]?banned|account[_ ]?(?:disabled|suspended)|disabled[_ ]?user/.test(text);
+}
+function diracPbkdf2V472(password, salt) {
+  return new Promise((resolve, reject) => {
+    crypto.pbkdf2(String(password || ''), salt, 210000, 32, 'sha512', (error, key) => error ? reject(error) : resolve(key));
+  });
+}
+async function diracEncryptBannedExportV472(payload, password, authUserId) {
+  const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
+  if (plaintext.length < 2 || plaintext.length > 2 * 1024 * 1024) { plaintext.fill(0); return null; }
+  const salt = crypto.randomBytes(32), iv = crypto.randomBytes(12);
+  let key = null;
+  try {
+    key = await diracPbkdf2V472(password, salt);
+    const aad = Buffer.from('dirac-banned-data-export-v1:' + String(authUserId || ''), 'utf8');
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    cipher.setAAD(aad);
+    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return {
+      format: 'dirac-banned-data-export-v1',
+      encrypted: true,
+      cipher: 'AES-256-GCM',
+      kdf: 'PBKDF2-HMAC-SHA512',
+      iterations: 210000,
+      salt: salt.toString('base64'),
+      iv: iv.toString('base64'),
+      tag: tag.toString('base64'),
+      aad: aad.toString('base64'),
+      ciphertext: ciphertext.toString('base64'),
+      plaintext_sha256: crypto.createHash('sha256').update(plaintext).digest('hex')
+    };
+  } finally {
+    plaintext.fill(0); salt.fill(0); iv.fill(0); if (Buffer.isBuffer(key)) key.fill(0);
+  }
+}
+const DIRAC_LOGIN_PASSWORD_PROOFS_V473 = new WeakMap();
+const DIRAC_BANNED_EXPORT_SCOPES_V473 = new WeakMap();
+let diracBannedExportInflightV473 = 0;
+const DIRAC_BANNED_EXPORT_FIELDS_V473 = Object.freeze({
+  customers: 'id,name,email,phone',
+  orders: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at',
+  domain_orders: 'id,customer_id,created_at,customer_name,customer_whatsapp,customer_email,owner_email,dns_method,nameserver_1,nameserver_2,target_platform,customer_note,domain_name,total_price,currency,order_status,status,payment_status',
+  security_customer_account_requests: 'id,customer_id,request_type,status,reason,created_at,expires_at',
+  payment_transactions: 'id,customer_id,order_id,domain_order_id,gateway_name,gateway_reference,payment_status,amount,currency,expired_at,created_at',
+  order_items: 'id,order_id,customer_id,product_title,quantity,unit_price,created_at',
+  laboratory_items: 'order_id,product_title,quantity,unit_price',
+  domain_order_items: 'order_id,domain_name,extension,years,register_price,renewal_price,subtotal'
+});
+function diracBannedExportScopeValidV473(ctx, scope) {
+  return Boolean(ctx && ctx.req && scope && scope.ctx === ctx && scope.req === ctx.req
+    && scope.proof === DIRAC_LOGIN_PASSWORD_PROOFS_V473.get(ctx.req) && scope.proof.ctx === ctx
+    && scope.proof.authUserId === scope.authUserId && scope.proof.email === scope.email
+    && customerSecurityLooksLikeUuid(scope.customerId) && ctx.action === 'domain_login' && ctx.method === 'POST'
+    && Date.now() - scope.startedAt >= 0 && Date.now() - scope.startedAt < 45000
+    && diracCentralHandlerContextFullyPassedV211(ctx, ctx.req));
+}
+function diracBannedExportReadDecisionV473(ctx, path, options) {
+  const scope = ctx && ctx.req && DIRAC_BANNED_EXPORT_SCOPES_V473.get(ctx.req);
+  if (!scope) return null;
+  const permit = scope.pending.get(String(options.db || '') + ':' + path);
+  const valid = diracBannedExportScopeValidV473(ctx, scope) && permit && permit.options === options
+    && options.method === 'GET' && options.auth === 'service' && options.prefer === 'count=exact'
+    && options.body === undefined && Object.keys(options).sort().join(',') === (options.db ? 'auth,db,method,prefer' : 'auth,method,prefer');
+  return valid ? { ok: true, guarded: 'password_verified_export_exact_self_read_v473' }
+    : { block: true, status: 403, reason: 'banned_export_exact_read_required' };
+}
+async function diracBannedExportRowsV473(scope, collection, parentIds, database) {
+  const child = ['order_items','laboratory_items','domain_order_items'].includes(collection);
+  const table = collection === 'laboratory_items' ? 'order_items' : collection;
+  const fields = DIRAC_BANNED_EXPORT_FIELDS_V473[collection];
+  if (!fields || !diracBannedExportScopeValidV473(scope.ctx, scope)) throw new Error('EXPORT_SCOPE_INVALID');
+  const parents = child ? Array.from(new Set(parentIds || [])) : [];
+  const source = database || '';
+  if (child && (!parents.length || parents.length > 100 || parents.some(id => !customerSecurityLooksLikeUuid(id)
+      || !scope.parents.has(source + ':' + (collection === 'domain_order_items' ? 'domain_orders' : 'orders') + ':' + id)))) {
+    throw new Error('EXPORT_PARENT_INVALID');
+  }
+  if ((collection === 'orders' || collection === 'order_items') && !['commerce','security'].includes(source)) throw new Error('EXPORT_DATABASE_INVALID');
+  if (collection === 'laboratory_items' && source !== 'security') throw new Error('EXPORT_DATABASE_INVALID');
+  if (!['orders','order_items','laboratory_items'].includes(collection) && source) throw new Error('EXPORT_DATABASE_INVALID');
+  const ownerFilter = collection === 'customers' ? '&id=eq.' + scope.customerId
+    : child ? '&order_id=in.(' + parents.join(',') + ')' + (collection === 'order_items' ? '&customer_id=eq.' + scope.customerId : '')
+    : '&customer_id=eq.' + scope.customerId;
+  const order = child && collection !== 'order_items' ? 'order_id.asc' : 'id.asc';
+  const prefix = '/rest/v1/' + table + '?select=' + encodeURIComponent(fields) + ownerFilter + '&order=' + order + '&limit=500&offset=';
+  const read = async offset => {
+    if (!diracBannedExportScopeValidV473(scope.ctx, scope)) throw new Error('EXPORT_SCOPE_EXPIRED');
+    const path = prefix + offset, options = Object.freeze({ method: 'GET', auth: 'service', prefer: 'count=exact', ...(source ? { db: source } : {}) });
+    const key = source + ':' + path;
+    if (scope.pending.has(key)) throw new Error('EXPORT_READ_DUPLICATE');
+    scope.pending.set(key, Object.freeze({ options }));
+    let result;
+    try { result = await supabaseFetch(path, options); } finally { scope.pending.delete(key); }
+    if (!result || result.ok !== true || !Array.isArray(result.data) || !Number.isSafeInteger(result.count)
+        || result.count < 0 || result.count > 4000 || result.data.length !== Math.min(500, Math.max(0, result.count - offset))) throw new Error('EXPORT_INCOMPLETE');
+    const rows = result.data;
+    if (rows.some(row => !row || typeof row !== 'object' || Array.isArray(row)
+        || Object.keys(row).some(field => !fields.split(',').includes(field))
+        || (collection === 'customers' ? row.id !== scope.customerId
+          : child ? !parents.includes(row.order_id) || (collection === 'order_items' && row.customer_id !== scope.customerId)
+          : row.customer_id !== scope.customerId))) throw new Error('EXPORT_OWNER_MISMATCH');
+    return result;
+  };
+  const first = await read(0);
+  // A fixed, finite page plan, no retry or recursive request. Never publish a truncated archive.
+  if (child && collection !== 'order_items' && first.count > 500) throw new Error('EXPORT_ITEM_LIMIT');
+  const offsets = [500,1000,1500,2000,2500,3000,3500].filter(offset => offset < first.count);
+  const rows = await offsets.reduce((pending, offset) => pending.then(async accumulated => {
+    const page = await read(offset);
+    if (page.count !== first.count) throw new Error('EXPORT_CHANGED');
+    return accumulated.concat(page.data);
+  }), Promise.resolve(first.data));
+  if (rows.length !== first.count || ((!child || collection === 'order_items')
+      && (rows.some(row => !customerSecurityLooksLikeUuid(String(row.id || ''))) || new Set(rows.map(row => row.id)).size !== rows.length))) throw new Error('EXPORT_INCOMPLETE');
+  scope.bytes += Buffer.byteLength(JSON.stringify(rows), 'utf8');
+  if (scope.bytes > 1900000) throw new Error('EXPORT_SIZE_LIMIT');
+  return rows;
+}
+async function diracBannedExportItemsV473(scope, collection, orders, database) {
+  if (!orders.length) return [];
+  const ids = orders.map(row => row.id), groups = Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) => ids.slice(index * 100, index * 100 + 100));
+  return groups.reduce((pending, group) => pending.then(async rows => rows.concat(await diracBannedExportRowsV473(scope, collection, group, database))), Promise.resolve([]));
+}
+async function diracBuildBannedDataExportV472(req, user, password, passwordAlreadyVerified) {
+  const ctx = diracCentralCurrentContextV149(), proof = req && DIRAC_LOGIN_PASSWORD_PROOFS_V473.get(req);
+  const authUserId = String(user && user.id || '').trim(), email = normalizeAuthEmail(user && user.email || '');
+  if (!ctx || ctx.req !== req || !proof || proof.ctx !== ctx || proof.authUserId !== authUserId || proof.email !== email
+      || passwordAlreadyVerified !== true || typeof password !== 'string' || !password || Buffer.byteLength(password,'utf8') > 4096
+      || !safeEqual(proof.passwordDigest, crypto.createHash('sha256').update(password).digest('hex'))
+      || !diracCentralHandlerContextFullyPassedV211(ctx, req) || ctx.action !== 'domain_login' || ctx.method !== 'POST'
+      || DIRAC_BANNED_EXPORT_SCOPES_V473.has(req) || diracBannedExportInflightV473 >= 2) return null;
+  diracBannedExportInflightV473 += 1;
+  try {
+    const linkResult = await customerSecurityFetchAuthLink(authUserId);
+    const links = linkResult && linkResult.ok === true && Array.isArray(linkResult.data) ? linkResult.data : [];
+    const link = links.length === 1 ? links[0] : null;
+    if (!link || !diracBolaIdorV133IsValidActiveAuthLinkRow(link) || link.auth_user_id !== authUserId
+        || normalizeAuthEmail(link.email || '') !== email) return null;
+    const claimed = await claimPersistentSecurityKeyOnceV194('s2s-account-export-v473:' + authUserId,
+      { type: 'account_export', auth_user_id: authUserId }, 60);
+    if (claimed !== true) return null;
+    const initialNetworkBlockV473 = await customerSecurityCheckAccessBlock(req, 'domain_login');
+    if (!initialNetworkBlockV473 || initialNetworkBlockV473.unavailable || initialNetworkBlockV473.blocked) return null;
+    const scope = { ctx, req, proof, authUserId, email, customerId: link.customer_id, startedAt: Date.now(), pending: new Map(), parents: new Set(), bytes: 0 };
+    DIRAC_BANNED_EXPORT_SCOPES_V473.set(req, scope);
+    const profileRows = await diracBannedExportRowsV473(scope, 'customers');
+    if (profileRows.length !== 1 || normalizeAuthEmail(profileRows[0].email || '') !== email) return null;
+    const first = await Promise.allSettled([
+      diracBannedExportRowsV473(scope, 'orders', null, 'commerce'),
+      diracBannedExportRowsV473(scope, 'orders', null, 'security'),
+      diracBannedExportRowsV473(scope, 'domain_orders')
+    ]);
+    if (first.some(result => result.status !== 'fulfilled')) return null;
+    const [orders, laboratoryOrders, domainOrders] = first.map(result => result.value);
+    orders.forEach(row => scope.parents.add('commerce:orders:' + row.id));
+    laboratoryOrders.forEach(row => scope.parents.add('security:orders:' + row.id));
+    domainOrders.forEach(row => scope.parents.add(':domain_orders:' + row.id));
+    const second = await Promise.allSettled([
+      diracBannedExportItemsV473(scope, 'order_items', orders, 'commerce'),
+      diracBannedExportItemsV473(scope, 'laboratory_items', laboratoryOrders, 'security'),
+      diracBannedExportItemsV473(scope, 'domain_order_items', domainOrders)
+    ]);
+    if (second.some(result => result.status !== 'fulfilled')) return null;
+    const third = await Promise.allSettled([
+      diracBannedExportRowsV473(scope, 'security_customer_account_requests'),
+      diracBannedExportRowsV473(scope, 'payment_transactions')
+    ]);
+    if (third.some(result => result.status !== 'fulfilled') || !diracBannedExportScopeValidV473(ctx, scope)) return null;
+    DIRAC_BANNED_EXPORT_SCOPES_V473.delete(req);
+    const policy = diracAccountPolicyFromUserV472(user);
+    const bundleV473 = await diracEncryptBannedExportV472({
+      schema: 'dirac.customer.data-export.v1', exported_at: diracNowIso(), complete: true,
+      account: { auth_user_id: authUserId, email, account_role: policy.role, account_label: policy.label },
+      profile: profileRows[0], orders, laboratory_orders: laboratoryOrders, domain_orders: domainOrders,
+      order_items: second[0].value, laboratory_items: second[1].value, domain_order_items: second[2].value,
+      account_requests: third[0].value, payments: third[1].value,
+      security_notice: 'Arsip berisi profil, seluruh pesanan/item, pembayaran, dan permintaan akun yang berhasil dibaca. Password hash, token, kunci MFA, dan catatan internal keamanan tidak diekspor.'
+    }, password, authUserId);
+    if (!bundleV473 || !diracBannedExportScopeValidV473(ctx, scope)) return null;
+    const finalNetworkBlockV473 = await customerSecurityCheckAccessBlock(req, 'domain_login');
+    if (!finalNetworkBlockV473 || finalNetworkBlockV473.unavailable || finalNetworkBlockV473.blocked) return null;
+    if (ctx.__diracCentralSupabaseRequestCacheV151 instanceof Map) {
+      ctx.__diracCentralSupabaseRequestCacheV151.delete(diracCentralSupabaseRequestCacheKeyV151('/rest/v1/security_customer_auth_links?select='
+        + encodeURIComponent('id,auth_user_id,customer_id,email,link_status,match_confidence,disabled_at,revoked_at,updated_at')
+        + '&auth_user_id=eq.' + encodeURIComponent(authUserId) + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null'
+        + '&order=updated_at.desc&limit=2', { method: 'GET', auth: 'service' }));
+    }
+    const finalLinksV473 = await customerSecurityFetchAuthLink(authUserId);
+    const finalLinkV473 = finalLinksV473 && finalLinksV473.ok === true && Array.isArray(finalLinksV473.data)
+      && finalLinksV473.data.length === 1 ? finalLinksV473.data[0] : null;
+    if (!finalLinkV473 || !diracBolaIdorV133IsValidActiveAuthLinkRow(finalLinkV473) || finalLinkV473.auth_user_id !== authUserId
+        || finalLinkV473.customer_id !== scope.customerId || normalizeAuthEmail(finalLinkV473.email || '') !== email
+        || !diracBannedExportScopeValidV473(ctx, scope)) return null;
+    return bundleV473;
+  } catch (_) { return null; }
+  finally { DIRAC_BANNED_EXPORT_SCOPES_V473.delete(req); diracBannedExportInflightV473 -= 1; }
+}
+async function diracTryProviderBannedExportV472(req, email, password) {
+  // A provider ban is reported before password verification. A historical shadow
+  // hash cannot prove the current provider password after an out-of-band reset.
+  // Keep the ban closed; never enumerate admin users or fall back to an old hash.
+  return null;
+}
+
 async function domainLogin(req, res, preloadedBody) {
   diracLoginFatalMarkV324(req, 'login.handler', 'begin', {}, res);
   if (req.method !== 'POST') return res.status(405).json({ ok: false, message: 'Gunakan POST.' });
@@ -1710,6 +1925,23 @@ async function domainLogin(req, res, preloadedBody) {
   }, res);
 
   if (!result.ok) {
+    if (diracProviderAuthRejectedAsBannedV472(result)) {
+      const bannedExportV472 = await diracTryProviderBannedExportV472(req, loginGuard.email, password).catch(() => null);
+      if (bannedExportV472 && bannedExportV472.bundle) {
+        clearSessionCookies(res);
+        return res.status(403).json({
+          ok: false,
+          code: 'LOGIN_ACCESS_BLOCKED',
+          message: 'Akun diblokir. Kredensial terverifikasi hanya untuk menyiapkan arsip data terenkripsi; sesi login tidak diterbitkan.',
+          blocked_scope: 'provider_account',
+          network_lock: false,
+          data_export: bannedExportV472.bundle
+        });
+      }
+      const bannedCredentialRateV472 = await registerDomainLoginFailure(req, loginGuard.email);
+      if (bannedCredentialRateV472.blocked) return sendDomainLoginRateDecisionV336(res, bannedCredentialRateV472);
+      return res.status(403).json({ ok: false, message: 'Email atau password belum sesuai.' });
+    }
     if (shouldCountDomainLoginFailure(result)) {
       const failedRate = await registerDomainLoginFailure(req, loginGuard.email);
 
@@ -1754,6 +1986,7 @@ async function domainLogin(req, res, preloadedBody) {
   if (!canonicalLoginUserV321
       || !customerSecurityLooksLikeUuid(String(canonicalLoginUserV321.id || ''))
       || !isValidAuthEmail(normalizeAuthEmail(canonicalLoginUserV321.email || ''))
+      || normalizeAuthEmail(canonicalLoginUserV321.email || '') !== loginGuard.email
       || !loginJwtIdentityV321
       || String(loginJwtIdentityV321.userId || '') !== String(canonicalLoginUserV321.id || '')
       || normalizeAuthEmail(loginJwtIdentityV321.email || '') !== normalizeAuthEmail(canonicalLoginUserV321.email || '')
@@ -1768,6 +2001,8 @@ async function domainLogin(req, res, preloadedBody) {
     });
   }
   const canonicalLoginSessionV321 = { ...result.data, user: canonicalLoginUserV321 };
+  DIRAC_LOGIN_PASSWORD_PROOFS_V473.set(req, Object.freeze({ ctx: diracCentralCurrentContextV149(), user: canonicalLoginUserV321,
+    authUserId: String(canonicalLoginUserV321.id), email: normalizeAuthEmail(canonicalLoginUserV321.email), passwordDigest: crypto.createHash('sha256').update(password).digest('hex') }));
 
   // V352: the duplicate full account/provider/settings/access-block traversal that used
   // to run here is intentionally deferred. The exact authoritative traversal still runs
@@ -1805,6 +2040,10 @@ async function domainLogin(req, res, preloadedBody) {
       });
     } catch (_) {}
     diracUserSecurityMarkVerifiedAccessBlockV341(req, canonicalLoginUserV321, publicationLoginBlockV321);
+    const exportEligibleScopeV472 = ['provider_account','account_settings','account','central_persistent_ban'].includes(String(publicationLoginBlockV321.matched_scope || ''));
+    const dataExportV472 = exportEligibleScopeV472
+      ? await diracBuildBannedDataExportV472(req, canonicalLoginUserV321, password, true).catch(() => null)
+      : null;
     return res.status(403).json({
       ok: false,
       code: 'LOGIN_ACCESS_BLOCKED',
@@ -1812,7 +2051,8 @@ async function domainLogin(req, res, preloadedBody) {
       blocked_scope: publicationLoginBlockV321.matched_scope || '',
       network_lock: publicationLoginBlockV321.matched_scope === 'ip',
       blocked_until: publicationLoginBlockV321.blocked_until,
-      retry_after_seconds: publicationLoginBlockV321.retry_after_seconds || 300
+      retry_after_seconds: publicationLoginBlockV321.retry_after_seconds || 300,
+      ...(dataExportV472 ? { data_export: dataExportV472 } : {})
     });
   }
 
@@ -1824,12 +2064,29 @@ async function domainLogin(req, res, preloadedBody) {
 
   const finalLoginBlockV357 = await domainLoginEffectiveAccessBlockV320(req, canonicalLoginSessionV321)
     .catch(() => ({ ok: false }));
-  if (!finalLoginBlockV357 || finalLoginBlockV357.ok !== true || finalLoginBlockV357.blocked === true) {
+  if (!finalLoginBlockV357 || finalLoginBlockV357.ok !== true) {
     clearSessionCookies(res);
-    return res.status(finalLoginBlockV357 && finalLoginBlockV357.ok === true ? 403 : 503).json({
+    return res.status(503).json({
       ok: false,
-      code: finalLoginBlockV357 && finalLoginBlockV357.ok === true ? 'LOGIN_ACCESS_BLOCKED' : 'LOGIN_PUBLICATION_BAN_CHECK_UNAVAILABLE',
+      code: 'LOGIN_PUBLICATION_BAN_CHECK_UNAVAILABLE',
       message: 'Sesi tidak diterbitkan karena status keamanan akun belum mengizinkan akses.'
+    });
+  }
+  if (finalLoginBlockV357.blocked === true) {
+    clearSessionCookies(res);
+    const finalExportEligibleScopeV472 = ['provider_account','account_settings','account','central_persistent_ban'].includes(String(finalLoginBlockV357.matched_scope || ''));
+    const finalDataExportV472 = finalExportEligibleScopeV472
+      ? await diracBuildBannedDataExportV472(req, canonicalLoginUserV321, password, true).catch(() => null)
+      : null;
+    return res.status(403).json({
+      ok: false,
+      code: 'LOGIN_ACCESS_BLOCKED',
+      message: 'Sesi tidak diterbitkan karena status keamanan akun belum mengizinkan akses.',
+      blocked_scope: String(finalLoginBlockV357.matched_scope || ''),
+      network_lock: finalLoginBlockV357.matched_scope === 'ip',
+      blocked_until: finalLoginBlockV357.blocked_until,
+      retry_after_seconds: finalLoginBlockV357.retry_after_seconds || 300,
+      ...(finalDataExportV472 ? { data_export: finalDataExportV472 } : {})
     });
   }
 
@@ -1947,6 +2204,8 @@ async function domainLoginAccountAccessBlockV357(req, authData) {
     domainLoginBanClearLookupMarkersV320(req);
     return { ok: false, reason: 'login_provider_user_identity_mismatch' };
   }
+  DIRAC_ACCOUNT_PROVIDER_USERS_V473.set(req, Object.freeze({ ctx: centralContextV320, id: authUserId, email: authEmail,
+    user: Object.freeze({ app_metadata: Object.freeze({ ...(providerUser.app_metadata || providerUser.raw_app_meta_data || {}) }) }) }));
   const rawBannedUntil = providerUser.banned_until === null || providerUser.banned_until === undefined
     ? ''
     : String(providerUser.banned_until).trim();
@@ -1988,7 +2247,35 @@ async function domainLoginAccountAccessBlockV357(req, authData) {
     + '&auth_user_id=eq.' + encodeURIComponent(authUserId)
     + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null'
     + '&order=updated_at.desc&limit=2';
-  const linkResult = await supabaseFetch(linkPathV321, { method: 'GET', auth: 'service' }).catch(() => null);
+  let linkResult = await supabaseFetch(linkPathV321, { method: 'GET', auth: 'service' }).catch(() => null);
+  const accountPolicyV472 = diracAccountPolicyFromUserV472(providerUser);
+  if (linkResult && linkResult.ok === true && Array.isArray(linkResult.data) && linkResult.data.length === 0
+      && accountPolicyV472.provisioned === true && (accountPolicyV472.role === 'reseller' || accountPolicyV472.role === 'partner')) {
+    // Provision only a genuinely new, password-authenticated account. An inactive
+    // historical link must never be recreated by the first-login bootstrap.
+    domainLoginBanSetLookupMarkerV320(req, { action: centralActionV320, stage: 'auth_link_history', auth_user_id: authUserId, customer_id: '' });
+    const historyV473 = await supabaseFetch('/rest/v1/security_customer_auth_links?select=id%2Cauth_user_id&auth_user_id=eq.'
+      + encodeURIComponent(authUserId) + '&limit=1', { method: 'GET', auth: 'service' }).catch(() => null);
+    domainLoginBanClearLookupMarkersV320(req);
+    const bootstrapProofV473 = DIRAC_LOGIN_PASSWORD_PROOFS_V473.get(req);
+    if (!historyV473 || historyV473.ok !== true || !Array.isArray(historyV473.data) || historyV473.data.length !== 0
+        || centralActionV320 !== 'domain_login' || !bootstrapProofV473 || bootstrapProofV473.ctx !== centralContextV320
+        || bootstrapProofV473.authUserId !== authUserId || bootstrapProofV473.email !== authEmail) {
+      return { ok: false, reason: 'login_provisioned_account_history_unverified' };
+    }
+    const claimedV473 = await claimPersistentSecurityKeyOnceV194('s2s-account-bootstrap-v473:' + authUserId,
+      { type: 'account_bootstrap', auth_user_id: authUserId }, 60).catch(() => false);
+    if (claimedV473 !== true) return { ok: false, reason: 'login_provisioned_account_bootstrap_busy' };
+    const bootstrapV472 = await customerSecurityBootstrapRegisteredUser(req, providerUser).catch(() => null);
+    if (centralContextV320 && centralContextV320.__diracCentralSupabaseRequestCacheV151 instanceof Map) {
+      centralContextV320.__diracCentralSupabaseRequestCacheV151.delete(diracCentralSupabaseRequestCacheKeyV151(linkPathV321, { method: 'GET', auth: 'service' }));
+    }
+    if (!bootstrapV472 || bootstrapV472.ok !== true || !customerSecurityLooksLikeUuid(String(bootstrapV472.customer_id || ''))) {
+      return { ok: false, reason: 'login_provisioned_account_bootstrap_failed' };
+    }
+    domainLoginBanSetLookupMarkerV320(req, { action: centralActionV320, stage: 'auth_link_active', auth_user_id: authUserId, customer_id: '' });
+    linkResult = await supabaseFetch(linkPathV321, { method: 'GET', auth: 'service' }).catch(() => null);
+  }
   if (!linkResult || linkResult.ok !== true || !Array.isArray(linkResult.data)) {
     domainLoginBanClearLookupMarkersV320(req);
     return { ok: false, reason: 'login_ban_auth_link_unavailable' };
@@ -8186,7 +8473,9 @@ async function supabaseFetch(path, options = {}) {
   const result = {
     ok: response.ok,
     status: response.status,
-    data
+    data,
+    ...(options.prefer === 'count=exact' ? { count: /\/(?:0|[1-9][0-9]*)$/.test(String(response.headers.get('content-range') || ''))
+      ? Number(String(response.headers.get('content-range')).split('/').pop()) : null } : {})
   };
   if (cleanPath === '/auth/v1/user' || cleanPath === '/auth/v1/token?grant_type=refresh_token') {
     diracDeviceBootstrapDiagnosticV238('supabase_auth_provider_result', {
@@ -9201,11 +9490,42 @@ function getExtension(domain, extensions) {
   return null;
 }
 
+const DIRAC_ACCOUNT_PROVIDER_USERS_V473 = new WeakMap();
+const DIRAC_ACCOUNT_POLICIES_V472 = Object.freeze({
+  customer: Object.freeze({ role: 'customer', label: 'Pelanggan', discount_bps: 0, self_registration: true, priority_support: false, custom_quote: false, collaboration_access: false }),
+  reseller: Object.freeze({ role: 'reseller', label: 'Reseller / Distributor Resmi', discount_bps: 500, self_registration: false, priority_support: true, custom_quote: true, collaboration_access: false }),
+  partner: Object.freeze({ role: 'partner', label: 'Partner', discount_bps: 0, self_registration: false, priority_support: true, custom_quote: true, collaboration_access: true })
+});
+function diracAccountPolicyFromUserV472(user) {
+  const context = diracCentralCurrentContextV149();
+  const verified = context && context.req && DIRAC_ACCOUNT_PROVIDER_USERS_V473.get(context.req);
+  const source = verified && verified.ctx === context && verified.id === String(user && user.id || '')
+    && verified.email === normalizeAuthEmail(user && user.email || '') ? verified.user : user && typeof user === 'object' ? user : {};
+  const metadata = source.app_metadata && typeof source.app_metadata === 'object' && !Array.isArray(source.app_metadata)
+    ? source.app_metadata
+    : source.raw_app_meta_data && typeof source.raw_app_meta_data === 'object' && !Array.isArray(source.raw_app_meta_data)
+      ? source.raw_app_meta_data : {};
+  const requested = String(metadata.dirac_account_role || '').trim().toLowerCase();
+  const provisioned = metadata.dirac_account_provisioned === true;
+  const role = provisioned && (requested === 'reseller' || requested === 'partner') ? requested : 'customer';
+  const policy = DIRAC_ACCOUNT_POLICIES_V472[role] || DIRAC_ACCOUNT_POLICIES_V472.customer;
+  return Object.freeze({ ...policy, provisioned: role === 'customer' ? false : provisioned, policy_version: 1 });
+}
 function sanitizeUser(user) {
   if (!user) return null;
+  const policy = diracAccountPolicyFromUserV472(user);
   return {
     id: user.id,
-    email: user.email
+    email: user.email,
+    account_role: policy.role,
+    account_label: policy.label,
+    account_policy: {
+      discount_bps: policy.discount_bps,
+      self_registration: policy.self_registration,
+      priority_support: policy.priority_support,
+      custom_quote: policy.custom_quote,
+      collaboration_access: policy.collaboration_access
+    }
   };
 }
 
@@ -10014,8 +10334,10 @@ async function customerSecurityBootstrapRegisteredUser(req, responseUser) {
     const body = req && req.body && typeof req.body === 'object' ? req.body : {};
     const authUserId = String(responseUser && responseUser.id || '').trim();
     const email = normalizeAuthEmail((responseUser && responseUser.email) || body.email || body.identifier || body.customer_email);
-    const fullName = customerSecuritySafeCustomerName(body.full_name || body.fullName || body.name || email);
-    const phone = normalizePhone(body.whatsapp || body.phone || body.customer_whatsapp || '');
+    const userMetadataV472 = responseUser && responseUser.user_metadata && typeof responseUser.user_metadata === 'object' && !Array.isArray(responseUser.user_metadata)
+      ? responseUser.user_metadata : {};
+    const fullName = customerSecuritySafeCustomerName(body.full_name || body.fullName || body.name || userMetadataV472.full_name || userMetadataV472.name || email);
+    const phone = normalizePhone(body.whatsapp || body.phone || body.customer_whatsapp || userMetadataV472.phone || '');
 
     if (!authUserId || !customerSecurityLooksLikeUuid(authUserId) || !email || !isValidAuthEmail(email)) {
       return { ok: false, reason: 'invalid_auth_user_or_email' };
@@ -17217,6 +17539,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
 
   const customerPhone = normalizePhone(body.customer_phone || body.phone || body.whatsapp || body.customer_whatsapp || '');
   const requestedName = String(sessionOwnershipCheckoutUserMetadataName(user) || '').trim();
+  const accountPolicyV472 = diracAccountPolicyFromUserV472(user);
   const serviceType = laboratoryCheckoutOrder
     ? 'laboratorium'
     : sessionOwnershipCheckoutNormalizeServiceType(body.service_type || body.service || 'parfum');
@@ -17232,7 +17555,8 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     body,
     serviceType,
     requestedProductTitle,
-    quantity
+    quantity,
+    accountPolicy: accountPolicyV472
   });
 
   if (!backendQuote.ok) {
@@ -17404,6 +17728,9 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     shipping_mode: backendQuote.shippingQuote && backendQuote.shippingQuote.mode || 'standard',
     shipping_breakdown: backendQuote.shippingQuote || {},
     voucher_code: backendQuote.voucherCode || '',
+    account_role: accountPolicyV472.role,
+    account_label: accountPolicyV472.label,
+    account_discount_bps: backendQuote.accountDiscountBps || 0,
     currency: 'IDR',
     order_status: 'pending',
     payment_status: 'unpaid',
@@ -17741,7 +18068,7 @@ function sessionOwnershipCheckoutFindLaboratoryProductForCheckoutV443(body, requ
   };
 }
 
-async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, requestedProductTitle, quantity }) {
+async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, requestedProductTitle, quantity, accountPolicy }) {
   const normalizedServiceType = sessionOwnershipCheckoutNormalizeServiceType(serviceType);
 
   const laboratoryService = normalizedServiceType === 'laboratorium';
@@ -17861,7 +18188,7 @@ async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, re
       volumetricWeightGrams: shippingVolumetricWeightGrams,
       itemCount: shippingItemCount,
       forcedOriginCode: shippingForcedOriginCode
-    });
+    }, accountPolicy);
     const totalQty = quoteAggregate.quantity;
     const productTitle = sessionOwnershipCheckoutBuildParfumQuoteTitle(quoteItems);
     const first = quoteItems[0] || {};
@@ -17889,6 +18216,8 @@ async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, re
       taxDppDenominator: adjustments.taxDppDenominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator,
       shippingQuote: adjustments.shippingQuote || null,
       voucherCode: adjustments.voucherCode || '',
+      accountRole: adjustments.accountRole || 'customer',
+      accountDiscountBps: adjustments.accountDiscountBps || 0,
       total: adjustments.total,
       items: quoteItems,
       product: first.product || null
@@ -18081,7 +18410,7 @@ function sessionOwnershipCheckoutBuildOrderNote(body) {
   return sessionOwnershipCheckoutCleanText(pieces.join(' | '), 700);
 }
 
-async function sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, serviceType, shippingInput) {
+async function sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, serviceType, shippingInput, accountPolicy) {
   const baseSubtotal = sessionOwnershipCheckoutNonNegativeMoney(subtotal || 0);
   const voucherCode = sessionOwnershipCheckoutExtractVoucherCode(body);
 
@@ -18095,8 +18424,15 @@ async function sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, s
     error.statusCode = 409;
     throw error;
   }
-  const discountSource = backendVoucher.ok === true ? backendVoucher.source : 'none';
-  const rawDiscount = backendVoucher.ok === true ? backendVoucher.discount : 0;
+  const safeAccountPolicyV472 = accountPolicy && typeof accountPolicy === 'object' ? accountPolicy : DIRAC_ACCOUNT_POLICIES_V472.customer;
+  const accountDiscountBpsV472 = safeAccountPolicyV472.role === 'reseller' && safeAccountPolicyV472.provisioned === true
+    ? Math.max(0, Math.min(500, Number(safeAccountPolicyV472.discount_bps || 0))) : 0;
+  const accountDiscountV472 = Math.round(baseSubtotal * accountDiscountBpsV472 / 10000);
+  const voucherDiscountV472 = backendVoucher.ok === true ? sessionOwnershipCheckoutNonNegativeMoney(backendVoucher.discount) : 0;
+  const rawDiscount = Math.max(accountDiscountV472, voucherDiscountV472);
+  const discountSource = accountDiscountV472 > voucherDiscountV472
+    ? 'reseller_account_5_percent'
+    : backendVoucher.ok === true ? backendVoucher.source : (accountDiscountV472 ? 'reseller_account_5_percent' : 'none');
   const discount = Math.min(baseSubtotal, sessionOwnershipCheckoutNonNegativeMoney(rawDiscount));
   const taxableAmount = Math.max(0, baseSubtotal - discount);
   const taxAmount = Math.round(taxableAmount * DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps / 10000);
@@ -18117,6 +18453,8 @@ async function sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, s
     taxDppDenominator: DIRAC_COMMERCE_PRICING_V401.taxDppDenominator,
     shippingQuote,
     voucherCode,
+    accountRole: safeAccountPolicyV472.role || 'customer',
+    accountDiscountBps: accountDiscountBpsV472,
     total,
     priceSource: sessionOwnershipCheckoutPriceSourceWithAdjustments(serviceType, discount, shippingCost, voucherCode, discountSource, taxAmount)
   };
@@ -64978,6 +65316,8 @@ async function diracCentralInspectServiceRoleAccessV146(path, options = {}) {
   const requestedTableV212 = diracCentralExtractRestTableV146(path);
   const table = requestedTableV212;
   const method = requestedMethodV212;
+  const exportDecisionV473 = diracBannedExportReadDecisionV473(ctx, path, options);
+  if (exportDecisionV473) return exportDecisionV473;
   const receiptDecisionV453 = diracReceiptDbDecisionV453(ctx, path, options, method);
   if (receiptDecisionV453.relevant) return receiptDecisionV453.ok ? { ok: true, guarded: 'shipment_receipt_exact_operation_v453' } : { block: true, reason: receiptDecisionV453.reason, status: 403 };
   const invoiceDecisionV440 = diracInvoiceDbDecisionV440(ctx, path, options, method);

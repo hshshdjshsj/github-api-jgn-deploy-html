@@ -720,7 +720,7 @@ async function resolveMainIdentity(req, res, required) {
   if (identityDiagnosticV360) identityDiagnosticV360.decision = 'identity_valid';
   const context = supportCentralCurrentContextV146();
   if (context) context.verifiedCustomerId = userId;
-  return { id: userId, email: userEmail, displayName: mainDisplayName(userEmail) };
+  return { id: userId, email: userEmail, displayName: mainDisplayName(userEmail), account_role: ['customer','reseller','partner'].includes(user.account_role) ? user.account_role : 'customer' };
 }
 
 function runtimeCookieName(productionName) {
@@ -1515,7 +1515,7 @@ async function actionChatPublicConfig(req, res) {
     code: 'CHAT_CONFIG_OK',
     csrfToken: csrfBundle(req, res, { session: hasSession ? session : null, scope: hasSession ? 'customer_mutation' : 'chat_start' }),
     authenticated: Boolean(identity),
-    user: identity ? { displayName: identity.displayName, email: identity.email } : null,
+    user: identity ? { displayName: identity.displayName, email: identity.email, account_role: identity.account_role } : null,
     hasSession,
     turnstileRequired: cfg.turnstileRequired,
     turnstileSiteKey: cfg.turnstileRequired ? cfg.turnstileSiteKey : ''
