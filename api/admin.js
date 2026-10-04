@@ -56,7 +56,9 @@ const CONTRACTS = Object.freeze({
   admin_shipment_update: post(['kind', 'order_id', 'expected_revision', 'tracking_number', 'courier', 'status', 'location', 'origin', 'destination', 'estimated_delivery', 'description', 'tracking_options', 'review_ack', 'review_reason', 'approval'], ['kind', 'order_id', 'expected_revision', 'tracking_number', 'courier', 'status', 'approval']),
   admin_shipment_cancel: post(['kind', 'order_id', 'expected_revision', 'description', 'review_ack', 'review_reason', 'approval'], ['kind', 'order_id', 'expected_revision', 'approval']),
   admin_blocks: get(['offset']),
+  admin_banned_data: get(['export_ref']),
   admin_unban: post(['block_id', 'approval'], ['block_id', 'approval']),
+  admin_banned_pdf: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'export_ref', 'mode', 'raw_pdf_base64', 'raw_pdf_sha256', 'approval']), required: Object.freeze(['export_ref', 'mode', 'raw_pdf_base64', 'raw_pdf_sha256', 'approval']), maxBodyBytes: 5700000, maxFieldBytes: 5500000, mutation: true, allowArrayItems: false }),
   admin_account_create: post(['mode', 'role', 'email', 'name', 'phone', 'approval'], ['email', 'approval']),
   admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
   admin_local_authorize: post(['purpose', 'content_sha256', 'approval'], ['purpose', 'content_sha256', 'approval']),
@@ -66,7 +68,7 @@ const CONTRACTS = Object.freeze({
   admin_monitor: get()
 });
 const ACTIONS = Object.freeze(Object.keys(CONTRACTS));
-const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_account_create: 'account_create', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal' });
+const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal' });
 const ORDER_SELECT = Object.freeze({
   regular: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
   laboratorium: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
@@ -260,7 +262,7 @@ function securityCredentials() {
 }
 function multiDbEnabled() { return /^(?:1|true|yes|on)$/i.test(String(process.env.DIRAC_ENABLE_MULTI_DB_ROUTER || process.env.DIRAC_MULTI_DB_ROUTER_ENABLED || '').trim()); }
 function businessTarget(table) {
-  const map = { domain_orders: 'DOMAIN', orders: 'COMMERCE', security_customer_events: 'PAYMENT_SERVICE' };
+  const map = { customers: 'CORE', domain_orders: 'DOMAIN', domain_order_items: 'DOMAIN', orders: 'COMMERCE', order_items: 'COMMERCE', payment_transactions: 'PAYMENT_SERVICE', security_customer_account_requests: 'PAYMENT_SERVICE', security_customer_events: 'PAYMENT_SERVICE' };
   if (!multiDbEnabled() || !map[table]) return legacyCredentials();
   const prefix = 'DIRAC_' + map[table] + '_SUPABASE_';
   const url = String(process.env[prefix + 'URL'] || '').trim().replace(/\/+$/, '');
@@ -833,6 +835,11 @@ function approvalPayload(action, body) {
   if (action === 'admin_shipment_update') return { action, review_ack: value.review_ack || '', review_reason: value.review_reason || '', kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, tracking_number: value.tracking_number, courier: value.courier, status: value.status, location: value.location || '', origin: value.origin || '', destination: value.destination || '', estimated_delivery: value.estimated_delivery || '', description: value.description || '', ...(value.tracking_options === undefined ? {} : { tracking_options: shipmentOptionsV450(value.tracking_options) }) };
   if (action === 'admin_shipment_cancel') return { action, review_ack: value.review_ack || '', review_reason: value.review_reason || '', kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, description: value.description || '' };
   if (action === 'admin_unban') return { action, block_id: value.block_id };
+  if (action === 'admin_banned_pdf') {
+    if (!adminBannedExportRefValidV476(value.export_ref) || !['download','email'].includes(String(value.mode || ''))
+        || typeof value.raw_pdf_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.raw_pdf_sha256)) fail('ADMIN_BANNED_PDF_INPUT_INVALID', 400);
+    return { action, export_ref: value.export_ref, mode: value.mode, raw_pdf_sha256: value.raw_pdf_sha256 };
+  }
   if (action === 'admin_account_create') { const account = adminAccountMutationPayload(value); return { action, ...account }; }
   if (action === 'admin_smtp_send') return { action, provider: value.provider, recipient_count: value.recipient_count, recipients_sha256: value.recipients_sha256, subject_sha256: value.subject_sha256, body_sha256: value.body_sha256, document_kind: value.document_kind, attachment_name: value.attachment_name || '', attachment_type: value.attachment_type || '', attachment_sha256: value.attachment_sha256 || '', legal_confirm: value.legal_confirm === true };
   fail('ADMIN_ACTION_APPROVAL_OPERATION_INVALID', 400);
@@ -1507,11 +1514,12 @@ async function execute(ops) {
     const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); return { ok: true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_logout') { const active = await session(ops, scope, false, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
-  await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_account_create: 'account_create', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
+  await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_banned_data: 'banned_data', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
   if (!operation) fail('ADMIN_ACTION_INVALID', 400);
   if (Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS, action)) { const approval = await ticket(ops, scope, body.approval, 'action-approval'); if (approval.value.operation !== action || approval.value.payloadHash !== approvalPayloadHash(action, body)) fail('ADMIN_ACTION_APPROVAL_MISMATCH', 403); await consume(ops, approval); }
   if (action === 'admin_smtp_send') { await throttle(ops, scope, 'smtp-send-minute', 2, 60); await throttle(ops, scope, 'smtp-send-hour', 5, 3600); }
   if (action === 'admin_account_create') { await throttle(ops, scope, 'account-create-minute', 3, 60); await throttle(ops, scope, 'account-create-hour', 5, 3600); }
+  if (action === 'admin_banned_pdf') { await throttle(ops, scope, 'banned-pdf-minute', 3, 60); await throttle(ops, scope, 'banned-pdf-hour', 5, 3600); }
   ops.assertFullGuard(); return ops.business(operation, body);
 }
 
@@ -1874,6 +1882,178 @@ function persistentBanRecord(record, securityKey) {
   return loginBan || (source.schema === 'dirac.customer_access_block' && source.state === 'active') || ['central_guard_transient_lockout_v335', 'global_hard_ban_v107', 'xss_one_strike_permanent_block_v3', 'global_api_threat_ban_v143', 'recovery_one_strike_persistent_ban_v201', 'central_guard_global_ban_v146', 'central_guard_transient_persistent_ban_v284', 'central_external_ban_v354', 'dirac_s2s_key_revocation_v206'].includes(type) || ['bola_idor_global_hard_ban', 'sqlmap_or_sqli_block'].includes(eventType);
 }
 
+const ADMIN_BANNED_EXPORT_PATCH_V476 = 'dirac-admin-banned-export-v476';
+const ADMIN_BANNED_EXPORT_MAX_ROWS_V476 = 250;
+const ADMIN_BANNED_EXPORT_MAX_BYTES_V476 = 220000;
+const ADMIN_BANNED_PDF_MAX_RAW_V476 = 3 * 1024 * 1024;
+const ADMIN_BANNED_PDF_MAX_EMAIL_V476 = 2 * 1024 * 1024;
+const ADMIN_BANNED_EXPORT_FIELDS_V476 = Object.freeze({
+  customers: 'id,name,email,phone',
+  orders: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at',
+  domain_orders: 'id,customer_id,created_at,customer_name,customer_whatsapp,customer_email,owner_email,dns_method,nameserver_1,nameserver_2,target_platform,customer_note,domain_name,total_price,currency,order_status,status,payment_status',
+  security_customer_account_requests: 'id,customer_id,request_type,status,reason,created_at,expires_at',
+  payment_transactions: 'id,customer_id,order_id,domain_order_id,gateway_name,gateway_reference,payment_status,amount,currency,expired_at,created_at',
+  order_items: 'id,order_id,customer_id,product_title,quantity,unit_price,created_at',
+  laboratory_items: 'order_id,product_title,quantity,unit_price',
+  domain_order_items: 'order_id,domain_name,extension,years,register_price,renewal_price,subtotal'
+});
+function adminBannedExportRefV476(securityKey) {
+  const value = String(securityKey || '');
+  if (!/^[A-Za-z0-9:._-]{1,500}$/.test(value)) return '';
+  const encoded = Buffer.from(value, 'utf8').toString('base64url'), key = deriveSecret('admin-banned-export-ref-v476');
+  try { return encoded + '.' + crypto.createHmac('sha256', key).update(encoded).digest('base64url'); }
+  finally { key.fill(0); }
+}
+function adminBannedExportRefParseV476(reference) {
+  const match = /^([A-Za-z0-9_-]{1,700})\.([A-Za-z0-9_-]{43})$/.exec(String(reference || ''));
+  if (!match) return '';
+  const key = deriveSecret('admin-banned-export-ref-v476'); let expected = '';
+  try { expected = crypto.createHmac('sha256', key).update(match[1]).digest('base64url'); }
+  finally { key.fill(0); }
+  if (!safeEqual(expected, match[2])) return '';
+  let value = ''; try { value = Buffer.from(match[1], 'base64url').toString('utf8'); } catch (_) { return ''; }
+  return /^[A-Za-z0-9:._-]{1,500}$/.test(value) && Buffer.from(value, 'utf8').toString('base64url') === match[1] ? value : '';
+}
+function adminBannedExportRefValidV476(reference) { return !!adminBannedExportRefParseV476(reference); }
+async function adminBannedIdentityV476(reference) {
+  const securityKey = adminBannedExportRefParseV476(reference); if (!securityKey) fail('ADMIN_BANNED_EXPORT_REFERENCE_INVALID', 400);
+  const result = await dbFetch('/rest/v1/dirac_persistent_bans?select=' + encodeURIComponent(ACCESS_BLOCK_SELECT) + '&security_key=eq.' + encodeURIComponent(securityKey) + '&limit=2', { method: 'GET' }, 'security');
+  if (!result.ok || !Array.isArray(result.data) || result.data.length !== 1) fail('ADMIN_BANNED_EXPORT_BLOCK_UNAVAILABLE', 409);
+  const source = result.data[0], now = Date.now();
+  if (!Number.isSafeInteger(Number(source.blocked_until_ms)) || Number(source.blocked_until_ms) <= now) fail('ADMIN_BANNED_EXPORT_BLOCK_INACTIVE', 409);
+  const access = validateAccessBlock(source, false);
+  let email = '', verified = false, customerId = '', family = '', reason = '', createdAt = '';
+  if (access) {
+    if (access.state !== 'active' || access.blocked_until_ms <= now) fail('ADMIN_BANNED_EXPORT_BLOCK_INACTIVE', 409);
+    const meta = access.metadata || {}; email = String(meta.identity_email || '').trim().toLowerCase(); verified = meta.identity_email_verified === true;
+    customerId = access.customer_id || ''; family = 'customer_access'; reason = String(access.reason || '').slice(0,300); createdAt = new Date(access.created_at_ms).toISOString();
+  } else {
+    const record = source && source.record_json;
+    if (!persistentBanRecord(record, securityKey)) fail('ADMIN_BANNED_EXPORT_BLOCK_INVALID', 409);
+    email = String(record && (record.identity_email || record.identityEmail || record.email) || '').trim().toLowerCase(); verified = record && record.identity_email_verified === true;
+    customerId = String(record && (record.customer_id || record.customerId) || '').trim().toLowerCase(); family = String(record && (record.type || record.event_type) || 'persistent').slice(0,80);
+    reason = String(record && (record.reason || record.ban_reason || record.reason_code) || '').slice(0,300); createdAt = String(record && (record.created_at || record.createdAt) || '').slice(0,48);
+  }
+  if (!verified || !isEmail(email)) fail('ADMIN_BANNED_EXPORT_EMAIL_NOT_VERIFIED', 409);
+  const profilePath = '/rest/v1/customers?select=' + encodeURIComponent(ADMIN_BANNED_EXPORT_FIELDS_V476.customers) + '&email=eq.' + encodeURIComponent(email) + '&limit=2';
+  const profileResult = await dbFetch(profilePath, { method: 'GET' });
+  if (!profileResult.ok || !Array.isArray(profileResult.data) || profileResult.data.length !== 1) fail('ADMIN_BANNED_EXPORT_OWNER_UNAVAILABLE', 409);
+  const profile = profileResult.data[0]; if (!profile || !isUuid(profile.id) || String(profile.email || '').trim().toLowerCase() !== email) fail('ADMIN_BANNED_EXPORT_OWNER_INVALID', 409);
+  if (customerId && (!isUuid(customerId) || customerId !== String(profile.id).toLowerCase())) fail('ADMIN_BANNED_EXPORT_OWNER_MISMATCH', 409);
+  return Object.freeze({ reference, securityKey, email, customerId: String(profile.id).toLowerCase(), profile, family, reason, createdAt });
+}
+async function adminBannedRowsV476(table, customerId, target, parentIds) {
+  const fields = ADMIN_BANNED_EXPORT_FIELDS_V476[table]; if (!fields || !isUuid(customerId)) fail('ADMIN_BANNED_EXPORT_QUERY_INVALID', 503);
+  const actualTable = table === 'laboratory_items' ? 'order_items' : table;
+  let filter = '';
+  if (table === 'laboratory_items' || table === 'domain_order_items') {
+    const ids = Array.isArray(parentIds) ? parentIds : [];
+    if (!ids.length) return [];
+    if (ids.length > 100 || ids.some(id => !isUuid(id))) fail('ADMIN_BANNED_EXPORT_TOO_LARGE', 413);
+    filter = '&order_id=in.(' + ids.map(encodeURIComponent).join(',') + ')';
+  } else filter = '&customer_id=eq.' + encodeURIComponent(customerId);
+  const order = table === 'laboratory_items' || table === 'domain_order_items' ? 'order_id.asc' : 'id.asc';
+  const path = '/rest/v1/' + actualTable + '?select=' + encodeURIComponent(fields) + filter + '&order=' + order + '&limit=' + (ADMIN_BANNED_EXPORT_MAX_ROWS_V476 + 1);
+  const result = await dbFetch(path, { method: 'GET' }, target || '');
+  if (!result.ok || !Array.isArray(result.data) || result.data.length > ADMIN_BANNED_EXPORT_MAX_ROWS_V476) fail('ADMIN_BANNED_EXPORT_TOO_LARGE', result && result.ok ? 413 : 503);
+  const parents = new Set(parentIds || []);
+  if (result.data.some(row => !row || typeof row !== 'object' || Array.isArray(row)
+      || Object.keys(row).some(field => !fields.split(',').includes(field))
+      || (table === 'laboratory_items' || table === 'domain_order_items' ? !parents.has(String(row.order_id || '')) : String(row.customer_id || '') !== customerId))) fail('ADMIN_BANNED_EXPORT_OWNER_MISMATCH', 409);
+  return result.data;
+}
+async function businessBannedDataV476(body) {
+  const identity = await adminBannedIdentityV476(body && body.export_ref);
+  const customerId = identity.customerId;
+  const first = await Promise.allSettled([
+    adminBannedRowsV476('orders', customerId, ''),
+    adminBannedRowsV476('orders', customerId, 'security'),
+    adminBannedRowsV476('domain_orders', customerId, ''),
+    adminBannedRowsV476('security_customer_account_requests', customerId, ''),
+    adminBannedRowsV476('payment_transactions', customerId, ''),
+    adminBannedRowsV476('order_items', customerId, '')
+  ]);
+  if (first.some(item => item.status !== 'fulfilled')) { const failed = first.find(item => item.status !== 'fulfilled'); throw failed.reason; }
+  const orders = first[0].value, laboratoryOrders = first[1].value, domainOrders = first[2].value;
+  const second = await Promise.allSettled([
+    adminBannedRowsV476('laboratory_items', customerId, 'security', laboratoryOrders.map(row => row.id)),
+    adminBannedRowsV476('domain_order_items', customerId, '', domainOrders.map(row => row.id))
+  ]);
+  if (second.some(item => item.status !== 'fulfilled')) { const failed = second.find(item => item.status !== 'fulfilled'); throw failed.reason; }
+  const payload = {
+    schema: 'dirac.admin.banned-data-export.v1', exported_at: new Date().toISOString(), complete: true,
+    block: { family: identity.family, reason: identity.reason, created_at: identity.createdAt },
+    account: { customer_id: customerId, email: identity.email }, profile: identity.profile,
+    orders, laboratory_orders: laboratoryOrders, domain_orders: domainOrders, order_items: first[5].value,
+    laboratory_items: second[0].value, domain_order_items: second[1].value,
+    account_requests: first[3].value, payments: first[4].value,
+    security_notice: 'Arsip tidak memuat password, hash password, token, cookie, kunci MFA, passkey privat, atau catatan internal keamanan.'
+  };
+  const collections = [orders,laboratoryOrders,domainOrders,first[5].value,second[0].value,second[1].value,first[3].value,first[4].value];
+  const totalRows = collections.reduce((sum, rows) => sum + rows.length, 0);
+  const serialized = JSON.stringify(payload);
+  if (totalRows > ADMIN_BANNED_EXPORT_MAX_ROWS_V476 || Buffer.byteLength(serialized,'utf8') > ADMIN_BANNED_EXPORT_MAX_BYTES_V476) fail('ADMIN_BANNED_EXPORT_TOO_LARGE', 413);
+  return { ok: true, export_ref: identity.reference, customer_email: identity.email, data_export: payload, row_count: totalRows };
+}
+function adminBannedPdfHexV476(bytes) { return Buffer.from(bytes).toString('hex').toUpperCase(); }
+function adminBannedPdfSha256V476(...parts) { const hash = crypto.createHash('sha256'); parts.forEach(part => hash.update(part)); return hash.digest(); }
+function adminBannedPdfAesNoPadV476(key, data) { const cipher = crypto.createCipheriv('aes-256-cbc', key, Buffer.alloc(16)); cipher.setAutoPadding(false); return Buffer.concat([cipher.update(data), cipher.final()]); }
+function adminBannedPdfStreamV476(key, data) { const iv = crypto.randomBytes(16), cipher = crypto.createCipheriv('aes-256-cbc', key, iv); return Buffer.concat([iv, cipher.update(data), cipher.final()]); }
+function adminBannedPdfEncryptV476(raw, password) {
+  if (!Buffer.isBuffer(raw) || raw.length < 100 || raw.length > ADMIN_BANNED_PDF_MAX_RAW_V476 || !/^%PDF-1\.4\n/.test(raw.subarray(0,9).toString('ascii')) || !/%%EOF\n$/.test(raw.subarray(-40).toString('ascii'))) fail('ADMIN_BANNED_PDF_INVALID', 400);
+  const xrefMarker = Buffer.from('xref\n'), xref = raw.indexOf(xrefMarker); if (xref < 9) fail('ADMIN_BANNED_PDF_INVALID', 400);
+  const xrefText = raw.subarray(xref).toString('latin1'); if (xrefText.includes('/Encrypt')) fail('ADMIN_BANNED_PDF_INVALID',400); const header = /^xref\n0 (\d+)\n0000000000 65535 f \n/.exec(xrefText);
+  if (!header) fail('ADMIN_BANNED_PDF_INVALID',400);
+  const size=Number(header[1]); if (!Number.isInteger(size) || size < 4 || size > 1000) fail('ADMIN_BANNED_PDF_INVALID',400);
+  const lines=xrefText.slice(header[0].length).split('\n'), offsetLines=lines.slice(0,size-1);
+  if (offsetLines.length !== size-1 || offsetLines.some(line=>!/^\d{10} 00000 n $/.test(line))) fail('ADMIN_BANNED_PDF_INVALID',400);
+  const offsets=offsetLines.map(line=>Number(line.slice(0,10)));
+  if (offsets.some((value,index)=>!Number.isInteger(value) || value < 9 || value >= xref || (index>0 && value<=offsets[index-1]))) fail('ADMIN_BANNED_PDF_INVALID',400);
+  const fileKey = crypto.randomBytes(32), userPassword = Buffer.from(String(password || ''),'utf8').subarray(0,127), ownerPassword = Buffer.from(crypto.randomBytes(48).toString('base64url'),'utf8').subarray(0,127);
+  if (userPassword.length < 12) fail('ADMIN_BANNED_PDF_PASSWORD_INVALID',503);
+  const uv=crypto.randomBytes(8), uk=crypto.randomBytes(8), U=Buffer.concat([adminBannedPdfSha256V476(userPassword,uv),uv,uk]), UE=adminBannedPdfAesNoPadV476(adminBannedPdfSha256V476(userPassword,uk),fileKey);
+  const ov=crypto.randomBytes(8), ok=crypto.randomBytes(8), O=Buffer.concat([adminBannedPdfSha256V476(ownerPassword,ov,U),ov,ok]), OE=adminBannedPdfAesNoPadV476(adminBannedPdfSha256V476(ownerPassword,ok,U),fileKey);
+  const permissions=-4, permissionBlock=Buffer.alloc(16); permissionBlock.writeInt32LE(permissions,0); permissionBlock.fill(0xff,4,8); permissionBlock[8]=70; permissionBlock.write('adb',9,'ascii'); crypto.randomBytes(4).copy(permissionBlock,12);
+  const permissionCipher=crypto.createCipheriv('aes-256-ecb',fileKey,null); permissionCipher.setAutoPadding(false); const Perms=Buffer.concat([permissionCipher.update(permissionBlock),permissionCipher.final()]);
+  const rebuilt=offsets.map((objectOffset,index)=>{
+    const objectEnd=index+1<offsets.length?offsets[index+1]:xref, objectBytes=raw.subarray(objectOffset,objectEnd), expectedId=index+1, head=new RegExp('^'+expectedId+' 0 obj\\n').exec(objectBytes.subarray(0,64).toString('latin1'));
+    if (!head) fail('ADMIN_BANNED_PDF_INVALID',400);
+    const contentStart=head[0].length, streamMarker=Buffer.from('\nstream\n'), streamAt=objectBytes.indexOf(streamMarker,contentStart);
+    if (streamAt<0) { if (!/\nendobj\n$/.test(objectBytes.toString('latin1'))) fail('ADMIN_BANNED_PDF_INVALID',400); return {id:expectedId,bytes:objectBytes}; }
+    const dictionary=objectBytes.subarray(contentStart,streamAt).toString('latin1'), lengthMatch=/\/Length (\d+)/.exec(dictionary); if (!lengthMatch) fail('ADMIN_BANNED_PDF_INVALID',400);
+    const length=Number(lengthMatch[1]), dataStart=streamAt+streamMarker.length, dataEnd=dataStart+length, tail=objectBytes.subarray(dataEnd).toString('latin1');
+    if (!Number.isInteger(length) || length<0 || dataEnd>objectBytes.length || !(tail==='endstream\nendobj\n'||tail==='\nendstream\nendobj\n')) fail('ADMIN_BANNED_PDF_INVALID',400);
+    const encrypted=adminBannedPdfStreamV476(fileKey,objectBytes.subarray(dataStart,dataEnd)), nextDictionary=dictionary.replace('/Length '+length,'/Length '+encrypted.length);
+    return {id:expectedId,bytes:Buffer.concat([Buffer.from(expectedId+' 0 obj\n'+nextDictionary+'\nstream\n','latin1'),encrypted,Buffer.from('\nendstream\nendobj\n','latin1')])};
+  });
+  const maximum=rebuilt.length, encryptId=maximum+1;
+  const dictionary=encryptId+' 0 obj\n<< /Filter /Standard /V 5 /Length 256 /O <'+adminBannedPdfHexV476(O)+'> /U <'+adminBannedPdfHexV476(U)+'> /OE <'+adminBannedPdfHexV476(OE)+'> /UE <'+adminBannedPdfHexV476(UE)+'> /P '+permissions+' /R 5 /Perms <'+adminBannedPdfHexV476(Perms)+'> /EncryptMetadata false /CF << /StdCF << /AuthEvent /DocOpen /CFM /AESV3 /Length 32 >> >> /StmF /StdCF /StrF /StdCF >>\nendobj\n';
+  const all=rebuilt.concat([{id:encryptId,bytes:Buffer.from(dictionary,'latin1')}]), prefix=Buffer.from('%PDF-1.7\n','latin1');
+  const built=all.reduce((state,item)=>{ state.offsets[item.id]=state.offset; state.parts.push(item.bytes); state.offset+=item.bytes.length; return state; },{parts:[prefix],offset:prefix.length,offsets:Array(encryptId+1).fill(0)}), xrefAt=built.offset;
+  const xrefRows=Array.from({length:encryptId},(_unused,index)=>String(built.offsets[index+1]).padStart(10,'0')+' 00000 n \n').join('');
+  const documentId=adminBannedPdfSha256V476(raw,crypto.randomBytes(32)).subarray(0,16), table='xref\n0 '+(encryptId+1)+'\n0000000000 65535 f \n'+xrefRows+'trailer\n<< /Size '+(encryptId+1)+' /Root 1 0 R /Encrypt '+encryptId+' 0 R /ID [<'+adminBannedPdfHexV476(documentId)+'><'+adminBannedPdfHexV476(documentId)+'>] >>\nstartxref\n'+xrefAt+'\n%%EOF\n';
+  built.parts.push(Buffer.from(table,'latin1')); fileKey.fill(0); ownerPassword.fill(0); return Buffer.concat(built.parts);
+}
+async function businessBannedPdfV476(body, origin, assertContext) {
+  const identity = await adminBannedIdentityV476(body && body.export_ref); assertContext();
+  const mode = String(body && body.mode || ''); if (!['download','email'].includes(mode) || typeof body.raw_pdf_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(body.raw_pdf_sha256)) fail('ADMIN_BANNED_PDF_INPUT_INVALID',400);
+  const raw = documentBytesV464(body.raw_pdf_base64, ADMIN_BANNED_PDF_MAX_RAW_V476); if (crypto.createHash('sha256').update(raw).digest('hex') !== body.raw_pdf_sha256) { raw.fill(0); fail('ADMIN_BANNED_PDF_HASH_MISMATCH',400); }
+  const password='DG-'+crypto.randomBytes(18).toString('base64url'); let encrypted=null;
+  try { encrypted=adminBannedPdfEncryptV476(raw,password); } finally { raw.fill(0); }
+  assertContext(); const digestHex=crypto.createHash('sha256').update(encrypted).digest('hex'), safeReference=crypto.createHash('sha256').update(identity.reference).digest('hex').slice(0,12), filename='data-akun-terblokir-'+safeReference+'.pdf';
+  if (mode === 'email') {
+    try {
+      if (encrypted.length > ADMIN_BANNED_PDF_MAX_EMAIL_V476) fail('ADMIN_BANNED_PDF_EMAIL_TOO_LARGE',413);
+      const host=new URL(origin).hostname, subject='Arsip data akun terenkripsi · '+host, content='Arsip data akun Anda terlampir dalam PDF terenkripsi. Password PDF tidak dikirim melalui email ini dan harus disampaikan administrator melalui kanal terpisah yang telah diverifikasi.';
+      const sent=await sendCustomerMail({ origin, provider:'auto', recipients:[identity.email], subject, body:content, kind:'document', attachment:{name:filename,type:'application/pdf',bytes:encrypted} }, assertContext); assertContext();
+      if (!customerMailAcceptedV451(sent,'auto',1)) fail('ADMIN_SMTP_DELIVERY_UNCONFIRMED',503);
+      return { ok:true, mode, emailed:true, customer_email:identity.email, provider:sent.provider, filename, file_sha256:digestHex, pdf_password:password, password_delivery:'admin_separate_verified_channel' };
+    } finally { encrypted.fill(0); }
+  }
+  try { return { ok:true, mode, customer_email:identity.email, filename, file_sha256:digestHex, file_base64:encrypted.toString('base64'), pdf_password:password, password_delivery:'admin_separate_verified_channel' }; }
+  finally { encrypted.fill(0); }
+}
+
 async function businessBlocks(body) {
   const raw = String(body.offset || '0'); if (!/^(0|[1-9][0-9]{0,4})$/.test(raw) || Number(raw) > 50000) fail('ADMIN_PAGE_INVALID', 400); const result = await dbFetch('/rest/v1/dirac_persistent_bans?select=' + encodeURIComponent(ACCESS_BLOCK_SELECT) + '&blocked_until_ms=gt.0&order=security_key.asc&limit=41&offset=' + Number(raw), { method: 'GET' }, 'security'); if (!result.ok || !Array.isArray(result.data) || result.data.length > 41) fail('ADMIN_DATA_UNAVAILABLE', 503);
   const blocks = [], seen = new Set(); result.data.slice(0, 40).forEach(row => {
@@ -1881,7 +2061,8 @@ async function businessBlocks(body) {
     if (value) {
       if (seen.has(value.block_id) || value.state !== 'active' || value.blocked_until_ms <= Date.now()) return;
       seen.add(value.block_id); const meta = value.metadata || {}, mirrored = /^(central_guard_|wrong_password_rate_limit_)/.test(value.reason);
-      blocks.push({ id: value.block_id, customer_email: isEmail(meta.identity_email) ? String(meta.identity_email).toLowerCase() : '', email_verified: meta.identity_email_verified === true, family: 'customer_access', reason: value.reason.slice(0, 300), created_at: new Date(value.created_at_ms).toISOString(), active: true, can_unban: !mirrored, review_note: mirrored ? 'Blokir ini terkait otoritas guard asal. Membuka salinan akses saja tidak memulihkan akses akun.' : 'Membuka catatan akses ini; blokir lain tetap diperiksa.' });
+      const exportable = meta.identity_email_verified === true && isEmail(meta.identity_email);
+      blocks.push({ id: value.block_id, customer_email: isEmail(meta.identity_email) ? String(meta.identity_email).toLowerCase() : '', email_verified: meta.identity_email_verified === true, family: 'customer_access', reason: value.reason.slice(0, 300), created_at: new Date(value.created_at_ms).toISOString(), active: true, can_unban: !mirrored, can_export_data: exportable, export_ref: exportable ? adminBannedExportRefV476(row.security_key) : '', review_note: mirrored ? 'Blokir ini terkait otoritas guard asal. Membuka salinan akses saja tidak memulihkan akses akun.' : 'Membuka catatan akses ini; blokir lain tetap diperiksa.' });
       return;
     }
     const record = row && row.record_json;
@@ -1891,7 +2072,8 @@ async function businessBlocks(body) {
       : String(row.security_key || '');
     const id = digest(logicalKey); if (seen.has(id)) return; seen.add(id);
     const email = String(record.identity_email || record.identityEmail || record.email || '').trim().toLowerCase();
-    blocks.push({ id, customer_email: isEmail(email) ? email : '', email_verified: record.identity_email_verified === true, family: String(record.type || record.event_type || 'persistent').slice(0, 80), reason: String(record.reason || record.ban_reason || record.reason_code || '').slice(0, 300), created_at: String(record.created_at || record.createdAt || '').slice(0, 48), active: true, can_unban: false, review_note: 'Blokir ini terkait otoritas guard asal dan hanya ditampilkan sebagai baca-saja.' });
+    const exportable = record.identity_email_verified === true && isEmail(email) && Number(row.blocked_until_ms) > Date.now();
+    blocks.push({ id, customer_email: isEmail(email) ? email : '', email_verified: record.identity_email_verified === true, family: String(record.type || record.event_type || 'persistent').slice(0, 80), reason: String(record.reason || record.ban_reason || record.reason_code || '').slice(0, 300), created_at: String(record.created_at || record.createdAt || '').slice(0, 48), active: true, can_unban: false, can_export_data: exportable, export_ref: exportable ? adminBannedExportRefV476(row.security_key) : '', review_note: 'Blokir ini terkait otoritas guard asal dan hanya ditampilkan sebagai baca-saja.' });
   });
   return { ok: true, blocks, offset: Number(raw), has_more: result.data.length === 41, time: new Date().toISOString() };
 }
@@ -1919,7 +2101,7 @@ function adminCentralBanRequired(error) {
 }
 function adminGuardSelfTest() {
   try {
-    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_unban','admin_account_create','admin_smtp_send','admin_local_authorize','admin_document_prepare','admin_document_seal','admin_document_verify','admin_monitor'];
+    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_banned_data','admin_unban','admin_banned_pdf','admin_account_create','admin_smtp_send','admin_local_authorize','admin_document_prepare','admin_document_seal','admin_document_verify','admin_monitor'];
     return Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && ACTIONS.length === expected.length && expected.every((name, index) => ACTIONS[index] === name && Object.isFrozen(CONTRACTS[name]) && Object.isFrozen(CONTRACTS[name].methods) && Object.isFrozen(CONTRACTS[name].allowed) && Object.isFrozen(CONTRACTS[name].required))
       && exactToken(randomToken()) && PASSWORD_COOKIE.startsWith('__Host-') && SESSION_COOKIE.startsWith('__Host-') && adminSecretState().configured === true;
   } catch (_) { return false; }
@@ -2124,7 +2306,7 @@ async function businessMonitor() {
   let rows = [], ready = false; try { const result = await dbFetch('/rest/v1/security_customer_events?select=id,event_type,status,risk_level,description,created_at&order=created_at.desc&limit=20', { method: 'GET' }); if (result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; } } catch (_) { ready = false; }
   const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Guard internal handler admin mandiri yang menangani permintaan ini.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [] };
 }
-async function business(operation, body, origin, assertContext) { if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'unban') return businessUnban(body); if (operation === 'account_create') return businessAccountManage(body, origin, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
+async function business(operation, body, origin, assertContext) { if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'banned_data') return businessBannedDataV476(body); if (operation === 'unban') return businessUnban(body); if (operation === 'banned_pdf') return businessBannedPdfV476(body, origin, assertContext); if (operation === 'account_create') return businessAccountManage(body, origin, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
 
 function adminCentralBanReason(error) {
   const raw = String(error && error.code || 'admin_failure').trim().toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');
@@ -2239,7 +2421,7 @@ function buildOps(req, res, state) {
     verifySecret: value => { assertFullGuard(); const current = adminSecretState(); return current.configured && typeof value === 'string' && safeEqual(digest(value), digest(current.secret)); },
     publishPassword: async () => { assertFullGuard(); const current = adminSecretState(); if (!current.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503); await publishPasswordProof(req, res, state.origin, state.device, current.secret); },
     securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const centralBan = await adminCentralBanFailure(req, Object.assign(new Error('ADMIN_SECURITY_REPORT_ONE_STRIKE'), { code: 'ADMIN_SECURITY_REPORT_ONE_STRIKE', status: 403, statusCode: 403 })); if (!centralBan || centralBan.ok !== true) fail('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', 503); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); res.setHeader('X-Dirac-Central-Ban', '1'); return { blockedUntil: centralBan.blocked_until_ms, central_ban: true }; },
-    business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'unban', 'account_create', 'smtp_send', 'local_authorize', 'document_prepare', 'document_seal', 'document_verify', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
+    business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'banned_data', 'unban', 'banned_pdf', 'account_create', 'smtp_send', 'local_authorize', 'document_prepare', 'document_seal', 'document_verify', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
   });
   state.deactivate = () => { active = false; records.clear(); };
   return ops;
