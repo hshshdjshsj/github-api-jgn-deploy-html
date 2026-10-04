@@ -1791,8 +1791,16 @@ async function diracBuildBannedDataExportV472(req, user, password, passwordAlrea
     const claimed = await claimPersistentSecurityKeyOnceV194('s2s-account-export-v473:' + authUserId,
       { type: 'account_export', auth_user_id: authUserId }, 60);
     if (claimed !== true) return null;
+    const accessBlockProofV474 = proof && proof.accessBlockV474;
+    const verifiedAccessBlockV474 = Boolean(Object.isFrozen(proof) && accessBlockProofV474 && Object.isFrozen(accessBlockProofV474)
+      && accessBlockProofV474.requestId === String(ctx.requestId || '')
+      && ['database','memory'].includes(accessBlockProofV474.source)
+      && ((accessBlockProofV474.source === 'database' && ['ip','device'].includes(accessBlockProofV474.matchedScope))
+        || (accessBlockProofV474.source === 'memory' && accessBlockProofV474.matchedScope === ''))
+      && Number.isSafeInteger(accessBlockProofV474.blockedUntilMs) && accessBlockProofV474.blockedUntilMs > Date.now());
     const initialNetworkBlockV473 = await customerSecurityCheckAccessBlock(req, 'domain_login');
-    if (!initialNetworkBlockV473 || initialNetworkBlockV473.unavailable || initialNetworkBlockV473.blocked) return null;
+    if (!initialNetworkBlockV473 || initialNetworkBlockV473.unavailable
+        || (initialNetworkBlockV473.blocked && !verifiedAccessBlockV474)) return null;
     const scope = { ctx, req, proof, authUserId, email, customerId: link.customer_id, startedAt: Date.now(), pending: new Map(), parents: new Set(), bytes: 0 };
     DIRAC_BANNED_EXPORT_SCOPES_V473.set(req, scope);
     const profileRows = await diracBannedExportRowsV473(scope, 'customers');
@@ -1830,7 +1838,8 @@ async function diracBuildBannedDataExportV472(req, user, password, passwordAlrea
     }, password, authUserId);
     if (!bundleV473 || !diracBannedExportScopeValidV473(ctx, scope)) return null;
     const finalNetworkBlockV473 = await customerSecurityCheckAccessBlock(req, 'domain_login');
-    if (!finalNetworkBlockV473 || finalNetworkBlockV473.unavailable || finalNetworkBlockV473.blocked) return null;
+    if (!finalNetworkBlockV473 || finalNetworkBlockV473.unavailable
+        || (finalNetworkBlockV473.blocked && !verifiedAccessBlockV474)) return null;
     if (ctx.__diracCentralSupabaseRequestCacheV151 instanceof Map) {
       ctx.__diracCentralSupabaseRequestCacheV151.delete(diracCentralSupabaseRequestCacheKeyV151('/rest/v1/security_customer_auth_links?select='
         + encodeURIComponent('id,auth_user_id,customer_id,email,link_status,match_confidence,disabled_at,revoked_at,updated_at')
@@ -1908,7 +1917,22 @@ async function domainLogin(req, res, preloadedBody) {
       message: 'Status blokir keamanan belum dapat diverifikasi. Sesi login tidak diterbitkan.'
     });
   }
-  if (preAuthAccessBlockV350.blocked) {
+  const preAuthAccessBlockedV474 = preAuthAccessBlockV350.blocked === true;
+  const preAuthAccessBlockSourceV474 = String(preAuthAccessBlockV350.source || '').trim().toLowerCase();
+  const preAuthAccessBlockScopeV474 = String(preAuthAccessBlockV350.matched_scope || '').trim().toLowerCase();
+  const preAuthAccessBlockUntilMsV474 = preAuthAccessBlockedV474 ? Date.parse(String(preAuthAccessBlockV350.blocked_until || '')) : 0;
+  const preAuthCentralContextV474 = diracCentralCurrentContextV149();
+  const preAuthAccessBlockProofV474 = preAuthAccessBlockedV474
+    && preAuthCentralContextV474 && preAuthCentralContextV474.req === req
+    && preAuthCentralContextV474.action === 'domain_login' && preAuthCentralContextV474.method === 'POST'
+    && diracCentralHandlerContextFullyPassedV211(preAuthCentralContextV474, req)
+    && ['database','memory'].includes(preAuthAccessBlockSourceV474)
+    && ((preAuthAccessBlockSourceV474 === 'database' && ['ip','device'].includes(preAuthAccessBlockScopeV474))
+      || (preAuthAccessBlockSourceV474 === 'memory' && preAuthAccessBlockScopeV474 === ''))
+    && Number.isSafeInteger(preAuthAccessBlockUntilMsV474) && preAuthAccessBlockUntilMsV474 > Date.now()
+    ? Object.freeze({ requestId: String(preAuthCentralContextV474.requestId || ''), source: preAuthAccessBlockSourceV474,
+      matchedScope: preAuthAccessBlockScopeV474, blockedUntilMs: preAuthAccessBlockUntilMsV474 }) : null;
+  if (preAuthAccessBlockedV474 && !preAuthAccessBlockProofV474) {
     customerSecurityBootstrapClearAuthPublicationV332(req, res);
     return res.status(403).json({
       ok: false,
@@ -1939,6 +1963,22 @@ async function domainLogin(req, res, preloadedBody) {
   }, res);
 
   if (!result.ok) {
+    if (preAuthAccessBlockedV474) {
+      if (shouldCountDomainLoginFailure(result)) {
+        const blockedAccessFailedRateV474 = await registerDomainLoginFailure(req, loginGuard.email);
+        if (blockedAccessFailedRateV474.blocked) return sendDomainLoginRateDecisionV336(res, blockedAccessFailedRateV474);
+      }
+      customerSecurityBootstrapClearAuthPublicationV332(req, res);
+      return res.status(403).json({
+        ok: false,
+        code: 'LOGIN_ACCESS_BLOCKED',
+        message: 'Akses masuk ditolak oleh kebijakan keamanan.',
+        blocked_scope: preAuthAccessBlockV350.matched_scope || '',
+        network_lock: preAuthAccessBlockV350.matched_scope === 'ip',
+        blocked_until: preAuthAccessBlockV350.blocked_until,
+        retry_after_seconds: preAuthAccessBlockV350.retry_after_seconds || 300
+      });
+    }
     if (diracProviderAuthRejectedAsBannedV472(result)) {
       const bannedExportV472 = await diracTryProviderBannedExportV472(req, loginGuard.email, password).catch(() => null);
       if (bannedExportV472 && bannedExportV472.bundle) {
@@ -2016,7 +2056,23 @@ async function domainLogin(req, res, preloadedBody) {
   }
   const canonicalLoginSessionV321 = { ...result.data, user: canonicalLoginUserV321 };
   DIRAC_LOGIN_PASSWORD_PROOFS_V473.set(req, Object.freeze({ ctx: diracCentralCurrentContextV149(), user: canonicalLoginUserV321,
-    authUserId: String(canonicalLoginUserV321.id), email: normalizeAuthEmail(canonicalLoginUserV321.email), passwordDigest: crypto.createHash('sha256').update(password).digest('hex') }));
+    authUserId: String(canonicalLoginUserV321.id), email: normalizeAuthEmail(canonicalLoginUserV321.email), passwordDigest: crypto.createHash('sha256').update(password).digest('hex'),
+    ...(preAuthAccessBlockProofV474 ? { accessBlockV474: preAuthAccessBlockProofV474 } : {}) }));
+
+  if (preAuthAccessBlockedV474) {
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
+    const blockedAccessDataExportV474 = await diracBuildBannedDataExportV472(req, canonicalLoginUserV321, password, true).catch(() => null);
+    return res.status(403).json({
+      ok: false,
+      code: 'LOGIN_ACCESS_BLOCKED',
+      message: 'Akses masuk tetap diblokir. Kredensial hanya diverifikasi untuk menyiapkan arsip data terenkripsi; sesi login tidak diterbitkan.',
+      blocked_scope: preAuthAccessBlockV350.matched_scope || '',
+      network_lock: preAuthAccessBlockV350.matched_scope === 'ip',
+      blocked_until: preAuthAccessBlockV350.blocked_until,
+      retry_after_seconds: preAuthAccessBlockV350.retry_after_seconds || 300,
+      ...(blockedAccessDataExportV474 ? { data_export: diracDataArchiveTransportV473(blockedAccessDataExportV474) } : {})
+    });
+  }
 
   // V352: the duplicate full account/provider/settings/access-block traversal that used
   // to run here is intentionally deferred. The exact authoritative traversal still runs
