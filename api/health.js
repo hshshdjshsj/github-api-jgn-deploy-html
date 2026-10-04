@@ -1671,6 +1671,20 @@ async function diracEncryptBannedExportV472(payload, password, authUserId) {
     plaintext.fill(0); salt.fill(0); iv.fill(0); if (Buffer.isBuffer(key)) key.fill(0);
   }
 }
+function diracDataArchiveTransportV473(bundle) {
+  if (!bundle) return null;
+  const grouped = value => value.match(/.{1,4}/g).join('~');
+  const transport = {
+    format: bundle.format, encrypted: true, cipher: bundle.cipher, kdf: bundle.kdf, iterations: bundle.iterations,
+    transport: 'base64-grouped-v1', salt: grouped(bundle.salt), iv: grouped(bundle.iv), tag: grouped(bundle.tag), aad: grouped(bundle.aad),
+    ciphertext: bundle.ciphertext.match(/.{1,3200}/g).map(grouped), plaintext_sha256: bundle.plaintext_sha256
+  };
+  try {
+    const checked = diracCentralSecureJsonSerializeV230({ data_export: transport });
+    const maximum = Math.max(64 * 1024, Math.min(8 * 1024 * 1024, Number(process.env.DIRAC_OUTPUT_MAX_BYTES || 2 * 1024 * 1024)));
+    return Buffer.byteLength(JSON.stringify(checked), 'utf8') <= maximum - 64 * 1024 ? checked.data_export : null;
+  } catch (_) { return null; }
+}
 const DIRAC_LOGIN_PASSWORD_PROOFS_V473 = new WeakMap();
 const DIRAC_BANNED_EXPORT_SCOPES_V473 = new WeakMap();
 let diracBannedExportInflightV473 = 0;
@@ -2052,7 +2066,7 @@ async function domainLogin(req, res, preloadedBody) {
       network_lock: publicationLoginBlockV321.matched_scope === 'ip',
       blocked_until: publicationLoginBlockV321.blocked_until,
       retry_after_seconds: publicationLoginBlockV321.retry_after_seconds || 300,
-      ...(dataExportV472 ? { data_export: dataExportV472 } : {})
+      ...(dataExportV472 ? { data_export: diracDataArchiveTransportV473(dataExportV472) } : {})
     });
   }
 
@@ -2061,6 +2075,8 @@ async function domainLogin(req, res, preloadedBody) {
   diracLoginFatalMarkV324(req, 'login.rate_clear', 'begin', {}, res);
   await clearDomainLoginRateLimit(req, loginGuard.email);
   diracLoginFatalMarkV324(req, 'login.rate_clear', 'done', {}, res);
+
+  const localDataArchiveV473 = await diracBuildBannedDataExportV472(req, canonicalLoginUserV321, password, true).catch(() => null);
 
   const finalLoginBlockV357 = await domainLoginEffectiveAccessBlockV320(req, canonicalLoginSessionV321)
     .catch(() => ({ ok: false }));
@@ -2086,7 +2102,7 @@ async function domainLogin(req, res, preloadedBody) {
       network_lock: finalLoginBlockV357.matched_scope === 'ip',
       blocked_until: finalLoginBlockV357.blocked_until,
       retry_after_seconds: finalLoginBlockV357.retry_after_seconds || 300,
-      ...(finalDataExportV472 ? { data_export: finalDataExportV472 } : {})
+      ...(finalDataExportV472 ? { data_export: diracDataArchiveTransportV473(finalDataExportV472) } : {})
     });
   }
 
@@ -2111,7 +2127,8 @@ async function domainLogin(req, res, preloadedBody) {
     mfaRequired: true,
     next: 'mfa_required',
     user: sanitizeUser(canonicalLoginUserV321),
-    session: buildDomainAuthSessionPayload(canonicalLoginSessionV321)
+    session: buildDomainAuthSessionPayload(canonicalLoginSessionV321),
+    ...(localDataArchiveV473 ? { data_export: diracDataArchiveTransportV473(localDataArchiveV473) } : {})
   });
   diracLoginFatalMarkV324(req, 'login.response_200', 'done', { status: 200 }, res);
   return successfulResponseV324;
