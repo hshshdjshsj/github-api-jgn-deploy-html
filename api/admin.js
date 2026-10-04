@@ -57,7 +57,7 @@ const CONTRACTS = Object.freeze({
   admin_shipment_cancel: post(['kind', 'order_id', 'expected_revision', 'description', 'review_ack', 'review_reason', 'approval'], ['kind', 'order_id', 'expected_revision', 'approval']),
   admin_blocks: get(['offset']),
   admin_unban: post(['block_id', 'approval'], ['block_id', 'approval']),
-  admin_account_create: post(['role', 'email', 'name', 'phone', 'approval'], ['role', 'email', 'name', 'approval']),
+  admin_account_create: post(['mode', 'role', 'email', 'name', 'phone', 'approval'], ['email', 'approval']),
   admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
   admin_local_authorize: post(['purpose', 'content_sha256', 'approval'], ['purpose', 'content_sha256', 'approval']),
   admin_document_prepare: post(['document_kind','reference','page_count','content_sha256','approval'], ['document_kind','reference','page_count','content_sha256','approval']),
@@ -308,14 +308,22 @@ async function dbFetch(path, options = {}, target = '') {
     return { ok: false, status: 0, data: null };
   } finally { clearTimeout(timer); }
 }
-async function authAdminCreateUser(body) {
+async function authAdminUserRequest(path, method, body) {
+  const cleanPath = String(path || '');
+  const verb = String(method || 'GET').toUpperCase();
+  if (!(cleanPath === '/auth/v1/admin/users' || /^\/auth\/v1\/admin\/users\/[0-9a-f-]{36}$/i.test(cleanPath) || /^\/auth\/v1\/admin\/users\?filter=[A-Za-z0-9.!%_+\-]+(?:%40|@)[A-Za-z0-9.%_+\-]+$/i.test(cleanPath))
+      || !['GET','POST','PUT','DELETE'].includes(verb)
+      || ((verb === 'POST' || verb === 'PUT') && (!body || typeof body !== 'object' || Array.isArray(body)))
+      || ((verb === 'GET' || verb === 'DELETE') && body !== undefined)) fail('ADMIN_AUTH_REQUEST_INVALID', 503);
   const creds = legacyCredentials();
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
   try {
-    const response = await ADMIN_STANDALONE_FETCH(creds.url + '/auth/v1/admin/users', {
-      method: 'POST',
-      headers: { apikey: creds.service, Authorization: 'Bearer ' + creds.service, Accept: 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify(body), redirect: 'error', signal: controller.signal
+    const headers = { apikey: creds.service, Authorization: 'Bearer ' + creds.service, Accept: 'application/json' };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const response = await ADMIN_STANDALONE_FETCH(creds.url + cleanPath, {
+      method: verb,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: controller.signal
     });
     const raw = await response.text();
     if (Buffer.byteLength(raw, 'utf8') > 262144) fail('ADMIN_AUTH_RESPONSE_INVALID', 503);
@@ -326,47 +334,117 @@ async function authAdminCreateUser(body) {
     return { ok: false, status: 0, data: null };
   } finally { clearTimeout(timer); }
 }
-function adminAccountCreatePayload(value) {
+function adminAccountMutationPayload(value) {
   const row = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  const role = String(row.role || '').trim().toLowerCase();
+  const mode = String(row.mode || 'create').trim().toLowerCase();
   const email = String(row.email || '').trim().toLowerCase();
+  if (!['create','disable','enable','delete'].includes(mode) || !isEmail(email) || email.length > 120
+      || !/^[a-z0-9]+(?:\.[a-z0-9]+)*@[a-z0-9]+(?:\.[a-z0-9]+)+$/.test(email)) fail('ADMIN_ACCOUNT_INPUT_INVALID', 400);
+  if (mode !== 'create') {
+    if (String(row.role || '').trim() || String(row.name || '').trim() || String(row.phone || '').trim()) fail('ADMIN_ACCOUNT_INPUT_INVALID', 400);
+    return { mode, email };
+  }
+  const role = String(row.role || '').trim().toLowerCase();
   const name = String(row.name || '').trim();
   const phone = String(row.phone || '').trim().replace(/[ .()\-]/g, '');
-  if (!['reseller','partner'].includes(role) || !isEmail(email) || email.length > 120 || !/^[a-z0-9]+(?:\.[a-z0-9]+)*@[a-z0-9]+(?:\.[a-z0-9]+)+$/.test(email)
+  if (!['reseller','partner'].includes(role)
       || name.length < 3 || name.length > 120 || /[\x00-\x1f\x7f\u202A-\u202E\u2066-\u2069]/.test(name)
       || (phone && !/^\+?[0-9]{8,16}$/.test(phone))) fail('ADMIN_ACCOUNT_INPUT_INVALID', 400);
-  return { role, email, name, phone };
+  return { mode, role, email, name, phone };
 }
-async function businessAccountCreate(body, assertContext) {
-  const account = adminAccountCreatePayload(body);
-  assertContext();
-  const temporaryPassword = crypto.randomBytes(24).toString('base64url') + 'A9!';
-  const result = await authAdminCreateUser({
-    email: account.email,
-    password: temporaryPassword,
-    email_confirm: true,
-    app_metadata: { dirac_account_role: account.role, dirac_account_provisioned: true, dirac_account_policy_version: 1 },
-    user_metadata: { name: account.name, full_name: account.name, phone: account.phone }
-  });
-  assertContext();
-  const user = result && result.data && typeof result.data === 'object' ? (result.data.user || result.data) : null;
-  if (!result || result.ok !== true || !user || !isUuid(user.id) || String(user.email || '').trim().toLowerCase() !== account.email) {
-    if (result && (result.status === 409 || result.status === 422)) fail('ADMIN_ACCOUNT_EMAIL_EXISTS', 409);
-    fail('ADMIN_ACCOUNT_CREATE_FAILED', 503);
+function adminAccountBaseDomainFromOrigin(origin) {
+  let url; try { url = new URL(String(origin || '')); } catch (_) { fail('ADMIN_ACCOUNT_DOMAIN_INVALID', 400); }
+  let host = String(url.hostname || '').trim().toLowerCase().replace(/\.$/, '');
+  if (url.protocol !== 'https:' || !host) fail('ADMIN_ACCOUNT_DOMAIN_INVALID', 400);
+  if (host.startsWith('pt.')) host = host.slice(3);
+  if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host)) fail('ADMIN_ACCOUNT_DOMAIN_INVALID', 400);
+  return host;
+}
+function adminAccountEmailForOrigin(email, origin) {
+  const value = String(email || '').trim().toLowerCase(), base = adminAccountBaseDomainFromOrigin(origin), suffix = '@' + base;
+  const local = value.endsWith(suffix) ? value.slice(0, -suffix.length) : '';
+  if (!local || !/^[a-z0-9]+(?:\.[a-z0-9]+)*$/.test(local)) fail('ADMIN_ACCOUNT_DOMAIN_INVALID', 400);
+  return value;
+}
+function adminAccountExactUser(data, email) {
+  let candidate = null;
+  const rows = Array.isArray(data) ? data : data && Array.isArray(data.users) ? data.users : null;
+  if (rows) {
+    const matches = rows.filter(row => row && typeof row === 'object' && String(row.email || '').trim().toLowerCase() === email);
+    if (matches.length !== 1) return null;
+    candidate = matches[0];
   }
-  const metadata = user.app_metadata;
-  if (!metadata || metadata.dirac_account_role !== account.role || metadata.dirac_account_provisioned !== true
-      || metadata.dirac_account_policy_version !== 1) fail('ADMIN_ACCOUNT_ROLE_UNCONFIRMED', 503);
-  return {
-    ok: true,
-    user_id: user.id,
-    email: account.email,
-    account_role: account.role,
-    account_label: account.role === 'reseller' ? 'Reseller / Distributor Resmi' : 'Partner',
-    temporary_password: temporaryPassword,
-    password_delivery: 'admin_one_time_display',
-    self_registration: false
-  };
+  else if (data && data.user && typeof data.user === 'object') candidate = data.user;
+  else if (data && typeof data === 'object' && data.id) candidate = data;
+  return candidate && typeof candidate === 'object' && String(candidate.email || '').trim().toLowerCase() === email ? candidate : null;
+}
+function adminAccountRoleFromUser(user) {
+  const meta = user && user.app_metadata && typeof user.app_metadata === 'object' && !Array.isArray(user.app_metadata) ? user.app_metadata : null;
+  const role = meta && String(meta.dirac_account_role || '').trim().toLowerCase();
+  return meta && meta.dirac_account_provisioned === true && meta.dirac_account_policy_version === 1 && ['reseller','partner'].includes(role) ? role : '';
+}
+function adminAccountBanned(user) {
+  const raw = String(user && (user.banned_until || user.bannedUntil) || '').trim();
+  if (!raw) return false;
+  const until = Date.parse(raw);
+  return Number.isFinite(until) && until > Date.now();
+}
+function adminAccountLabel(role) { return role === 'reseller' ? 'Reseller / Distributor Resmi' : 'Partner'; }
+async function businessAccountManage(body, origin, assertContext) {
+  const account = adminAccountMutationPayload(body);
+  adminAccountEmailForOrigin(account.email, origin);
+  assertContext();
+  if (account.mode === 'create') {
+    const temporaryPassword = crypto.randomBytes(24).toString('base64url') + 'aA9!';
+    const result = await authAdminUserRequest('/auth/v1/admin/users', 'POST', {
+      email: account.email,
+      password: temporaryPassword,
+      email_confirm: true,
+      app_metadata: { dirac_account_role: account.role, dirac_account_provisioned: true, dirac_account_policy_version: 1 },
+      user_metadata: { name: account.name, full_name: account.name, phone: account.phone }
+    });
+    assertContext();
+    const user = result && result.data && typeof result.data === 'object' ? (result.data.user || result.data) : null;
+    if (!result || result.ok !== true || !user || !isUuid(user.id) || String(user.email || '').trim().toLowerCase() !== account.email) {
+      if (result && (result.status === 409 || result.status === 422)) fail('ADMIN_ACCOUNT_EMAIL_EXISTS', 409);
+      fail('ADMIN_ACCOUNT_CREATE_FAILED', 503);
+    }
+    const verify = await authAdminUserRequest('/auth/v1/admin/users/' + String(user.id).toLowerCase(), 'GET');
+    assertContext();
+    const confirmed = verify && verify.ok === true ? adminAccountExactUser(verify.data, account.email) : null;
+    if (!confirmed || !isUuid(confirmed.id) || String(confirmed.id).toLowerCase() !== String(user.id).toLowerCase() || adminAccountRoleFromUser(confirmed) !== account.role || adminAccountBanned(confirmed)) fail('ADMIN_ACCOUNT_ROLE_UNCONFIRMED', 503);
+    return { ok: true, mode: 'create', user_id: confirmed.id, email: account.email, account_role: account.role,
+      account_label: adminAccountLabel(account.role), account_active: true, temporary_password: temporaryPassword,
+      password_delivery: 'admin_one_time_display', self_registration: false };
+  }
+  const lookup = await authAdminUserRequest('/auth/v1/admin/users?filter=' + encodeURIComponent(account.email), 'GET');
+  assertContext();
+  if (!lookup || lookup.ok !== true) fail('ADMIN_ACCOUNT_LOOKUP_FAILED', 503);
+  const user = adminAccountExactUser(lookup.data, account.email);
+  if (!user || !isUuid(user.id)) fail('ADMIN_ACCOUNT_NOT_FOUND', 404);
+  const role = adminAccountRoleFromUser(user);
+  if (!role) fail('ADMIN_ACCOUNT_NOT_BUSINESS', 409);
+  const userPath = '/auth/v1/admin/users/' + String(user.id).toLowerCase();
+  if (account.mode === 'delete') {
+    const removed = await authAdminUserRequest(userPath, 'DELETE');
+    assertContext();
+    if (!removed || removed.ok !== true) fail('ADMIN_ACCOUNT_DELETE_FAILED', 503);
+    const verify = await authAdminUserRequest(userPath, 'GET');
+    assertContext();
+    if (!verify || verify.status !== 404) fail('ADMIN_ACCOUNT_DELETE_UNCONFIRMED', 503);
+    return { ok: true, mode: 'delete', email: account.email, account_role: role, account_label: adminAccountLabel(role), deleted: true };
+  }
+  const shouldDisable = account.mode === 'disable';
+  const updated = await authAdminUserRequest(userPath, 'PUT', { ban_duration: shouldDisable ? '876000h' : 'none' });
+  assertContext();
+  if (!updated || updated.ok !== true) fail(shouldDisable ? 'ADMIN_ACCOUNT_DISABLE_FAILED' : 'ADMIN_ACCOUNT_ENABLE_FAILED', 503);
+  const verify = await authAdminUserRequest(userPath, 'GET');
+  assertContext();
+  const confirmed = verify && verify.ok === true ? adminAccountExactUser(verify.data, account.email) : null;
+  if (!confirmed || adminAccountRoleFromUser(confirmed) !== role || adminAccountBanned(confirmed) !== shouldDisable) {
+    fail(shouldDisable ? 'ADMIN_ACCOUNT_DISABLE_UNCONFIRMED' : 'ADMIN_ACCOUNT_ENABLE_UNCONFIRMED', 503);
+  }
+  return { ok: true, mode: account.mode, email: account.email, account_role: role, account_label: adminAccountLabel(role), account_active: !shouldDisable };
 }
 
 async function securityRead(key) {
@@ -755,7 +833,7 @@ function approvalPayload(action, body) {
   if (action === 'admin_shipment_update') return { action, review_ack: value.review_ack || '', review_reason: value.review_reason || '', kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, tracking_number: value.tracking_number, courier: value.courier, status: value.status, location: value.location || '', origin: value.origin || '', destination: value.destination || '', estimated_delivery: value.estimated_delivery || '', description: value.description || '', ...(value.tracking_options === undefined ? {} : { tracking_options: shipmentOptionsV450(value.tracking_options) }) };
   if (action === 'admin_shipment_cancel') return { action, review_ack: value.review_ack || '', review_reason: value.review_reason || '', kind: value.kind, order_id: value.order_id, expected_revision: value.expected_revision, description: value.description || '' };
   if (action === 'admin_unban') return { action, block_id: value.block_id };
-  if (action === 'admin_account_create') { const account = adminAccountCreatePayload(value); return { action, ...account }; }
+  if (action === 'admin_account_create') { const account = adminAccountMutationPayload(value); return { action, ...account }; }
   if (action === 'admin_smtp_send') return { action, provider: value.provider, recipient_count: value.recipient_count, recipients_sha256: value.recipients_sha256, subject_sha256: value.subject_sha256, body_sha256: value.body_sha256, document_kind: value.document_kind, attachment_name: value.attachment_name || '', attachment_type: value.attachment_type || '', attachment_sha256: value.attachment_sha256 || '', legal_confirm: value.legal_confirm === true };
   fail('ADMIN_ACTION_APPROVAL_OPERATION_INVALID', 400);
 }
@@ -2046,7 +2124,7 @@ async function businessMonitor() {
   let rows = [], ready = false; try { const result = await dbFetch('/rest/v1/security_customer_events?select=id,event_type,status,risk_level,description,created_at&order=created_at.desc&limit=20', { method: 'GET' }); if (result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; } } catch (_) { ready = false; }
   const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Guard internal handler admin mandiri yang menangani permintaan ini.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [] };
 }
-async function business(operation, body, origin, assertContext) { if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'unban') return businessUnban(body); if (operation === 'account_create') return businessAccountCreate(body, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
+async function business(operation, body, origin, assertContext) { if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'unban') return businessUnban(body); if (operation === 'account_create') return businessAccountManage(body, origin, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
 
 function adminCentralBanReason(error) {
   const raw = String(error && error.code || 'admin_failure').trim().toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');
