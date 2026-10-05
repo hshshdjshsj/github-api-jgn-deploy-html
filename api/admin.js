@@ -262,7 +262,7 @@ function securityCredentials() {
 }
 function multiDbEnabled() { return /^(?:1|true|yes|on)$/i.test(String(process.env.DIRAC_ENABLE_MULTI_DB_ROUTER || process.env.DIRAC_MULTI_DB_ROUTER_ENABLED || '').trim()); }
 function businessTarget(table) {
-  const map = { customers: 'CORE', domain_orders: 'DOMAIN', domain_order_items: 'DOMAIN', orders: 'COMMERCE', order_items: 'COMMERCE', payment_transactions: 'PAYMENT_SERVICE', security_customer_account_requests: 'PAYMENT_SERVICE', security_customer_events: 'PAYMENT_SERVICE' };
+  const map = { customers: 'CORE', security_customer_auth_links: 'CUSTOMER_SECURITY', security_customer_sessions: 'CUSTOMER_SECURITY', domain_passkeys: 'DOMAIN', domain_orders: 'DOMAIN', domain_order_items: 'DOMAIN', orders: 'COMMERCE', order_items: 'COMMERCE', payment_transactions: 'PAYMENT_SERVICE', security_customer_account_requests: 'PAYMENT_SERVICE', security_customer_events: 'PAYMENT_SERVICE' };
   if (!multiDbEnabled() || !map[table]) return legacyCredentials();
   const prefix = 'DIRAC_' + map[table] + '_SUPABASE_';
   const url = String(process.env[prefix + 'URL'] || '').trim().replace(/\/+$/, '');
@@ -340,7 +340,7 @@ function adminAccountMutationPayload(value) {
   const row = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const mode = String(row.mode || 'create').trim().toLowerCase();
   const email = String(row.email || '').trim().toLowerCase();
-  if (!['create','disable','enable','delete'].includes(mode) || !isEmail(email) || email.length > 120
+  if (!['create','disable','enable','delete','reset_password','reset_passkey'].includes(mode) || !isEmail(email) || email.length > 120
       || !/^[a-z0-9]+(?:\.[a-z0-9]+)*@[a-z0-9]+(?:\.[a-z0-9]+)+$/.test(email)) fail('ADMIN_ACCOUNT_INPUT_INVALID', 400);
   if (mode !== 'create') {
     if (String(row.role || '').trim() || String(row.name || '').trim() || String(row.phone || '').trim()) fail('ADMIN_ACCOUNT_INPUT_INVALID', 400);
@@ -435,6 +435,61 @@ async function businessAccountManage(body, origin, assertContext) {
     assertContext();
     if (!verify || verify.status !== 404) fail('ADMIN_ACCOUNT_DELETE_UNCONFIRMED', 503);
     return { ok: true, mode: 'delete', email: account.email, account_role: role, account_label: adminAccountLabel(role), deleted: true };
+  }
+  if (account.mode === 'reset_password') {
+    const temporaryPassword = crypto.randomBytes(24).toString('base64url') + 'aA9!';
+    const updated = await authAdminUserRequest(userPath, 'PUT', { password: temporaryPassword });
+    assertContext();
+    const changed = updated && updated.ok === true ? adminAccountExactUser(updated.data, account.email) : null;
+    if (!changed || String(changed.id || '').toLowerCase() !== String(user.id).toLowerCase() || adminAccountRoleFromUser(changed) !== role) fail('ADMIN_ACCOUNT_PASSWORD_RESET_FAILED', 503);
+    let sessionsRevoked = 0;
+    const link = await dbFetch('/rest/v1/security_customer_auth_links?select=' + encodeURIComponent('auth_user_id,customer_id,email,link_status,disabled_at,revoked_at') + '&auth_user_id=eq.' + encodeURIComponent(String(user.id).toLowerCase()) + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&limit=2', { method: 'GET' });
+    assertContext();
+    if (!link || !link.ok || !Array.isArray(link.data) || link.data.length > 1) fail('ADMIN_ACCOUNT_SECURITY_STATE_UNAVAILABLE', 503);
+    if (link.data.length === 1) {
+      const customerId = String(link.data[0] && link.data[0].customer_id || '').toLowerCase();
+      if (!isUuid(customerId) || String(link.data[0].auth_user_id || '').toLowerCase() !== String(user.id).toLowerCase() || String(link.data[0].email || '').toLowerCase() !== account.email) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
+      const nowIso = new Date().toISOString();
+      const revoked = await dbFetch('/rest/v1/security_customer_sessions?select=' + encodeURIComponent('id,customer_id,status,revoked_at,revoke_reason') + '&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { status: 'revoked', revoked_at: nowIso, revoke_reason: 'admin_password_reset' } });
+      assertContext();
+      if (!revoked || !revoked.ok || !Array.isArray(revoked.data)) fail('ADMIN_ACCOUNT_SESSION_REVOCATION_FAILED', 503);
+      sessionsRevoked = revoked.data.length;
+      const active = await dbFetch('/rest/v1/security_customer_sessions?select=id&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null&limit=1', { method: 'GET' });
+      assertContext();
+      if (!active || !active.ok || !Array.isArray(active.data) || active.data.length !== 0) fail('ADMIN_ACCOUNT_SESSION_REVOCATION_UNCONFIRMED', 503);
+    }
+    const verify = await authAdminUserRequest(userPath, 'GET');
+    assertContext();
+    const confirmed = verify && verify.ok === true ? adminAccountExactUser(verify.data, account.email) : null;
+    if (!confirmed || adminAccountRoleFromUser(confirmed) !== role || adminAccountBanned(confirmed) !== adminAccountBanned(user)) fail('ADMIN_ACCOUNT_PASSWORD_RESET_UNCONFIRMED', 503);
+    return { ok: true, mode: 'reset_password', email: account.email, account_role: role, account_label: adminAccountLabel(role), temporary_password: temporaryPassword, password_delivery: 'admin_one_time_display', sessions_revoked: sessionsRevoked };
+  }
+  if (account.mode === 'reset_passkey') {
+    const link = await dbFetch('/rest/v1/security_customer_auth_links?select=' + encodeURIComponent('auth_user_id,customer_id,email,link_status,disabled_at,revoked_at') + '&auth_user_id=eq.' + encodeURIComponent(String(user.id).toLowerCase()) + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&limit=2', { method: 'GET' });
+    assertContext();
+    if (!link || !link.ok || !Array.isArray(link.data) || link.data.length > 1) fail('ADMIN_ACCOUNT_SECURITY_STATE_UNAVAILABLE', 503);
+    if (link.data.length === 0) return { ok: true, mode: 'reset_passkey', email: account.email, account_role: role, account_label: adminAccountLabel(role), passkeys_revoked: 0, sessions_revoked: 0, passkey_enrolled: false };
+    const customerId = String(link.data[0] && link.data[0].customer_id || '').toLowerCase();
+    if (!isUuid(customerId) || String(link.data[0].auth_user_id || '').toLowerCase() !== String(user.id).toLowerCase() || String(link.data[0].email || '').toLowerCase() !== account.email) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
+    const activePasskeys = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at') + '&user_id=eq.' + encodeURIComponent(customerId) + '&is_active=eq.true&revoked_at=is.null', { method: 'GET' });
+    assertContext();
+    if (!activePasskeys || !activePasskeys.ok || !Array.isArray(activePasskeys.data) || activePasskeys.data.length > 16) fail('ADMIN_ACCOUNT_PASSKEY_STATE_UNAVAILABLE', 503);
+    const nowIso = new Date().toISOString();
+    let passkeysRevoked = 0;
+    if (activePasskeys.data.length) {
+      const revokedPasskeys = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(customerId) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, revoked_at: nowIso, revoke_reason: 'admin_passkey_reset', updated_at: nowIso } });
+      assertContext();
+      if (!revokedPasskeys || !revokedPasskeys.ok || !Array.isArray(revokedPasskeys.data) || revokedPasskeys.data.length !== activePasskeys.data.length) fail('ADMIN_ACCOUNT_PASSKEY_RESET_FAILED', 503);
+      passkeysRevoked = revokedPasskeys.data.length;
+    }
+    const revokedSessions = await dbFetch('/rest/v1/security_customer_sessions?select=' + encodeURIComponent('id,customer_id,status,revoked_at,revoke_reason') + '&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { status: 'revoked', revoked_at: nowIso, revoke_reason: 'admin_passkey_reset' } });
+    assertContext();
+    if (!revokedSessions || !revokedSessions.ok || !Array.isArray(revokedSessions.data)) fail('ADMIN_ACCOUNT_SESSION_REVOCATION_FAILED', 503);
+    const passkeyCheck = await dbFetch('/rest/v1/domain_passkeys?select=id&user_id=eq.' + encodeURIComponent(customerId) + '&is_active=eq.true&revoked_at=is.null&limit=1', { method: 'GET' });
+    const sessionCheck = await dbFetch('/rest/v1/security_customer_sessions?select=id&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null&limit=1', { method: 'GET' });
+    assertContext();
+    if (!passkeyCheck || !passkeyCheck.ok || !Array.isArray(passkeyCheck.data) || passkeyCheck.data.length !== 0 || !sessionCheck || !sessionCheck.ok || !Array.isArray(sessionCheck.data) || sessionCheck.data.length !== 0) fail('ADMIN_ACCOUNT_PASSKEY_RESET_UNCONFIRMED', 503);
+    return { ok: true, mode: 'reset_passkey', email: account.email, account_role: role, account_label: adminAccountLabel(role), passkeys_revoked: passkeysRevoked, sessions_revoked: revokedSessions.data.length, passkey_enrolled: passkeysRevoked > 0 };
   }
   const shouldDisable = account.mode === 'disable';
   const updated = await authAdminUserRequest(userPath, 'PUT', { ban_duration: shouldDisable ? '876000h' : 'none' });

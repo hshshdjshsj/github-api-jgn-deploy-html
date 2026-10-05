@@ -1898,16 +1898,22 @@ async function domainLogin(req, res, preloadedBody) {
     ok: Boolean(loginGuard && loginGuard.ok),
     status: Number(loginGuard && loginGuard.status || 0)
   }, res);
-  if (!loginGuard.ok) {
+  const loginInputRestrictedExportV475 = Boolean(loginGuard && loginGuard.ok !== true
+    && loginGuard.exportPasswordVerificationV475 === true && Number(loginGuard.status) === 403
+    && loginGuard.body && loginGuard.body.code === 'LOGIN_ACCESS_RESTRICTED'
+    && isStrictDomainLoginEmail(email) && password
+    && detectDomainAuthThreat({ rawEmail, password }).detected !== true);
+  if (!loginGuard.ok && !loginInputRestrictedExportV475) {
     return res.status(loginGuard.status).json(loginGuard.body);
   }
+  const loginEmailV475 = loginInputRestrictedExportV475 ? email : loginGuard.email;
 
   // V352 performance-safe scheduling: these two checks are independent reads.
   // Both still execute and both remain fail-closed before password authentication.
   diracLoginFatalMarkV324(req, 'login.rate_check', 'begin', {}, res);
   const [preAuthAccessBlockV350, loginRate] = await Promise.all([
     customerSecurityCheckAccessBlock(req, 'domain_login'),
-    checkDomainLoginRateLimit(req, loginGuard.email)
+    checkDomainLoginRateLimit(req, loginEmailV475)
   ]);
   if (!preAuthAccessBlockV350 || preAuthAccessBlockV350.unavailable) {
     customerSecurityBootstrapClearAuthPublicationV332(req, res);
@@ -1948,6 +1954,7 @@ async function domainLogin(req, res, preloadedBody) {
     ok: Boolean(loginRate && loginRate.ok)
   }, res);
   if (!loginRate.ok) {
+    if (loginInputRestrictedExportV475) return res.status(loginGuard.status).json(loginGuard.body);
     return sendDomainLoginRateDecisionV336(res, loginRate);
   }
 
@@ -1955,7 +1962,7 @@ async function domainLogin(req, res, preloadedBody) {
   const result = await supabaseFetch('/auth/v1/token?grant_type=password', {
     method: 'POST',
     auth: 'anon',
-    body: { email: loginGuard.email, password }
+    body: { email: loginEmailV475, password }
   });
   diracLoginFatalMarkV324(req, 'login.auth_token', 'done', {
     ok: Boolean(result && result.ok),
@@ -1963,9 +1970,14 @@ async function domainLogin(req, res, preloadedBody) {
   }, res);
 
   if (!result.ok) {
+    if (loginInputRestrictedExportV475) {
+      if (shouldCountDomainLoginFailure(result)) await registerDomainLoginFailure(req, loginEmailV475);
+      customerSecurityBootstrapClearAuthPublicationV332(req, res);
+      return res.status(loginGuard.status).json(loginGuard.body);
+    }
     if (preAuthAccessBlockedV474) {
       if (shouldCountDomainLoginFailure(result)) {
-        const blockedAccessFailedRateV474 = await registerDomainLoginFailure(req, loginGuard.email);
+        const blockedAccessFailedRateV474 = await registerDomainLoginFailure(req, loginEmailV475);
         if (blockedAccessFailedRateV474.blocked) return sendDomainLoginRateDecisionV336(res, blockedAccessFailedRateV474);
       }
       customerSecurityBootstrapClearAuthPublicationV332(req, res);
@@ -1980,7 +1992,7 @@ async function domainLogin(req, res, preloadedBody) {
       });
     }
     if (diracProviderAuthRejectedAsBannedV472(result)) {
-      const bannedExportV472 = await diracTryProviderBannedExportV472(req, loginGuard.email, password).catch(() => null);
+      const bannedExportV472 = await diracTryProviderBannedExportV472(req, loginEmailV475, password).catch(() => null);
       if (bannedExportV472 && bannedExportV472.bundle) {
         customerSecurityBootstrapClearAuthPublicationV332(req, res);
         return res.status(403).json({
@@ -1992,12 +2004,12 @@ async function domainLogin(req, res, preloadedBody) {
           data_export: bannedExportV472.bundle
         });
       }
-      const bannedCredentialRateV472 = await registerDomainLoginFailure(req, loginGuard.email);
+      const bannedCredentialRateV472 = await registerDomainLoginFailure(req, loginEmailV475);
       if (bannedCredentialRateV472.blocked) return sendDomainLoginRateDecisionV336(res, bannedCredentialRateV472);
       return res.status(403).json({ ok: false, message: 'Email atau password belum sesuai.' });
     }
     if (shouldCountDomainLoginFailure(result)) {
-      const failedRate = await registerDomainLoginFailure(req, loginGuard.email);
+      const failedRate = await registerDomainLoginFailure(req, loginEmailV475);
 
       if (failedRate.blocked) {
         return sendDomainLoginRateDecisionV336(res, failedRate);
@@ -2040,7 +2052,7 @@ async function domainLogin(req, res, preloadedBody) {
   if (!canonicalLoginUserV321
       || !customerSecurityLooksLikeUuid(String(canonicalLoginUserV321.id || ''))
       || !isValidAuthEmail(normalizeAuthEmail(canonicalLoginUserV321.email || ''))
-      || normalizeAuthEmail(canonicalLoginUserV321.email || '') !== loginGuard.email
+      || normalizeAuthEmail(canonicalLoginUserV321.email || '') !== loginEmailV475
       || !loginJwtIdentityV321
       || String(loginJwtIdentityV321.userId || '') !== String(canonicalLoginUserV321.id || '')
       || normalizeAuthEmail(loginJwtIdentityV321.email || '') !== normalizeAuthEmail(canonicalLoginUserV321.email || '')
@@ -2058,6 +2070,23 @@ async function domainLogin(req, res, preloadedBody) {
   DIRAC_LOGIN_PASSWORD_PROOFS_V473.set(req, Object.freeze({ ctx: diracCentralCurrentContextV149(), user: canonicalLoginUserV321,
     authUserId: String(canonicalLoginUserV321.id), email: normalizeAuthEmail(canonicalLoginUserV321.email), passwordDigest: crypto.createHash('sha256').update(password).digest('hex'),
     ...(preAuthAccessBlockProofV474 ? { accessBlockV474: preAuthAccessBlockProofV474 } : {}) }));
+
+  if (loginInputRestrictedExportV475) {
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
+    const restrictedDataExportV475 = await diracBuildBannedDataExportV472(req, canonicalLoginUserV321, password, true).catch(() => null);
+    const restrictedTransportV475 = restrictedDataExportV475 ? diracDataArchiveTransportV473(restrictedDataExportV475) : null;
+    if (!restrictedTransportV475) return res.status(loginGuard.status).json(loginGuard.body);
+    return res.status(403).json({
+      ok: false,
+      code: 'LOGIN_ACCESS_BLOCKED',
+      message: 'Akses masuk tetap dibatasi. Kredensial hanya diverifikasi untuk menyiapkan arsip data terenkripsi; sesi login tidak diterbitkan.',
+      blocked_scope: 'login_security',
+      network_lock: false,
+      blocked_years: Number(loginGuard.body && loginGuard.body.blocked_years || 10),
+      incident_code: String(loginGuard.body && loginGuard.body.incident_code || ''),
+      data_export: restrictedTransportV475
+    });
+  }
 
   if (preAuthAccessBlockedV474) {
     customerSecurityBootstrapClearAuthPublicationV332(req, res);
@@ -2129,7 +2158,7 @@ async function domainLogin(req, res, preloadedBody) {
   // Clear stale failed-password counters only after the final authoritative ban decision.
   // A clear failure never grants access; the final ban decision above has already passed.
   diracLoginFatalMarkV324(req, 'login.rate_clear', 'begin', {}, res);
-  await clearDomainLoginRateLimit(req, loginGuard.email);
+  await clearDomainLoginRateLimit(req, loginEmailV475);
   diracLoginFatalMarkV324(req, 'login.rate_clear', 'done', {}, res);
 
   const localDataArchiveV473 = await diracBuildBannedDataExportV472(req, canonicalLoginUserV321, password, true).catch(() => null);
@@ -2598,7 +2627,8 @@ async function guardDomainLoginInput(req, res, input) {
     return {
       ok: false,
       status: 403,
-      body: buildLoginSecurityTenYearBody(incident)
+      body: buildLoginSecurityTenYearBody(incident),
+      exportPasswordVerificationV475: action === 'domain_login'
     };
   }
 
@@ -61528,7 +61558,7 @@ async function diracAdminStepUpV410(req, ctx) {
   if (proof.expiresAt <= now) return missing();
   const factor = ['admin_email_start', 'admin_email_verify', 'admin_passkey_start', 'admin_passkey_verify', 'admin_totp_verify'].includes(ctx.action);
   if (factor && now - proof.createdAt >= 600000) return missing();
-  const business = ['admin_orders', 'admin_shipment_update', 'admin_shipment_cancel', 'admin_blocks', 'admin_unban', 'admin_monitor'].includes(ctx.action);
+  const business = ['admin_orders', 'admin_shipment_update', 'admin_shipment_cancel', 'admin_blocks', 'admin_unban', 'admin_account_create', 'admin_monitor'].includes(ctx.action);
   if (!factor && !business && !['admin_status', 'admin_logout'].includes(ctx.action)) return { ok: false, reason: 'admin_authority_action_invalid_v410' };
   if (business) {
     const sessions = readCookieTokenCandidates(parseCookies(req), '__Host-dirac_admin_v405');
@@ -61788,7 +61818,7 @@ async function diracCentralAdminDispatchV405(req, res, ctx) {
     clearSession: async () => { assertContext(); if (ctx.action !== 'admin_logout') throw new Error('ADMIN_SESSION_CLEAR_INVALID'); await diracAdminRevokePasswordV410(req, ctx); assertContext(); appendSetCookie(res, cookieName + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); appendSetCookie(res, DIRAC_ADMIN_PASSWORD_COOKIE_V410 + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); clearSessionCookies(res); },
     business: async (operation, body) => {
       assertContext();
-      const expected = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_monitor: 'monitor' }[ctx.action];
+      const expected = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_account_create: 'account_create', admin_monitor: 'monitor' }[ctx.action];
       if (operation !== expected || authority.business !== true || DIRAC_ADMIN_BUSINESS_CAPABILITIES_V405.has(req)) throw new Error('ADMIN_BUSINESS_CONTRACT_INVALID');
       const capability = Object.freeze({ req, ctx, admin, operation, active: true });
       DIRAC_ADMIN_BUSINESS_CAPABILITIES_V405.set(req, capability);
@@ -61831,7 +61861,7 @@ const DIRAC_ADMIN_ORDER_SELECT_V406 = Object.freeze({
   regular: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
   domain: 'id,customer_id,customer_name,customer_email,customer_whatsapp,domain_name,total_price,currency,payment_status,order_status,created_at'
 });
-const DIRAC_ADMIN_BUSINESS_ACTIONS_V406 = new Set(['admin_orders', 'admin_shipment_update', 'admin_shipment_cancel', 'admin_blocks', 'admin_unban', 'admin_monitor']);
+const DIRAC_ADMIN_BUSINESS_ACTIONS_V406 = new Set(['admin_orders', 'admin_shipment_update', 'admin_shipment_cancel', 'admin_blocks', 'admin_unban', 'admin_account_create', 'admin_monitor']);
 
 function diracAdminBusinessErrorV406(code, status = 503) {
   return Object.assign(new Error(code), { code, statusCode: status, status });
@@ -61842,7 +61872,7 @@ function diracAdminBusinessFullyAuthorizedV406(ctx) {
       || !DIRAC_ADMIN_BUSINESS_ACTIONS_V406.has(ctx.action)
       || diracCentralCurrentContextV149() !== ctx
       || diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) !== true) return null;
-  const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_monitor: 'monitor' }[ctx.action];
+  const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_unban: 'unban', admin_account_create: 'account_create', admin_monitor: 'monitor' }[ctx.action];
   if (diracAdminBusinessAuthorizedV405(ctx, operation) !== true) return null;
   const capability = DIRAC_ADMIN_BUSINESS_CAPABILITIES_V405.get(ctx.req);
   const proof = capability && capability.admin;
@@ -62137,6 +62167,133 @@ async function diracAdminSaveShipmentV406(req, res, cancel) {
   return res.status(200).json({ ok: true, shipment: diracAdminShipmentPublicV406(confirmed) });
 }
 
+
+function diracAdminAccountMutationV474(value) {
+  const row = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const mode = String(row.mode || 'create').trim().toLowerCase();
+  const email = normalizeAuthEmail(row.email || '');
+  const base = String(diracBaseDomainV250() || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+  const suffix = '@' + base;
+  const local = email && base && email.endsWith(suffix) ? email.slice(0, -suffix.length) : '';
+  if (!['create','disable','enable','delete'].includes(mode)
+      || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(base)
+      || !local || !/^[a-z0-9]+(?:\.[a-z0-9]+)*$/.test(local) || email.length > 120) {
+    throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_INPUT_INVALID', 400);
+  }
+  if (mode !== 'create') {
+    if (String(row.role || '').trim() || String(row.name || '').trim() || String(row.phone || '').trim()) {
+      throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_INPUT_INVALID', 400);
+    }
+    return { mode, email };
+  }
+  const role = String(row.role || '').trim().toLowerCase();
+  const name = String(row.name || '').trim();
+  const phone = String(row.phone || '').trim().replace(/[ .()\-]/g, '');
+  if (!['reseller','partner'].includes(role) || name.length < 3 || name.length > 120
+      || /[\x00-\x1f\x7f\u202A-\u202E\u2066-\u2069]/.test(name)
+      || (phone && !/^\+?[0-9]{8,16}$/.test(phone))) {
+    throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_INPUT_INVALID', 400);
+  }
+  return { mode, role, email, name, phone };
+}
+
+function diracAdminAccountExactUserV474(data, email) {
+  let candidate = null;
+  if (Array.isArray(data)) { if (data.length !== 1) return null; candidate = data[0]; }
+  else if (data && Array.isArray(data.users)) { if (data.users.length !== 1) return null; candidate = data.users[0]; }
+  else if (data && data.user && typeof data.user === 'object') candidate = data.user;
+  else if (data && typeof data === 'object' && data.id) candidate = data;
+  return candidate && typeof candidate === 'object' && normalizeAuthEmail(candidate.email || '') === email ? candidate : null;
+}
+
+function diracAdminAccountRoleV474(user) {
+  const meta = user && user.app_metadata && typeof user.app_metadata === 'object' && !Array.isArray(user.app_metadata) ? user.app_metadata : null;
+  const role = meta && String(meta.dirac_account_role || '').trim().toLowerCase();
+  return meta && meta.dirac_account_provisioned === true && meta.dirac_account_policy_version === 1 && ['reseller','partner'].includes(role) ? role : '';
+}
+
+function diracAdminAccountBannedV474(user) {
+  const raw = String(user && (user.banned_until || user.bannedUntil) || '').trim();
+  if (!raw) return false;
+  const until = Date.parse(raw);
+  return Number.isFinite(until) && until > Date.now();
+}
+
+function diracAdminAccountLabelV474(role) {
+  return role === 'reseller' ? 'Reseller / Distributor Resmi' : 'Partner';
+}
+
+function diracAdminAccountAssertV474(ctx) {
+  if (!diracAdminBusinessFullyAuthorizedV406(ctx) || ctx.action !== 'admin_account_create') {
+    throw diracAdminBusinessErrorV406('ADMIN_THREE_FACTORS_REQUIRED', 403);
+  }
+  return true;
+}
+
+async function diracAdminAccountOperationV474(ctx, body) {
+  diracAdminAccountAssertV474(ctx);
+  const account = diracAdminAccountMutationV474(body);
+  if (account.mode === 'create') {
+    const temporaryPassword = crypto.randomBytes(24).toString('base64url') + 'aA9!';
+    const created = await supabaseFetch('/auth/v1/admin/users', {
+      method: 'POST', auth: 'service', body: {
+        email: account.email, password: temporaryPassword, email_confirm: true,
+        app_metadata: { dirac_account_role: account.role, dirac_account_provisioned: true, dirac_account_policy_version: 1 },
+        user_metadata: { name: account.name, full_name: account.name, phone: account.phone }
+      }
+    });
+    diracAdminAccountAssertV474(ctx);
+    if (!created || created.ok !== true) {
+      if (created && (created.status === 409 || created.status === 422)) throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_EMAIL_EXISTS', 409);
+      throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_CREATE_FAILED', 503);
+    }
+    const createdUser = created.data && typeof created.data === 'object' ? (created.data.user || created.data) : null;
+    const userId = String(createdUser && createdUser.id || '').trim().toLowerCase();
+    if (!customerSecurityLooksLikeUuid(userId) || normalizeAuthEmail(createdUser && createdUser.email || '') !== account.email) {
+      throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_CREATE_UNCONFIRMED', 503);
+    }
+    const verified = await supabaseFetch('/auth/v1/admin/users/' + userId, { method: 'GET', auth: 'service' });
+    diracAdminAccountAssertV474(ctx);
+    const confirmed = verified && verified.ok === true ? diracAdminAccountExactUserV474(verified.data, account.email) : null;
+    if (!confirmed || String(confirmed.id || '').trim().toLowerCase() !== userId || diracAdminAccountRoleV474(confirmed) !== account.role || diracAdminAccountBannedV474(confirmed)) {
+      throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_ROLE_UNCONFIRMED', 503);
+    }
+    return { ok: true, mode: 'create', user_id: userId, email: account.email, account_role: account.role,
+      account_label: diracAdminAccountLabelV474(account.role), account_active: true, temporary_password: temporaryPassword,
+      password_delivery: 'admin_one_time_display', self_registration: false };
+  }
+  const lookup = await supabaseFetch('/auth/v1/admin/users?email=' + encodeURIComponent(account.email), { method: 'GET', auth: 'service' });
+  diracAdminAccountAssertV474(ctx);
+  if (!lookup || lookup.ok !== true) throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_LOOKUP_FAILED', 503);
+  const user = diracAdminAccountExactUserV474(lookup.data, account.email);
+  const userId = String(user && user.id || '').trim().toLowerCase();
+  if (!user || !customerSecurityLooksLikeUuid(userId)) throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_NOT_FOUND', 404);
+  const role = diracAdminAccountRoleV474(user);
+  if (!role) throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_NOT_BUSINESS', 409);
+  const userPath = '/auth/v1/admin/users/' + userId;
+  if (account.mode === 'delete') {
+    const removed = await supabaseFetch(userPath, { method: 'DELETE', auth: 'service' });
+    diracAdminAccountAssertV474(ctx);
+    if (!removed || removed.ok !== true) throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_DELETE_FAILED', 503);
+    const verified = await supabaseFetch(userPath, { method: 'GET', auth: 'service' });
+    diracAdminAccountAssertV474(ctx);
+    if (!verified || verified.status !== 404) throw diracAdminBusinessErrorV406('ADMIN_ACCOUNT_DELETE_UNCONFIRMED', 503);
+    return { ok: true, mode: 'delete', email: account.email, account_role: role, account_label: diracAdminAccountLabelV474(role), deleted: true };
+  }
+  const disable = account.mode === 'disable';
+  const updated = await supabaseFetch(userPath, { method: 'PUT', auth: 'service', body: { ban_duration: disable ? '876000h' : 'none' } });
+  diracAdminAccountAssertV474(ctx);
+  if (!updated || updated.ok !== true) throw diracAdminBusinessErrorV406(disable ? 'ADMIN_ACCOUNT_DISABLE_FAILED' : 'ADMIN_ACCOUNT_ENABLE_FAILED', 503);
+  const verified = await supabaseFetch(userPath, { method: 'GET', auth: 'service' });
+  diracAdminAccountAssertV474(ctx);
+  const confirmed = verified && verified.ok === true ? diracAdminAccountExactUserV474(verified.data, account.email) : null;
+  if (!confirmed || diracAdminAccountRoleV474(confirmed) !== role || diracAdminAccountBannedV474(confirmed) !== disable) {
+    throw diracAdminBusinessErrorV406(disable ? 'ADMIN_ACCOUNT_DISABLE_UNCONFIRMED' : 'ADMIN_ACCOUNT_ENABLE_UNCONFIRMED', 503);
+  }
+  return { ok: true, mode: account.mode, email: account.email, account_role: role,
+    account_label: diracAdminAccountLabelV474(role), account_active: !disable };
+}
+
 async function diracAdminBusinessOperationV406(ctx, operation, body) {
   if (!diracAdminBusinessFullyAuthorizedV406(ctx)
       || !diracAdminBusinessAuthorizedV405(ctx, operation)) {
@@ -62150,6 +62307,7 @@ async function diracAdminBusinessOperationV406(ctx, operation, body) {
   else if (operation === 'unban') await diracAdminUnbanV406(req, response);
   else if (operation === 'monitor') await diracAdminMonitorV406(req, response);
   else if (operation === 'shipment_update' || operation === 'shipment_cancel') await diracAdminSaveShipmentV406(req, response, operation === 'shipment_cancel');
+  else if (operation === 'account_create') { payload = await diracAdminAccountOperationV474(ctx, body); status = 200; }
   else throw diracAdminBusinessErrorV406('ADMIN_OPERATION_INVALID', 400);
   if (status !== 200) throw diracAdminBusinessErrorV406(String(payload && payload.code || 'ADMIN_OPERATION_REJECTED'), status);
   if (!payload || payload.ok !== true) throw diracAdminBusinessErrorV406('ADMIN_OPERATION_UNVERIFIED');
