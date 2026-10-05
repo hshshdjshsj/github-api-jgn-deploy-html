@@ -468,7 +468,7 @@ async function adminAccountRevokePasskeysV480(link, assertContext) {
   if (!active || !active.ok || !Array.isArray(active.data) || active.data.length > 16) fail('ADMIN_ACCOUNT_PASSKEY_STATE_UNAVAILABLE', 503);
   if (active.data.length === 0) return 0;
   const nowIso = new Date().toISOString();
-  const revoked = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, revoked_at: nowIso, revoke_reason: 'admin_account_delete', updated_at: nowIso } });
+  const revoked = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, updated_at: nowIso } });
   assertContext();
   if (!revoked || !revoked.ok || !Array.isArray(revoked.data) || revoked.data.length !== active.data.length) fail('ADMIN_ACCOUNT_PASSKEY_RESET_FAILED', 503);
   const check = await dbFetch('/rest/v1/domain_passkeys?select=id&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null&limit=1', { method: 'GET' });
@@ -596,7 +596,7 @@ async function businessAccountManage(body, origin, assertContext) {
     const nowIso = new Date().toISOString();
     let passkeysRevoked = 0;
     if (activePasskeys.data.length) {
-      const revokedPasskeys = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(customerId) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, revoked_at: nowIso, revoke_reason: 'admin_passkey_reset', updated_at: nowIso } });
+      const revokedPasskeys = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(customerId) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, updated_at: nowIso } });
       assertContext();
       if (!revokedPasskeys || !revokedPasskeys.ok || !Array.isArray(revokedPasskeys.data) || revokedPasskeys.data.length !== activePasskeys.data.length) fail('ADMIN_ACCOUNT_PASSKEY_RESET_FAILED', 503);
       passkeysRevoked = revokedPasskeys.data.length;
