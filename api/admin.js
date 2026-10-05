@@ -395,6 +395,16 @@ function adminAccountBanned(user) {
   const until = Date.parse(raw);
   return Number.isFinite(until) && until > Date.now();
 }
+function adminAccountProvisionMetadata(role, partnerInvite) {
+  return { dirac_account_role: role, dirac_account_provisioned: true, dirac_account_policy_version: 1,
+    ...(partnerInvite ? { dirac_parent_partner_customer_id: partnerInvite.customer_id, dirac_partner_request_id: partnerInvite.id } : {}) };
+}
+function adminAccountProfileMetadata(name, phone) { return { name, full_name: name, phone }; }
+function adminAccountUserUpgradeable(user, email) {
+  return !!(user && isUuid(user.id) && String(user.email || '').trim().toLowerCase() === email && !adminAccountRoleFromUser(user)
+    && !String(user.deleted_at || '').trim() && !String(user.disabled_at || '').trim()
+    && user.disabled !== true && user.is_disabled !== true && user.is_anonymous !== true);
+}
 function adminAccountLabel(role) { return role === 'reseller' ? 'Reseller / Distributor Resmi' : 'Partner'; }
 async function businessAccountManage(body, origin, assertContext) {
   const account = adminAccountMutationPayload(body);
@@ -403,25 +413,61 @@ async function businessAccountManage(body, origin, assertContext) {
   if (account.mode === 'create') {
     const partnerInvite = account.partner_request_id ? await adminPartnerInviteForAccountCreateV478(account, assertContext) : null;
     assertContext();
+    const provisionMetadata = adminAccountProvisionMetadata(account.role, partnerInvite);
+    const profileMetadata = adminAccountProfileMetadata(account.name, account.phone);
     const temporaryPassword = crypto.randomBytes(24).toString('base64url') + 'aA9!';
     const result = await authAdminUserRequest('/auth/v1/admin/users', 'POST', {
       email: account.email,
       password: temporaryPassword,
       email_confirm: true,
-      app_metadata: { dirac_account_role: account.role, dirac_account_provisioned: true, dirac_account_policy_version: 1, ...(partnerInvite ? { dirac_parent_partner_customer_id: partnerInvite.customer_id, dirac_partner_request_id: partnerInvite.id } : {}) },
-      user_metadata: { name: account.name, full_name: account.name, phone: account.phone }
+      app_metadata: provisionMetadata,
+      user_metadata: profileMetadata
     });
     assertContext();
-    const user = result && result.data && typeof result.data === 'object' ? (result.data.user || result.data) : null;
+    let user = result && result.data && typeof result.data === 'object' ? (result.data.user || result.data) : null;
+    let passwordDelivery = 'admin_one_time_display', passwordPreserved = false, accountUpgraded = false, preservedProviderBan = false;
     if (!result || result.ok !== true || !user || !isUuid(user.id) || String(user.email || '').trim().toLowerCase() !== account.email) {
-      if (result && (result.status === 409 || result.status === 422)) fail('ADMIN_ACCOUNT_EMAIL_EXISTS', 409);
-      fail('ADMIN_ACCOUNT_CREATE_FAILED', 503);
+      if (!(result && (result.status === 409 || result.status === 422))) fail('ADMIN_ACCOUNT_CREATE_FAILED', 503);
+      const lookupExisting = await authAdminUserRequest('/auth/v1/admin/users?filter=' + encodeURIComponent(account.email), 'GET');
+      assertContext();
+      if (!lookupExisting || lookupExisting.ok !== true) fail('ADMIN_ACCOUNT_LOOKUP_FAILED', 503);
+      const existing = adminAccountExactUser(lookupExisting.data, account.email);
+      if (!adminAccountUserUpgradeable(existing, account.email)) fail('ADMIN_ACCOUNT_EMAIL_EXISTS', 409);
+      preservedProviderBan = adminAccountBanned(existing);
+      const existingAppMetadata = existing.app_metadata && typeof existing.app_metadata === 'object' && !Array.isArray(existing.app_metadata) ? { ...existing.app_metadata } : {};
+      const existingUserMetadata = existing.user_metadata && typeof existing.user_metadata === 'object' && !Array.isArray(existing.user_metadata) ? { ...existing.user_metadata } : {};
+      const existingPath = '/auth/v1/admin/users/' + String(existing.id).toLowerCase();
+      const upgraded = await authAdminUserRequest(existingPath, 'PUT', {
+        email_confirm: true,
+        app_metadata: { ...existingAppMetadata, ...provisionMetadata },
+        user_metadata: { ...existingUserMetadata, ...profileMetadata }
+      });
+      assertContext();
+      user = upgraded && upgraded.ok === true ? adminAccountExactUser(upgraded.data, account.email) : null;
+      if (!user || String(user.id || '').toLowerCase() !== String(existing.id).toLowerCase() || adminAccountRoleFromUser(user) !== account.role || adminAccountBanned(user) !== preservedProviderBan) fail('ADMIN_ACCOUNT_ROLE_UNCONFIRMED', 503);
+      if (partnerInvite) {
+        try { await adminPartnerInviteCompleteV478(partnerInvite, user, assertContext); }
+        catch (error) {
+          const rollback = await authAdminUserRequest(existingPath, 'PUT', {
+            email_confirm: true,
+            app_metadata: existingAppMetadata,
+            user_metadata: existingUserMetadata
+          });
+          assertContext();
+          const rolledBack = rollback && rollback.ok === true && adminAccountRoleFromUser(adminAccountExactUser(rollback.data, account.email)) === '';
+          if (!rolledBack) fail('ADMIN_ACCOUNT_PARTNER_LINK_ROLLBACK_FAILED', 503);
+          throw error;
+        }
+      }
+      passwordDelivery = 'existing_password_preserved';
+      passwordPreserved = true;
+      accountUpgraded = true;
     }
     const verify = await authAdminUserRequest('/auth/v1/admin/users/' + String(user.id).toLowerCase(), 'GET');
     assertContext();
     const confirmed = verify && verify.ok === true ? adminAccountExactUser(verify.data, account.email) : null;
-    if (!confirmed || !isUuid(confirmed.id) || String(confirmed.id).toLowerCase() !== String(user.id).toLowerCase() || adminAccountRoleFromUser(confirmed) !== account.role || adminAccountBanned(confirmed)) fail('ADMIN_ACCOUNT_ROLE_UNCONFIRMED', 503);
-    if (partnerInvite) {
+    if (!confirmed || !isUuid(confirmed.id) || String(confirmed.id).toLowerCase() !== String(user.id).toLowerCase() || adminAccountRoleFromUser(confirmed) !== account.role || adminAccountBanned(confirmed) !== preservedProviderBan) fail('ADMIN_ACCOUNT_ROLE_UNCONFIRMED', 503);
+    if (partnerInvite && !accountUpgraded) {
       try { await adminPartnerInviteCompleteV478(partnerInvite, confirmed, assertContext); }
       catch (error) {
         const rolledBack = await adminRollbackBusinessAccountV478(confirmed.id, account.email, assertContext);
@@ -430,8 +476,9 @@ async function businessAccountManage(body, origin, assertContext) {
       }
     }
     return { ok: true, mode: 'create', user_id: confirmed.id, email: account.email, account_role: account.role,
-      account_label: adminAccountLabel(account.role), account_active: true, temporary_password: temporaryPassword,
-      password_delivery: 'admin_one_time_display', self_registration: false, partner_request_id: partnerInvite ? partnerInvite.id : '' };
+      account_label: adminAccountLabel(account.role), account_active: !preservedProviderBan, temporary_password: passwordPreserved ? '' : temporaryPassword,
+      password_delivery: passwordDelivery, password_preserved: passwordPreserved, account_upgraded: accountUpgraded,
+      self_registration: false, partner_request_id: partnerInvite ? partnerInvite.id : '' };
   }
   const lookup = await authAdminUserRequest('/auth/v1/admin/users?filter=' + encodeURIComponent(account.email), 'GET');
   assertContext();

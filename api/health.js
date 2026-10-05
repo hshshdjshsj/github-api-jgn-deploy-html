@@ -2006,7 +2006,7 @@ async function domainLogin(req, res, preloadedBody) {
       }
       const bannedCredentialRateV472 = await registerDomainLoginFailure(req, loginEmailV475);
       if (bannedCredentialRateV472.blocked) return sendDomainLoginRateDecisionV336(res, bannedCredentialRateV472);
-      return res.status(403).json({ ok: false, message: 'Email atau password belum sesuai.' });
+      return res.status(403).json({ ok: false, code: 'LOGIN_ACCOUNT_DISABLED_OR_CREDENTIALS_INVALID', message: 'Akun sedang dinonaktifkan atau email/password belum sesuai.' });
     }
     if (shouldCountDomainLoginFailure(result)) {
       const failedRate = await registerDomainLoginFailure(req, loginEmailV475);
