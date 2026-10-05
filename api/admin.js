@@ -406,6 +406,76 @@ function adminAccountUserUpgradeable(user, email) {
     && user.disabled !== true && user.is_disabled !== true && user.is_anonymous !== true);
 }
 function adminAccountLabel(role) { return role === 'reseller' ? 'Reseller / Distributor Resmi' : 'Partner'; }
+function adminBusinessAccountPublicV479(user) {
+  const role = adminAccountRoleFromUser(user), email = String(user && user.email || '').trim().toLowerCase();
+  if (!role || !user || !isUuid(user.id) || !isEmail(email) || adminAccountBanned(user) || String(user.deleted_at || '').trim() || String(user.disabled_at || '').trim() || user.disabled === true || user.is_disabled === true || user.is_anonymous === true) return null;
+  const meta = user.user_metadata && typeof user.user_metadata === 'object' && !Array.isArray(user.user_metadata) ? user.user_metadata : {};
+  return { user_id: String(user.id).toLowerCase(), email, account_role: role, account_label: adminAccountLabel(role), account_active: true, name: String(meta.name || meta.full_name || '').trim().slice(0, 120), phone: String(meta.phone || '').trim().slice(0, 24), created_at: String(user.created_at || '').slice(0, 48) };
+}
+async function adminAccountSecurityLinkV480(user, email, assertContext) {
+  const authUserId = String(user && user.id || '').trim().toLowerCase(), normalizedEmail = String(email || '').trim().toLowerCase();
+  if (!isUuid(authUserId) || !isEmail(normalizedEmail) || normalizedEmail !== String(user && user.email || '').trim().toLowerCase()) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
+  const result = await dbFetch('/rest/v1/security_customer_auth_links?select=' + encodeURIComponent('id,auth_user_id,customer_id,email,link_status,disabled_at,revoked_at') + '&auth_user_id=eq.' + encodeURIComponent(authUserId) + '&link_status=eq.active&revoked_at=is.null&limit=2', { method: 'GET' });
+  assertContext();
+  if (!result || !result.ok || !Array.isArray(result.data) || result.data.length > 1) fail('ADMIN_ACCOUNT_SECURITY_STATE_UNAVAILABLE', 503);
+  if (result.data.length === 0) return null;
+  const row = result.data[0], linkId = String(row && row.id || '').trim().toLowerCase(), customerId = String(row && row.customer_id || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(linkId) || !isUuid(customerId) || String(row && row.auth_user_id || '').trim().toLowerCase() !== authUserId || String(row && row.email || '').trim().toLowerCase() !== normalizedEmail || String(row && row.link_status || '').trim().toLowerCase() !== 'active' || row.revoked_at) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
+  return { id: linkId, auth_user_id: authUserId, customer_id: customerId, email: normalizedEmail, link_status: 'active', disabled_at: row.disabled_at || null, revoked_at: null };
+}
+async function adminAccountSetLinkDisabledV480(link, disabled, assertContext) {
+  if (!link) return false;
+  if (disabled === true && link.disabled_at) return true;
+  if (disabled === false && !link.disabled_at) return true;
+  const nowIso = new Date().toISOString();
+  const path = '/rest/v1/security_customer_auth_links?select=' + encodeURIComponent('id,auth_user_id,customer_id,email,link_status,disabled_at,revoked_at') + '&id=eq.' + encodeURIComponent(link.id) + '&auth_user_id=eq.' + encodeURIComponent(link.auth_user_id) + '&customer_id=eq.' + encodeURIComponent(link.customer_id) + '&email=eq.' + encodeURIComponent(link.email) + '&link_status=eq.active&revoked_at=is.null';
+  const patched = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { disabled_at: disabled ? nowIso : null, updated_at: nowIso } });
+  assertContext();
+  if (!patched || !patched.ok || !Array.isArray(patched.data) || patched.data.length !== 1) fail('ADMIN_ACCOUNT_SECURITY_STATE_UPDATE_FAILED', 503);
+  const row = patched.data[0];
+  if (String(row && row.id || '').trim().toLowerCase() !== link.id || String(row && row.auth_user_id || '').trim().toLowerCase() !== link.auth_user_id || String(row && row.customer_id || '').trim().toLowerCase() !== link.customer_id || String(row && row.email || '').trim().toLowerCase() !== link.email || String(row && row.link_status || '').trim().toLowerCase() !== 'active' || row.revoked_at || (disabled ? !row.disabled_at : !!row.disabled_at)) fail('ADMIN_ACCOUNT_SECURITY_STATE_UPDATE_UNCONFIRMED', 503);
+  link.disabled_at = row.disabled_at || null;
+  return true;
+}
+async function adminAccountRevokeLinkV480(link, assertContext) {
+  if (!link) return false;
+  const nowIso = new Date().toISOString();
+  const path = '/rest/v1/security_customer_auth_links?select=' + encodeURIComponent('id,auth_user_id,customer_id,email,link_status,disabled_at,revoked_at') + '&id=eq.' + encodeURIComponent(link.id) + '&auth_user_id=eq.' + encodeURIComponent(link.auth_user_id) + '&customer_id=eq.' + encodeURIComponent(link.customer_id) + '&email=eq.' + encodeURIComponent(link.email) + '&link_status=eq.active&revoked_at=is.null';
+  const patched = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { disabled_at: nowIso, revoked_at: nowIso, updated_at: nowIso } });
+  assertContext();
+  if (!patched || !patched.ok || !Array.isArray(patched.data) || patched.data.length !== 1) fail('ADMIN_ACCOUNT_SECURITY_STATE_UPDATE_FAILED', 503);
+  const row = patched.data[0];
+  if (String(row && row.id || '').trim().toLowerCase() !== link.id || String(row && row.auth_user_id || '').trim().toLowerCase() !== link.auth_user_id || String(row && row.customer_id || '').trim().toLowerCase() !== link.customer_id || String(row && row.email || '').trim().toLowerCase() !== link.email || String(row && row.link_status || '').trim().toLowerCase() !== 'active' || !row.disabled_at || !row.revoked_at) fail('ADMIN_ACCOUNT_SECURITY_STATE_UPDATE_UNCONFIRMED', 503);
+  link.disabled_at = row.disabled_at; link.revoked_at = row.revoked_at;
+  return true;
+}
+async function adminAccountRevokeSessionsV480(link, reason, assertContext) {
+  if (!link) return 0;
+  if (!['admin_account_disable','admin_account_delete','admin_password_reset'].includes(reason)) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
+  const nowIso = new Date().toISOString();
+  const revoked = await dbFetch('/rest/v1/security_customer_sessions?select=' + encodeURIComponent('id,customer_id,status,revoked_at,revoke_reason') + '&customer_id=eq.' + encodeURIComponent(link.customer_id) + '&status=eq.active&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { status: 'revoked', revoked_at: nowIso, revoke_reason: reason } });
+  assertContext();
+  if (!revoked || !revoked.ok || !Array.isArray(revoked.data)) fail('ADMIN_ACCOUNT_SESSION_REVOCATION_FAILED', 503);
+  const active = await dbFetch('/rest/v1/security_customer_sessions?select=id&customer_id=eq.' + encodeURIComponent(link.customer_id) + '&status=eq.active&revoked_at=is.null&limit=1', { method: 'GET' });
+  assertContext();
+  if (!active || !active.ok || !Array.isArray(active.data) || active.data.length !== 0) fail('ADMIN_ACCOUNT_SESSION_REVOCATION_UNCONFIRMED', 503);
+  return revoked.data.length;
+}
+async function adminAccountRevokePasskeysV480(link, assertContext) {
+  if (!link) return 0;
+  const active = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'GET' });
+  assertContext();
+  if (!active || !active.ok || !Array.isArray(active.data) || active.data.length > 16) fail('ADMIN_ACCOUNT_PASSKEY_STATE_UNAVAILABLE', 503);
+  if (active.data.length === 0) return 0;
+  const nowIso = new Date().toISOString();
+  const revoked = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, revoked_at: nowIso, revoke_reason: 'admin_account_delete', updated_at: nowIso } });
+  assertContext();
+  if (!revoked || !revoked.ok || !Array.isArray(revoked.data) || revoked.data.length !== active.data.length) fail('ADMIN_ACCOUNT_PASSKEY_RESET_FAILED', 503);
+  const check = await dbFetch('/rest/v1/domain_passkeys?select=id&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null&limit=1', { method: 'GET' });
+  assertContext();
+  if (!check || !check.ok || !Array.isArray(check.data) || check.data.length !== 0) fail('ADMIN_ACCOUNT_PASSKEY_RESET_UNCONFIRMED', 503);
+  return revoked.data.length;
+}
 async function businessAccountManage(body, origin, assertContext) {
   const account = adminAccountMutationPayload(body);
   adminAccountEmailForOrigin(account.email, origin);
@@ -489,36 +559,27 @@ async function businessAccountManage(body, origin, assertContext) {
   if (!role) fail('ADMIN_ACCOUNT_NOT_BUSINESS', 409);
   const userPath = '/auth/v1/admin/users/' + String(user.id).toLowerCase();
   if (account.mode === 'delete') {
+    const securityLink = await adminAccountSecurityLinkV480(user, account.email, assertContext);
+    const linkDisabled = await adminAccountSetLinkDisabledV480(securityLink, true, assertContext);
+    const sessionsRevoked = await adminAccountRevokeSessionsV480(securityLink, 'admin_account_delete', assertContext);
+    const passkeysRevoked = await adminAccountRevokePasskeysV480(securityLink, assertContext);
+    const linkRevoked = await adminAccountRevokeLinkV480(securityLink, assertContext);
     const removed = await authAdminUserRequest(userPath, 'DELETE');
     assertContext();
     if (!removed || removed.ok !== true) fail('ADMIN_ACCOUNT_DELETE_FAILED', 503);
     const verify = await authAdminUserRequest(userPath, 'GET');
     assertContext();
     if (!verify || verify.status !== 404) fail('ADMIN_ACCOUNT_DELETE_UNCONFIRMED', 503);
-    return { ok: true, mode: 'delete', email: account.email, account_role: role, account_label: adminAccountLabel(role), deleted: true };
+    return { ok: true, mode: 'delete', email: account.email, account_role: role, account_label: adminAccountLabel(role), deleted: true, link_disabled: linkDisabled, link_revoked: linkRevoked, sessions_revoked: sessionsRevoked, passkeys_revoked: passkeysRevoked };
   }
   if (account.mode === 'reset_password') {
     const temporaryPassword = crypto.randomBytes(24).toString('base64url') + 'aA9!';
+    const securityLink = await adminAccountSecurityLinkV480(user, account.email, assertContext);
+    const sessionsRevoked = await adminAccountRevokeSessionsV480(securityLink, 'admin_password_reset', assertContext);
     const updated = await authAdminUserRequest(userPath, 'PUT', { password: temporaryPassword });
     assertContext();
     const changed = updated && updated.ok === true ? adminAccountExactUser(updated.data, account.email) : null;
     if (!changed || String(changed.id || '').toLowerCase() !== String(user.id).toLowerCase() || adminAccountRoleFromUser(changed) !== role) fail('ADMIN_ACCOUNT_PASSWORD_RESET_FAILED', 503);
-    let sessionsRevoked = 0;
-    const link = await dbFetch('/rest/v1/security_customer_auth_links?select=' + encodeURIComponent('auth_user_id,customer_id,email,link_status,disabled_at,revoked_at') + '&auth_user_id=eq.' + encodeURIComponent(String(user.id).toLowerCase()) + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&limit=2', { method: 'GET' });
-    assertContext();
-    if (!link || !link.ok || !Array.isArray(link.data) || link.data.length > 1) fail('ADMIN_ACCOUNT_SECURITY_STATE_UNAVAILABLE', 503);
-    if (link.data.length === 1) {
-      const customerId = String(link.data[0] && link.data[0].customer_id || '').toLowerCase();
-      if (!isUuid(customerId) || String(link.data[0].auth_user_id || '').toLowerCase() !== String(user.id).toLowerCase() || String(link.data[0].email || '').toLowerCase() !== account.email) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
-      const nowIso = new Date().toISOString();
-      const revoked = await dbFetch('/rest/v1/security_customer_sessions?select=' + encodeURIComponent('id,customer_id,status,revoked_at,revoke_reason') + '&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { status: 'revoked', revoked_at: nowIso, revoke_reason: 'admin_password_reset' } });
-      assertContext();
-      if (!revoked || !revoked.ok || !Array.isArray(revoked.data)) fail('ADMIN_ACCOUNT_SESSION_REVOCATION_FAILED', 503);
-      sessionsRevoked = revoked.data.length;
-      const active = await dbFetch('/rest/v1/security_customer_sessions?select=id&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null&limit=1', { method: 'GET' });
-      assertContext();
-      if (!active || !active.ok || !Array.isArray(active.data) || active.data.length !== 0) fail('ADMIN_ACCOUNT_SESSION_REVOCATION_UNCONFIRMED', 503);
-    }
     const verify = await authAdminUserRequest(userPath, 'GET');
     assertContext();
     const confirmed = verify && verify.ok === true ? adminAccountExactUser(verify.data, account.email) : null;
@@ -526,12 +587,9 @@ async function businessAccountManage(body, origin, assertContext) {
     return { ok: true, mode: 'reset_password', email: account.email, account_role: role, account_label: adminAccountLabel(role), temporary_password: temporaryPassword, password_delivery: 'admin_one_time_display', sessions_revoked: sessionsRevoked };
   }
   if (account.mode === 'reset_passkey') {
-    const link = await dbFetch('/rest/v1/security_customer_auth_links?select=' + encodeURIComponent('auth_user_id,customer_id,email,link_status,disabled_at,revoked_at') + '&auth_user_id=eq.' + encodeURIComponent(String(user.id).toLowerCase()) + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&limit=2', { method: 'GET' });
-    assertContext();
-    if (!link || !link.ok || !Array.isArray(link.data) || link.data.length > 1) fail('ADMIN_ACCOUNT_SECURITY_STATE_UNAVAILABLE', 503);
-    if (link.data.length === 0) return { ok: true, mode: 'reset_passkey', email: account.email, account_role: role, account_label: adminAccountLabel(role), passkeys_revoked: 0, sessions_revoked: 0, passkey_enrolled: false };
-    const customerId = String(link.data[0] && link.data[0].customer_id || '').toLowerCase();
-    if (!isUuid(customerId) || String(link.data[0].auth_user_id || '').toLowerCase() !== String(user.id).toLowerCase() || String(link.data[0].email || '').toLowerCase() !== account.email) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
+    const securityLink = await adminAccountSecurityLinkV480(user, account.email, assertContext);
+    if (!securityLink) return { ok: true, mode: 'reset_passkey', email: account.email, account_role: role, account_label: adminAccountLabel(role), passkeys_revoked: 0, sessions_revoked: 0, passkey_enrolled: false };
+    const customerId = securityLink.customer_id;
     const activePasskeys = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at') + '&user_id=eq.' + encodeURIComponent(customerId) + '&is_active=eq.true&revoked_at=is.null', { method: 'GET' });
     assertContext();
     if (!activePasskeys || !activePasskeys.ok || !Array.isArray(activePasskeys.data) || activePasskeys.data.length > 16) fail('ADMIN_ACCOUNT_PASSKEY_STATE_UNAVAILABLE', 503);
@@ -553,6 +611,12 @@ async function businessAccountManage(body, origin, assertContext) {
     return { ok: true, mode: 'reset_passkey', email: account.email, account_role: role, account_label: adminAccountLabel(role), passkeys_revoked: passkeysRevoked, sessions_revoked: revokedSessions.data.length, passkey_enrolled: passkeysRevoked > 0 };
   }
   const shouldDisable = account.mode === 'disable';
+  const securityLink = await adminAccountSecurityLinkV480(user, account.email, assertContext);
+  let linkSynchronized = !securityLink, sessionsRevoked = 0;
+  if (shouldDisable) {
+    linkSynchronized = await adminAccountSetLinkDisabledV480(securityLink, true, assertContext);
+    sessionsRevoked = await adminAccountRevokeSessionsV480(securityLink, 'admin_account_disable', assertContext);
+  }
   const updated = await authAdminUserRequest(userPath, 'PUT', { ban_duration: shouldDisable ? '876000h' : 'none' });
   assertContext();
   if (!updated || updated.ok !== true) fail(shouldDisable ? 'ADMIN_ACCOUNT_DISABLE_FAILED' : 'ADMIN_ACCOUNT_ENABLE_FAILED', 503);
@@ -562,7 +626,8 @@ async function businessAccountManage(body, origin, assertContext) {
   if (!confirmed || adminAccountRoleFromUser(confirmed) !== role || adminAccountBanned(confirmed) !== shouldDisable) {
     fail(shouldDisable ? 'ADMIN_ACCOUNT_DISABLE_UNCONFIRMED' : 'ADMIN_ACCOUNT_ENABLE_UNCONFIRMED', 503);
   }
-  return { ok: true, mode: account.mode, email: account.email, account_role: role, account_label: adminAccountLabel(role), account_active: !shouldDisable };
+  if (!shouldDisable) linkSynchronized = await adminAccountSetLinkDisabledV480(securityLink, false, assertContext);
+  return { ok: true, mode: account.mode, email: account.email, account_role: role, account_label: adminAccountLabel(role), account_active: !shouldDisable, link_synchronized: linkSynchronized, sessions_revoked: sessionsRevoked };
 }
 
 async function securityRead(key) {
@@ -1831,8 +1896,7 @@ async function businessSummaryV456(body) {
   return { ok: true, view: 'summary', kind, offset: Number(rawOffset), page_size: 200, from, until, has_more: result.data.length === 201, totals, time: new Date().toISOString() };
 }
 
-async function businessOrders(body) {
-  if (body.view !== undefined || body.from !== undefined || body.until !== undefined) return businessSummaryV456(body);
+async function businessOrdersSingleV480(body) {
   const kind = String(body.kind || 'regular'), offsetRaw = String(body.offset || '0'); if (!Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 50000) fail('ADMIN_PAGE_INVALID', 400);
   const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&order=created_at.desc,id.desc&limit=41&offset=' + Number(offsetRaw), path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await dbFetch(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
   if (kind === 'domain' && domainOrderUndefinedColumn(result)) result = await dbFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(DOMAIN_ORDER_COMPAT_SELECT) + suffix, { method: 'GET' });
@@ -1840,6 +1904,32 @@ async function businessOrders(body) {
   let shipments = []; if (keys.length) { const shipped = await dbFetch('/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=in.(' + keys.map(encodeURIComponent).join(',') + ')&limit=' + keys.length, { method: 'GET' }, 'security'); if (!shipped.ok || !Array.isArray(shipped.data) || shipped.data.length > keys.length) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); shipments = shipped.data; }
   const map = new Map(); shipments.forEach(row => { if (!keys.includes(row && row.security_key) || map.has(row.security_key)) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); const value = validateShipmentRow(row, row.security_key), order = orders.find(item => item.id === (value && value.order_id)); if (!value || !order || (order.customer_id !== value.customer_id && value.updated_by !== ADMIN_USER_ID)) fail('ADMIN_SHIPMENT_OWNER_MISMATCH', 503); map.set(row.security_key, value); });
   return { ok: true, kind, offset: Number(offsetRaw), has_more: rows.length === 41, orders: orders.map(row => ({ ...row, shipment: shipmentPublic(map.get(shipmentKey(kind, row.id))) })), time: new Date().toISOString() };
+}
+function businessOrdersBundleSourceV480(result, kind) {
+  return result && result.ok === true && result.data && result.data.kind === kind ? { ok: true, kind, data: result.data } : { ok: false, kind };
+}
+async function businessOrders(body) {
+  const kind = String(body.kind || 'regular');
+  if (body.view !== undefined || body.from !== undefined || body.until !== undefined) {
+    if (kind !== 'all') return businessSummaryV456(body);
+    const pages = await Promise.all([
+      businessSummaryV456({ ...body, kind: 'regular' }),
+      businessSummaryV456({ ...body, kind: 'laboratorium' }),
+      businessSummaryV456({ ...body, kind: 'domain' })
+    ]);
+    return { ok: true, view: 'summary', kind: 'all', offset: pages[0].offset, page_size: 200, from: pages[0].from, until: pages[0].until, pages, time: new Date().toISOString() };
+  }
+  if (kind !== 'all') return businessOrdersSingleV480(body);
+  const offsetRaw = String(body.offset || '0');
+  if (!/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 50000) fail('ADMIN_PAGE_INVALID', 400);
+  const bundled = await Promise.all([
+    businessOrdersSingleV480({ kind: 'regular', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(() => ({ ok: false, data: null })),
+    businessOrdersSingleV480({ kind: 'laboratorium', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(() => ({ ok: false, data: null })),
+    businessOrdersSingleV480({ kind: 'domain', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(() => ({ ok: false, data: null }))
+  ]);
+  const sources = [businessOrdersBundleSourceV480(bundled[0], 'regular'), businessOrdersBundleSourceV480(bundled[1], 'laboratorium'), businessOrdersBundleSourceV480(bundled[2], 'domain')];
+  if (!sources[0].ok && !sources[1].ok && !sources[2].ok) fail('ADMIN_DATA_UNAVAILABLE', 503);
+  return { ok: true, kind: 'all', offset: Number(offsetRaw), sources, time: new Date().toISOString() };
 }
 async function loadOrder(kind, id, database = dbFetch) {
   const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&id=eq.' + encodeURIComponent(id) + '&limit=2', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await database(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
@@ -2453,10 +2543,14 @@ function adminPartnerRequestMetaV478(value) {
 async function businessPartnerRequestsV478(assertContext) {
   assertContext();
   const path = '/rest/v1/security_customer_account_requests?select=' + encodeURIComponent('id,customer_id,request_type,status,reason,metadata,created_at,updated_at,completed_at,expires_at') + '&request_type=in.(' + ADMIN_PARTNER_REQUEST_TYPES_V478.join(',') + ')&order=created_at.desc&limit=12';
-  const result = await dbFetch(path, { method: 'GET' });
+  const reads = await Promise.all([dbFetch(path, { method: 'GET' }), authAdminUserRequest('/auth/v1/admin/users', 'GET').catch(() => null)]);
   assertContext();
+  const result = reads[0], accountResult = reads[1];
   if (!result || !result.ok || !Array.isArray(result.data) || result.data.length > 12) fail('ADMIN_PARTNER_REQUEST_STORE_UNAVAILABLE', 503);
-  return { ok: true, requests: result.data, time: new Date().toISOString() };
+  const users = accountResult && accountResult.data && Array.isArray(accountResult.data.users) ? accountResult.data.users : Array.isArray(accountResult && accountResult.data) ? accountResult.data : null;
+  const accountsReady = !!(accountResult && accountResult.ok === true && users && users.length <= 1000);
+  const accounts = accountsReady ? users.map(adminBusinessAccountPublicV479).filter(Boolean).slice(0, 12) : [];
+  return { ok: true, requests: result.data, accounts_ready: accountsReady, accounts, time: new Date().toISOString() };
 }
 async function businessPartnerRequestUpdateV478(body, assertContext) {
   const input = adminPartnerRequestUpdatePayloadV478(body);
