@@ -59,7 +59,9 @@ const CONTRACTS = Object.freeze({
   admin_banned_data: get(['export_ref']),
   admin_unban: post(['block_id', 'approval'], ['block_id', 'approval']),
   admin_banned_pdf: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'export_ref', 'mode', 'raw_pdf_base64', 'raw_pdf_sha256', 'approval']), required: Object.freeze(['export_ref', 'mode', 'raw_pdf_base64', 'raw_pdf_sha256', 'approval']), maxBodyBytes: 5700000, maxFieldBytes: 5500000, mutation: true, allowArrayItems: false }),
-  admin_account_create: post(['mode', 'role', 'email', 'name', 'phone', 'approval'], ['email', 'approval']),
+  admin_account_create: post(['mode', 'role', 'email', 'name', 'phone', 'partner_request_id', 'approval'], ['email', 'approval']),
+  admin_partner_requests: get(),
+  admin_partner_request_update: post(['request_id', 'status', 'note', 'approval'], ['request_id', 'status', 'approval']),
   admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
   admin_local_authorize: post(['purpose', 'content_sha256', 'approval'], ['purpose', 'content_sha256', 'approval']),
   admin_document_prepare: post(['document_kind','reference','page_count','content_sha256','approval'], ['document_kind','reference','page_count','content_sha256','approval']),
@@ -68,7 +70,7 @@ const CONTRACTS = Object.freeze({
   admin_monitor: get()
 });
 const ACTIONS = Object.freeze(Object.keys(CONTRACTS));
-const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal' });
+const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal' });
 const ORDER_SELECT = Object.freeze({
   regular: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
   laboratorium: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
@@ -343,16 +345,18 @@ function adminAccountMutationPayload(value) {
   if (!['create','disable','enable','delete','reset_password','reset_passkey'].includes(mode) || !isEmail(email) || email.length > 120
       || !/^[a-z0-9]+(?:\.[a-z0-9]+)*@[a-z0-9]+(?:\.[a-z0-9]+)+$/.test(email)) fail('ADMIN_ACCOUNT_INPUT_INVALID', 400);
   if (mode !== 'create') {
-    if (String(row.role || '').trim() || String(row.name || '').trim() || String(row.phone || '').trim()) fail('ADMIN_ACCOUNT_INPUT_INVALID', 400);
+    if (String(row.role || '').trim() || String(row.name || '').trim() || String(row.phone || '').trim() || String(row.partner_request_id || '').trim()) fail('ADMIN_ACCOUNT_INPUT_INVALID', 400);
     return { mode, email };
   }
   const role = String(row.role || '').trim().toLowerCase();
   const name = String(row.name || '').trim();
   const phone = String(row.phone || '').trim().replace(/[ .()\-]/g, '');
+  const partnerRequestId = String(row.partner_request_id || '').trim().toLowerCase();
   if (!['reseller','partner'].includes(role)
       || name.length < 3 || name.length > 120 || /[\x00-\x1f\x7f\u202A-\u202E\u2066-\u2069]/.test(name)
-      || (phone && !/^\+?[0-9]{8,16}$/.test(phone))) fail('ADMIN_ACCOUNT_INPUT_INVALID', 400);
-  return { mode, role, email, name, phone };
+      || (phone && !/^\+?[0-9]{8,16}$/.test(phone))
+      || (partnerRequestId && (!isUuid(partnerRequestId) || role !== 'reseller'))) fail('ADMIN_ACCOUNT_INPUT_INVALID', 400);
+  return { mode, role, email, name, phone, partner_request_id: partnerRequestId };
 }
 function adminAccountBaseDomainFromOrigin(origin) {
   let url; try { url = new URL(String(origin || '')); } catch (_) { fail('ADMIN_ACCOUNT_DOMAIN_INVALID', 400); }
@@ -363,9 +367,9 @@ function adminAccountBaseDomainFromOrigin(origin) {
   return host;
 }
 function adminAccountEmailForOrigin(email, origin) {
-  const value = String(email || '').trim().toLowerCase(), base = adminAccountBaseDomainFromOrigin(origin), suffix = '@' + base;
-  const local = value.endsWith(suffix) ? value.slice(0, -suffix.length) : '';
-  if (!local || !/^[a-z0-9]+(?:\.[a-z0-9]+)*$/.test(local)) fail('ADMIN_ACCOUNT_DOMAIN_INVALID', 400);
+  const value = String(email || '').trim().toLowerCase();
+  adminAccountBaseDomainFromOrigin(origin);
+  if (!isEmail(value) || value.length > 120 || /[\r\n\u0000-\u001f\u007f]/.test(value)) fail('ADMIN_ACCOUNT_DOMAIN_INVALID', 400);
   return value;
 }
 function adminAccountExactUser(data, email) {
@@ -397,12 +401,14 @@ async function businessAccountManage(body, origin, assertContext) {
   adminAccountEmailForOrigin(account.email, origin);
   assertContext();
   if (account.mode === 'create') {
+    const partnerInvite = account.partner_request_id ? await adminPartnerInviteForAccountCreateV478(account, assertContext) : null;
+    assertContext();
     const temporaryPassword = crypto.randomBytes(24).toString('base64url') + 'aA9!';
     const result = await authAdminUserRequest('/auth/v1/admin/users', 'POST', {
       email: account.email,
       password: temporaryPassword,
       email_confirm: true,
-      app_metadata: { dirac_account_role: account.role, dirac_account_provisioned: true, dirac_account_policy_version: 1 },
+      app_metadata: { dirac_account_role: account.role, dirac_account_provisioned: true, dirac_account_policy_version: 1, ...(partnerInvite ? { dirac_parent_partner_customer_id: partnerInvite.customer_id, dirac_partner_request_id: partnerInvite.id } : {}) },
       user_metadata: { name: account.name, full_name: account.name, phone: account.phone }
     });
     assertContext();
@@ -415,9 +421,17 @@ async function businessAccountManage(body, origin, assertContext) {
     assertContext();
     const confirmed = verify && verify.ok === true ? adminAccountExactUser(verify.data, account.email) : null;
     if (!confirmed || !isUuid(confirmed.id) || String(confirmed.id).toLowerCase() !== String(user.id).toLowerCase() || adminAccountRoleFromUser(confirmed) !== account.role || adminAccountBanned(confirmed)) fail('ADMIN_ACCOUNT_ROLE_UNCONFIRMED', 503);
+    if (partnerInvite) {
+      try { await adminPartnerInviteCompleteV478(partnerInvite, confirmed, assertContext); }
+      catch (error) {
+        const rolledBack = await adminRollbackBusinessAccountV478(confirmed.id, account.email, assertContext);
+        if (!rolledBack) fail('ADMIN_ACCOUNT_PARTNER_LINK_ROLLBACK_FAILED', 503);
+        throw error;
+      }
+    }
     return { ok: true, mode: 'create', user_id: confirmed.id, email: account.email, account_role: account.role,
       account_label: adminAccountLabel(account.role), account_active: true, temporary_password: temporaryPassword,
-      password_delivery: 'admin_one_time_display', self_registration: false };
+      password_delivery: 'admin_one_time_display', self_registration: false, partner_request_id: partnerInvite ? partnerInvite.id : '' };
   }
   const lookup = await authAdminUserRequest('/auth/v1/admin/users?filter=' + encodeURIComponent(account.email), 'GET');
   assertContext();
@@ -896,6 +910,7 @@ function approvalPayload(action, body) {
     return { action, export_ref: value.export_ref, mode: value.mode, raw_pdf_sha256: value.raw_pdf_sha256 };
   }
   if (action === 'admin_account_create') { const account = adminAccountMutationPayload(value); return { action, ...account }; }
+  if (action === 'admin_partner_request_update') { const request = adminPartnerRequestUpdatePayloadV478(value); return { action, ...request }; }
   if (action === 'admin_smtp_send') return { action, provider: value.provider, recipient_count: value.recipient_count, recipients_sha256: value.recipients_sha256, subject_sha256: value.subject_sha256, body_sha256: value.body_sha256, document_kind: value.document_kind, attachment_name: value.attachment_name || '', attachment_type: value.attachment_type || '', attachment_sha256: value.attachment_sha256 || '', legal_confirm: value.legal_confirm === true };
   fail('ADMIN_ACTION_APPROVAL_OPERATION_INVALID', 400);
 }
@@ -1569,11 +1584,12 @@ async function execute(ops) {
     const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); return { ok: true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_logout') { const active = await session(ops, scope, false, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
-  await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_banned_data: 'banned_data', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
+  await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_banned_data: 'banned_data', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_partner_requests: 'partner_requests', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
   if (!operation) fail('ADMIN_ACTION_INVALID', 400);
   if (Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS, action)) { const approval = await ticket(ops, scope, body.approval, 'action-approval'); if (approval.value.operation !== action || approval.value.payloadHash !== approvalPayloadHash(action, body)) fail('ADMIN_ACTION_APPROVAL_MISMATCH', 403); await consume(ops, approval); }
   if (action === 'admin_smtp_send') { await throttle(ops, scope, 'smtp-send-minute', 2, 60); await throttle(ops, scope, 'smtp-send-hour', 5, 3600); }
   if (action === 'admin_account_create') { await throttle(ops, scope, 'account-create-minute', 3, 60); await throttle(ops, scope, 'account-create-hour', 5, 3600); }
+  if (action === 'admin_partner_request_update') { await throttle(ops, scope, 'partner-request-update-minute', 6, 60); await throttle(ops, scope, 'partner-request-update-hour', 30, 3600); }
   if (action === 'admin_banned_pdf') { await throttle(ops, scope, 'banned-pdf-minute', 3, 60); await throttle(ops, scope, 'banned-pdf-hour', 5, 3600); }
   ops.assertFullGuard(); return ops.business(operation, body);
 }
@@ -2156,7 +2172,7 @@ function adminCentralBanRequired(error) {
 }
 function adminGuardSelfTest() {
   try {
-    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_banned_data','admin_unban','admin_banned_pdf','admin_account_create','admin_smtp_send','admin_local_authorize','admin_document_prepare','admin_document_seal','admin_document_verify','admin_monitor'];
+    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_banned_data','admin_unban','admin_banned_pdf','admin_account_create','admin_partner_requests','admin_partner_request_update','admin_smtp_send','admin_local_authorize','admin_document_prepare','admin_document_seal','admin_document_verify','admin_monitor'];
     return Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && ACTIONS.length === expected.length && expected.every((name, index) => ACTIONS[index] === name && Object.isFrozen(CONTRACTS[name]) && Object.isFrozen(CONTRACTS[name].methods) && Object.isFrozen(CONTRACTS[name].allowed) && Object.isFrozen(CONTRACTS[name].required))
       && exactToken(randomToken()) && PASSWORD_COOKIE.startsWith('__Host-') && SESSION_COOKIE.startsWith('__Host-') && adminSecretState().configured === true;
   } catch (_) { return false; }
@@ -2357,11 +2373,98 @@ async function businessDocumentV464(operation, body, origin, assertContext) {
 }
 const DOCUMENT_SERVICE_V464 = Object.freeze({ version: DOCUMENT_VERSION_V464, prepare: documentPrepareV464, seal: documentSealV464, verify: documentVerifyV464, same: (left,right) => stableJson(left) === stableJson(right) });
 
+const ADMIN_PARTNER_REQUEST_TYPES_V478 = Object.freeze(['partner_reseller_invite','partner_customer_referral','partner_withdrawal','partner_commission_review','partner_support']);
+function adminPartnerRequestTypeV478(value) {
+  const type = String(value || '').trim().toLowerCase();
+  return ADMIN_PARTNER_REQUEST_TYPES_V478.includes(type) ? type : '';
+}
+function adminPartnerRequestNoteV478(value) {
+  const note = String(value || '').trim();
+  if (note.length > 1200 || /[\u0000-\u001f\u007f\u202A-\u202E\u2066-\u2069]/.test(note)) fail('ADMIN_PARTNER_REQUEST_INPUT_INVALID', 400);
+  return note;
+}
+function adminPartnerRequestUpdatePayloadV478(value) {
+  const row = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const requestId = String(row.request_id || '').trim().toLowerCase(), status = String(row.status || '').trim().toLowerCase(), note = adminPartnerRequestNoteV478(row.note || '');
+  if (!isUuid(requestId) || !['processing','completed','rejected'].includes(status)) fail('ADMIN_PARTNER_REQUEST_INPUT_INVALID', 400);
+  return { request_id: requestId, status, note };
+}
+function adminPartnerRequestMetaV478(value) {
+  const meta = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    source: String(meta.source || '').slice(0, 80),
+    partner_auth_user_id: isUuid(meta.partner_auth_user_id) ? String(meta.partner_auth_user_id).toLowerCase() : '',
+    partner_email: isEmail(meta.partner_email) ? String(meta.partner_email).trim().toLowerCase() : '',
+    email: isEmail(meta.email) ? String(meta.email).trim().toLowerCase() : '',
+    name: String(meta.name || '').slice(0, 120), phone: String(meta.phone || '').slice(0, 24),
+    amount: Number.isSafeInteger(Number(meta.amount)) ? Number(meta.amount) : 0,
+    bank_name: String(meta.bank_name || '').slice(0, 80), account_name: String(meta.account_name || '').slice(0, 120), account_number: String(meta.account_number || '').slice(0, 32),
+    period: String(meta.period || '').slice(0, 16), message: String(meta.message || '').slice(0, 1200),
+    admin_note: String(meta.admin_note || '').slice(0, 1200), reseller_auth_user_id: isUuid(meta.reseller_auth_user_id) ? String(meta.reseller_auth_user_id).toLowerCase() : ''
+  };
+}
+async function businessPartnerRequestsV478(assertContext) {
+  assertContext();
+  const path = '/rest/v1/security_customer_account_requests?select=' + encodeURIComponent('id,customer_id,request_type,status,reason,metadata,created_at,updated_at,completed_at,expires_at') + '&request_type=in.(' + ADMIN_PARTNER_REQUEST_TYPES_V478.join(',') + ')&order=created_at.desc&limit=12';
+  const result = await dbFetch(path, { method: 'GET' });
+  assertContext();
+  if (!result || !result.ok || !Array.isArray(result.data) || result.data.length > 12) fail('ADMIN_PARTNER_REQUEST_STORE_UNAVAILABLE', 503);
+  return { ok: true, requests: result.data, time: new Date().toISOString() };
+}
+async function businessPartnerRequestUpdateV478(body, assertContext) {
+  const input = adminPartnerRequestUpdatePayloadV478(body);
+  assertContext();
+  const readPath = '/rest/v1/security_customer_account_requests?select=' + encodeURIComponent('id,customer_id,request_type,status,reason,metadata,created_at,updated_at,completed_at,expires_at') + '&id=eq.' + encodeURIComponent(input.request_id) + '&limit=2';
+  const read = await dbFetch(readPath, { method: 'GET' });
+  assertContext();
+  if (!read || !read.ok || !Array.isArray(read.data) || read.data.length !== 1) fail('ADMIN_PARTNER_REQUEST_NOT_FOUND', 404);
+  const current = read.data[0], type = adminPartnerRequestTypeV478(current && current.request_type), currentStatus = String(current && current.status || '').trim().toLowerCase();
+  if (!type || !isUuid(current && current.customer_id) || !['pending','processing'].includes(currentStatus) || (type === 'partner_reseller_invite' && input.status === 'completed')) fail('ADMIN_PARTNER_REQUEST_STATE_INVALID', 409);
+  const nowIso = new Date().toISOString(), priorMeta = current.metadata && typeof current.metadata === 'object' && !Array.isArray(current.metadata) ? current.metadata : {};
+  const patchPath = '/rest/v1/security_customer_account_requests?id=eq.' + encodeURIComponent(input.request_id) + '&status=eq.' + encodeURIComponent(currentStatus) + '&select=' + encodeURIComponent('id,customer_id,request_type,status,reason,metadata,created_at,updated_at,completed_at,expires_at');
+  const patched = await dbFetch(patchPath, { method: 'PATCH', prefer: 'return=representation', body: { status: input.status, updated_at: nowIso, completed_at: input.status === 'processing' ? null : nowIso, metadata: { ...priorMeta, admin_note: input.note, admin_updated_at: nowIso, admin_updated_by: 'owner' } } });
+  assertContext();
+  if (!patched || !patched.ok || !Array.isArray(patched.data) || patched.data.length !== 1 || String(patched.data[0] && patched.data[0].id || '').toLowerCase() !== input.request_id || String(patched.data[0] && patched.data[0].status || '').toLowerCase() !== input.status || adminPartnerRequestTypeV478(patched.data[0] && patched.data[0].request_type) !== type) fail('ADMIN_PARTNER_REQUEST_UPDATE_UNCONFIRMED', 503);
+  return { ok: true, request: patched.data[0] };
+}
+async function adminPartnerInviteForAccountCreateV478(account, assertContext) {
+  if (!account || account.role !== 'reseller' || !isUuid(account.partner_request_id)) fail('ADMIN_ACCOUNT_PARTNER_REQUEST_INVALID', 400);
+  assertContext();
+  const path = '/rest/v1/security_customer_account_requests?select=' + encodeURIComponent('id,customer_id,request_type,status,reason,metadata,created_at') + '&id=eq.' + encodeURIComponent(account.partner_request_id) + '&request_type=eq.partner_reseller_invite&status=in.(pending,processing)&limit=2';
+  const result = await dbFetch(path, { method: 'GET' });
+  assertContext();
+  if (!result || !result.ok || !Array.isArray(result.data) || result.data.length !== 1) fail('ADMIN_ACCOUNT_PARTNER_REQUEST_INVALID', 409);
+  const row = result.data[0], meta = adminPartnerRequestMetaV478(row && row.metadata);
+  if (!isUuid(row && row.id) || !isUuid(row && row.customer_id) || meta.source !== 'partner_portal_v478' || !isUuid(meta.partner_auth_user_id) || !isEmail(meta.partner_email) || meta.email !== account.email || meta.name !== account.name || String(meta.phone || '') !== String(account.phone || '')) fail('ADMIN_ACCOUNT_PARTNER_REQUEST_MISMATCH', 409);
+  return { id: String(row.id).toLowerCase(), customer_id: String(row.customer_id).toLowerCase(), status: String(row.status || '').toLowerCase(), metadata: row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {} };
+}
+async function adminPartnerInviteCompleteV478(invite, user, assertContext) {
+  const nowIso = new Date().toISOString(), currentStatus = String(invite && invite.status || '').toLowerCase(), priorMeta = invite && invite.metadata && typeof invite.metadata === 'object' && !Array.isArray(invite.metadata) ? invite.metadata : {};
+  if (!invite || !isUuid(invite.id) || !isUuid(invite.customer_id) || !['pending','processing'].includes(currentStatus) || !user || !isUuid(user.id)) fail('ADMIN_ACCOUNT_PARTNER_REQUEST_INVALID', 409);
+  assertContext();
+  const path = '/rest/v1/security_customer_account_requests?id=eq.' + encodeURIComponent(invite.id) + '&status=eq.' + encodeURIComponent(currentStatus) + '&select=' + encodeURIComponent('id,status,request_type,metadata,completed_at');
+  const result = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { status: 'completed', updated_at: nowIso, completed_at: nowIso, metadata: { ...priorMeta, reseller_auth_user_id: String(user.id).toLowerCase(), completed_by_admin: true, admin_updated_at: nowIso } } });
+  assertContext();
+  const row = result && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null, meta = adminPartnerRequestMetaV478(row && row.metadata);
+  if (!result || !result.ok || !row || String(row.id || '').toLowerCase() !== invite.id || String(row.status || '').toLowerCase() !== 'completed' || String(row.request_type || '') !== 'partner_reseller_invite' || meta.reseller_auth_user_id !== String(user.id).toLowerCase()) fail('ADMIN_ACCOUNT_PARTNER_REQUEST_COMPLETE_FAILED', 503);
+  return true;
+}
+async function adminRollbackBusinessAccountV478(userId, email, assertContext) {
+  if (!isUuid(userId) || !isEmail(email)) return false;
+  assertContext();
+  const removed = await authAdminUserRequest('/auth/v1/admin/users/' + String(userId).toLowerCase(), 'DELETE');
+  assertContext();
+  if (!removed || removed.ok !== true) return false;
+  const verify = await authAdminUserRequest('/auth/v1/admin/users/' + String(userId).toLowerCase(), 'GET');
+  assertContext();
+  return !!verify && verify.status === 404;
+}
+
 async function businessMonitor() {
   let rows = [], ready = false; try { const result = await dbFetch('/rest/v1/security_customer_events?select=id,event_type,status,risk_level,description,created_at&order=created_at.desc&limit=20', { method: 'GET' }); if (result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; } } catch (_) { ready = false; }
   const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Guard internal handler admin mandiri yang menangani permintaan ini.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [] };
 }
-async function business(operation, body, origin, assertContext) { if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'banned_data') return businessBannedDataV476(body); if (operation === 'unban') return businessUnban(body); if (operation === 'banned_pdf') return businessBannedPdfV476(body, origin, assertContext); if (operation === 'account_create') return businessAccountManage(body, origin, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
+async function business(operation, body, origin, assertContext) { if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'banned_data') return businessBannedDataV476(body); if (operation === 'unban') return businessUnban(body); if (operation === 'banned_pdf') return businessBannedPdfV476(body, origin, assertContext); if (operation === 'account_create') return businessAccountManage(body, origin, assertContext); if (operation === 'partner_requests') return businessPartnerRequestsV478(assertContext); if (operation === 'partner_request_update') return businessPartnerRequestUpdateV478(body, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
 
 function adminCentralBanReason(error) {
   const raw = String(error && error.code || 'admin_failure').trim().toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');

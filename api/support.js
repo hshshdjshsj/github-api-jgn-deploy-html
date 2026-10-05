@@ -717,10 +717,15 @@ async function resolveMainIdentity(req, res, required) {
     if (identityDiagnosticV360) identityDiagnosticV360.decision = 'upstream_2xx_identity_invalid';
     throw new PublicError(502, 'MAIN_IDENTITY_INVALID', 'Identitas akun Dirac tidak valid.');
   }
+  const accountRole = String(user.account_role || '');
+  if (!['customer','reseller','partner'].includes(accountRole)) {
+    if (identityDiagnosticV360) identityDiagnosticV360.decision = 'upstream_identity_role_invalid';
+    throw new PublicError(502, 'MAIN_IDENTITY_ROLE_INVALID', 'Role akun Dirac tidak dapat diverifikasi.');
+  }
   if (identityDiagnosticV360) identityDiagnosticV360.decision = 'identity_valid';
   const context = supportCentralCurrentContextV146();
   if (context) context.verifiedCustomerId = userId;
-  return { id: userId, email: userEmail, displayName: mainDisplayName(userEmail), account_role: ['customer','reseller','partner'].includes(user.account_role) ? user.account_role : 'customer' };
+  return { id: userId, email: userEmail, displayName: mainDisplayName(userEmail), account_role: accountRole };
 }
 
 function runtimeCookieName(productionName) {

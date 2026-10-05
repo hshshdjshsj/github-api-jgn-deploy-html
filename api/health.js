@@ -9614,6 +9614,12 @@ function diracAccountPolicyFromUserV472(user) {
   const policy = DIRAC_ACCOUNT_POLICIES_V472[role] || DIRAC_ACCOUNT_POLICIES_V472.customer;
   return Object.freeze({ ...policy, provisioned: role === 'customer' ? false : provisioned, policy_version: 1 });
 }
+function diracPartnerCodeV478(user, policy) {
+  const safePolicy = policy && typeof policy === 'object' ? policy : diracAccountPolicyFromUserV472(user);
+  const userId = String(user && user.id || '').trim().toLowerCase(), base = String(diracBaseDomainV250() || '').trim().toLowerCase();
+  if (safePolicy.role !== 'partner' || !customerSecurityLooksLikeUuid(userId) || !base) return '';
+  return 'PRT-' + crypto.createHash('sha256').update('dirac-partner-code-v478|' + base + '|' + userId).digest('hex').slice(0, 12).toUpperCase();
+}
 function sanitizeUser(user) {
   if (!user) return null;
   const policy = diracAccountPolicyFromUserV472(user);
@@ -9628,7 +9634,8 @@ function sanitizeUser(user) {
       priority_support: policy.priority_support,
       custom_quote: policy.custom_quote,
       collaboration_access: policy.collaboration_access
-    }
+    },
+    ...(policy.role === 'partner' ? { partner_code: diracPartnerCodeV478(user, policy) } : {})
   };
 }
 
@@ -12199,6 +12206,64 @@ async function customerSecurityRevokeOtherSessions(req, res, action) {
   });
 }
 
+const CUSTOMER_SECURITY_PARTNER_REQUEST_TYPES_V478 = new Set(['partner_reseller_invite','partner_customer_referral','partner_withdrawal','partner_commission_review','partner_support']);
+async function customerSecurityPartnerTrackerV478(customerId) {
+  const owner = String(customerId || '').trim().toLowerCase();
+  if (!customerSecurityLooksLikeUuid(owner)) return null;
+  const table = '/rest/v1/security_customer_account_requests?', ownerFilter = '&customer_id=eq.' + encodeURIComponent(owner);
+  const recentPath = table + 'select=' + encodeURIComponent('id,request_type,status,reason,created_at,updated_at,completed_at,expires_at') + ownerFilter + '&request_type=in.(partner_reseller_invite,partner_customer_referral,partner_withdrawal,partner_commission_review,partner_support)&order=created_at.desc&limit=10';
+  const resellerPath = table + 'select=id' + ownerFilter + '&request_type=eq.partner_reseller_invite&status=eq.completed&limit=1';
+  const customerPath = table + 'select=id' + ownerFilter + '&request_type=eq.partner_customer_referral&status=eq.completed&limit=1';
+  const activePath = table + 'select=id' + ownerFilter + '&request_type=in.(partner_reseller_invite,partner_customer_referral,partner_withdrawal,partner_commission_review,partner_support)&status=in.(pending,processing)&limit=1';
+  const results = await Promise.all([
+    supabaseFetch(recentPath, { method: 'GET', auth: 'service' }),
+    supabaseFetch(resellerPath, { method: 'GET', auth: 'service', prefer: 'count=exact' }),
+    supabaseFetch(customerPath, { method: 'GET', auth: 'service', prefer: 'count=exact' }),
+    supabaseFetch(activePath, { method: 'GET', auth: 'service', prefer: 'count=exact' })
+  ]);
+  const recent = results[0], reseller = results[1], customer = results[2], active = results[3];
+  if (!recent || !recent.ok || !Array.isArray(recent.data) || recent.data.length > 10 || !reseller || !reseller.ok || !Number.isSafeInteger(reseller.count) || reseller.count < 0 || !customer || !customer.ok || !Number.isSafeInteger(customer.count) || customer.count < 0 || !active || !active.ok || !Number.isSafeInteger(active.count) || active.count < 0) return null;
+  return { account_requests: recent.data, summary: { reseller_completed: reseller.count, customer_referral_completed: customer.count, active_requests: active.count } };
+}
+function customerSecurityPartnerEmailV478(value) {
+  const email = String(value || '').trim().toLowerCase();
+  return email.length <= 120 && /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(email) ? email : '';
+}
+function customerSecurityPartnerTextV478(value, min, max) {
+  const text = String(value || '').trim();
+  return text.length >= min && text.length <= max && !/[\u0000-\u001f\u007f\u202A-\u202E\u2066-\u2069]/.test(text) ? text : '';
+}
+function customerSecurityPartnerRequestPayloadV478(requestType, body, access) {
+  const email = customerSecurityPartnerEmailV478(body && body.email), name = customerSecurityPartnerTextV478(body && body.name, 3, 120), phone = String(body && body.phone || '').trim().replace(/[ .()\-]/g, '');
+  const partnerEmail = customerSecurityPartnerEmailV478(access && access.user && access.user.email), partnerAuthUserId = String(access && access.authUserId || '').trim().toLowerCase();
+  if (!partnerEmail || !customerSecurityLooksLikeUuid(partnerAuthUserId)) return null;
+  if (requestType === 'partner_reseller_invite') {
+    if (!email || !name || (phone && !/^\+?[0-9]{8,16}$/.test(phone))) return null;
+    return { reason: customerSecuritySanitizeReason('Partner mengajukan pembuatan akun reseller untuk ' + name + ' <' + email + '>.'), metadata: { source: 'partner_portal_v478', partner_auth_user_id: partnerAuthUserId, partner_email: partnerEmail, email, name, phone } };
+  }
+  if (requestType === 'partner_customer_referral') {
+    if (!email || !name) return null;
+    return { reason: customerSecuritySanitizeReason('Partner mengajukan referral customer untuk ' + name + ' <' + email + '>.'), metadata: { source: 'partner_portal_v478', partner_auth_user_id: partnerAuthUserId, partner_email: partnerEmail, email, name } };
+  }
+  if (requestType === 'partner_withdrawal') {
+    const amount = Number(String(body && body.amount || '').trim()), bankName = customerSecurityPartnerTextV478(body && body.bank_name, 2, 80), accountName = customerSecurityPartnerTextV478(body && body.account_name, 3, 120), accountNumber = String(body && body.account_number || '').trim();
+    if (!Number.isSafeInteger(amount) || amount < 10000 || amount > 1000000000000 || !bankName || !accountName || !/^[0-9]{6,30}$/.test(accountNumber)) return null;
+    const tail = accountNumber.slice(-4);
+    return { reason: customerSecuritySanitizeReason('Partner mengajukan withdrawal Rp ' + String(amount) + ' ke ' + bankName + ' rekening ****' + tail + '.'), metadata: { source: 'partner_portal_v478', partner_auth_user_id: partnerAuthUserId, partner_email: partnerEmail, amount, bank_name: bankName, account_name: accountName, account_number: accountNumber } };
+  }
+  if (requestType === 'partner_commission_review') {
+    const period = String(body && body.period || '').trim(), message = customerSecurityPartnerTextV478(body && body.message, 3, 1200);
+    if (!/^[0-9]{4}-(?:0[1-9]|1[0-2])$/.test(period) || !message) return null;
+    return { reason: customerSecuritySanitizeReason('Partner meminta review komisi periode ' + period + ': ' + message), metadata: { source: 'partner_portal_v478', partner_auth_user_id: partnerAuthUserId, partner_email: partnerEmail, period, message } };
+  }
+  if (requestType === 'partner_support') {
+    const message = customerSecurityPartnerTextV478(body && body.message, 3, 1200);
+    if (!message) return null;
+    return { reason: customerSecuritySanitizeReason('Partner meminta bantuan: ' + message), metadata: { source: 'partner_portal_v478', partner_auth_user_id: partnerAuthUserId, partner_email: partnerEmail, message } };
+  }
+  return null;
+}
+
 async function customerSecurityCreateAccountRequest(req, res, action) {
   const access = await customerSecurityRequireAccess(req, res, {
     action,
@@ -12210,8 +12275,14 @@ async function customerSecurityCreateAccountRequest(req, res, action) {
   const body = await readBody(req);
   const allowed = new Set(['security_review', 'export_data', 'deactivate_account', 'reactivate_account']);
   const requestType = String(body.request_type || 'security_review').trim().toLowerCase();
-  const safeType = allowed.has(requestType) ? requestType : 'security_review';
-  const reason = customerSecuritySanitizeReason(body.reason || 'Customer meminta review keamanan akun.');
+  const accountPolicy = diracAccountPolicyFromUserV472(access.user), partnerRequest = CUSTOMER_SECURITY_PARTNER_REQUEST_TYPES_V478.has(requestType);
+  if (requestType.startsWith('partner_') && !partnerRequest) return res.status(400).json({ ok: false, code: 'PARTNER_REQUEST_TYPE_INVALID', message: 'Jenis request partner tidak valid.' });
+  if (partnerRequest && accountPolicy.role !== 'partner') return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Fitur ini hanya tersedia untuk akun Partner terverifikasi.' });
+  const partnerPayload = partnerRequest ? customerSecurityPartnerRequestPayloadV478(requestType, body, access) : null;
+  if (partnerRequest && !partnerPayload) return res.status(400).json({ ok: false, code: 'PARTNER_REQUEST_INPUT_INVALID', message: 'Data pengajuan Partner belum valid.' });
+  const safeType = partnerRequest ? requestType : allowed.has(requestType) ? requestType : 'security_review';
+  const reason = partnerRequest ? partnerPayload.reason : customerSecuritySanitizeReason(body.reason || 'Customer meminta review keamanan akun.');
+  const requestMetadata = partnerRequest ? partnerPayload.metadata : { source: 'customer_security_guarded_action', action, idempotency_key_present: Boolean(req.headers && (req.headers['idempotency-key'] || req.headers['x-idempotency-key']) || body.idempotency_key || '') };
   const idempotencyKey = customerSecuritySanitizeReason(req.headers && (req.headers['idempotency-key'] || req.headers['x-idempotency-key']) || body.idempotency_key || '');
 
   if (idempotencyKey) {
@@ -12244,11 +12315,7 @@ async function customerSecurityCreateAccountRequest(req, res, action) {
       status: 'pending',
       reason,
       expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-      metadata: {
-        source: 'customer_security_guarded_action',
-        action,
-        idempotency_key_present: Boolean(idempotencyKey)
-      }
+      metadata: requestMetadata
     }]
   });
 
@@ -33398,13 +33465,16 @@ __diracV202RegisterMiddleware(async function customerSecurityFeatureReadWrapper(
     }
 
     if (action === 'customer_security_request_tracker') {
+      const accountPolicyV478 = diracAccountPolicyFromUserV472(access.user);
+      const partnerTrackerV478 = accountPolicyV478.role === 'partner' ? await customerSecurityPartnerTrackerV478(access.customerId) : null;
       return res.status(200).json({
         ok: true,
         service: bundle.service,
         source: bundle.source,
         readOnly: true,
         mfa_active_now: bundle.mfa_active_now,
-        account_requests: bundle.account_requests,
+        account_requests: partnerTrackerV478 ? partnerTrackerV478.account_requests : bundle.account_requests,
+        ...(partnerTrackerV478 ? { partner_summary: partnerTrackerV478.summary } : {}),
         policy: bundle.policy,
         time: diracNowIso()
       });
@@ -69268,7 +69338,7 @@ function diracCentralContractForActionV146(action) {
     create_payment: postOnly,
     customer_security_revoke_session: { ...postOnly, required: ['session_id'] },
     customer_security_revoke_other_sessions: postOnly,
-    customer_security_account_request: postOnly,
+    customer_security_account_request: { ...postOnly, allowed: commonPost.concat(['request_type', 'amount', 'bank_name', 'account_name', 'account_number', 'message', 'period']) },
     customer_security_recovery_codes_generate: recoveryGeneratePost,
     customer_security_recovery_code_verify: recoveryVerifyPost,
     [DIRAC_RECOVERY_WORKER_ACTION]: recoveryWorkerPost,
