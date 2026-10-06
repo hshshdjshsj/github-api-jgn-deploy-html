@@ -59,7 +59,12 @@ const CONTRACTS = Object.freeze({
   admin_banned_data: get(['export_ref']),
   admin_unban: post(['block_id', 'approval'], ['block_id', 'approval']),
   admin_banned_pdf: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'export_ref', 'mode', 'raw_pdf_base64', 'raw_pdf_sha256', 'approval']), required: Object.freeze(['export_ref', 'mode', 'raw_pdf_base64', 'raw_pdf_sha256', 'approval']), maxBodyBytes: 5700000, maxFieldBytes: 5500000, mutation: true, allowArrayItems: false }),
-  admin_account_create: post(['mode', 'role', 'email', 'name', 'phone', 'partner_request_id', 'approval'], ['email', 'approval']),
+  admin_account_create: post(['role', 'email', 'name', 'phone', 'partner_request_id', 'approval'], ['email', 'approval']),
+  admin_account_disable: post(['email', 'approval'], ['email', 'approval']),
+  admin_account_enable: post(['email', 'approval'], ['email', 'approval']),
+  admin_account_delete: post(['email', 'approval'], ['email', 'approval']),
+  admin_account_password_reset: post(['email', 'approval'], ['email', 'approval']),
+  admin_account_passkey_reset: post(['email', 'approval'], ['email', 'approval']),
   admin_partner_requests: get(),
   admin_partner_request_update: post(['request_id', 'status', 'note', 'approval'], ['request_id', 'status', 'approval']),
   admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
@@ -67,10 +72,11 @@ const CONTRACTS = Object.freeze({
   admin_document_prepare: post(['document_kind','reference','page_count','content_sha256','approval'], ['document_kind','reference','page_count','content_sha256','approval']),
   admin_document_seal: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'identity','format','page','raw_sha256','file_base64','approval']), required: Object.freeze(['identity','format','page','raw_sha256','file_base64','approval']), maxBodyBytes: 4250000, maxFieldBytes: 4194304, mutation: true, allowArrayItems: false }),
   admin_document_verify: get(['file_sha256','document_id','qr_proof']),
-  admin_monitor: get()
+  admin_monitor: get(['view', 'from', 'until'])
 });
 const ACTIONS = Object.freeze(Object.keys(CONTRACTS));
-const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal' });
+const ADMIN_ACCOUNT_ACTION_MODES = Object.freeze({ admin_account_create: 'create', admin_account_disable: 'disable', admin_account_enable: 'enable', admin_account_delete: 'delete', admin_account_password_reset: 'reset_password', admin_account_passkey_reset: 'reset_passkey' });
+const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_account_disable: 'account_disable', admin_account_enable: 'account_enable', admin_account_delete: 'account_delete', admin_account_password_reset: 'account_password_reset', admin_account_passkey_reset: 'account_passkey_reset', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal' });
 const ORDER_SELECT = Object.freeze({
   regular: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
   laboratorium: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
@@ -408,9 +414,10 @@ function adminAccountUserUpgradeable(user, email) {
 function adminAccountLabel(role) { return role === 'reseller' ? 'Reseller / Distributor Resmi' : 'Partner'; }
 function adminBusinessAccountPublicV479(user) {
   const role = adminAccountRoleFromUser(user), email = String(user && user.email || '').trim().toLowerCase();
-  if (!role || !user || !isUuid(user.id) || !isEmail(email) || adminAccountBanned(user) || String(user.deleted_at || '').trim() || String(user.disabled_at || '').trim() || user.disabled === true || user.is_disabled === true || user.is_anonymous === true) return null;
+  if (!role || !user || !isUuid(user.id) || !isEmail(email) || String(user.deleted_at || '').trim() || user.is_anonymous === true) return null;
   const meta = user.user_metadata && typeof user.user_metadata === 'object' && !Array.isArray(user.user_metadata) ? user.user_metadata : {};
-  return { user_id: String(user.id).toLowerCase(), email, account_role: role, account_label: adminAccountLabel(role), account_active: true, name: String(meta.name || meta.full_name || '').trim().slice(0, 120), phone: String(meta.phone || '').trim().slice(0, 24), created_at: String(user.created_at || '').slice(0, 48) };
+  const accountActive = !(adminAccountBanned(user) || String(user.disabled_at || '').trim() || user.disabled === true || user.is_disabled === true);
+  return { user_id: String(user.id).toLowerCase(), email, account_role: role, account_label: adminAccountLabel(role), account_active: accountActive, name: String(meta.name || meta.full_name || '').trim().slice(0, 120), phone: String(meta.phone || '').trim().slice(0, 24), created_at: String(user.created_at || '').slice(0, 48) };
 }
 async function adminAccountSecurityLinkV480(user, email, assertContext) {
   const authUserId = String(user && user.id || '').trim().toLowerCase(), normalizedEmail = String(email || '').trim().toLowerCase();
@@ -451,7 +458,7 @@ async function adminAccountRevokeLinkV480(link, assertContext) {
 }
 async function adminAccountRevokeSessionsV480(link, reason, assertContext) {
   if (!link) return 0;
-  if (!['admin_account_disable','admin_account_delete','admin_password_reset'].includes(reason)) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
+  if (!['admin_account_disable','admin_account_delete','admin_password_reset','admin_passkey_reset'].includes(reason)) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
   const nowIso = new Date().toISOString();
   const revoked = await dbFetch('/rest/v1/security_customer_sessions?select=' + encodeURIComponent('id,customer_id,status,revoked_at,revoke_reason') + '&customer_id=eq.' + encodeURIComponent(link.customer_id) + '&status=eq.active&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { status: 'revoked', revoked_at: nowIso, revoke_reason: reason } });
   assertContext();
@@ -461,14 +468,15 @@ async function adminAccountRevokeSessionsV480(link, reason, assertContext) {
   if (!active || !active.ok || !Array.isArray(active.data) || active.data.length !== 0) fail('ADMIN_ACCOUNT_SESSION_REVOCATION_UNCONFIRMED', 503);
   return revoked.data.length;
 }
-async function adminAccountRevokePasskeysV480(link, assertContext) {
+async function adminAccountRevokePasskeysV480(link, reason, assertContext) {
   if (!link) return 0;
-  const active = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'GET' });
+  if (!['admin_account_delete','admin_passkey_reset'].includes(reason)) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
+  const active = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,rotation_state,revoked_at') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'GET' });
   assertContext();
   if (!active || !active.ok || !Array.isArray(active.data) || active.data.length > 16) fail('ADMIN_ACCOUNT_PASSKEY_STATE_UNAVAILABLE', 503);
   if (active.data.length === 0) return 0;
   const nowIso = new Date().toISOString();
-  const revoked = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, updated_at: nowIso } });
+  const revoked = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,rotation_state,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, rotation_state: 'revoked', revoked_at: nowIso, revoke_reason: reason, updated_at: nowIso } });
   assertContext();
   if (!revoked || !revoked.ok || !Array.isArray(revoked.data) || revoked.data.length !== active.data.length) fail('ADMIN_ACCOUNT_PASSKEY_RESET_FAILED', 503);
   const check = await dbFetch('/rest/v1/domain_passkeys?select=id&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null&limit=1', { method: 'GET' });
@@ -562,7 +570,7 @@ async function businessAccountManage(body, origin, assertContext) {
     const securityLink = await adminAccountSecurityLinkV480(user, account.email, assertContext);
     const linkDisabled = await adminAccountSetLinkDisabledV480(securityLink, true, assertContext);
     const sessionsRevoked = await adminAccountRevokeSessionsV480(securityLink, 'admin_account_delete', assertContext);
-    const passkeysRevoked = await adminAccountRevokePasskeysV480(securityLink, assertContext);
+    const passkeysRevoked = await adminAccountRevokePasskeysV480(securityLink, 'admin_account_delete', assertContext);
     const linkRevoked = await adminAccountRevokeLinkV480(securityLink, assertContext);
     const removed = await authAdminUserRequest(userPath, 'DELETE');
     assertContext();
@@ -589,44 +597,37 @@ async function businessAccountManage(body, origin, assertContext) {
   if (account.mode === 'reset_passkey') {
     const securityLink = await adminAccountSecurityLinkV480(user, account.email, assertContext);
     if (!securityLink) return { ok: true, mode: 'reset_passkey', email: account.email, account_role: role, account_label: adminAccountLabel(role), passkeys_revoked: 0, sessions_revoked: 0, passkey_enrolled: false };
-    const customerId = securityLink.customer_id;
-    const activePasskeys = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at') + '&user_id=eq.' + encodeURIComponent(customerId) + '&is_active=eq.true&revoked_at=is.null', { method: 'GET' });
-    assertContext();
-    if (!activePasskeys || !activePasskeys.ok || !Array.isArray(activePasskeys.data) || activePasskeys.data.length > 16) fail('ADMIN_ACCOUNT_PASSKEY_STATE_UNAVAILABLE', 503);
-    const nowIso = new Date().toISOString();
-    let passkeysRevoked = 0;
-    if (activePasskeys.data.length) {
-      const revokedPasskeys = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(customerId) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, updated_at: nowIso } });
-      assertContext();
-      if (!revokedPasskeys || !revokedPasskeys.ok || !Array.isArray(revokedPasskeys.data) || revokedPasskeys.data.length !== activePasskeys.data.length) fail('ADMIN_ACCOUNT_PASSKEY_RESET_FAILED', 503);
-      passkeysRevoked = revokedPasskeys.data.length;
-    }
-    const revokedSessions = await dbFetch('/rest/v1/security_customer_sessions?select=' + encodeURIComponent('id,customer_id,status,revoked_at,revoke_reason') + '&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { status: 'revoked', revoked_at: nowIso, revoke_reason: 'admin_passkey_reset' } });
-    assertContext();
-    if (!revokedSessions || !revokedSessions.ok || !Array.isArray(revokedSessions.data)) fail('ADMIN_ACCOUNT_SESSION_REVOCATION_FAILED', 503);
-    const passkeyCheck = await dbFetch('/rest/v1/domain_passkeys?select=id&user_id=eq.' + encodeURIComponent(customerId) + '&is_active=eq.true&revoked_at=is.null&limit=1', { method: 'GET' });
-    const sessionCheck = await dbFetch('/rest/v1/security_customer_sessions?select=id&customer_id=eq.' + encodeURIComponent(customerId) + '&status=eq.active&revoked_at=is.null&limit=1', { method: 'GET' });
-    assertContext();
-    if (!passkeyCheck || !passkeyCheck.ok || !Array.isArray(passkeyCheck.data) || passkeyCheck.data.length !== 0 || !sessionCheck || !sessionCheck.ok || !Array.isArray(sessionCheck.data) || sessionCheck.data.length !== 0) fail('ADMIN_ACCOUNT_PASSKEY_RESET_UNCONFIRMED', 503);
-    return { ok: true, mode: 'reset_passkey', email: account.email, account_role: role, account_label: adminAccountLabel(role), passkeys_revoked: passkeysRevoked, sessions_revoked: revokedSessions.data.length, passkey_enrolled: passkeysRevoked > 0 };
+    const sessionsRevoked = await adminAccountRevokeSessionsV480(securityLink, 'admin_passkey_reset', assertContext);
+    const passkeysRevoked = await adminAccountRevokePasskeysV480(securityLink, 'admin_passkey_reset', assertContext);
+    return { ok: true, mode: 'reset_passkey', email: account.email, account_role: role, account_label: adminAccountLabel(role), passkeys_revoked: passkeysRevoked, sessions_revoked: sessionsRevoked, passkey_enrolled: passkeysRevoked > 0 };
   }
-  const shouldDisable = account.mode === 'disable';
+  const shouldDisable = account.mode === 'disable', wasBanned = adminAccountBanned(user);
   const securityLink = await adminAccountSecurityLinkV480(user, account.email, assertContext);
   let linkSynchronized = !securityLink, sessionsRevoked = 0;
   if (shouldDisable) {
     linkSynchronized = await adminAccountSetLinkDisabledV480(securityLink, true, assertContext);
     sessionsRevoked = await adminAccountRevokeSessionsV480(securityLink, 'admin_account_disable', assertContext);
   }
-  const updated = await authAdminUserRequest(userPath, 'PUT', { ban_duration: shouldDisable ? '876000h' : 'none' });
-  assertContext();
-  if (!updated || updated.ok !== true) fail(shouldDisable ? 'ADMIN_ACCOUNT_DISABLE_FAILED' : 'ADMIN_ACCOUNT_ENABLE_FAILED', 503);
-  const verify = await authAdminUserRequest(userPath, 'GET');
-  assertContext();
-  const confirmed = verify && verify.ok === true ? adminAccountExactUser(verify.data, account.email) : null;
-  if (!confirmed || adminAccountRoleFromUser(confirmed) !== role || adminAccountBanned(confirmed) !== shouldDisable) {
-    fail(shouldDisable ? 'ADMIN_ACCOUNT_DISABLE_UNCONFIRMED' : 'ADMIN_ACCOUNT_ENABLE_UNCONFIRMED', 503);
+  try {
+    const updated = await authAdminUserRequest(userPath, 'PUT', { ban_duration: shouldDisable ? '876000h' : 'none' });
+    assertContext();
+    if (!updated || updated.ok !== true) fail(shouldDisable ? 'ADMIN_ACCOUNT_DISABLE_FAILED' : 'ADMIN_ACCOUNT_ENABLE_FAILED', 503);
+    const verify = await authAdminUserRequest(userPath, 'GET');
+    assertContext();
+    const confirmed = verify && verify.ok === true ? adminAccountExactUser(verify.data, account.email) : null;
+    if (!confirmed || adminAccountRoleFromUser(confirmed) !== role || adminAccountBanned(confirmed) !== shouldDisable) fail(shouldDisable ? 'ADMIN_ACCOUNT_DISABLE_UNCONFIRMED' : 'ADMIN_ACCOUNT_ENABLE_UNCONFIRMED', 503);
+    if (!shouldDisable) linkSynchronized = await adminAccountSetLinkDisabledV480(securityLink, false, assertContext);
+  } catch (error) {
+    if (!shouldDisable && wasBanned) {
+      const rollback = await authAdminUserRequest(userPath, 'PUT', { ban_duration: '876000h' });
+      assertContext();
+      const rollbackVerify = rollback && rollback.ok === true ? await authAdminUserRequest(userPath, 'GET') : null;
+      assertContext();
+      const restored = rollbackVerify && rollbackVerify.ok === true ? adminAccountExactUser(rollbackVerify.data, account.email) : null;
+      if (!restored || adminAccountRoleFromUser(restored) !== role || adminAccountBanned(restored) !== true) fail('ADMIN_ACCOUNT_ENABLE_ROLLBACK_FAILED', 503);
+    }
+    throw error;
   }
-  if (!shouldDisable) linkSynchronized = await adminAccountSetLinkDisabledV480(securityLink, false, assertContext);
   return { ok: true, mode: account.mode, email: account.email, account_role: role, account_label: adminAccountLabel(role), account_active: !shouldDisable, link_synchronized: linkSynchronized, sessions_revoked: sessionsRevoked };
 }
 
@@ -1021,7 +1022,7 @@ function approvalPayload(action, body) {
         || typeof value.raw_pdf_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.raw_pdf_sha256)) fail('ADMIN_BANNED_PDF_INPUT_INVALID', 400);
     return { action, export_ref: value.export_ref, mode: value.mode, raw_pdf_sha256: value.raw_pdf_sha256 };
   }
-  if (action === 'admin_account_create') { const account = adminAccountMutationPayload(value); return { action, ...account }; }
+  if (Object.prototype.hasOwnProperty.call(ADMIN_ACCOUNT_ACTION_MODES, action)) { const account = adminAccountMutationPayload({ ...value, mode: ADMIN_ACCOUNT_ACTION_MODES[action] }); return { action, ...account }; }
   if (action === 'admin_partner_request_update') { const request = adminPartnerRequestUpdatePayloadV478(value); return { action, ...request }; }
   if (action === 'admin_smtp_send') return { action, provider: value.provider, recipient_count: value.recipient_count, recipients_sha256: value.recipients_sha256, subject_sha256: value.subject_sha256, body_sha256: value.body_sha256, document_kind: value.document_kind, attachment_name: value.attachment_name || '', attachment_type: value.attachment_type || '', attachment_sha256: value.attachment_sha256 || '', legal_confirm: value.legal_confirm === true };
   fail('ADMIN_ACTION_APPROVAL_OPERATION_INVALID', 400);
@@ -1696,14 +1697,15 @@ async function execute(ops) {
     const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); return { ok: true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_logout') { const active = await session(ops, scope, false, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
-  await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_banned_data: 'banned_data', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_partner_requests: 'partner_requests', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
+  await session(ops, scope); const operation = { admin_orders: 'orders', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_banned_data: 'banned_data', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_account_disable: 'account_create', admin_account_enable: 'account_create', admin_account_delete: 'account_create', admin_account_password_reset: 'account_create', admin_account_passkey_reset: 'account_create', admin_partner_requests: 'partner_requests', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
   if (!operation) fail('ADMIN_ACTION_INVALID', 400);
   if (Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS, action)) { const approval = await ticket(ops, scope, body.approval, 'action-approval'); if (approval.value.operation !== action || approval.value.payloadHash !== approvalPayloadHash(action, body)) fail('ADMIN_ACTION_APPROVAL_MISMATCH', 403); await consume(ops, approval); }
   if (action === 'admin_smtp_send') { await throttle(ops, scope, 'smtp-send-minute', 2, 60); await throttle(ops, scope, 'smtp-send-hour', 5, 3600); }
-  if (action === 'admin_account_create') { await throttle(ops, scope, 'account-create-minute', 3, 60); await throttle(ops, scope, 'account-create-hour', 5, 3600); }
+  if (Object.prototype.hasOwnProperty.call(ADMIN_ACCOUNT_ACTION_MODES, action)) { await throttle(ops, scope, 'account-create-minute', 3, 60); await throttle(ops, scope, 'account-create-hour', 5, 3600); }
   if (action === 'admin_partner_request_update') { await throttle(ops, scope, 'partner-request-update-minute', 6, 60); await throttle(ops, scope, 'partner-request-update-hour', 30, 3600); }
   if (action === 'admin_banned_pdf') { await throttle(ops, scope, 'banned-pdf-minute', 3, 60); await throttle(ops, scope, 'banned-pdf-hour', 5, 3600); }
-  ops.assertFullGuard(); return ops.business(operation, body);
+  const businessBody = Object.prototype.hasOwnProperty.call(ADMIN_ACCOUNT_ACTION_MODES, action) ? { ...body, mode: ADMIN_ACCOUNT_ACTION_MODES[action] } : body;
+  ops.assertFullGuard(); return ops.business(operation, businessBody);
 }
 
 // V453: bounded shipment review, change summaries and signed customer receipts.
@@ -1856,14 +1858,14 @@ function orderPublic(row, kind) {
   return { id: row.id, kind, order_id: String(row.order_id || (kind === 'domain' ? 'DOM-' + row.id.slice(0, 8).toUpperCase() : row.id)), customer_id: row.customer_id, customer_name: String(row.customer_name || '').slice(0, 160), customer_email: String(row.customer_email || '').slice(0, 254), customer_phone: String(row.customer_phone || row.customer_whatsapp || '').slice(0, 40), shipping_address: String(row.shipping_address || '').slice(0, 600), service_type: kind === 'domain' ? 'domain' : String(row.service_type || '').slice(0, 60), domain_name: String(row.domain_name || '').slice(0, 254), total, currency: String(row.currency || 'IDR').slice(0, 8), payment_method: String(row.payment_method || '').slice(0, 80), payment_status: String(row.payment_status || '').slice(0, 40), order_status: String(row.order_status || '').slice(0, 40), created_at: row.created_at };
 }
 function domainOrderUndefinedColumn(result) { return !!(result && result.ok === false && result.status === 400 && result.data && String(result.data.code || '') === '42703'); }
-// V456: bounded, read-only operational summaries. No shipment/customer payload is fetched.
+// V482: bounded read-only summary/finance pages. Shipment/customer payload is never fetched for these views.
 async function businessSummaryV456(body) {
-  const kind = String(body.kind || 'regular'), rawOffset = String(body.offset || '0');
+  const kind = String(body.kind || 'regular'), rawOffset = String(body.offset || '0'), view = String(body.view || '');
   const from = String(body.from || ''), until = String(body.until || '');
   const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
   const start = Date.parse(from), end = Date.parse(until);
-  if (body.view !== 'summary' || !Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(rawOffset) || Number(rawOffset) > 49800 || Number(rawOffset) % 200 !== 0) fail('ADMIN_SUMMARY_RANGE_INVALID', 400);
-  if (!iso.test(from) || !iso.test(until) || !Number.isFinite(start) || !Number.isFinite(end) || new Date(start).toISOString() !== from || new Date(end).toISOString() !== until || start < Date.UTC(1999, 11, 31, 10) || start >= end || end > Date.now() + 60000) fail('ADMIN_SUMMARY_RANGE_INVALID', 400);
+  if (!['summary','finance'].includes(view) || !Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(rawOffset) || Number(rawOffset) > 49800 || Number(rawOffset) % 200 !== 0) fail(view === 'finance' ? 'ADMIN_FINANCE_RANGE_INVALID' : 'ADMIN_SUMMARY_RANGE_INVALID', 400);
+  if (!iso.test(from) || !iso.test(until) || !Number.isFinite(start) || !Number.isFinite(end) || new Date(start).toISOString() !== from || new Date(end).toISOString() !== until || start < Date.UTC(1999, 11, 31, 10) || start >= end || end > Date.now() + 60000) fail(view === 'finance' ? 'ADMIN_FINANCE_RANGE_INVALID' : 'ADMIN_SUMMARY_RANGE_INVALID', 400);
   const table = kind === 'domain' ? 'domain_orders' : 'orders';
   const select = kind === 'domain' ? 'id,total_price,currency,payment_status,created_at' : 'id,total,payment_status,created_at';
   const suffix = '&created_at=gte.' + encodeURIComponent(from) + '&created_at=lt.' + encodeURIComponent(until) + '&order=created_at.desc,id.desc&limit=201&offset=' + Number(rawOffset);
@@ -1874,26 +1876,30 @@ async function businessSummaryV456(body) {
     implicitCurrency = true;
   }
   if (!result.ok || !Array.isArray(result.data) || result.data.length > 201) fail('ADMIN_DATA_UNAVAILABLE', 503);
-  const seen = new Set(); let lastTime = Infinity;
+  const seen = new Set(), financeRows = []; let lastTime = Infinity;
   const totals = result.data.slice(0, 200).reduce((out, row) => {
-    if (!row || typeof row !== 'object' || !isUuid(row.id) || seen.has(row.id)) fail('ADMIN_SUMMARY_DATA_INVALID', 503);
+    if (!row || typeof row !== 'object' || !isUuid(row.id) || seen.has(row.id)) fail(view === 'finance' ? 'ADMIN_FINANCE_DATA_INVALID' : 'ADMIN_SUMMARY_DATA_INVALID', 503);
     const time = Date.parse(row.created_at), raw = kind === 'domain' ? row.total_price : row.total;
-    if ((typeof raw !== 'number' && typeof raw !== 'string') || !/^[0-9]+(?:\.[0-9]{1,2})?$/.test(String(raw))) fail('ADMIN_SUMMARY_DATA_INVALID', 503);
+    if ((typeof raw !== 'number' && typeof raw !== 'string') || !/^[0-9]+(?:\.[0-9]{1,2})?$/.test(String(raw))) fail(view === 'finance' ? 'ADMIN_FINANCE_DATA_INVALID' : 'ADMIN_SUMMARY_DATA_INVALID', 503);
     const minor = Math.round(Number(raw) * 100), currency = implicitCurrency || row.currency == null || row.currency === '' ? 'IDR' : String(row.currency).toUpperCase();
-    if (!Number.isFinite(time) || time < start || time >= end || time > lastTime || !Number.isSafeInteger(minor) || minor < 0 || !/^[A-Z]{3}$/.test(currency) || (row.payment_status != null && (typeof row.payment_status !== 'string' || row.payment_status.length > 80))) fail('ADMIN_SUMMARY_DATA_INVALID', 503);
+    if (!Number.isFinite(time) || time < start || time >= end || time > lastTime || !Number.isSafeInteger(minor) || minor < 0 || !/^[A-Z]{3}$/.test(currency) || (row.payment_status != null && (typeof row.payment_status !== 'string' || row.payment_status.length > 80))) fail(view === 'finance' ? 'ADMIN_FINANCE_DATA_INVALID' : 'ADMIN_SUMMARY_DATA_INVALID', 503);
     seen.add(row.id); lastTime = time;
     const status = String(row.payment_status || '').trim().toLowerCase();
     const paid = ['paid', 'sudah bayar'].includes(status), refunded = ['refunded', 'refund'].includes(status), open = ['unpaid', 'pending', 'created', 'belum bayar'].includes(status);
-    out.orders += 1; out.paid += Number(paid); out.refunded += Number(refunded); out.open += Number(open); out.other += Number(!paid && !refunded && !open);
-    if (kind === 'domain' && (implicitCurrency || row.currency == null || row.currency === '')) out.implicit_idr += 1;
-    if (currency !== 'IDR') out.non_idr += 1;
+    if (view === 'finance') financeRows.push({ id: row.id, kind, total: minor / 100, currency, payment_status: status, created_at: String(row.created_at || '') });
     else {
-      out.paid_minor += paid ? minor : 0; out.refunded_minor += refunded ? minor : 0; out.open_minor += open ? minor : 0;
-      if (![out.paid_minor, out.refunded_minor, out.open_minor].every(Number.isSafeInteger)) fail('ADMIN_SUMMARY_DATA_INVALID', 503);
+      out.orders += 1; out.paid += Number(paid); out.refunded += Number(refunded); out.open += Number(open); out.other += Number(!paid && !refunded && !open);
+      if (kind === 'domain' && (implicitCurrency || row.currency == null || row.currency === '')) out.implicit_idr += 1;
+      if (currency !== 'IDR') out.non_idr += 1;
+      else {
+        out.paid_minor += paid ? minor : 0; out.refunded_minor += refunded ? minor : 0; out.open_minor += open ? minor : 0;
+        if (![out.paid_minor, out.refunded_minor, out.open_minor].every(Number.isSafeInteger)) fail('ADMIN_SUMMARY_DATA_INVALID', 503);
+      }
     }
     return out;
   }, { orders: 0, paid: 0, refunded: 0, open: 0, other: 0, non_idr: 0, implicit_idr: 0, paid_minor: 0, refunded_minor: 0, open_minor: 0 });
-  return { ok: true, view: 'summary', kind, offset: Number(rawOffset), page_size: 200, from, until, has_more: result.data.length === 201, totals, time: new Date().toISOString() };
+  const common = { ok: true, view, kind, offset: Number(rawOffset), page_size: 200, from, until, has_more: result.data.length === 201, time: new Date().toISOString() };
+  return view === 'finance' ? { ...common, orders: financeRows } : { ...common, totals };
 }
 
 async function businessOrdersSingleV480(body) {
@@ -1908,24 +1914,47 @@ async function businessOrdersSingleV480(body) {
 function businessOrdersBundleSourceV480(result, kind) {
   return result && result.ok === true && result.data && result.data.kind === kind ? { ok: true, kind, data: result.data } : { ok: false, kind };
 }
+function businessFinancePairV484(first, second, kind) {
+  if (!first || !second || first.ok !== true || second.ok !== true || first.view !== 'finance' || second.view !== 'finance' || first.kind !== kind || second.kind !== kind || first.page_size !== 200 || second.page_size !== 200 || second.offset !== first.offset + 200 || first.from !== second.from || first.until !== second.until || !Array.isArray(first.orders) || !Array.isArray(second.orders) || first.orders.length > 200 || second.orders.length > 200 || (first.has_more === true && first.orders.length !== 200) || (second.has_more === true && second.orders.length !== 200) || (first.has_more === false && (second.orders.length !== 0 || second.has_more !== false))) fail('ADMIN_FINANCE_DATA_INVALID', 503);
+  return { ...first, page_size: 400, has_more: second.has_more, orders: [...first.orders, ...second.orders], time: new Date().toISOString() };
+}
 async function businessOrders(body) {
   const kind = String(body.kind || 'regular');
   if (body.view !== undefined || body.from !== undefined || body.until !== undefined) {
     if (kind !== 'all') return businessSummaryV456(body);
+    const view = String(body.view || '');
+    if (view === 'finance') {
+      const offsetRaw = String(body.offset || '0');
+      if (!/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 49600 || Number(offsetRaw) % 400 !== 0) fail('ADMIN_FINANCE_RANGE_INVALID', 400);
+      const offsetNext = String(Number(offsetRaw) + 200), financePages = await Promise.all([
+        businessSummaryV456({ ...body, kind: 'regular', offset: offsetRaw }),
+        businessSummaryV456({ ...body, kind: 'laboratorium', offset: offsetRaw }),
+        businessSummaryV456({ ...body, kind: 'domain', offset: offsetRaw }),
+        businessSummaryV456({ ...body, kind: 'regular', offset: offsetNext }),
+        businessSummaryV456({ ...body, kind: 'laboratorium', offset: offsetNext }),
+        businessSummaryV456({ ...body, kind: 'domain', offset: offsetNext })
+      ]);
+      const pages = [
+        businessFinancePairV484(financePages[0], financePages[3], 'regular'),
+        businessFinancePairV484(financePages[1], financePages[4], 'laboratorium'),
+        businessFinancePairV484(financePages[2], financePages[5], 'domain')
+      ];
+      return { ok: true, view, kind: 'all', offset: Number(offsetRaw), page_size: 400, from: pages[0].from, until: pages[0].until, pages, time: new Date().toISOString() };
+    }
     const pages = await Promise.all([
       businessSummaryV456({ ...body, kind: 'regular' }),
       businessSummaryV456({ ...body, kind: 'laboratorium' }),
       businessSummaryV456({ ...body, kind: 'domain' })
     ]);
-    return { ok: true, view: 'summary', kind: 'all', offset: pages[0].offset, page_size: 200, from: pages[0].from, until: pages[0].until, pages, time: new Date().toISOString() };
+    return { ok: true, view, kind: 'all', offset: pages[0].offset, page_size: 200, from: pages[0].from, until: pages[0].until, pages, time: new Date().toISOString() };
   }
   if (kind !== 'all') return businessOrdersSingleV480(body);
   const offsetRaw = String(body.offset || '0');
   if (!/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 50000) fail('ADMIN_PAGE_INVALID', 400);
   const bundled = await Promise.all([
-    businessOrdersSingleV480({ kind: 'regular', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(() => ({ ok: false, data: null })),
-    businessOrdersSingleV480({ kind: 'laboratorium', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(() => ({ ok: false, data: null })),
-    businessOrdersSingleV480({ kind: 'domain', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(() => ({ ok: false, data: null }))
+    businessOrdersSingleV480({ kind: 'regular', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; }),
+    businessOrdersSingleV480({ kind: 'laboratorium', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; }),
+    businessOrdersSingleV480({ kind: 'domain', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; })
   ]);
   const sources = [businessOrdersBundleSourceV480(bundled[0], 'regular'), businessOrdersBundleSourceV480(bundled[1], 'laboratorium'), businessOrdersBundleSourceV480(bundled[2], 'domain')];
   if (!sources[0].ok && !sources[1].ok && !sources[2].ok) fail('ADMIN_DATA_UNAVAILABLE', 503);
@@ -2309,7 +2338,7 @@ function adminCentralBanRequired(error) {
 }
 function adminGuardSelfTest() {
   try {
-    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_banned_data','admin_unban','admin_banned_pdf','admin_account_create','admin_partner_requests','admin_partner_request_update','admin_smtp_send','admin_local_authorize','admin_document_prepare','admin_document_seal','admin_document_verify','admin_monitor'];
+    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_blocks','admin_banned_data','admin_unban','admin_banned_pdf','admin_account_create','admin_account_disable','admin_account_enable','admin_account_delete','admin_account_password_reset','admin_account_passkey_reset','admin_partner_requests','admin_partner_request_update','admin_smtp_send','admin_local_authorize','admin_document_prepare','admin_document_seal','admin_document_verify','admin_monitor'];
     return Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && ACTIONS.length === expected.length && expected.every((name, index) => ACTIONS[index] === name && Object.isFrozen(CONTRACTS[name]) && Object.isFrozen(CONTRACTS[name].methods) && Object.isFrozen(CONTRACTS[name].allowed) && Object.isFrozen(CONTRACTS[name].required))
       && exactToken(randomToken()) && PASSWORD_COOKIE.startsWith('__Host-') && SESSION_COOKIE.startsWith('__Host-') && adminSecretState().configured === true;
   } catch (_) { return false; }
@@ -2601,11 +2630,16 @@ async function adminRollbackBusinessAccountV478(userId, email, assertContext) {
   return !!verify && verify.status === 404;
 }
 
-async function businessMonitor() {
-  let rows = [], ready = false; try { const result = await dbFetch('/rest/v1/security_customer_events?select=id,event_type,status,risk_level,description,created_at&order=created_at.desc&limit=20', { method: 'GET' }); if (result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; } } catch (_) { ready = false; }
-  const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Guard internal handler admin mandiri yang menangani permintaan ini.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [] };
+async function businessMonitor(body) {
+  const input = body && typeof body === 'object' && !Array.isArray(body) ? body : {}, view = String(input.view || '');
+  if (view && view !== 'overview') fail('ADMIN_MONITOR_VIEW_INVALID', 400);
+  const eventRead = dbFetch('/rest/v1/security_customer_events?select=id,event_type,status,risk_level,description,created_at&order=created_at.desc&limit=20', { method: 'GET' }).catch(() => null);
+  const summaryRead = view === 'overview' ? businessOrders({ kind: 'all', offset: 0, view: 'summary', from: String(input.from || ''), until: String(input.until || '') }) : Promise.resolve(null);
+  const reads = await Promise.all([eventRead, summaryRead]), result = reads[0], summary = reads[1];
+  let rows = [], ready = false; if (result && result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; }
+  const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Guard internal handler admin mandiri yang menangani permintaan ini.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [], ...(view === 'overview' ? { overview_summary: summary } : {}) };
 }
-async function business(operation, body, origin, assertContext) { if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'banned_data') return businessBannedDataV476(body); if (operation === 'unban') return businessUnban(body); if (operation === 'banned_pdf') return businessBannedPdfV476(body, origin, assertContext); if (operation === 'account_create') return businessAccountManage(body, origin, assertContext); if (operation === 'partner_requests') return businessPartnerRequestsV478(assertContext); if (operation === 'partner_request_update') return businessPartnerRequestUpdateV478(body, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(); fail('ADMIN_OPERATION_INVALID', 400); }
+async function business(operation, body, origin, assertContext) { if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'banned_data') return businessBannedDataV476(body); if (operation === 'unban') return businessUnban(body); if (operation === 'banned_pdf') return businessBannedPdfV476(body, origin, assertContext); if (operation === 'account_create') return businessAccountManage(body, origin, assertContext); if (operation === 'partner_requests') return businessPartnerRequestsV478(assertContext); if (operation === 'partner_request_update') return businessPartnerRequestUpdateV478(body, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(body); fail('ADMIN_OPERATION_INVALID', 400); }
 
 function adminCentralBanReason(error) {
   const raw = String(error && error.code || 'admin_failure').trim().toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');
