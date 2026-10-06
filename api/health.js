@@ -2602,6 +2602,7 @@ async function guardDomainLoginInput(req, res, input) {
   const email = String(input && input.email || '');
   const password = String(input && input.password || '');
   const action = String(input && input.action || 'domain_login');
+  const domainAccountAction = action === 'domain_login' || action === 'domain_register';
   const form = String(input && input.form || (action === 'domain_register' ? 'Register' : 'Login'));
   const endpoint = String(input && input.endpoint || `/api/health?action=${action}`);
   const now = Date.now();
@@ -2697,7 +2698,7 @@ async function guardDomainLoginInput(req, res, input) {
     };
   }
 
-  if (!isStrictDomainLoginEmail(email)) {
+  if (!(domainAccountAction ? isStrictDomainAccountEmail(email) : isStrictDomainLoginEmail(email))) {
     return {
       ok: false,
       status: 400,
@@ -2705,6 +2706,18 @@ async function guardDomainLoginInput(req, res, input) {
         ok: false,
         code: 'INVALID_EMAIL_FORMAT',
         message: 'Email belum sesuai.\nGunakan huruf kecil, angka, tanda @, dan titik.\nContoh:\nnama@gmail.com'
+      }
+    };
+  }
+
+  if (domainAccountAction && !isAllowedDomainAuthEmail(email)) {
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        ok: false,
+        code: 'EMAIL_DOMAIN_NOT_ALLOWED',
+        message: 'Domain email tidak diizinkan. Gunakan domain situs aktif, Gmail, iCloud, Outlook, atau Yahoo.'
       }
     };
   }
@@ -2737,6 +2750,27 @@ function isStrictDomainLoginEmail(email) {
   if ((value.match(/@/g) || []).length !== 1) return false;
   if (value.startsWith('.') || value.endsWith('.') || value.includes('..')) return false;
   return /^[a-z0-9]+(?:\.[a-z0-9]+)*@[a-z0-9]+(?:\.[a-z0-9]+)+$/.test(value);
+}
+
+function isStrictDomainAccountEmail(email) {
+  const value = String(email || '').trim();
+  if (!/^[a-z0-9@.-]+$/.test(value)) return false;
+  if ((value.match(/@/g) || []).length !== 1) return false;
+  if (value.startsWith('.') || value.endsWith('.') || value.includes('..')) return false;
+  return /^[a-z0-9]+(?:\.[a-z0-9]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(value);
+}
+
+function isAllowedDomainAuthEmail(email) {
+  const value = normalizeAuthEmail(email);
+  if (!isStrictDomainAccountEmail(value)) return false;
+  const domain = value.slice(value.lastIndexOf('@') + 1);
+  let activeDomain = '';
+  try { activeDomain = diracBaseDomainV250(); } catch (_) { return false; }
+  return domain === activeDomain
+    || domain === 'gmail.com'
+    || domain === 'icloud.com'
+    || domain === 'outlook.com'
+    || domain === 'yahoo.com';
 }
 
 function isClearDomainLoginSqlInjection(value) {
