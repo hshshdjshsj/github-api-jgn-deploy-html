@@ -476,7 +476,7 @@ async function adminAccountRevokePasskeysV480(link, reason, assertContext) {
   if (!active || !active.ok || !Array.isArray(active.data) || active.data.length > 16) fail('ADMIN_ACCOUNT_PASSKEY_STATE_UNAVAILABLE', 503);
   if (active.data.length === 0) return 0;
   const nowIso = new Date().toISOString();
-  const revoked = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,rotation_state,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, rotation_state: 'revoked', revoked_at: nowIso, revoke_reason: reason, updated_at: nowIso } });
+  const revoked = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,rotation_state,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, revoked_at: nowIso, revoke_reason: reason, updated_at: nowIso } });
   assertContext();
   if (!revoked || !revoked.ok || !Array.isArray(revoked.data) || revoked.data.length !== active.data.length) fail('ADMIN_ACCOUNT_PASSKEY_RESET_FAILED', 503);
   const check = await dbFetch('/rest/v1/domain_passkeys?select=id&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null&limit=1', { method: 'GET' });
