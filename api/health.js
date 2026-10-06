@@ -4010,7 +4010,8 @@ function diracRegisterEmailRequestHashV331(input) {
     normalizeAuthEmail(source.email || ''),
     String(source.password || ''),
     String(source.fullName || '').trim(),
-    String(source.whatsapp || '').trim()
+    String(source.whatsapp || '').trim(),
+    String(source.referralCode || '').trim()
   ]);
   return crypto.createHmac('sha256', diracCentralDeriveSecretV146('register-email-request-v331'))
     .update(canonical, 'utf8').digest('hex');
@@ -4811,6 +4812,16 @@ async function domainRegister(req, res, preloadedBody) {
   const password = String(body.password || '');
   const fullName = String(body.full_name || body.fullName || body.name || '').trim();
   const whatsapp = normalizePhone(body.whatsapp || body.phone || body.customer_whatsapp || '');
+  const rawReferralCode = String(body.referral_code || '').trim();
+  const parsedReferralCodeV479 = diracPartnerReferralCodeParseV479(rawReferralCode);
+  if (rawReferralCode && parsedReferralCodeV479.ok !== true) {
+    return res.status(400).json({
+      ok: false,
+      code: 'REGISTER_REFERRAL_CODE_INVALID',
+      message: 'Kode referral Partner tidak valid. Salin ulang kode terbaru dari dashboard Partner.'
+    });
+  }
+  const referralCode = parsedReferralCodeV479.ok === true ? parsedReferralCodeV479.code : '';
 
   const registerGuard = await guardDomainLoginInput(req, res, {
     rawEmail,
@@ -4851,6 +4862,17 @@ async function domainRegister(req, res, preloadedBody) {
     return res.status(400).json({ ok: false, message: 'Password minimal 6 karakter.' });
   }
 
+  if (referralCode) {
+    const referralResolutionV479 = await diracRegisterPartnerReferralResolveV479(req, referralCode);
+    if (!referralResolutionV479 || referralResolutionV479.ok !== true) {
+      return res.status(Number(referralResolutionV479 && referralResolutionV479.status || 503)).json({
+        ok: false,
+        code: String(referralResolutionV479 && referralResolutionV479.code || 'REGISTER_REFERRAL_LOOKUP_UNAVAILABLE'),
+        message: String(referralResolutionV479 && referralResolutionV479.message || 'Kode referral Partner belum dapat diverifikasi secara aman.')
+      });
+    }
+  }
+
   const userData = {};
   if (fullName) {
     userData.full_name = fullName;
@@ -4858,7 +4880,7 @@ async function domainRegister(req, res, preloadedBody) {
   }
   if (whatsapp) userData.whatsapp = whatsapp;
 
-  const registrationInput = Object.freeze({ email, password, fullName, whatsapp });
+  const registrationInput = Object.freeze({ email, password, fullName, whatsapp, referralCode });
   const verificationTokenPresent = Object.prototype.hasOwnProperty.call(body, 'email_verification_token');
 
   if (!verificationTokenPresent) {
@@ -9648,11 +9670,233 @@ function diracAccountPolicyFromUserV472(user) {
   const policy = DIRAC_ACCOUNT_POLICIES_V472[role] || DIRAC_ACCOUNT_POLICIES_V472.customer;
   return Object.freeze({ ...policy, provisioned: role === 'customer' ? false : provisioned, policy_version: 1 });
 }
+const DIRAC_PARTNER_REFERRAL_PATCH_V479 = 'dirac-partner-referral-v479';
+const DIRAC_REGISTER_PARTNER_REFERRAL_V479 = new WeakMap();
+
+function diracPartnerReferralKeyV479(purpose) {
+  return crypto.createHmac('sha256', diracCentralDeriveSecretV146('partner-referral-code-v479'))
+    .update(DIRAC_PARTNER_REFERRAL_PATCH_V479 + '|' + String(purpose || ''), 'utf8')
+    .digest();
+}
+
+function diracPartnerReferralNonceV479(userId) {
+  const clean = String(userId || '').trim().toLowerCase();
+  if (!customerSecurityLooksLikeUuid(clean)) return Buffer.alloc(0);
+  return crypto.createHmac('sha256', diracPartnerReferralKeyV479('nonce'))
+    .update(DIRAC_PARTNER_REFERRAL_PATCH_V479 + '|' + clean, 'utf8')
+    .digest().subarray(0, 12);
+}
+
+function diracPartnerReferralCodeFromUserIdV479(userId) {
+  const clean = String(userId || '').trim().toLowerCase();
+  if (!customerSecurityLooksLikeUuid(clean)) return '';
+  const plain = Buffer.from(clean.replace(/-/g, ''), 'hex');
+  const nonce = diracPartnerReferralNonceV479(clean);
+  if (plain.length !== 16 || nonce.length !== 12) return '';
+  try {
+    const cipher = crypto.createCipheriv('aes-256-gcm', diracPartnerReferralKeyV479('cipher'), nonce);
+    cipher.setAAD(Buffer.from(DIRAC_PARTNER_REFERRAL_PATCH_V479, 'utf8'));
+    const encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return encrypted.length === 16 && tag.length === 16
+      ? 'PRT-' + Buffer.concat([nonce, encrypted, tag]).toString('base64url')
+      : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function diracPartnerReferralCodeParseV479(value) {
+  const code = String(value || '').trim();
+  if (!code) return Object.freeze({ ok: true, code: '', userId: '' });
+  const match = /^PRT-([A-Za-z0-9_-]{59})$/.exec(code);
+  if (!match) return Object.freeze({ ok: false, code: '', userId: '' });
+  try {
+    const packed = Buffer.from(match[1], 'base64url');
+    if (packed.length !== 44) return Object.freeze({ ok: false, code: '', userId: '' });
+    const nonce = packed.subarray(0, 12);
+    const ciphertext = packed.subarray(12, 28);
+    const tag = packed.subarray(28, 44);
+    if (nonce.length !== 12 || ciphertext.length !== 16 || tag.length !== 16) return Object.freeze({ ok: false, code: '', userId: '' });
+    const decipher = crypto.createDecipheriv('aes-256-gcm', diracPartnerReferralKeyV479('cipher'), nonce);
+    decipher.setAAD(Buffer.from(DIRAC_PARTNER_REFERRAL_PATCH_V479, 'utf8'));
+    decipher.setAuthTag(tag);
+    const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    if (plain.length !== 16) return Object.freeze({ ok: false, code: '', userId: '' });
+    const hex = plain.toString('hex').toLowerCase();
+    const userId = hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+    const expectedNonce = diracPartnerReferralNonceV479(userId);
+    if (!customerSecurityLooksLikeUuid(userId) || expectedNonce.length !== 12 || !crypto.timingSafeEqual(nonce, expectedNonce)) {
+      return Object.freeze({ ok: false, code: '', userId: '' });
+    }
+    return Object.freeze({ ok: true, code, userId });
+  } catch (_) {
+    return Object.freeze({ ok: false, code: '', userId: '' });
+  }
+}
+
+function diracRegisterPartnerReferralGetV479(req) {
+  const referral = req && DIRAC_REGISTER_PARTNER_REFERRAL_V479.get(req);
+  return referral && referral.ok === true ? referral : null;
+}
+
+async function diracRegisterPartnerReferralResolveV479(req, referralCode) {
+  diracRegisterEmailGuardContextV331(req);
+  const parsed = diracPartnerReferralCodeParseV479(referralCode);
+  if (!parsed.ok || !parsed.userId) {
+    return { ok: false, status: 400, code: 'REGISTER_REFERRAL_CODE_INVALID', message: 'Kode referral Partner tidak valid. Salin ulang kode terbaru dari dashboard Partner.' };
+  }
+
+  const provider = await supabaseFetch('/auth/v1/admin/users/' + encodeURIComponent(parsed.userId), {
+    method: 'GET',
+    auth: 'service'
+  });
+  if (!provider || provider.ok !== true) {
+    if (Number(provider && provider.status || 0) === 404) {
+      return { ok: false, status: 400, code: 'REGISTER_REFERRAL_CODE_INVALID', message: 'Kode referral Partner tidak valid. Salin ulang kode terbaru dari dashboard Partner.' };
+    }
+    return { ok: false, status: 503, code: 'REGISTER_REFERRAL_LOOKUP_UNAVAILABLE', message: 'Kode referral Partner belum dapat diverifikasi secara aman.' };
+  }
+
+  const partnerUser = normalizeSupabaseAdminUser(provider.data);
+  const partnerAuthUserId = String(partnerUser && partnerUser.id || '').trim().toLowerCase();
+  const partnerEmail = normalizeAuthEmail(partnerUser && partnerUser.email || '');
+  const partnerPolicy = diracAccountPolicyFromUserV472(partnerUser);
+  if (!customerSecurityLooksLikeUuid(partnerAuthUserId)
+      || !safeEqual(partnerAuthUserId, parsed.userId)
+      || !isValidAuthEmail(partnerEmail)
+      || !partnerPolicy || partnerPolicy.role !== 'partner' || partnerPolicy.provisioned !== true) {
+    return { ok: false, status: 400, code: 'REGISTER_REFERRAL_CODE_INVALID', message: 'Kode referral Partner tidak valid. Salin ulang kode terbaru dari dashboard Partner.' };
+  }
+
+  const linkPath = '/rest/v1/security_customer_auth_links?select='
+    + encodeURIComponent('auth_user_id,customer_id,email,link_status,disabled_at,revoked_at')
+    + '&auth_user_id=eq.' + encodeURIComponent(partnerAuthUserId)
+    + '&link_status=eq.active&disabled_at=is.null&revoked_at=is.null&order=updated_at.desc&limit=2';
+  const linkResult = await supabaseFetch(linkPath, { method: 'GET', auth: 'service' });
+  if (!linkResult || linkResult.ok !== true || !Array.isArray(linkResult.data)) {
+    return { ok: false, status: 503, code: 'REGISTER_REFERRAL_LOOKUP_UNAVAILABLE', message: 'Kode referral Partner belum dapat diverifikasi secara aman.' };
+  }
+  const linkRows = linkResult.data.filter((row) => row
+    && String(row.link_status || '') === 'active'
+    && !row.disabled_at && !row.revoked_at
+    && safeEqual(String(row.auth_user_id || '').trim().toLowerCase(), partnerAuthUserId)
+    && safeEqual(normalizeAuthEmail(row.email || ''), partnerEmail)
+    && customerSecurityLooksLikeUuid(row.customer_id));
+  if (linkRows.length !== 1) {
+    return { ok: false, status: 400, code: 'REGISTER_REFERRAL_CODE_INVALID', message: 'Kode referral Partner tidak valid. Salin ulang kode terbaru dari dashboard Partner.' };
+  }
+
+  const referral = Object.freeze({
+    ok: true,
+    code: parsed.code,
+    partner_auth_user_id: partnerAuthUserId,
+    partner_customer_id: String(linkRows[0].customer_id || '').trim().toLowerCase(),
+    partner_email: partnerEmail
+  });
+  DIRAC_REGISTER_PARTNER_REFERRAL_V479.set(req, referral);
+  return referral;
+}
+
+function diracRegisterPartnerReferralReasonV479(email) {
+  const clean = normalizeAuthEmail(email || '');
+  return clean ? customerSecuritySanitizeReason('Referral customer otomatis terverifikasi: ' + clean + '.') : '';
+}
+
+function diracRegisterPartnerReferralReadPathV479(referral, email) {
+  const reason = diracRegisterPartnerReferralReasonV479(email);
+  if (!referral || !customerSecurityLooksLikeUuid(referral.partner_customer_id) || !reason) return '';
+  return '/rest/v1/security_customer_account_requests?select='
+    + encodeURIComponent('id,customer_id,request_type,status,reason,metadata,created_at,completed_at')
+    + '&customer_id=eq.' + encodeURIComponent(referral.partner_customer_id)
+    + '&request_type=eq.partner_customer_referral&status=eq.completed'
+    + '&reason=eq.' + encodeURIComponent(reason)
+    + '&order=created_at.desc&limit=2';
+}
+
+function diracRegisterPartnerReferralRowMatchesV479(row, referral, referred) {
+  const metadata = row && row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : null;
+  return Boolean(row && referral && referred && metadata
+    && safeEqual(String(row.customer_id || '').trim().toLowerCase(), referral.partner_customer_id)
+    && String(row.request_type || '') === 'partner_customer_referral'
+    && String(row.status || '') === 'completed'
+    && safeEqual(String(row.reason || ''), diracRegisterPartnerReferralReasonV479(referred.email))
+    && String(metadata.source || '') === 'customer_registration_referral_v479'
+    && safeEqual(String(metadata.partner_auth_user_id || '').trim().toLowerCase(), referral.partner_auth_user_id)
+    && safeEqual(normalizeAuthEmail(metadata.partner_email || ''), referral.partner_email)
+    && safeEqual(normalizeAuthEmail(metadata.email || ''), referred.email)
+    && safeEqual(String(metadata.referred_auth_user_id || '').trim().toLowerCase(), referred.auth_user_id)
+    && safeEqual(String(metadata.referred_customer_id || '').trim().toLowerCase(), referred.customer_id));
+}
+
+async function diracRegisterPartnerReferralCommitV479(req, responseUser, bootstrap) {
+  const referral = diracRegisterPartnerReferralGetV479(req);
+  if (!referral) return { ok: true, skipped: true };
+  const referred = Object.freeze({
+    auth_user_id: String(responseUser && responseUser.id || '').trim().toLowerCase(),
+    customer_id: String(bootstrap && bootstrap.customer_id || '').trim().toLowerCase(),
+    email: normalizeAuthEmail(responseUser && responseUser.email || ''),
+    name: customerSecuritySafeCustomerName(req && req.body && (req.body.full_name || req.body.fullName || req.body.name) || responseUser && responseUser.email || '')
+  });
+  if (!customerSecurityLooksLikeUuid(referred.auth_user_id)
+      || !customerSecurityLooksLikeUuid(referred.customer_id)
+      || !isValidAuthEmail(referred.email)
+      || safeEqual(referred.auth_user_id, referral.partner_auth_user_id)
+      || safeEqual(referred.customer_id, referral.partner_customer_id)
+      || safeEqual(referred.email, referral.partner_email)) {
+    return { ok: false, status: 409, code: 'REGISTER_REFERRAL_RELATION_INVALID' };
+  }
+
+  const readPath = diracRegisterPartnerReferralReadPathV479(referral, referred.email);
+  const existing = await supabaseFetch(readPath, { method: 'GET', auth: 'service' });
+  if (!existing || existing.ok !== true || !Array.isArray(existing.data) || existing.data.length > 2) {
+    return { ok: false, status: 503, code: 'REGISTER_REFERRAL_READBACK_UNAVAILABLE' };
+  }
+  const exactExisting = existing.data.filter((row) => diracRegisterPartnerReferralRowMatchesV479(row, referral, referred));
+  if (exactExisting.length === 1) return { ok: true, idempotent: true };
+  if (exactExisting.length > 1 || existing.data.length > 0) return { ok: false, status: 409, code: 'REGISTER_REFERRAL_RELATION_AMBIGUOUS' };
+
+  const completedAt = new Date().toISOString();
+  const created = await supabaseFetch('/rest/v1/security_customer_account_requests', {
+    method: 'POST',
+    auth: 'service',
+    prefer: 'return=representation',
+    body: [{
+      customer_id: referral.partner_customer_id,
+      request_type: 'partner_customer_referral',
+      status: 'completed',
+      reason: diracRegisterPartnerReferralReasonV479(referred.email),
+      completed_at: completedAt,
+      expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      metadata: {
+        source: 'customer_registration_referral_v479',
+        partner_auth_user_id: referral.partner_auth_user_id,
+        partner_email: referral.partner_email,
+        email: referred.email,
+        name: referred.name,
+        referred_auth_user_id: referred.auth_user_id,
+        referred_customer_id: referred.customer_id
+      }
+    }]
+  });
+  if (created && created.ok === true && Array.isArray(created.data) && created.data.length === 1
+      && diracRegisterPartnerReferralRowMatchesV479(created.data[0], referral, referred)) {
+    return { ok: true, idempotent: false };
+  }
+
+  const readback = await supabaseFetch(readPath, { method: 'GET', auth: 'service' });
+  const readbackRows = readback && readback.ok === true && Array.isArray(readback.data) ? readback.data : [];
+  const exactReadback = readbackRows.filter((row) => diracRegisterPartnerReferralRowMatchesV479(row, referral, referred));
+  return exactReadback.length === 1
+    ? { ok: true, idempotent: true, recovered: true }
+    : { ok: false, status: 503, code: 'REGISTER_REFERRAL_COMMIT_UNVERIFIED' };
+}
+
 function diracPartnerCodeV478(user, policy) {
   const safePolicy = policy && typeof policy === 'object' ? policy : diracAccountPolicyFromUserV472(user);
-  const userId = String(user && user.id || '').trim().toLowerCase(), base = String(diracBaseDomainV250() || '').trim().toLowerCase();
-  if (safePolicy.role !== 'partner' || !customerSecurityLooksLikeUuid(userId) || !base) return '';
-  return 'PRT-' + crypto.createHash('sha256').update('dirac-partner-code-v478|' + base + '|' + userId).digest('hex').slice(0, 12).toUpperCase();
+  const userId = String(user && user.id || '').trim().toLowerCase();
+  if (safePolicy.role !== 'partner' || !customerSecurityLooksLikeUuid(userId)) return '';
+  return diracPartnerReferralCodeFromUserIdV479(userId);
 }
 function sanitizeUser(user) {
   if (!user) return null;
@@ -10327,6 +10571,26 @@ async function customerSecurityBootstrapWrapRegisterResponse(req, res, runPrevio
         if (typeof diracCentralRecordSuppressedExceptionV221 === 'function') diracCentralRecordSuppressedExceptionV221(bootstrapMarkerWriteErrorV335);
       }
       if (responseActionV366 === 'domain_register') {
+        const referralCommitV479 = await diracRegisterPartnerReferralCommitV479(req, payload.user, bootstrap);
+        if (!referralCommitV479 || referralCommitV479.ok !== true) {
+          customerSecurityBootstrapClearAuthPublicationV332(req, res);
+          const rollbackV366 = await diracRegisterEmailRollbackFreshAuthUserV366(req);
+          if (originalStatus) originalStatus(503); else res.statusCode = 503;
+          if (rollbackV366.tracked === true && rollbackV366.ok !== true) {
+            return await originalJson({
+              ok: false,
+              code: 'REGISTER_ROLLBACK_UNVERIFIED',
+              restart_verification: true,
+              message: 'Pendaftaran belum selesai dan akun sementara belum dapat dibersihkan secara terverifikasi. Silakan mulai ulang pendaftaran setelah beberapa saat.'
+            });
+          }
+          return await originalJson(diracRegisterEmailRollbackResponseV366({
+            ok: false,
+            code: String(referralCommitV479 && referralCommitV479.code || 'REGISTER_REFERRAL_COMMIT_UNVERIFIED'),
+            restart_verification: true,
+            message: 'Pendaftaran belum selesai karena referral Partner tidak dapat dikunci secara terverifikasi. Silakan mulai ulang pendaftaran.'
+          }, rollbackV366));
+        }
         diracRegisterEmailCommitFreshAuthUserV366(req, payload.user);
       }
       finalPayload = customerSecurityAttachBootstrapSummary(payload, bootstrap);
@@ -22856,7 +23120,7 @@ function diracPasskeyServerDeviceEnsureV360(req, res, owner, expectedStoredKeyId
   };
 }
 
-async function diracPasskeyServerDeviceRecoverOwnerRebindV479(req, owner, row, currentBinding) {
+async function diracPasskeyServerDeviceRecoverOwnerRebindV479(req, owner, row, currentBinding, currentUser) {
   if (!currentBinding || currentBinding.ok !== true || currentBinding.ownerRebind === true) return currentBinding;
   const stored = diracPasskeyA2FStoredDeviceBinding(row);
   const currentKeyId = String(currentBinding.keyId || '');
@@ -22871,10 +23135,9 @@ async function diracPasskeyServerDeviceRecoverOwnerRebindV479(req, owner, row, c
   const originalCustomerId = String(credentialJson && credentialJson.customer_id || '').trim();
   const currentAuthUserId = String(owner && owner.authUserId || '').trim();
   const currentCustomerId = String(owner && owner.customerId || '').trim();
-  const ownerEmail = normalizeAuthEmail(owner && owner.email || '');
-  const rowEmail = normalizeAuthEmail(row && row.email || '');
-  const storedUaHash = String(credentialJson && credentialJson.user_agent_hash || '').trim().toLowerCase();
-  const currentUaHash = String(customerMfaBindingHash('ua', requestUserAgent(req)) || '').trim().toLowerCase();
+  const ownerEmail = normalizeAuthEmail(owner && owner.email || ''), rowEmail = normalizeAuthEmail(row && row.email || '');
+  const storedUaHash = String(credentialJson && credentialJson.user_agent_hash || '').trim().toLowerCase(), currentUaHash = String(customerMfaBindingHash('ua', requestUserAgent(req)) || '').trim().toLowerCase();
+  const currentPolicy = diracAccountPolicyFromUserV472(currentUser);
   if (!credentialJson || credentialJson.schema !== 'dirac-domain-passkey-v1'
       || !customerSecurityLooksLikeUuid(originalAuthUserId)
       || !customerSecurityLooksLikeUuid(originalCustomerId)
@@ -22882,12 +23145,13 @@ async function diracPasskeyServerDeviceRecoverOwnerRebindV479(req, owner, row, c
       || !customerSecurityLooksLikeUuid(currentCustomerId)
       || safeEqual(originalAuthUserId, currentAuthUserId)
       || !safeEqual(originalCustomerId, currentCustomerId)
+      || !currentUser || !safeEqual(String(currentUser.id || '').trim(), currentAuthUserId)
+      || !safeEqual(normalizeAuthEmail(currentUser.email || ''), ownerEmail)
       || !safeEqual(String(row && row.user_id || '').trim(), currentCustomerId)
-      || !isValidAuthEmail(ownerEmail)
-      || !safeEqual(rowEmail, ownerEmail)
-      || !/^[a-f0-9]{64}$/.test(storedUaHash)
-      || !/^[a-f0-9]{64}$/.test(currentUaHash)
-      || !safeEqual(storedUaHash, currentUaHash)) return currentBinding;
+      || !isValidAuthEmail(ownerEmail) || !safeEqual(rowEmail, ownerEmail)
+      || !/^[a-f0-9]{64}$/.test(storedUaHash) || !/^[a-f0-9]{64}$/.test(currentUaHash)
+      || !safeEqual(storedUaHash, currentUaHash)
+      || !currentPolicy || currentPolicy.provisioned !== true || !['reseller','partner'].includes(currentPolicy.role)) return currentBinding;
 
   const historySelect = 'auth_user_id,customer_id,email,link_status,disabled_at,revoked_at';
   const historyPath = '/rest/v1/security_customer_auth_links?select=' + encodeURIComponent(historySelect)
@@ -22898,16 +23162,16 @@ async function diracPasskeyServerDeviceRecoverOwnerRebindV479(req, owner, row, c
   if (!historyResult || historyResult.ok !== true || !Array.isArray(historyResult.data) || historyResult.data.length >= 20) {
     return { ok: false, reason: 'server_device_owner_rebind_history_unavailable' };
   }
-  const exactActiveLink = (link, authUserId) => link && typeof link === 'object' && !Array.isArray(link)
-    && safeEqual(String(link.auth_user_id || '').trim(), authUserId)
+  const sameOwnerRow = (link) => link && typeof link === 'object' && !Array.isArray(link)
     && safeEqual(String(link.customer_id || '').trim(), currentCustomerId)
-    && safeEqual(normalizeAuthEmail(link.email || ''), ownerEmail)
+    && safeEqual(normalizeAuthEmail(link.email || ''), ownerEmail);
+  const activeLinks = historyResult.data.filter((link) => sameOwnerRow(link)
     && String(link.link_status || '').toLowerCase() === 'active'
-    && !link.disabled_at
-    && !link.revoked_at;
-  const originalLinks = historyResult.data.filter((link) => exactActiveLink(link, originalAuthUserId));
-  const currentLinks = historyResult.data.filter((link) => exactActiveLink(link, currentAuthUserId));
-  if (originalLinks.length !== 1 || currentLinks.length !== 1) return currentBinding;
+    && !link.disabled_at && !link.revoked_at);
+  const originalLinks = historyResult.data.filter((link) => sameOwnerRow(link)
+    && safeEqual(String(link.auth_user_id || '').trim(), originalAuthUserId));
+  const currentLinkActive = activeLinks.length === 1 && safeEqual(String(activeLinks[0] && activeLinks[0].auth_user_id || '').trim(), currentAuthUserId);
+  if (!currentLinkActive || originalLinks.length > 1) return currentBinding;
 
   return {
     ...currentBinding,
@@ -25750,7 +26014,7 @@ async function diracPasskeyA2FStart(req, res) {
         req,
         owner,
         activePasskeys[0],
-        serverDeviceBindingV360
+        serverDeviceBindingV360, user
       );
     }
     if (!serverDeviceBindingV360 || serverDeviceBindingV360.ok !== true) {
@@ -66235,6 +66499,81 @@ function diracCentralIsRegisterBootstrapServiceRoleV146(ctx, table, path, option
     });
   }
 
+  if (cleanTable === 'security_customer_account_requests') {
+    if (action !== 'domain_register' || !ctx || !ctx.req || diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) !== true) return false;
+    const referralV479 = diracRegisterPartnerReferralGetV479(ctx.req);
+    const bootstrapV479 = ctx.req.__diracVerifiedCustomerBootstrapV335;
+    if (!referralV479 || !bootstrapV479 || bootstrapV479.ok !== true || bootstrapV479.action !== 'domain_register'
+        || !customerSecurityLooksLikeUuid(referralV479.partner_auth_user_id)
+        || !customerSecurityLooksLikeUuid(referralV479.partner_customer_id)
+        || !isValidAuthEmail(referralV479.partner_email)
+        || !customerSecurityLooksLikeUuid(bootstrapV479.auth_user_id)
+        || !customerSecurityLooksLikeUuid(bootstrapV479.customer_id)
+        || !isValidAuthEmail(bootstrapV479.email)
+        || safeEqual(referralV479.partner_auth_user_id, bootstrapV479.auth_user_id)
+        || safeEqual(referralV479.partner_customer_id, bootstrapV479.customer_id)
+        || safeEqual(referralV479.partner_email, bootstrapV479.email)) return false;
+
+    const expectedReasonV479 = diracRegisterPartnerReferralReasonV479(bootstrapV479.email);
+    if (!expectedReasonV479) return false;
+
+    if (cleanMethod === 'GET') {
+      const exactPathV479 = String(path || '');
+      const queryIndexV479 = exactPathV479.indexOf('?');
+      if (queryIndexV479 <= 0 || exactPathV479.slice(0, queryIndexV479) !== '/rest/v1/security_customer_account_requests') return false;
+      let paramsV479;
+      try { paramsV479 = new URLSearchParams(exactPathV479.slice(queryIndexV479 + 1)); } catch (_) { return false; }
+      const expectedKeysV479 = ['select','customer_id','request_type','status','reason','order','limit'];
+      const keysV479 = Array.from(paramsV479.keys());
+      if (keysV479.length !== expectedKeysV479.length
+          || expectedKeysV479.some((key) => paramsV479.getAll(key).length !== 1)
+          || keysV479.some((key) => !expectedKeysV479.includes(String(key || '')))) return false;
+      return paramsV479.get('select') === 'id,customer_id,request_type,status,reason,metadata,created_at,completed_at'
+        && paramsV479.get('customer_id') === 'eq.' + referralV479.partner_customer_id
+        && paramsV479.get('request_type') === 'eq.partner_customer_referral'
+        && paramsV479.get('status') === 'eq.completed'
+        && paramsV479.get('reason') === 'eq.' + expectedReasonV479
+        && paramsV479.get('order') === 'created_at.desc'
+        && paramsV479.get('limit') === '2'
+        && Object.keys(options).sort().join(',') === 'auth,method'
+        && options.auth === 'service' && String(options.method || '').toUpperCase() === 'GET';
+    }
+
+    if (cleanMethod !== 'POST'
+        || String(path || '') !== '/rest/v1/security_customer_account_requests'
+        || Object.keys(options).sort().join(',') !== 'auth,body,method,prefer'
+        || options.auth !== 'service'
+        || String(options.method || '').toUpperCase() !== 'POST'
+        || String(options.prefer || '') !== 'return=representation') return false;
+
+    return diracCentralBodyRowsSafeV146(body, [
+      'customer_id', 'request_type', 'status', 'reason', 'completed_at', 'expires_at', 'metadata'
+    ], (row) => {
+      const metadataV479 = row && row.metadata;
+      if (!metadataV479 || typeof metadataV479 !== 'object' || Array.isArray(metadataV479)) return false;
+      const expectedMetadataKeysV479 = [
+        'source', 'partner_auth_user_id', 'partner_email', 'email', 'name', 'referred_auth_user_id', 'referred_customer_id'
+      ].sort();
+      if (Object.keys(metadataV479).sort().join(',') !== expectedMetadataKeysV479.join(',')) return false;
+      const completedAtV479 = Date.parse(String(row.completed_at || ''));
+      const expiresAtV479 = Date.parse(String(row.expires_at || ''));
+      return safeEqual(String(row.customer_id || '').trim().toLowerCase(), referralV479.partner_customer_id)
+        && String(row.request_type || '') === 'partner_customer_referral'
+        && String(row.status || '') === 'completed'
+        && safeEqual(String(row.reason || ''), expectedReasonV479)
+        && Number.isFinite(completedAtV479) && Math.abs(Date.now() - completedAtV479) <= 2 * 60 * 1000
+        && Number.isFinite(expiresAtV479) && expiresAtV479 > completedAtV479
+        && expiresAtV479 <= completedAtV479 + 31 * 24 * 60 * 60 * 1000
+        && String(metadataV479.source || '') === 'customer_registration_referral_v479'
+        && safeEqual(String(metadataV479.partner_auth_user_id || '').trim().toLowerCase(), referralV479.partner_auth_user_id)
+        && safeEqual(normalizeAuthEmail(metadataV479.partner_email || ''), referralV479.partner_email)
+        && safeEqual(normalizeAuthEmail(metadataV479.email || ''), bootstrapV479.email)
+        && String(metadataV479.name || '').length >= 1 && String(metadataV479.name || '').length <= 120
+        && safeEqual(String(metadataV479.referred_auth_user_id || '').trim().toLowerCase(), bootstrapV479.auth_user_id)
+        && safeEqual(String(metadataV479.referred_customer_id || '').trim().toLowerCase(), bootstrapV479.customer_id);
+    });
+  }
+
   if (cleanTable === 'security_customer_password_hashes') {
     return diracCentralIsAuthPasswordHashServiceRoleV146(ctx, path, body, cleanMethod);
   }
@@ -69415,7 +69754,7 @@ function diracCentralContractForActionV146(action) {
   const recoveryLinkPostV251 = { methods:['POST'], allowed:['action','rid','token'], required:['action','rid','token'], maxBodyBytes:16*1024, maxFieldBytes:8192, mutation:true, allowProtectedFields:false };
   const recoveryHpkeV251 = { methods:['HEAD','POST'], allowed:['action','aead_nonce','ciphertext','enc','expires_at_ms','hpke_key_id','hpke_suite','mlkem_key_id','request_id','sent_at_ms','version'], required:[], maxBodyBytes:64*1024, maxFieldBytes:64*1024, mutation:true, allowProtectedFields:false };
   const authLoginPost = { methods: ['POST'], allowed: ['email', 'password', 'fullName', 'full_name', 'name', 'phone'], required: ['email', 'password'], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
-  const authRegisterPost = { methods: ['POST'], allowed: ['email', 'password', 'fullName', 'full_name', 'name', 'phone', 'email_verification_token'], required: ['email', 'password'], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
+  const authRegisterPost = { methods: ['POST'], allowed: ['email', 'password', 'fullName', 'full_name', 'name', 'phone', 'email_verification_token', 'referral_code'], required: ['email', 'password'], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
   const contracts = {
     domain_health: { ...getOnly, allowed: commonGet.concat(['_csrf_bootstrap']) },
     hostinger_check: { ...getOnly, required: ['domain'] },
@@ -69551,6 +69890,7 @@ function diracCentralValidateFieldFormatV146(key, value) {
   if (!text) return { ok: true };
   if (clean === 'email' && !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(text)) return { ok: false, reason: 'email_format_invalid' };
   if (clean === 'email_verification_token' && !diracRegisterEmailProofLooksValidV374(text, text.length)) return { ok: false, reason: 'email_verification_token_format_invalid' };
+  if (clean === 'referral_code' && !/^PRT-[A-Za-z0-9_-]{59}$/.test(text)) return { ok: false, reason: 'referral_code_format_invalid' };
   if (/domain/.test(clean) && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(text)) return { ok: false, reason: 'domain_format_invalid' };
   if (/uuid|customer_id|user_id|auth_user_id|owner_user_id|session_id|recovery_code_id|credential_id|project_id|document_id|item_id/.test(clean) && !diracCentralLooksLikeUuidV146(text)) {
     if (/_id$/.test(clean)) return { ok: false, reason: clean + '_format_invalid' };
