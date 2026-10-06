@@ -296,6 +296,36 @@ function tableFromPath(path) {
   if (!match || match[1] === 'rpc') return '';
   try { return decodeURIComponent(match[1]); } catch (_) { return ''; }
 }
+async function readAdminUpstreamText(response, maximum, code) {
+  const declared = String(response.headers.get('content-length') || '');
+  const cancel = () => { try { if (response.body) Promise.resolve(response.body.cancel()).catch(() => {}); } catch (_) {} };
+  if (declared && (!/^(?:0|[1-9][0-9]*)$/.test(declared) || Number(declared) > maximum)) { cancel(); fail(code, 503); }
+  if (!response.body) return '';
+  if (typeof response.body.pipeTo !== 'function') { cancel(); fail(code, 503); }
+  let bytes = Buffer.allocUnsafe(Math.min(maximum, 16384));
+  let size = 0;
+  try {
+    await response.body.pipeTo(new WritableStream({
+      write(part) {
+        if (!(part instanceof Uint8Array) || !part.byteLength) fail(code, 503);
+        const nextSize = size + part.byteLength;
+        if (nextSize > maximum) fail(code, 503);
+        if (nextSize > bytes.length) {
+          const expanded = Buffer.allocUnsafe(Math.min(maximum, Math.max(nextSize, bytes.length * 2)));
+          bytes.copy(expanded, 0, 0, size);
+          bytes.fill(0, 0, size);
+          bytes = expanded;
+        }
+        bytes.set(part, size);
+        size = nextSize;
+      }
+    }));
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size)); }
+    catch (_) { fail(code, 503); }
+  } finally {
+    bytes.fill(0, 0, size);
+  }
+}
 async function dbFetch(path, options = {}, target = '') {
   const cleanPath = String(path || '');
   const method = String(options.method || 'GET').toUpperCase();
@@ -309,8 +339,7 @@ async function dbFetch(path, options = {}, target = '') {
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
     if (options.prefer) headers.Prefer = options.prefer;
     const response = await ADMIN_STANDALONE_FETCH(creds.url + cleanPath, { method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), redirect: 'error', signal: controller.signal });
-    const raw = await response.text();
-    if (Buffer.byteLength(raw, 'utf8') > MAX_RESPONSE_BYTES) fail('ADMIN_DATABASE_RESPONSE_INVALID', 503);
+    const raw = await readAdminUpstreamText(response, MAX_RESPONSE_BYTES, 'ADMIN_DATABASE_RESPONSE_INVALID');
     let data = null; if (raw) { try { data = JSON.parse(raw); } catch (_) { fail('ADMIN_DATABASE_RESPONSE_INVALID', 503); } }
     return { ok: response.ok, status: response.status, data };
   } catch (error) {
@@ -335,8 +364,7 @@ async function authAdminUserRequest(path, method, body) {
       headers,
       body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: controller.signal
     });
-    const raw = await response.text();
-    if (Buffer.byteLength(raw, 'utf8') > 262144) fail('ADMIN_AUTH_RESPONSE_INVALID', 503);
+    const raw = await readAdminUpstreamText(response, 262144, 'ADMIN_AUTH_RESPONSE_INVALID');
     let data = null; if (raw) { try { data = JSON.parse(raw); } catch (_) { fail('ADMIN_AUTH_RESPONSE_INVALID', 503); } }
     return { ok: response.ok, status: response.status, data };
   } catch (error) {
