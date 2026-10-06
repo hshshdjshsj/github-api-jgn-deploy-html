@@ -22809,17 +22809,35 @@ function diracPasskeyServerDeviceReadV360(req, owner) {
   }
   if (expiresAt <= now) return { ok: false, reason: 'server_device_cookie_expired' };
   if (!safeEqual(String(payload.uid), authUserId) || !safeEqual(String(payload.cid), customerId)) {
-    return { ok: false, reason: 'server_device_cookie_owner_mismatch' };
+    const sameCustomer = safeEqual(String(payload.cid), customerId);
+    const legacyOwner = sameCustomer && customerSecurityLooksLikeUuid(String(payload.uid || ''))
+      ? { authUserId: String(payload.uid), customerId }
+      : null;
+    const legacyKeyId = legacyOwner ? diracPasskeyServerDeviceKeyIdV360(legacyOwner, deviceId) : '';
+    return {
+      ok: false,
+      reason: 'server_device_cookie_owner_mismatch',
+      rebindable: Boolean(sameCustomer && /^[a-f0-9]{64}$/.test(legacyKeyId)),
+      deviceId,
+      legacyKeyId
+    };
   }
   const keyId = diracPasskeyServerDeviceKeyIdV360(owner, deviceId);
   if (!/^[a-f0-9]{64}$/.test(keyId)) return { ok: false, reason: 'server_device_cookie_binding_invalid', tampered: true };
   return { ok: true, value: raw, payload, deviceId, keyId };
 }
 
-function diracPasskeyServerDeviceEnsureV360(req, res, owner) {
+function diracPasskeyServerDeviceEnsureV360(req, res, owner, expectedStoredKeyId = '') {
   const current = diracPasskeyServerDeviceReadV360(req, owner);
   if (current.tampered === true) return current;
-  const deviceId = current.ok === true ? current.deviceId : crypto.randomBytes(32).toString('base64url');
+  const storedKeyId = String(expectedStoredKeyId || '');
+  const ownerRebind = current.ok !== true
+    && current.rebindable === true
+    && /^[a-f0-9]{64}$/.test(storedKeyId)
+    && safeEqual(String(current.legacyKeyId || ''), storedKeyId);
+  const deviceId = current.ok === true || ownerRebind
+    ? current.deviceId
+    : crypto.randomBytes(32).toString('base64url');
   const issued = diracPasskeyServerDeviceEncodeV360(owner, deviceId);
   if (!issued || !/^[a-f0-9]{64}$/.test(String(issued.keyId || ''))) {
     return { ok: false, reason: 'server_device_cookie_issue_failed' };
@@ -22828,7 +22846,14 @@ function diracPasskeyServerDeviceEnsureV360(req, res, owner) {
     maxAge: DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_MAX_AGE_V360,
     domain: ''
   }));
-  return { ok: true, deviceId: issued.deviceId, keyId: issued.keyId, refreshed: current.ok === true };
+  return {
+    ok: true,
+    deviceId: issued.deviceId,
+    keyId: issued.keyId,
+    refreshed: current.ok === true,
+    ownerRebind,
+    rebindFromKeyId: ownerRebind ? storedKeyId : ''
+  };
 }
 
 function diracPasskeyA2FDeviceBindingKeyId(publicKeyJwk) {
@@ -23016,18 +23041,28 @@ function diracPasskeyA2FValidateAuthenticationDeviceBinding({ row, body, setupTo
       ? String(payload.serverDeviceBindingV360.keyId || '')
       : String(payload && payload.deviceBindingKeyId || '');
     if (!/^[a-f0-9]{64}$/.test(challengeBinding)
-        || !safeEqual(challengeBinding, current.keyId)
-        || !safeEqual(stored.keyId, current.keyId)) {
+        || !safeEqual(challengeBinding, current.keyId)) {
+      return { ok: false, reason: 'server_device_binding_key_mismatch' };
+    }
+    const rebindAuthority = payload && payload.serverDeviceBindingV360
+      && payload.serverDeviceBindingV360.version === DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V360
+      && payload.serverDeviceBindingV360.ownerRebind === true
+      && /^[a-f0-9]{64}$/.test(String(payload.serverDeviceBindingV360.rebindFromKeyId || ''))
+      && safeEqual(String(payload.serverDeviceBindingV360.rebindFromKeyId), stored.keyId)
+      && !safeEqual(stored.keyId, current.keyId);
+    if (!safeEqual(stored.keyId, current.keyId) && !rebindAuthority) {
       return { ok: false, reason: 'server_device_binding_key_mismatch' };
     }
     return {
       ok: true,
-      keyId: stored.keyId,
+      keyId: current.keyId,
       binding: stored.binding,
       version: stored.version,
       algorithm: stored.algorithm,
       policy: stored.policy,
-      serverBound: true
+      serverBound: true,
+      ownerRebind: rebindAuthority,
+      rebindFromKeyId: rebindAuthority ? stored.keyId : ''
     };
   }
   const envelope = diracPasskeyA2FDecodeDeviceBindingEnvelope(body, 'authentication');
@@ -24381,6 +24416,12 @@ async function diracPasskeyA2FUpdateUsage({ row, owner, response, credential, cl
   const currentCredentialJson = row.credential_json && typeof row.credential_json === 'object' ? row.credential_json : {};
   const updatedCredentialJson = {
     ...currentCredentialJson,
+    ...(deviceBinding.ownerRebind === true ? {
+      device_binding: {
+        ...(currentCredentialJson.device_binding && typeof currentCredentialJson.device_binding === 'object' ? currentCredentialJson.device_binding : {}),
+        key_id: deviceBinding.keyId
+      }
+    } : {}),
     webauthn: {
       ...(currentCredentialJson.webauthn && typeof currentCredentialJson.webauthn === 'object' ? currentCredentialJson.webauthn : {}),
       sign_count: signCount,
@@ -25634,7 +25675,14 @@ async function diracPasskeyA2FStart(req, res) {
       : 'webcrypto-nonextractable-v1';
   let serverDeviceBindingV360 = null;
   if (deviceBindingPolicyV360 === DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V360) {
-    serverDeviceBindingV360 = diracPasskeyServerDeviceEnsureV360(req, res, owner);
+    serverDeviceBindingV360 = diracPasskeyServerDeviceEnsureV360(
+      req,
+      res,
+      owner,
+      activeBindingAtStartV360 && activeBindingAtStartV360.serverBound === true
+        ? String(activeBindingAtStartV360.keyId || '')
+        : ''
+    );
     if (!serverDeviceBindingV360 || serverDeviceBindingV360.ok !== true) {
       if (serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true) {
         await diracA2FHardBanCurrentRequest('passkey_server_device_cookie_tampered');
@@ -25671,7 +25719,11 @@ async function diracPasskeyA2FStart(req, res) {
     activeCredentialSetHashAtStart: activeSetAtStart.hash,
     serverDeviceBindingV360: serverDeviceBindingV360 && serverDeviceBindingV360.ok === true ? {
       version: DIRAC_PASSKEY_SERVER_DEVICE_BINDING_VERSION_V360,
-      keyId: serverDeviceBindingV360.keyId
+      keyId: serverDeviceBindingV360.keyId,
+      ...(serverDeviceBindingV360.ownerRebind === true ? {
+        ownerRebind: true,
+        rebindFromKeyId: serverDeviceBindingV360.rebindFromKeyId
+      } : {})
     } : undefined,
     primaryAuthV301: recoveryAuthorityV281 ? undefined : {
       version: 301,
