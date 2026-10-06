@@ -22856,6 +22856,67 @@ function diracPasskeyServerDeviceEnsureV360(req, res, owner, expectedStoredKeyId
   };
 }
 
+async function diracPasskeyServerDeviceRecoverOwnerRebindV479(req, owner, row, currentBinding) {
+  if (!currentBinding || currentBinding.ok !== true || currentBinding.ownerRebind === true) return currentBinding;
+  const stored = diracPasskeyA2FStoredDeviceBinding(row);
+  const currentKeyId = String(currentBinding.keyId || '');
+  if (!stored.ok || stored.serverBound !== true
+      || !/^[a-f0-9]{64}$/.test(currentKeyId)
+      || safeEqual(stored.keyId, currentKeyId)) return currentBinding;
+
+  const credentialJson = row && row.credential_json && typeof row.credential_json === 'object' && !Array.isArray(row.credential_json)
+    ? row.credential_json
+    : null;
+  const originalAuthUserId = String(credentialJson && credentialJson.auth_user_id || '').trim();
+  const originalCustomerId = String(credentialJson && credentialJson.customer_id || '').trim();
+  const currentAuthUserId = String(owner && owner.authUserId || '').trim();
+  const currentCustomerId = String(owner && owner.customerId || '').trim();
+  const ownerEmail = normalizeAuthEmail(owner && owner.email || '');
+  const rowEmail = normalizeAuthEmail(row && row.email || '');
+  const storedUaHash = String(credentialJson && credentialJson.user_agent_hash || '').trim().toLowerCase();
+  const currentUaHash = String(customerMfaBindingHash('ua', requestUserAgent(req)) || '').trim().toLowerCase();
+  if (!credentialJson || credentialJson.schema !== 'dirac-domain-passkey-v1'
+      || !customerSecurityLooksLikeUuid(originalAuthUserId)
+      || !customerSecurityLooksLikeUuid(originalCustomerId)
+      || !customerSecurityLooksLikeUuid(currentAuthUserId)
+      || !customerSecurityLooksLikeUuid(currentCustomerId)
+      || safeEqual(originalAuthUserId, currentAuthUserId)
+      || !safeEqual(originalCustomerId, currentCustomerId)
+      || !safeEqual(String(row && row.user_id || '').trim(), currentCustomerId)
+      || !isValidAuthEmail(ownerEmail)
+      || !safeEqual(rowEmail, ownerEmail)
+      || !/^[a-f0-9]{64}$/.test(storedUaHash)
+      || !/^[a-f0-9]{64}$/.test(currentUaHash)
+      || !safeEqual(storedUaHash, currentUaHash)) return currentBinding;
+
+  const historySelect = 'auth_user_id,customer_id,email,link_status,disabled_at,revoked_at';
+  const historyPath = '/rest/v1/security_customer_auth_links?select=' + encodeURIComponent(historySelect)
+    + '&customer_id=eq.' + encodeURIComponent(currentCustomerId)
+    + '&email=eq.' + encodeURIComponent(ownerEmail)
+    + '&limit=20';
+  const historyResult = await supabaseFetch(historyPath, { method: 'GET', auth: 'service' }).catch(() => null);
+  if (!historyResult || historyResult.ok !== true || !Array.isArray(historyResult.data) || historyResult.data.length >= 20) {
+    return { ok: false, reason: 'server_device_owner_rebind_history_unavailable' };
+  }
+  const exactActiveLink = (link, authUserId) => link && typeof link === 'object' && !Array.isArray(link)
+    && safeEqual(String(link.auth_user_id || '').trim(), authUserId)
+    && safeEqual(String(link.customer_id || '').trim(), currentCustomerId)
+    && safeEqual(normalizeAuthEmail(link.email || ''), ownerEmail)
+    && String(link.link_status || '').toLowerCase() === 'active'
+    && !link.disabled_at
+    && !link.revoked_at;
+  const originalLinks = historyResult.data.filter((link) => exactActiveLink(link, originalAuthUserId));
+  const currentLinks = historyResult.data.filter((link) => exactActiveLink(link, currentAuthUserId));
+  if (originalLinks.length !== 1 || currentLinks.length !== 1) return currentBinding;
+
+  return {
+    ...currentBinding,
+    ownerRebind: true,
+    rebindFromKeyId: stored.keyId,
+    ownerRebindRecovered: true
+  };
+}
+
 function diracPasskeyA2FDeviceBindingKeyId(publicKeyJwk) {
   const jwk = publicKeyJwk && typeof publicKeyJwk === 'object' ? publicKeyJwk : {};
   const x = diracPasskeyA2FSafeString(jwk.x, 64);
@@ -25683,6 +25744,15 @@ async function diracPasskeyA2FStart(req, res) {
         ? String(activeBindingAtStartV360.keyId || '')
         : ''
     );
+    if (serverDeviceBindingV360 && serverDeviceBindingV360.ok === true
+        && hasActivePasskey && activePasskeys.length === 1) {
+      serverDeviceBindingV360 = await diracPasskeyServerDeviceRecoverOwnerRebindV479(
+        req,
+        owner,
+        activePasskeys[0],
+        serverDeviceBindingV360
+      );
+    }
     if (!serverDeviceBindingV360 || serverDeviceBindingV360.ok !== true) {
       if (serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true) {
         await diracA2FHardBanCurrentRequest('passkey_server_device_cookie_tampered');
