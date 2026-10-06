@@ -315,7 +315,7 @@ async function dbFetch(path, options = {}, target = '') {
     return { ok: response.ok, status: response.status, data };
   } catch (error) {
     if (error && /^ADMIN_/.test(String(error.code || ''))) throw error;
-    return { ok: false, status: 0, data: null };
+    return { ok: false, status: 0, data: null, diagnostic_transport: { name: String(error && error.name || '').slice(0, 120), code: String(error && error.code || '').slice(0, 120), message: String(error && error.message || '').slice(0, 700), aborted: !!(error && (error.name === 'AbortError' || error.code === 'ABORT_ERR')) } };
   } finally { clearTimeout(timer); }
 }
 async function authAdminUserRequest(path, method, body) {
@@ -341,7 +341,7 @@ async function authAdminUserRequest(path, method, body) {
     return { ok: response.ok, status: response.status, data };
   } catch (error) {
     if (error && /^ADMIN_/.test(String(error.code || ''))) throw error;
-    return { ok: false, status: 0, data: null };
+    return { ok: false, status: 0, data: null, diagnostic_transport: { name: String(error && error.name || '').slice(0, 120), code: String(error && error.code || '').slice(0, 120), message: String(error && error.message || '').slice(0, 700), aborted: !!(error && (error.name === 'AbortError' || error.code === 'ABORT_ERR')) } };
   } finally { clearTimeout(timer); }
 }
 function adminAccountMutationPayload(value) {
@@ -419,6 +419,77 @@ function adminBusinessAccountPublicV479(user) {
   const accountActive = !(adminAccountBanned(user) || String(user.disabled_at || '').trim() || user.disabled === true || user.is_disabled === true);
   return { user_id: String(user.id).toLowerCase(), email, account_role: role, account_label: adminAccountLabel(role), account_active: accountActive, name: String(meta.name || meta.full_name || '').trim().slice(0, 120), phone: String(meta.phone || '').trim().slice(0, 24), created_at: String(user.created_at || '').slice(0, 48) };
 }
+const ADMIN_ACCOUNT_DELETE_DIAGNOSTIC_V489 = 'dirac-admin-account-delete-diagnostic-v489';
+function adminAccountDiagnosticTextV489(value, max = 700) {
+  return String(value || '')
+    .replace(/https?:\/\/[^\s\"']+/gi, '<url>')
+    .replace(/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/gi, '<email>')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '<uuid>')
+    .replace(/[A-Za-z0-9_-]{43,}/g, '<token>')
+    .slice(0, max);
+}
+function adminAccountDiagnosticRouteV489(table) {
+  const alias = table === 'domain_passkeys' ? 'DOMAIN' : (table === 'security_customer_auth_links' || table === 'security_customer_sessions' ? 'CUSTOMER_SECURITY' : 'LEGACY');
+  if (alias === 'LEGACY' || !multiDbEnabled()) return 'legacy';
+  const prefix = 'DIRAC_' + alias + '_SUPABASE_';
+  const complete = !!(String(process.env[prefix + 'URL'] || '').trim() && String(process.env[prefix + 'ANON_KEY'] || '').trim() && String(process.env[prefix + 'SERVICE_ROLE_KEY'] || '').trim());
+  return complete ? 'multi:' + alias : 'legacy_fallback:' + alias;
+}
+function adminAccountDeleteDiagnosticV489(stage, context) {
+  try {
+    const row = context && typeof context === 'object' && !Array.isArray(context) ? context : {};
+    const result = row.result && typeof row.result === 'object' ? row.result : null;
+    const arrayData = result && Array.isArray(result.data) ? result.data : null;
+    const objectData = result && result.data && typeof result.data === 'object' && !Array.isArray(result.data) ? result.data : null;
+    const first = arrayData && arrayData.length && arrayData[0] && typeof arrayData[0] === 'object' ? arrayData[0] : null;
+    const transport = result && result.diagnostic_transport && typeof result.diagnostic_transport === 'object' ? result.diagnostic_transport : {};
+    console.error('[' + ADMIN_ACCOUNT_DELETE_DIAGNOSTIC_V489 + '] ' + JSON.stringify({
+      patch: ADMIN_ACCOUNT_DELETE_DIAGNOSTIC_V489,
+      event: 'admin_account_delete_diagnostic',
+      stage: String(stage || '').slice(0, 120),
+      trace_ref: String(row.trace_ref || '').slice(0, 32),
+      failure_stage: String(row.failure_stage || '').slice(0, 120),
+      failure_code: String(row.failure_code || '').slice(0, 120),
+      error_status: Number(row.error_status || 0),
+      reason: String(row.reason || '').slice(0, 64),
+      email_sha256_16: row.email ? digest(String(row.email).trim().toLowerCase()).slice(0, 16) : '',
+      auth_user_sha256_16: row.auth_user_id ? digest(String(row.auth_user_id).trim().toLowerCase()).slice(0, 16) : '',
+      customer_sha256_16: row.customer_id ? digest(String(row.customer_id).trim().toLowerCase()).slice(0, 16) : '',
+      has_security_link: row.has_security_link === true,
+      table: String(row.table || '').slice(0, 80),
+      db_route: row.table ? adminAccountDiagnosticRouteV489(String(row.table)) : '',
+      multi_db_enabled: multiDbEnabled(),
+      request_method: String(row.request_method || '').toUpperCase().slice(0, 12),
+      request_shape: String(row.request_shape || '').slice(0, 420),
+      request_body_keys: String(row.request_body_keys || '').slice(0, 240),
+      expected_row_count: Number.isInteger(row.expected_row_count) ? row.expected_row_count : -1,
+      response_present: !!result,
+      response_ok: result ? result.ok === true : false,
+      response_status: result ? Number(result.status || 0) : 0,
+      response_data_type: result ? (Array.isArray(result.data) ? 'array' : (result.data === null ? 'null' : typeof result.data)) : 'missing',
+      response_row_count: arrayData ? arrayData.length : -1,
+      response_object_keys: objectData ? Object.keys(objectData).sort().join(',').slice(0, 300) : '',
+      first_row_keys: first ? Object.keys(first).sort().join(',').slice(0, 300) : '',
+      first_row_has_id: !!(first && Object.prototype.hasOwnProperty.call(first, 'id')),
+      first_row_has_user_id: !!(first && Object.prototype.hasOwnProperty.call(first, 'user_id')),
+      first_row_is_active: first && Object.prototype.hasOwnProperty.call(first, 'is_active') ? first.is_active === true : null,
+      first_row_rotation_state: first ? String(first.rotation_state || '').slice(0, 80) : '',
+      first_row_revoked_at_present: !!(first && first.revoked_at),
+      condition_result_present: row.condition_result_present === true,
+      condition_ok_true: row.condition_ok_true === true,
+      condition_data_array: row.condition_data_array === true,
+      condition_row_count_match: row.condition_row_count_match === true,
+      response_error_code: adminAccountDiagnosticTextV489(objectData && objectData.code, 160),
+      response_error_message: adminAccountDiagnosticTextV489(objectData && objectData.message),
+      response_error_details: adminAccountDiagnosticTextV489(objectData && objectData.details),
+      response_error_hint: adminAccountDiagnosticTextV489(objectData && objectData.hint),
+      transport_error_name: adminAccountDiagnosticTextV489(transport.name, 120),
+      transport_error_code: adminAccountDiagnosticTextV489(transport.code, 120),
+      transport_error_message: adminAccountDiagnosticTextV489(transport.message),
+      transport_aborted: transport.aborted === true
+    }));
+  } catch (_) {}
+}
 async function adminAccountSecurityLinkV480(user, email, assertContext) {
   const authUserId = String(user && user.id || '').trim().toLowerCase(), normalizedEmail = String(email || '').trim().toLowerCase();
   if (!isUuid(authUserId) || !isEmail(normalizedEmail) || normalizedEmail !== String(user && user.email || '').trim().toLowerCase()) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
@@ -468,20 +539,45 @@ async function adminAccountRevokeSessionsV480(link, reason, assertContext) {
   if (!active || !active.ok || !Array.isArray(active.data) || active.data.length !== 0) fail('ADMIN_ACCOUNT_SESSION_REVOCATION_UNCONFIRMED', 503);
   return revoked.data.length;
 }
-async function adminAccountRevokePasskeysV480(link, reason, assertContext) {
+async function adminAccountRevokePasskeysV480(link, reason, assertContext, traceRef = '') {
   if (!link) return 0;
   if (!['admin_account_delete','admin_passkey_reset'].includes(reason)) fail('ADMIN_ACCOUNT_SECURITY_STATE_INVALID', 503);
-  const active = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,rotation_state,revoked_at') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'GET' });
+  const diagTrace = String(traceRef || crypto.randomBytes(6).toString('hex').toUpperCase()).slice(0, 32);
+  const readPath = '/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,rotation_state,revoked_at') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null';
+  adminAccountDeleteDiagnosticV489('passkeys.read.begin', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'GET', request_shape: 'select=id,user_id,is_active,rotation_state,revoked_at;filter=user_id:eq:<customer>;is_active:eq:true;revoked_at:is:null' });
+  const active = await dbFetch(readPath, { method: 'GET' });
   assertContext();
-  if (!active || !active.ok || !Array.isArray(active.data) || active.data.length > 16) fail('ADMIN_ACCOUNT_PASSKEY_STATE_UNAVAILABLE', 503);
-  if (active.data.length === 0) return 0;
+  adminAccountDeleteDiagnosticV489('passkeys.read.result', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'GET', result: active, expected_row_count: -1, condition_result_present: !!active, condition_ok_true: !!(active && active.ok), condition_data_array: !!(active && Array.isArray(active.data)), condition_row_count_match: !!(active && Array.isArray(active.data) && active.data.length <= 16) });
+  if (!active || !active.ok || !Array.isArray(active.data) || active.data.length > 16) {
+    adminAccountDeleteDiagnosticV489('passkeys.read.failure', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'GET', result: active, failure_code: 'ADMIN_ACCOUNT_PASSKEY_STATE_UNAVAILABLE', condition_result_present: !!active, condition_ok_true: !!(active && active.ok), condition_data_array: !!(active && Array.isArray(active.data)), condition_row_count_match: !!(active && Array.isArray(active.data) && active.data.length <= 16) });
+    fail('ADMIN_ACCOUNT_PASSKEY_STATE_UNAVAILABLE', 503);
+  }
+  if (active.data.length === 0) {
+    adminAccountDeleteDiagnosticV489('passkeys.none_active', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'GET', result: active, expected_row_count: 0, condition_result_present: true, condition_ok_true: true, condition_data_array: true, condition_row_count_match: true });
+    return 0;
+  }
   const nowIso = new Date().toISOString();
-  const revoked = await dbFetch('/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,rotation_state,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null', { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, revoked_at: nowIso, revoke_reason: reason, updated_at: nowIso } });
+  const patchPath = '/rest/v1/domain_passkeys?select=' + encodeURIComponent('id,user_id,is_active,rotation_state,revoked_at,revoke_reason') + '&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null';
+  adminAccountDeleteDiagnosticV489('passkeys.patch.begin', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'PATCH', request_shape: 'select=id,user_id,is_active,rotation_state,revoked_at,revoke_reason;filter=user_id:eq:<customer>;is_active:eq:true;revoked_at:is:null;prefer=return=representation', request_body_keys: 'is_active,revoked_at,revoke_reason,updated_at', expected_row_count: active.data.length });
+  const revoked = await dbFetch(patchPath, { method: 'PATCH', prefer: 'return=representation', body: { is_active: false, revoked_at: nowIso, revoke_reason: reason, updated_at: nowIso } });
   assertContext();
-  if (!revoked || !revoked.ok || !Array.isArray(revoked.data) || revoked.data.length !== active.data.length) fail('ADMIN_ACCOUNT_PASSKEY_RESET_FAILED', 503);
-  const check = await dbFetch('/rest/v1/domain_passkeys?select=id&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null&limit=1', { method: 'GET' });
+  const revokedPresent = !!revoked, revokedOk = !!(revoked && revoked.ok), revokedArray = !!(revoked && Array.isArray(revoked.data)), revokedCountMatch = !!(revokedArray && revoked.data.length === active.data.length);
+  adminAccountDeleteDiagnosticV489('passkeys.patch.result', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'PATCH', request_shape: 'select=id,user_id,is_active,rotation_state,revoked_at,revoke_reason;filter=user_id:eq:<customer>;is_active:eq:true;revoked_at:is:null;prefer=return=representation', request_body_keys: 'is_active,revoked_at,revoke_reason,updated_at', result: revoked, expected_row_count: active.data.length, condition_result_present: revokedPresent, condition_ok_true: revokedOk, condition_data_array: revokedArray, condition_row_count_match: revokedCountMatch });
+  if (!revokedPresent || !revokedOk || !revokedArray || !revokedCountMatch) {
+    adminAccountDeleteDiagnosticV489('passkeys.patch.failure', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'PATCH', result: revoked, expected_row_count: active.data.length, failure_code: 'ADMIN_ACCOUNT_PASSKEY_RESET_FAILED', condition_result_present: revokedPresent, condition_ok_true: revokedOk, condition_data_array: revokedArray, condition_row_count_match: revokedCountMatch });
+    fail('ADMIN_ACCOUNT_PASSKEY_RESET_FAILED', 503);
+  }
+  const verifyPath = '/rest/v1/domain_passkeys?select=id&user_id=eq.' + encodeURIComponent(link.customer_id) + '&is_active=eq.true&revoked_at=is.null&limit=1';
+  adminAccountDeleteDiagnosticV489('passkeys.verify.begin', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'GET', request_shape: 'select=id;filter=user_id:eq:<customer>;is_active:eq:true;revoked_at:is:null;limit=1', expected_row_count: 0 });
+  const check = await dbFetch(verifyPath, { method: 'GET' });
   assertContext();
-  if (!check || !check.ok || !Array.isArray(check.data) || check.data.length !== 0) fail('ADMIN_ACCOUNT_PASSKEY_RESET_UNCONFIRMED', 503);
+  const checkPresent = !!check, checkOk = !!(check && check.ok), checkArray = !!(check && Array.isArray(check.data)), checkEmpty = !!(checkArray && check.data.length === 0);
+  adminAccountDeleteDiagnosticV489('passkeys.verify.result', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'GET', result: check, expected_row_count: 0, condition_result_present: checkPresent, condition_ok_true: checkOk, condition_data_array: checkArray, condition_row_count_match: checkEmpty });
+  if (!checkPresent || !checkOk || !checkArray || !checkEmpty) {
+    adminAccountDeleteDiagnosticV489('passkeys.verify.failure', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'GET', result: check, expected_row_count: 0, failure_code: 'ADMIN_ACCOUNT_PASSKEY_RESET_UNCONFIRMED', condition_result_present: checkPresent, condition_ok_true: checkOk, condition_data_array: checkArray, condition_row_count_match: checkEmpty });
+    fail('ADMIN_ACCOUNT_PASSKEY_RESET_UNCONFIRMED', 503);
+  }
+  adminAccountDeleteDiagnosticV489('passkeys.completed', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'PATCH', expected_row_count: revoked.data.length, condition_result_present: true, condition_ok_true: true, condition_data_array: true, condition_row_count_match: true });
   return revoked.data.length;
 }
 async function businessAccountManage(body, origin, assertContext) {
@@ -567,18 +663,42 @@ async function businessAccountManage(body, origin, assertContext) {
   if (!role) fail('ADMIN_ACCOUNT_NOT_BUSINESS', 409);
   const userPath = '/auth/v1/admin/users/' + String(user.id).toLowerCase();
   if (account.mode === 'delete') {
-    const securityLink = await adminAccountSecurityLinkV480(user, account.email, assertContext);
-    const linkDisabled = await adminAccountSetLinkDisabledV480(securityLink, true, assertContext);
-    const sessionsRevoked = await adminAccountRevokeSessionsV480(securityLink, 'admin_account_delete', assertContext);
-    const passkeysRevoked = await adminAccountRevokePasskeysV480(securityLink, 'admin_account_delete', assertContext);
-    const linkRevoked = await adminAccountRevokeLinkV480(securityLink, assertContext);
-    const removed = await authAdminUserRequest(userPath, 'DELETE');
-    assertContext();
-    if (!removed || removed.ok !== true) fail('ADMIN_ACCOUNT_DELETE_FAILED', 503);
-    const verify = await authAdminUserRequest(userPath, 'GET');
-    assertContext();
-    if (!verify || verify.status !== 404) fail('ADMIN_ACCOUNT_DELETE_UNCONFIRMED', 503);
-    return { ok: true, mode: 'delete', email: account.email, account_role: role, account_label: adminAccountLabel(role), deleted: true, link_disabled: linkDisabled, link_revoked: linkRevoked, sessions_revoked: sessionsRevoked, passkeys_revoked: passkeysRevoked };
+    const deleteTraceRef = crypto.randomBytes(6).toString('hex').toUpperCase();
+    let deleteFailureStage = 'begin', securityLink = null;
+    adminAccountDeleteDiagnosticV489('delete.begin', { trace_ref: deleteTraceRef, email: account.email, auth_user_id: user.id, reason: 'admin_account_delete' });
+    try {
+      deleteFailureStage = 'security_link';
+      adminAccountDeleteDiagnosticV489('delete.security_link.begin', { trace_ref: deleteTraceRef, email: account.email, auth_user_id: user.id, reason: 'admin_account_delete', table: 'security_customer_auth_links', request_method: 'GET', request_shape: 'active non-revoked auth link by auth_user_id;limit=2' });
+      securityLink = await adminAccountSecurityLinkV480(user, account.email, assertContext);
+      adminAccountDeleteDiagnosticV489('delete.security_link.resolved', { trace_ref: deleteTraceRef, email: account.email, auth_user_id: user.id, customer_id: securityLink && securityLink.customer_id, has_security_link: !!securityLink, reason: 'admin_account_delete', table: 'security_customer_auth_links', request_method: 'GET' });
+      deleteFailureStage = 'link_disable';
+      const linkDisabled = await adminAccountSetLinkDisabledV480(securityLink, true, assertContext);
+      adminAccountDeleteDiagnosticV489('delete.link_disabled', { trace_ref: deleteTraceRef, email: account.email, auth_user_id: user.id, customer_id: securityLink && securityLink.customer_id, has_security_link: !!securityLink, reason: 'admin_account_delete', table: 'security_customer_auth_links', request_method: 'PATCH', condition_result_present: linkDisabled === true, condition_ok_true: linkDisabled === true });
+      deleteFailureStage = 'session_revoke';
+      const sessionsRevoked = await adminAccountRevokeSessionsV480(securityLink, 'admin_account_delete', assertContext);
+      adminAccountDeleteDiagnosticV489('delete.sessions_revoked', { trace_ref: deleteTraceRef, email: account.email, auth_user_id: user.id, customer_id: securityLink && securityLink.customer_id, has_security_link: !!securityLink, reason: 'admin_account_delete', table: 'security_customer_sessions', request_method: 'PATCH', expected_row_count: sessionsRevoked, condition_result_present: true, condition_ok_true: true });
+      deleteFailureStage = 'passkey_revoke';
+      const passkeysRevoked = await adminAccountRevokePasskeysV480(securityLink, 'admin_account_delete', assertContext, deleteTraceRef);
+      adminAccountDeleteDiagnosticV489('delete.passkeys_revoked', { trace_ref: deleteTraceRef, email: account.email, auth_user_id: user.id, customer_id: securityLink && securityLink.customer_id, has_security_link: !!securityLink, reason: 'admin_account_delete', table: 'domain_passkeys', request_method: 'PATCH', expected_row_count: passkeysRevoked, condition_result_present: true, condition_ok_true: true });
+      deleteFailureStage = 'link_revoke';
+      const linkRevoked = await adminAccountRevokeLinkV480(securityLink, assertContext);
+      adminAccountDeleteDiagnosticV489('delete.link_revoked', { trace_ref: deleteTraceRef, email: account.email, auth_user_id: user.id, customer_id: securityLink && securityLink.customer_id, has_security_link: !!securityLink, reason: 'admin_account_delete', table: 'security_customer_auth_links', request_method: 'PATCH', condition_result_present: linkRevoked === true, condition_ok_true: linkRevoked === true });
+      deleteFailureStage = 'auth_user_delete';
+      const removed = await authAdminUserRequest(userPath, 'DELETE');
+      assertContext();
+      adminAccountDeleteDiagnosticV489('delete.auth_user_delete.result', { trace_ref: deleteTraceRef, email: account.email, auth_user_id: user.id, customer_id: securityLink && securityLink.customer_id, has_security_link: !!securityLink, reason: 'admin_account_delete', request_method: 'DELETE', request_shape: '/auth/v1/admin/users/<user>', result: removed, condition_result_present: !!removed, condition_ok_true: !!(removed && removed.ok) });
+      if (!removed || removed.ok !== true) fail('ADMIN_ACCOUNT_DELETE_FAILED', 503);
+      deleteFailureStage = 'auth_user_verify';
+      const verify = await authAdminUserRequest(userPath, 'GET');
+      assertContext();
+      adminAccountDeleteDiagnosticV489('delete.auth_user_verify.result', { trace_ref: deleteTraceRef, email: account.email, auth_user_id: user.id, customer_id: securityLink && securityLink.customer_id, has_security_link: !!securityLink, reason: 'admin_account_delete', request_method: 'GET', request_shape: '/auth/v1/admin/users/<user>;expected_status=404', result: verify, expected_row_count: 0, condition_result_present: !!verify, condition_ok_true: !!(verify && verify.status === 404) });
+      if (!verify || verify.status !== 404) fail('ADMIN_ACCOUNT_DELETE_UNCONFIRMED', 503);
+      adminAccountDeleteDiagnosticV489('delete.completed', { trace_ref: deleteTraceRef, email: account.email, auth_user_id: user.id, customer_id: securityLink && securityLink.customer_id, has_security_link: !!securityLink, reason: 'admin_account_delete', expected_row_count: passkeysRevoked, condition_result_present: true, condition_ok_true: true });
+      return { ok: true, mode: 'delete', email: account.email, account_role: role, account_label: adminAccountLabel(role), deleted: true, link_disabled: linkDisabled, link_revoked: linkRevoked, sessions_revoked: sessionsRevoked, passkeys_revoked: passkeysRevoked };
+    } catch (error) {
+      adminAccountDeleteDiagnosticV489('delete.failure', { trace_ref: deleteTraceRef, email: account.email, auth_user_id: user.id, customer_id: securityLink && securityLink.customer_id, has_security_link: !!securityLink, reason: 'admin_account_delete', failure_stage: deleteFailureStage, failure_code: String(error && error.code || ''), error_status: Number(error && (error.status || error.statusCode) || 0) });
+      throw error;
+    }
   }
   if (account.mode === 'reset_password') {
     const temporaryPassword = crypto.randomBytes(24).toString('base64url') + 'aA9!';
