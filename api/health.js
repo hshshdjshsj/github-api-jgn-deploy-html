@@ -1315,8 +1315,6 @@ function isPublicDomainCheckThreat(value) {
 }
 
 async function checkPublicDomainRateLimit(req, parts) {
-  if (isEnvTrue('PUBLIC_DOMAIN_CHECK_RATE_DISABLED')) return { ok: true, retryAfterSeconds: 0 };
-
   const now = Date.now();
   cleanupPublicDomainRateStore(now);
 
@@ -35444,7 +35442,6 @@ function diracUltraStrictOriginGuard(req, action) {
     const guard = diracSensitivePostOriginCheck(req, action);
     if (!guard || !guard.ok) return guard || { ok: false, code: 'ORIGIN_BLOCKED' };
     if (guard.source === 'missing_origin_fail_open') {
-      if (isEnvTrue('DIRAC_ULTRA_ALLOW_MISSING_ORIGIN')) return guard;
       if (process.env.NODE_ENV !== 'production') return guard;
       return { ok: false, code: 'SENSITIVE_POST_ORIGIN_HEADER_REQUIRED', source: 'ultra_missing_origin_block' };
     }
@@ -35461,7 +35458,6 @@ try {
     diracSensitivePostOriginCheck = function diracSensitivePostOriginCheckUltra(req, action) {
       const guard = __diracUltraOriginalSensitiveOriginCheck(req, action);
       if (guard && guard.ok && guard.source === 'missing_origin_fail_open') {
-        if (isEnvTrue('DIRAC_ULTRA_ALLOW_MISSING_ORIGIN')) return guard;
         if (process.env.NODE_ENV === 'production' || isEnvTrue('DIRAC_SENSITIVE_POST_ORIGIN_REQUIRE_HEADER')) {
           return { ok: false, code: 'SENSITIVE_POST_ORIGIN_HEADER_REQUIRED', source: 'ultra_missing_origin_block' };
         }
@@ -35525,7 +35521,6 @@ function diracUltraBodyTooLargeError(limit) {
 }
 
 async function diracUltraCheckRateLimit(req, action, method) {
-  if (isEnvTrue('DIRAC_ULTRA_RATE_LIMIT_DISABLED')) return { ok: true };
   if (String(method || '').toUpperCase() === 'OPTIONS') return { ok: true };
 
   const config = diracUltraRateLimitConfig(action, method);
@@ -35721,7 +35716,6 @@ function diracV101NormalizeAction(action) {
 }
 
 function diracV101DetectRequestThreat(req, action, method) {
-  if (isEnvTrue('DIRAC_SQLMAP_GUARD_DISABLED')) return { detected: false };
   if (String(method || '').toUpperCase() === 'OPTIONS') return { detected: false };
 
   const headers = (req && req.headers) || {};
@@ -35861,7 +35855,6 @@ function diracV101InspectionSamples(value) {
 }
 
 function diracV101ShouldInspectParsedBody(req, action) {
-  if (isEnvTrue('DIRAC_SQLMAP_BODY_GUARD_DISABLED')) return false;
   const method = String((req && req.method) || '').toUpperCase();
   if (!['POST', 'PUT', 'PATCH'].includes(method)) return false;
   const normalized = diracV101NormalizeAction(action || String((req && req.query && req.query.action) || ''));
@@ -36110,7 +36103,6 @@ try {
 } catch (_) {}
 
 function diracV101ValidateServiceRoleSupabasePath(path, options = {}) {
-  if (isEnvTrue('DIRAC_SERVICE_ROLE_GUARD_DISABLED')) return { ok: true };
   const raw = String(path || '').trim();
   if (!raw || /https?:\/\//i.test(raw) || /(?:\.\.|\\|\u0000)/.test(raw)) {
     return { ok: false, code: 'SERVICE_ROLE_PATH_INVALID' };
@@ -36322,7 +36314,6 @@ function diracV107NormalizeAction(action) {
 }
 
 function diracV107ShouldSkipLegacyV107(req, action, method) {
-  if (diracV107EnvTrue('DIRAC_GLOBAL_HARD_BAN_DISABLED')) return true;
   if (String(method || '').toUpperCase() === 'OPTIONS') return true;
 
   const url = String((req && req.url) || '');
@@ -38315,7 +38306,6 @@ __diracV202RegisterMiddleware(async function diracUltraXssOneStrikePermanentBloc
 }, "diracUltraXssOneStrikePermanentBlockWrapperV3");
 
 function diracUltraXssV3ShouldSkipPermanentBlock(req, action, method) {
-  if (diracUltraXssV3EnvTrue('DIRAC_XSS_ONE_STRIKE_BLOCK_DISABLED')) return true;
   if (String(method || '').toUpperCase() === 'OPTIONS') return true;
 
   const normalized = String(action || '').toLowerCase();
@@ -38726,7 +38716,6 @@ function diracV119RequestMethod(req) {
 }
 
 function diracV119ShouldInspectBody(req, action) {
-  if (diracV119EnvTrue('DIRAC_BODY_INPUT_GUARD_DISABLED')) return false;
   const method = diracV119RequestMethod(req);
   if (!['POST', 'PUT', 'PATCH'].includes(method)) return false;
 
@@ -38740,7 +38729,6 @@ function diracV119ShouldInspectBody(req, action) {
 }
 
 function diracV119ShouldInspectSupabaseWrite(path, options = {}) {
-  if (diracV119EnvTrue('DIRAC_BODY_INPUT_DB_WRITE_GUARD_DISABLED')) return false;
   const method = String((options && options.method) || 'GET').toUpperCase();
   if (!['POST', 'PUT', 'PATCH'].includes(method)) return false;
 
@@ -39244,9 +39232,7 @@ function diracCsrfIsNeverTouchAction(action) {
 }
 
 function diracCsrfIsDisabledForAction(action) {
-  if (isEnvTrue('DIRAC_CSRF_HMAC_DISABLED')) return true;
-  const key = 'DIRAC_CSRF_HMAC_DISABLED_' + String(action || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-  return isEnvTrue(key);
+  return false;
 }
 
 function diracCsrfIsEnforcedForAction(action) {
@@ -39789,18 +39775,14 @@ function diracBackendXssV4ApplyHeaders(req, res) {
   try { res.setHeader('X-Download-Options', 'noopen'); } catch (_) {}
   try { res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), fullscreen=(self)'); } catch (_) {}
 
-  if (!diracBackendXssV4EnvTrue('DIRAC_BACKEND_XSS_CSP_DISABLED')) {
-    try {
-      if (!diracBackendXssV4HasHeader(res, 'Content-Security-Policy')) {
-        res.setHeader('Content-Security-Policy', diracBackendXssV4CspValue());
-      }
-    } catch (_) {}
-  }
+  try {
+    if (!diracBackendXssV4HasHeader(res, 'Content-Security-Policy')) {
+      res.setHeader('Content-Security-Policy', diracBackendXssV4CspValue());
+    }
+  } catch (_) {}
 }
 
 function diracBackendXssV4CspValue() {
-  const fromEnv = String(process.env.DIRAC_BACKEND_XSS_CSP || '').trim();
-  if (fromEnv) return fromEnv;
   return [
     "default-src 'none'",
     "base-uri 'none'",
@@ -39834,7 +39816,6 @@ function diracBackendXssV4InstallJsonOutputGuard(req, res) {
 }
 
 function diracBackendXssV4ShouldSkipJsonGuard(req, action) {
-  if (diracBackendXssV4EnvTrue('DIRAC_BACKEND_XSS_JSON_GUARD_DISABLED')) return true;
   const method = String((req && req.method) || 'GET').toUpperCase();
   if (method !== 'GET') return true;
   if (diracBackendXssV4IsProtectedAction(action)) return true;
@@ -40661,7 +40642,6 @@ function diracBolaIdorV121CurrentContext() {
 
 function diracBolaIdorV121InspectServiceScope(path, options = {}) {
   if (!options || options.auth !== 'service') return { ok: true };
-  if (diracBolaIdorV121EnvTrue('DIRAC_BOLA_IDOR_SERVICE_SCOPE_DISABLED', false)) return { ok: true };
 
   const rawPath = String(path || '').trim();
   if (!rawPath || !rawPath.startsWith('/rest/v1/')) return { ok: true };
@@ -40883,7 +40863,7 @@ function diracBolaIdorV121Small(value, max) {
    - Naik dari monitor-only menjadi pencegahan high-confidence.
    - Tidak mengubah endpoint, login, logout, hash, payment, email template, A2F/MFA, atau auto logout.
    - Blocking default hanya untuk akses service-role ke tabel milik user tanpa owner scope pada action non-sensitif.
-   - Tetap bisa dimatikan cepat dengan DIRAC_BOLA_IDOR_STRICT_SAFE_DISABLED=true.
+   - Guard strict tetap aktif dan fail-closed pada setiap jalur service-role.
    ============================================================ */
 
 const DIRAC_BOLA_IDOR_STRICT_SAFE_PATCH_V122 = 'dirac-bola-idor-strict-safe-blocker-v122';
@@ -40912,8 +40892,6 @@ try {
 function diracBolaIdorV122InspectStrictSafe(path, options = {}) {
   try {
     if (!options || options.auth !== 'service') return { ok: true };
-    if (diracBolaIdorV122EnvTrue('DIRAC_BOLA_IDOR_STRICT_SAFE_DISABLED', false)) return { ok: true };
-    if (diracBolaIdorV122EnvFalse('DIRAC_BOLA_IDOR_STRICT_SAFE_ENFORCE', true)) return { ok: true };
 
     const rawPath = String(path || '').trim();
     if (!rawPath || !rawPath.startsWith('/rest/v1/')) return { ok: true };
@@ -41243,7 +41221,6 @@ try {
 function diracBolaIdorV126InspectOwnerValue(path, options = {}) {
   try {
     if (!options || options.auth !== 'service') return { ok: true };
-    if (diracBolaIdorV126EnvTrue('DIRAC_BOLA_IDOR_OWNER_BINDING_DISABLED', false)) return { ok: true };
 
     const method = String(options.method || 'GET').toUpperCase();
     if (!/^(GET|HEAD|PATCH|PUT|DELETE)$/i.test(method)) return { ok: true };
@@ -41830,7 +41807,6 @@ async function diracBolaIdorV128InspectHttpRequest(req) {
 
 async function diracBolaIdorV128InspectSupabaseAccess(path, options = {}) {
   if (!options || options.auth !== 'service') return { ok: true };
-  if (diracBolaIdorV128EnvTrue('DIRAC_BOLA_IDOR_GLOBAL_BAN_DISABLED', false)) return { ok: true };
 
   const rawPath = String(path || '').trim();
   if (!rawPath || !rawPath.startsWith('/rest/v1/')) return { ok: true };
@@ -43084,7 +43060,6 @@ function diracV131IsAuthPassthroughAction(action, method, req) {
 }
 
 function diracV107ShouldSkip(req, action, method) {
-  if (diracV107EnvTrue('DIRAC_GLOBAL_HARD_BAN_DISABLED')) return true;
   if (String(method || '').toUpperCase() === 'OPTIONS') return true;
 
   const normalized = diracV107NormalizeAction(action);
@@ -44626,9 +44601,7 @@ function diracV137CsrfServerOnlyAction(action) {
 }
 
 function diracV137CsrfExplicitlyDisabled(action) {
-  if (diracV137CsrfEnvTrue('DIRAC_CSRF_ALL_WEBSITE_ACTIONS_DISABLED')) return true;
-  const key = 'DIRAC_CSRF_ALL_DISABLED_' + String(action || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-  return diracV137CsrfEnvTrue(key);
+  return false;
 }
 
 function diracV137CsrfForceVerify(req, action) {
@@ -44794,10 +44767,7 @@ function diracV138CsrfExternalServerToServerAction(action) {
 }
 
 function diracV138CsrfExplicitlyDisabled(action) {
-  // Tidak menyediakan global kill-switch baru. Hanya emergency per-action agar
-  // produksi bisa rollback satu aksi spesifik tanpa menurunkan semua keamanan.
-  const key = 'DIRAC_CSRF_EVERY_BROWSER_DISABLED_' + String(action || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-  return diracV138CsrfEnvTrue(key);
+  return false;
 }
 
 function diracV138CsrfForceVerify(req, action) {
@@ -45214,7 +45184,6 @@ async function diracV143InspectParsedBody(req, body) {
 }
 
 function diracV143DetectRequestThreat(req, action, method) {
-  if (diracV143EnvTrue('DIRAC_GLOBAL_API_THREAT_GUARD_DISABLED')) return { detected: false };
   if (String(method || '').toUpperCase() === 'OPTIONS') return { detected: false };
 
   const headers = (req && req.headers) || {};
@@ -70101,6 +70070,8 @@ function assertProductionSecurityConfigV146() {
     'DIRAC_SQLMAP_GUARD_DISABLED',
     'DIRAC_SQLMAP_BODY_GUARD_DISABLED',
     'DIRAC_SERVICE_ROLE_GUARD_DISABLED',
+    'DIRAC_PASSWORD_ARGON2_DISABLED',
+    'DIRAC_PASSWORD_ARGON2_ROTATE_EVERY_LOGIN_DISABLED',
     'DIRAC_XSS_ONE_STRIKE_BLOCK_DISABLED',
     'DIRAC_BODY_INPUT_GUARD_DISABLED',
     'DIRAC_BODY_INPUT_DB_WRITE_GUARD_DISABLED',
@@ -74508,6 +74479,7 @@ async function diracCentralBackendComplianceGateV230() {
     let gateStageV231 = 'initializing';
     DIRAC_CENTRAL_BACKEND_DYNAMIC_GATE_PROMISE_V230 = diracCentralBackendGateWithDeadlineV231(async (gateSignalV231) => {
       return diracCentralRunInternalComplianceContextV230(async () => {
+        diracCentralRootSecretV146();
         const probe = crypto.randomBytes(24).toString('base64url');
         // Preserve consume -> replay ordering; independent probes still must all pass.
         const [consumeResult, recordResult, rateResult, loggedResult] = await Promise.allSettled([

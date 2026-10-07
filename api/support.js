@@ -40,6 +40,7 @@ function parseStrictJson(input, options = {}) {
   if (!source || Buffer.byteLength(source, 'utf8') > maxBytes) throw inputError('JSON_SIZE_LIMIT');
   let index = 0;
   let nodes = 0;
+  const numberPattern = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
   const fail = (code = 'JSON_INVALID') => { throw inputError(code); };
   const whitespace = () => { while (/[\x20\t\r\n]/.test(source[index] || '\0')) index += 1; };
   const string = () => {
@@ -101,7 +102,8 @@ function parseStrictJson(input, options = {}) {
     for (const literal of ['true', 'false', 'null']) {
       if (source.startsWith(literal, index)) { index += literal.length; return; }
     }
-    const number = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(source.slice(index));
+    numberPattern.lastIndex = index;
+    const number = numberPattern.exec(source);
     if (!number) fail();
     const numeric = Number(number[0]);
     if (!Number.isFinite(numeric) || (Number.isInteger(numeric) && !Number.isSafeInteger(numeric))) fail('JSON_NUMBER_INVALID');
@@ -275,8 +277,8 @@ function config() {
   if (turnstilePartialConfig) throw new PublicError(503, 'TURNSTILE_CONFIG_MISSING', 'Verifikasi anti-bot support belum dikonfigurasi lengkap.');
   if (customerConfigOnly && turnstileExplicit && envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', false) && !turnstilePairConfigured) throw new PublicError(503, 'TURNSTILE_CONFIG_MISSING', 'Verifikasi anti-bot support diwajibkan tetapi kuncinya belum lengkap.');
   const turnstileRequired = customerConfigOnly
-    ? (turnstilePairConfigured ? envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', true) : false)
-    : envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', isProduction());
+    ? (turnstilePairConfigured ? (isProduction() ? true : envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', true)) : false)
+    : (isProduction() ? true : envTrue('DIRAC_SUPPORT_REQUIRE_TURNSTILE', false));
   if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(supabaseUrl)) throw new PublicError(503, 'SUPPORT_CONFIG_INVALID', 'Konfigurasi database support belum valid.');
   const publishableRole = decodeJwt(publishableKey).role; const secretRole = decodeJwt(secretKey).role;
   const publishableValid = /^sb_publishable_[A-Za-z0-9_-]{10,}$/.test(publishableKey) || publishableRole === 'anon';

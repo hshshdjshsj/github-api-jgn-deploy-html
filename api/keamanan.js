@@ -95,6 +95,7 @@ function parseStrictJson(input, options = {}) {
   if (!source || Buffer.byteLength(source, 'utf8') > maxBytes) throw inputError('JSON_SIZE_LIMIT');
   let index = 0;
   let nodes = 0;
+  const numberPattern = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
   const fail = (code = 'JSON_INVALID') => { throw inputError(code); };
   const whitespace = () => { while (/[\x20\t\r\n]/.test(source[index] || '\0')) index += 1; };
   const string = () => {
@@ -156,7 +157,8 @@ function parseStrictJson(input, options = {}) {
     for (const literal of ['true', 'false', 'null']) {
       if (source.startsWith(literal, index)) { index += literal.length; return; }
     }
-    const number = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(source.slice(index));
+    numberPattern.lastIndex = index;
+    const number = numberPattern.exec(source);
     if (!number) fail();
     const numeric = Number(number[0]);
     if (!Number.isFinite(numeric) || (Number.isInteger(numeric) && !Number.isSafeInteger(numeric))) fail('JSON_NUMBER_INVALID');
@@ -3061,7 +3063,7 @@ async function securityResetGmailMailV352(account, record, subject, text, html, 
   let socket = null;
   try {
     const tls = require('tls');
-    socket = tls.connect({ host: account.host, port: account.port, servername: account.host, timeout: 7000 });
+    socket = tls.connect({ host: account.host, port: account.port, servername: account.host, rejectUnauthorized: true, minVersion: 'TLSv1.2', timeout: 7000 });
     await securityResetSmtpCommandV342(socket, '', 220);
     await securityResetSmtpCommandV342(socket, 'EHLO ' + diracBaseDomainV250(), 250);
     const auth = Buffer.from('\u0000' + account.user + '\u0000' + account.pass, 'utf8').toString('base64');
