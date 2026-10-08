@@ -875,6 +875,81 @@ async function atomicRate(key, limit, seconds) {
   return row.allowed === true;
 }
 
+// Manual administrator verification-code requests only. Reuse dirac_s2s_security,
+// an existing atomic claim RPC, and a compare-and-set update. No new tables or ENV.
+const ADMIN_EMAIL_REQUEST_RATE_VERSION_V491 = 'dirac-admin-email-request-rate-v491';
+const ADMIN_EMAIL_REQUEST_COOLDOWNS_V491 = Object.freeze([300000, 900000, 3600000, 86400000]);
+function adminEmailRateKeyV491(scope) {
+  return 's2s-admin-v411:email-rate:' + digest(ADMIN_EMAIL_REQUEST_RATE_VERSION_V491 + ':' + scope.owner);
+}
+function adminEmailRateRecordV491(scope, count, now) {
+  return {
+    version: VERSION, policy: ADMIN_EMAIL_REQUEST_RATE_VERSION_V491,
+    ownerHash: digest(scope.owner), count, updatedAt: now,
+    blockedUntilMs: count ? now + ADMIN_EMAIL_REQUEST_COOLDOWNS_V491[count - 1] : 0,
+    revision: randomToken()
+  };
+}
+function adminEmailRateValidateV491(entry, scope) {
+  if (!entry || entry.ok !== true) fail('ADMIN_EMAIL_RATE_STORE_UNAVAILABLE', 503);
+  if (entry.found !== true) return null;
+  const r = entry.record, now = Date.now();
+  if (!r || Object.keys(r).sort().join(',') !== 'blockedUntilMs,count,ownerHash,policy,revision,updatedAt,version'
+    || r.version !== VERSION || r.policy !== ADMIN_EMAIL_REQUEST_RATE_VERSION_V491
+    || r.ownerHash !== digest(scope.owner) || !Number.isSafeInteger(r.count) || r.count < 0 || r.count > 4
+    || !Number.isSafeInteger(r.updatedAt) || r.updatedAt <= 0 || r.updatedAt > now + 10000
+    || !Number.isSafeInteger(r.blockedUntilMs)
+    || r.blockedUntilMs !== (r.count === 0 ? 0 : r.updatedAt + ADMIN_EMAIL_REQUEST_COOLDOWNS_V491[r.count - 1])
+    || !exactToken(r.revision) || !Number.isFinite(Date.parse(String(entry.expiresAt || '')))) {
+    fail('ADMIN_EMAIL_RATE_STATE_INVALID', 503);
+  }
+  return r;
+}
+async function adminEmailRateWriteV491(scope, prior, count) {
+  const key = adminEmailRateKeyV491(scope), next = adminEmailRateRecordV491(scope, count, Date.now());
+  if (!prior || prior.found !== true) {
+    if (count !== 1 || await securityClaim(key, next, 10 * 365 * 86400) !== true) fail('ADMIN_EMAIL_RATE_STORE_UNAVAILABLE', 503);
+    return true;
+  }
+  const oldExpiry = Date.parse(prior.expiresAt);
+  if (!Number.isFinite(oldExpiry)) fail('ADMIN_EMAIL_RATE_STATE_INVALID', 503);
+  const nextExpiry = new Date(Math.max(Date.now() + 10 * 365 * 86400000, oldExpiry + 1)).toISOString();
+  const result = await dbFetch('/rest/v1/dirac_s2s_security?security_key=eq.' + encodeURIComponent(key)
+    + '&expires_at=eq.' + encodeURIComponent(prior.expiresAt)
+    + '&select=security_key,record_json,expires_at', {
+    method: 'PATCH', prefer: 'return=representation',
+    body: { record_json: next, expires_at: nextExpiry }
+  }, 'security');
+  const row = result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
+  if (!row || row.security_key !== key || Date.parse(String(row.expires_at || '')) !== Date.parse(nextExpiry)
+      || !row.record_json || row.record_json.revision !== next.revision) fail('ADMIN_EMAIL_RATE_CONCURRENT_REQUEST', 503);
+  return true;
+}
+async function adminEmailRateTakeV491(ops, scope) {
+  ops.assertFullGuard();
+  const entry = await securityRead(adminEmailRateKeyV491(scope));
+  const record = adminEmailRateValidateV491(entry, scope);
+  const count = record ? record.count : 0;
+  if (count && record.blockedUntilMs > Date.now()) {
+    const error = Object.assign(new Error('ADMIN_EMAIL_REQUEST_RATE_LIMITED'), {
+      code: 'ADMIN_EMAIL_REQUEST_RATE_LIMITED', status: 429,
+      retryAfterSeconds: Math.max(1, Math.ceil((record.blockedUntilMs - Date.now()) / 1000)),
+      resetAt: new Date(record.blockedUntilMs).toISOString()
+    });
+    throw error;
+  }
+  if (count >= 4) fail('ADMIN_SMTP_REQUEST_PERMANENT_BAN', 403);
+  await adminEmailRateWriteV491(scope, entry, count + 1);
+  ops.assertFullGuard();
+}
+async function adminEmailRateResetV491(ops, scope) {
+  ops.assertFullGuard();
+  const entry = await securityRead(adminEmailRateKeyV491(scope));
+  const record = adminEmailRateValidateV491(entry, scope);
+  if (record && record.count !== 0) await adminEmailRateWriteV491(scope, entry, 0);
+  ops.assertFullGuard();
+}
+
 function passwordProofKey(token) { return PASSWORD_PREFIX + digest(token); }
 function pageNonceKey(token) { return PAGE_NONCE_PREFIX + digest(token); }
 function scopeBinding(origin, device, secret) {
@@ -1745,7 +1820,7 @@ async function execute(ops) {
     return { ok: true, email: ADMIN_EMAIL_MASKED, enrolled: !!enrolled, enrollment_state: enrolled ? enrolled.enrollmentState : 'none', passkey_storage: ADMIN_PASSKEY_TABLE, authenticated: !!active, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: null, persistent_session: !!active, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_email_start') {
-    await throttle(ops, scope, 'email-start-minute', 1, 60); await throttle(ops, scope, 'email-start-hour', 5, 3600);
+    await adminEmailRateTakeV491(ops, scope);
     const code = adminEmailCode(), codeLength = code.length, salt = randomToken(), reference = crypto.randomBytes(12).toString('hex');
     const token = await issue(ops, scope, 'email', { salt, codeHash: digest(salt + ':' + code), reference, codeLength }, EMAIL_CODE_SECONDS); const delivered = await ops.mail({ to: ADMIN_EMAIL, code, reference, expiresAt: Date.now() + EMAIL_CODE_SECONDS * 1000, kind: 'login', operation: '' });
     if (!delivered || delivered.ok !== true) fail('ADMIN_EMAIL_DELIVERY_UNCONFIRMED', 503); return { ok: true, ticket: token, stage: 'email', email: ADMIN_EMAIL_MASKED, code_length: codeLength, min_chars: EMAIL_CODE_MIN, max_chars: EMAIL_CODE_MAX, expires_in: EMAIL_CODE_SECONDS, one_time: true };
@@ -1753,7 +1828,7 @@ async function execute(ops) {
   if (action === 'admin_email_verify') {
     const entry = await ticket(ops, scope, body.ticket, 'email'); await throttle(ops, scope, 'email-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
     if (!Number.isInteger(entry.value.codeLength) || entry.value.codeLength < EMAIL_CODE_MIN || entry.value.codeLength > EMAIL_CODE_MAX || !validAdminEmailCode(body.code) || body.code.length !== entry.value.codeLength || !safeEqual(digest(entry.value.salt + ':' + body.code), entry.value.codeHash)) fail('ADMIN_EMAIL_CODE_INVALID', 401);
-    await consume(ops, entry); return { ok: true, ticket: await issue(ops, scope, 'passkey-start'), stage: 'passkey' };
+    await consume(ops, entry); await adminEmailRateResetV491(ops, scope); return { ok: true, ticket: await issue(ops, scope, 'passkey-start'), stage: 'passkey' };
   }
   if (action === 'admin_action_passkey_start') {
     await session(ops, scope); const operation = String(body.operation || ''), payload = body.payload;
@@ -2478,7 +2553,7 @@ const ADMIN_CENTRAL_BAN_FAILURE_CODES = Object.freeze([
   'ADMIN_PASSKEY_KEY_INVALID', 'ADMIN_PASSKEY_RECOVERY_INVALID', 'ADMIN_PASSKEY_RPID_MISMATCH', 'ADMIN_PASSKEY_SCOPE_INVALID',
   'ADMIN_PASSKEY_SIGNATURE_INVALID', 'ADMIN_PASSKEY_USER_MISMATCH', 'ADMIN_PASSKEY_UV_REQUIRED', 'ADMIN_PREFLIGHT_INVALID', 'ADMIN_PROOF_INVALID',
   'ADMIN_PROOF_REPLAYED', 'ADMIN_QUERY_DUPLICATE', 'ADMIN_REFERER_INVALID', 'ADMIN_REQUEST_INVALID', 'ADMIN_SECURITY_REPORT_INVALID',
-  'ADMIN_SECURITY_REPORT_ONE_STRIKE', 'ADMIN_TICKET_ALREADY_USED', 'ADMIN_TICKET_INVALID', 'ADMIN_TOTP_ALREADY_USED', 'ADMIN_TOTP_INVALID'
+  'ADMIN_SECURITY_REPORT_ONE_STRIKE', 'ADMIN_SMTP_REQUEST_PERMANENT_BAN', 'ADMIN_TICKET_ALREADY_USED', 'ADMIN_TICKET_INVALID', 'ADMIN_TOTP_ALREADY_USED', 'ADMIN_TOTP_INVALID'
 ]);
 function adminCentralBanRequired(error) {
   const code = String(error && error.code || ''), status = Number(error && (error.status || error.statusCode) || 0);
@@ -2961,7 +3036,18 @@ function validateShape(action, method, query, body) {
 }
 function errorPayload(error) {
   const known = error && (/^ADMIN_[A-Z0-9_]{1,90}$/.test(String(error.code || '')) || String(error.code || '') === 'SECURITY_REPORT_EVIDENCE_REJECTED' || ['SHIPMENT_BUSY', 'SHIPMENT_CONFIG_REQUIRED', 'SHIPMENT_SMTP_NOT_CONFIGURED', 'SHIPMENT_CUSTOMER_EMAIL_REQUIRED', 'SHIPMENT_TRACKING_ID_REQUIRED', 'SHIPMENT_ENDPOINT_INVALID', 'SHIPMENT_CONFIG_INVALID', 'SHIPMENT_OPTIONS_INVALID', 'SHIPMENT_OPTIONS_REQUIRED', 'SHIPMENT_STATE_INVALID', 'SHIPMENT_CONFIG_WRITE_UNCONFIRMED', 'SHIPMENT_CONFIG_UNAVAILABLE'].includes(String(error.code || ''))), supplied = Number(error && (error.status || error.statusCode) || 503), status = known && ALLOWED_RESPONSE_STATUSES.has(supplied) ? supplied : 503;
-  return { status, body: { ok: false, code: known ? error.code : 'ADMIN_OPERATION_UNAVAILABLE', message: status === 503 ? 'Layanan admin belum dapat diverifikasi. Periksa konfigurasi yang diwajibkan lalu coba kembali.' : status === 429 ? 'Batas percobaan tercapai. Tunggu sebelum mencoba lagi.' : 'Verifikasi admin belum valid atau sudah kedaluwarsa.' } };
+  const result = { status, body: { ok: false, code: known ? error.code : 'ADMIN_OPERATION_UNAVAILABLE', message: status === 503 ? 'Layanan admin belum dapat diverifikasi. Periksa konfigurasi yang diwajibkan lalu coba kembali.' : status === 429 ? 'Batas percobaan tercapai. Tunggu sebelum mencoba lagi.' : 'Verifikasi admin belum valid atau sudah kedaluwarsa.' } };
+  if (status === 429 && error && error.code === 'ADMIN_EMAIL_REQUEST_RATE_LIMITED'
+    && Number.isSafeInteger(error.retryAfterSeconds) && error.retryAfterSeconds > 0
+    && typeof error.resetAt === 'string' && Number.isFinite(Date.parse(error.resetAt))) {
+    result.body.message = 'Permintaan kode email dibatasi. Tunggu hingga waktu reset yang ditampilkan.';
+    result.body.retry_after_seconds = error.retryAfterSeconds;
+    result.body.reset_at = error.resetAt;
+  }
+  if (status === 403 && error && error.code === 'ADMIN_SMTP_REQUEST_PERMANENT_BAN') {
+    result.body.message = 'Batas permintaan kode admin tercapai. Sumber permintaan diblokir permanen oleh sistem keamanan.';
+  }
+  return result;
 }
 async function adminBusiness(req, res, operations) {
   try { return res.status(200).json(await execute(operations)); }

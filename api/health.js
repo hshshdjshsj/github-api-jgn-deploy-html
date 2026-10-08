@@ -3560,9 +3560,9 @@ function normalizeDomainLoginRateRecord(record, now = Date.now()) {
     throw Object.assign(new Error('LOGIN_SECURITY_STATE_INVALID'), { code: 'LOGIN_SECURITY_STATE_UNAVAILABLE' });
   }
   const identityEmailV363 = normalizeAuthEmail(row.identity_email || row.identityEmail || '');
-  const permanent = row.permanent === true || count >= 7 || blockedUntilMs > 0;
+  const permanent = row.permanent === true || count >= 3 || blockedUntilMs > 0;
   return {
-    count: Math.min(7, count),
+    count: Math.min(3, count),
     windowStartMs: Number(row.windowStartMs || row.window_start_ms || now),
     resetAtMs: Number(row.resetAtMs || row.reset_at_ms || (now + DOMAIN_LOGIN_RATE_WINDOW_MS)),
     blockedUntilMs: permanent ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 : blockedUntilMs,
@@ -3705,7 +3705,7 @@ async function writeDomainLoginRateRecord(identity, record) {
 }
 
 function domainLoginRateDecisionV336(identity, record, now = Date.now()) {
-  const permanent = record.permanent === true || record.count >= 7;
+  const permanent = record.permanent === true || record.count >= 3;
   const blocked = permanent || record.blockedUntilMs > now;
   return {
     ok: !blocked,
@@ -3718,9 +3718,7 @@ function domainLoginRateDecisionV336(identity, record, now = Date.now()) {
     retryAfterSeconds: permanent ? 0 : Math.max(0, Math.ceil((record.blockedUntilMs - now) / 1000)),
     message: permanent
       ? 'Perangkat dan jaringan sumber login ini terkunci permanen oleh sistem keamanan. Silakan hubungi admin melalui WhatsApp 087892523968 atau email ' + diracSupportEmailV250() + '.'
-      : record.count >= 6
-        ? 'Password salah 6 kali. Akun dibatasi selama 24 jam sejak percobaan terakhir. Satu kesalahan berikutnya setelah pembatasan berakhir akan mengunci akun; silakan hubungi admin jika membutuhkan bantuan.'
-        : 'Password salah 5 kali. Akun dibatasi selama 1 jam sejak percobaan terakhir. Silakan coba kembali setelah pembatasan berakhir.'
+      : 'Percobaan masuk dibatasi sementara oleh sistem keamanan. Silakan coba kembali setelah masa tunggu berakhir.'
   };
 }
 
@@ -3776,9 +3774,9 @@ async function registerDomainLoginFailureForIdentityV353(identity) {
       record.windowStartMs = now;
       record.resetAtMs = now + DOMAIN_LOGIN_RATE_WINDOW_MS;
     }
-    record.count = Math.min(7, record.count + 1);
+    record.count = Math.min(3, record.count + 1);
     record.lastFailedAtMs = now;
-    record.permanent = record.count >= 5;
+    record.permanent = record.count >= 3;
     record.blockedUntilMs = record.permanent ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335 : 0;
     if (!await writeDomainLoginRateRecord(identity, record)) continue;
     return { ...domainLoginRateDecisionV336(identity, record, now), matched_scope: identity.scope || 'account' };
@@ -3827,7 +3825,7 @@ async function registerDomainLoginFailure(req, email) {
       );
     }
 
-    if (selected && Number(selected.count || 0) >= 5 && req && !Object.prototype.hasOwnProperty.call(req, '__diracUserSecurityLoginFailureV336')) {
+    if (selected && Number(selected.count || 0) >= 3 && req && !Object.prototype.hasOwnProperty.call(req, '__diracUserSecurityLoginFailureV336')) {
       Object.defineProperty(req, '__diracUserSecurityLoginFailureV336', {
         value: Object.freeze({
           email: normalizeAuthEmail(email),
@@ -3851,11 +3849,12 @@ async function registerDomainLoginFailure(req, email) {
 }
 
 async function clearDomainLoginRateLimit(req, email) {
-  const identity = getDomainLoginRateIdentity(req, email);
+  const identities = getDomainLoginRateIdentitiesV353(req, email);
+  const cleared = await Promise.allSettled(identities.map(async (identity) => {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const record = await readDomainLoginRateRecord(identity);
     // Once escalation starts, only an administrator can clear its history.
-    if (record.count === 0 || record.count >= 5 || record.permanent || record.blockedUntilMs > Date.now()) return;
+    if (record.count === 0 || record.count >= 3 || record.permanent || record.blockedUntilMs > Date.now()) return;
     record.count = 0;
     record.lastFailedAtMs = 0;
     let clearedV350 = false;
@@ -3876,6 +3875,8 @@ async function clearDomainLoginRateLimit(req, email) {
   const finalRecordV350 = await readDomainLoginRateRecord(identity);
   const finalDecisionV350 = domainLoginRateDecisionV336(identity, finalRecordV350);
   if (!finalDecisionV350 || finalDecisionV350.unavailable) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
+  }));
+  if (cleared.some((outcome) => outcome.status === 'rejected')) throw new Error('LOGIN_SECURITY_STATE_UNAVAILABLE');
   return;
 }
 
@@ -4698,9 +4699,9 @@ function diracRegisterEmailRollbackResponseV366(payload, rollback) {
 
 function diracRegisterEmailSmtpCooldownMsV374(attempt) {
   if (attempt === 1) return 5 * 60 * 1000;
-  if (attempt === 2) return 30 * 60 * 1000;
+  if (attempt === 2) return 15 * 60 * 1000;
   if (attempt === 3) return 60 * 60 * 1000;
-  if (attempt === 4) return 3 * 24 * 60 * 60 * 1000;
+  if (attempt === 4) return 24 * 60 * 60 * 1000;
   return 0;
 }
 
@@ -4747,6 +4748,8 @@ async function diracRegisterEmailSmtpRateTakeV374(req, email) {
   }
   if (currentAttempt >= 5) return Object.freeze({ ok: false, banned: true, retryAfterSeconds: 0 });
   if (currentBlockedUntil > Date.now()) return Object.freeze({ ok: false, limited: true, retryAfterSeconds: Math.max(1, Math.ceil((currentBlockedUntil - Date.now()) / 1000)), attemptCount: currentAttempt });
+  const consumedV374 = await diracCentralAtomicConsumeV230({ namespace: 'register_smtp_rate_v374', jti: diracCentralHashV146([identity.key, currentAttempt, record ? record.updated_at_ms : 'initial'].join('|')), expiresAt: Math.floor(Date.now() / 1000) + 900, contextHash: identity.key });
+  if (!consumedV374 || consumedV374.ok !== true) throw Object.assign(new Error('REGISTER_EMAIL_SMTP_RATE_CONFLICT'), { code: 'REGISTER_EMAIL_SMTP_RATE_CONFLICT', statusCode: 409 });
   const nextAttempt = currentAttempt + 1;
   if (nextAttempt >= 5) {
     const banned = await diracCentralBanAuthorityBanV354(req, 'smtp_register_request_attempt_limit', 10 * 365 * 24 * 60 * 60);
@@ -4757,6 +4760,80 @@ async function diracRegisterEmailSmtpRateTakeV374(req, email) {
   const blockedUntilMs = Date.now() + diracRegisterEmailSmtpCooldownMsV374(nextAttempt);
   await diracRegisterEmailSmtpRateWriteV374(identity, nextAttempt, blockedUntilMs);
   return Object.freeze({ ok: true, attemptCount: nextAttempt, blockedUntilMs });
+}
+
+// Registration email-proof mistakes: persistent, same owner-bound Central Guard
+// identity as the existing manual SMTP gate. No new table, ENV, or request loop.
+const DIRAC_REGISTER_EMAIL_PROOF_FAILURE_POLICY_V492 = 'register-email-proof-fail-v492';
+function diracRegisterEmailProofFailureIdentityV492(req, email) {
+  const original = diracRegisterEmailSmtpRateIdentityV374(req, email);
+  return Object.freeze({
+    key: 'register-email-proof-fail-v492:' + diracCentralHashV146([DIRAC_REGISTER_EMAIL_PROOF_FAILURE_POLICY_V492, original.key].join('|')),
+    emailHash: original.emailHash, identityHash: original.identityHash
+  });
+}
+async function diracRegisterEmailProofFailureReadV492(identity) {
+  const result = await supabaseFetch('/rest/v1/dirac_persistent_bans?select=' + encodeURIComponent('security_key,record_json,blocked_until_ms') + '&security_key=eq.' + encodeURIComponent(identity.key) + '&limit=1', { method: 'GET', auth: 'service' });
+  if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > 1) throw Object.assign(new Error('REGISTER_EMAIL_PROOF_RATE_UNAVAILABLE'), { code: 'REGISTER_EMAIL_PROOF_RATE_UNAVAILABLE', statusCode: 503 });
+  const row = result.data.length ? result.data[0] : null;
+  if (!row) return Object.freeze({ count: 0, revision: 'initial' });
+  const data = row.record_json;
+  if (row.security_key !== identity.key || !data || typeof data !== 'object' || Array.isArray(data)
+    || Object.keys(data).sort().join(',') !== 'attempt_count,email_hash,identity_hash,revision,type'
+    || data.type !== DIRAC_REGISTER_EMAIL_PROOF_FAILURE_POLICY_V492
+    || !safeEqual(String(data.email_hash || ''), identity.emailHash)
+    || !safeEqual(String(data.identity_hash || ''), identity.identityHash)
+    || !Number.isSafeInteger(data.attempt_count) || data.attempt_count < 0 || data.attempt_count > 3
+    || typeof data.revision !== 'string' || !/^[a-f0-9]{64}$/.test(data.revision)
+    || Number(row.blocked_until_ms || 0) !== (data.attempt_count === 3 ? DIRAC_REGISTER_EMAIL_SMTP_RATE_PERMANENT_UNTIL_MS_V374 : 0)) {
+    throw Object.assign(new Error('REGISTER_EMAIL_PROOF_RATE_STATE_INVALID'), { code: 'REGISTER_EMAIL_PROOF_RATE_STATE_INVALID', statusCode: 503 });
+  }
+  return Object.freeze({ count: data.attempt_count, revision: data.revision });
+}
+async function diracRegisterEmailProofFailureWriteV492(identity, count) {
+  const blockedUntilMs = count >= 3 ? DIRAC_REGISTER_EMAIL_SMTP_RATE_PERMANENT_UNTIL_MS_V374 : 0;
+  const revision = crypto.randomBytes(32).toString('hex');
+  const record = { type: DIRAC_REGISTER_EMAIL_PROOF_FAILURE_POLICY_V492, email_hash: identity.emailHash, identity_hash: identity.identityHash, attempt_count: count, revision };
+  const result = await supabaseFetch('/rest/v1/dirac_persistent_bans?on_conflict=security_key', {
+    method: 'POST', auth: 'service', prefer: 'resolution=merge-duplicates,return=representation',
+    body: [{ security_key: identity.key, record_json: record, blocked_until_ms: blockedUntilMs, updated_at: new Date().toISOString(), expires_at: '9999-01-01T00:00:00.000Z' }]
+  });
+  const row = result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
+  if (!row || row.security_key !== identity.key || Number(row.blocked_until_ms || 0) !== blockedUntilMs
+    || !row.record_json || row.record_json.revision !== revision) throw Object.assign(new Error('REGISTER_EMAIL_PROOF_RATE_WRITE_FAILED'), { code: 'REGISTER_EMAIL_PROOF_RATE_WRITE_FAILED', statusCode: 503 });
+  return true;
+}
+async function diracRegisterEmailProofFailureTakeV492(req, email) {
+  const identity = diracRegisterEmailProofFailureIdentityV492(req, email);
+  const prior = await diracRegisterEmailProofFailureReadV492(identity);
+  if (prior.count >= 3) return Object.freeze({ ok: true, banned: true });
+  const consumed = await diracCentralAtomicConsumeV230({
+    namespace: 'register_email_proof_fail_v492',
+    jti: diracCentralHashV146([identity.key, prior.count, prior.revision].join('|')),
+    expiresAt: Math.floor(Date.now() / 1000) + 900, contextHash: identity.key
+  });
+  if (!consumed || consumed.ok !== true) throw Object.assign(new Error('REGISTER_EMAIL_PROOF_RATE_CONFLICT'), { code: 'REGISTER_EMAIL_PROOF_RATE_CONFLICT', statusCode: 503 });
+  const next = prior.count + 1;
+  if (next >= 3) {
+    const ban = await diracCentralBanAuthorityBanV354(req, 'register_email_proof_invalid_three_times', 10 * 365 * 24 * 60 * 60);
+    if (!ban || ban.ok !== true) throw Object.assign(new Error('REGISTER_EMAIL_PROOF_PERMANENT_BAN_UNAVAILABLE'), { code: 'REGISTER_EMAIL_PROOF_PERMANENT_BAN_UNAVAILABLE', statusCode: 503 });
+  }
+  await diracRegisterEmailProofFailureWriteV492(identity, next);
+  return Object.freeze({ ok: true, count: next, banned: next >= 3 });
+}
+async function diracRegisterEmailProofFailureResetV492(req, email) {
+  const identity = diracRegisterEmailProofFailureIdentityV492(req, email);
+  const prior = await diracRegisterEmailProofFailureReadV492(identity);
+  if (prior.count >= 3) throw Object.assign(new Error('REGISTER_EMAIL_PROOF_PERMANENTLY_BANNED'), { code: 'REGISTER_EMAIL_PROOF_PERMANENTLY_BANNED', statusCode: 423 });
+  if (prior.count === 0) return true;
+  await diracRegisterEmailProofFailureWriteV492(identity, 0);
+  return true;
+}
+function diracRegisterEmailProofFailureBoundV492(req, input) {
+  const token = diracRegisterEmailReadChallengeV331(req);
+  const payload = token ? diracRegisterEmailDecodeChallengeV331(token) : null;
+  return Boolean(payload && safeEqual(String(payload.request_hash || ''), diracRegisterEmailRequestHashV331(input))
+    && safeEqual(String(payload.binding_hash || ''), diracRegisterEmailBindingHashV331(req)));
 }
 
 async function diracRegisterEmailSmtpRateResetV374(req, email) {
@@ -4889,9 +4966,9 @@ async function domainRegister(req, res, preloadedBody) {
     }
     if (smtpRateV374 && smtpRateV374.banned === true) return res.status(423).json({ ok: false, code: 'REGISTER_EMAIL_SMTP_PERMANENTLY_BANNED', message: 'Permintaan kode verifikasi mencapai batas keamanan. Central ban/global ban permanen telah diterapkan.' });
     if (smtpRateV374 && smtpRateV374.limited === true) {
-      const retryAfterSecondsV374 = Math.max(1, Math.min(3 * 24 * 60 * 60, Number(smtpRateV374.retryAfterSeconds || 60)));
+      const retryAfterSecondsV374 = Math.max(1, Math.min(24 * 60 * 60, Number(smtpRateV374.retryAfterSeconds || 60)));
       try { res.setHeader('Retry-After', String(Math.ceil(retryAfterSecondsV374))); } catch (_) {}
-      return res.status(429).json({ ok: false, code: 'REGISTER_EMAIL_SMTP_RATE_LIMITED', message: 'Permintaan kode verifikasi masih dalam masa tunggu keamanan.', retry_after_seconds: Math.ceil(retryAfterSecondsV374) });
+      return res.status(429).json({ ok: false, code: 'REGISTER_EMAIL_SMTP_RATE_LIMITED', message: 'Permintaan kode verifikasi dibatasi. Coba lagi setelah hitung mundur selesai.', retry_after_seconds: Math.ceil(retryAfterSecondsV374), reset_at: new Date(Date.now() + Math.ceil(retryAfterSecondsV374) * 1000).toISOString() });
     }
     const smtpConfig = diracRegisterEmailConfigV331();
     if (!smtpConfig) {
@@ -4946,6 +5023,13 @@ async function domainRegister(req, res, preloadedBody) {
   );
   if (!verifiedEmailProof.ok) {
     if (verifiedEmailProof.restart) diracRegisterEmailClearChallengeCookieV331(res);
+    if (verifiedEmailProof.code === 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID'
+      && diracRegisterEmailProofFailureBoundV492(req, registrationInput)) {
+      let failure;
+      try { failure = await diracRegisterEmailProofFailureTakeV492(req, email); }
+      catch (_) { return res.status(503).json({ ok: false, code: 'REGISTER_EMAIL_PROOF_RATE_UNAVAILABLE', message: 'Status keamanan kode verifikasi tidak dapat dipastikan. Akses ditutup.' }); }
+      if (failure.banned) return res.status(423).json({ ok: false, code: 'REGISTER_EMAIL_PROOF_PERMANENTLY_BANNED', message: 'Verifikasi kode gagal tiga kali. Sumber permintaan diblokir permanen oleh sistem keamanan.' });
+    }
     return res.status(verifiedEmailProof.status).json({
       ok: false,
       code: verifiedEmailProof.code,
@@ -4967,7 +5051,7 @@ async function domainRegister(req, res, preloadedBody) {
       message: 'Bukti verifikasi tidak dapat dikunci sebagai sekali pakai. Silakan kirim kode baru.'
     });
   }
-  try { await diracRegisterEmailSmtpRateResetV374(req, email); }
+  try { await diracRegisterEmailProofFailureResetV492(req, email); await diracRegisterEmailSmtpRateResetV374(req, email); }
   catch (error) {
     diracRegisterEmailClearChallengeCookieV331(res);
     return res.status(503).json({ ok: false, code: String(error && error.code || 'REGISTER_EMAIL_SMTP_RATE_RESET_FAILED'), restart_verification: true, message: 'Status pembatasan kode verifikasi belum dapat direset secara aman. Silakan kirim kode baru.' });
@@ -13865,7 +13949,7 @@ const LOST_PASSKEY_RECOVERY_PURPOSE = 'register_new_passkey';
 const LOST_PASSKEY_RECOVERY_RANDOM_BYTES = 300;
 const LOST_PASSKEY_RECOVERY_HKDF_BYTES = 1000;
 const LOST_PASSKEY_RECOVERY_FILE_KEY_MIN_BYTES = 3000;
-const LOST_PASSKEY_RECOVERY_ATTEMPT_LIMIT = 5;
+const LOST_PASSKEY_RECOVERY_ATTEMPT_LIMIT = 3;
 const DIRAC_RECOVERY_WORKER_ACTION = 'dirac_recovery_worker_generate';
 const DIRAC_RECOVERY_WORKER_TASK_GENERATE = 'lost_passkey_generate';
 const DIRAC_RECOVERY_WORKER_TASK_VERIFY = 'lost_passkey_verify';
@@ -14559,7 +14643,72 @@ async function customerSecurityVerifyAccountPasswordForPdfV156(email, accountPas
   const user = result && result.data && result.data.user;
   const directIdentityVerified = Boolean(result && result.ok === true && user
     && user.id === expectedAuthUserId && normalizeAuthEmail(user.email || '') === normalizedEmail);
-  return { ok: directIdentityVerified, status: directIdentityVerified ? 200 : (result && result.ok === false ? result.status || 503 : 403) };
+  const rejectedCode = String(result && result.data && (result.data.error_code || result.data.error) || '').toLowerCase();
+  const credentialRejected = Boolean(result && result.ok === false && [400, 401].includes(Number(result.status))
+    && ['invalid_credentials', 'invalid_grant', 'invalid_login_credentials'].includes(rejectedCode));
+  return { ok: directIdentityVerified, status: directIdentityVerified ? 200 : (credentialRejected ? 401 : 503), invalidCredentials: credentialRejected };
+}
+
+// Wrong-password recovery gate on a verified session owner, using the existing
+// persistent-ban table and atomic consume. Timeout/5xx are not credential failures.
+const DIRAC_RECOVERY_PASSWORD_FAILURE_POLICY_V492 = 'recovery-password-fail-v492';
+function diracRecoveryPasswordFailureKeyV492(owner) {
+  if (!owner || !customerSecurityLooksLikeUuid(String(owner.authUserId || ''))
+    || !customerSecurityLooksLikeUuid(String(owner.customerId || ''))) throw new Error('RECOVERY_PASSWORD_OWNER_REQUIRED');
+  return 'recovery-password-fail-v492:' + diracCentralHashV146([
+    DIRAC_RECOVERY_PASSWORD_FAILURE_POLICY_V492, owner.authUserId, owner.customerId
+  ].join('|'));
+}
+async function diracRecoveryPasswordFailureReadV492(key) {
+  const result = await supabaseFetch('/rest/v1/dirac_persistent_bans?select=' + encodeURIComponent('security_key,record_json,blocked_until_ms') + '&security_key=eq.' + encodeURIComponent(key) + '&limit=1', { method: 'GET', auth: 'service' });
+  if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > 1) throw new Error('RECOVERY_PASSWORD_RATE_STORE_UNAVAILABLE');
+  const row = result.data.length ? result.data[0] : null;
+  if (!row) return Object.freeze({ count: 0, revision: 'initial' });
+  const record = row.record_json;
+  if (row.security_key !== key || !record || typeof record !== 'object' || Array.isArray(record)
+    || Object.keys(record).sort().join(',') !== 'attempt_count,revision,type'
+    || record.type !== DIRAC_RECOVERY_PASSWORD_FAILURE_POLICY_V492
+    || !Number.isSafeInteger(record.attempt_count) || record.attempt_count < 0 || record.attempt_count > 3
+    || typeof record.revision !== 'string' || !/^[a-f0-9]{64}$/.test(record.revision)
+    || Number(row.blocked_until_ms || 0) !== (record.attempt_count >= 3 ? DIRAC_REGISTER_EMAIL_SMTP_RATE_PERMANENT_UNTIL_MS_V374 : 0)) throw new Error('RECOVERY_PASSWORD_RATE_STATE_INVALID');
+  return Object.freeze({ count: record.attempt_count, revision: record.revision });
+}
+async function diracRecoveryPasswordFailureWriteV492(key, count) {
+  const blockedUntilMs = count >= 3 ? DIRAC_REGISTER_EMAIL_SMTP_RATE_PERMANENT_UNTIL_MS_V374 : 0;
+  const revision = crypto.randomBytes(32).toString('hex');
+  const result = await supabaseFetch('/rest/v1/dirac_persistent_bans?on_conflict=security_key', {
+    method: 'POST', auth: 'service', prefer: 'resolution=merge-duplicates,return=representation',
+    body: [{ security_key: key, record_json: { type: DIRAC_RECOVERY_PASSWORD_FAILURE_POLICY_V492, attempt_count: count, revision }, blocked_until_ms: blockedUntilMs, updated_at: new Date().toISOString(), expires_at: '9999-01-01T00:00:00.000Z' }]
+  });
+  const row = result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
+  if (!row || row.security_key !== key || Number(row.blocked_until_ms || 0) !== blockedUntilMs
+    || !row.record_json || row.record_json.revision !== revision) throw new Error('RECOVERY_PASSWORD_RATE_WRITE_FAILED');
+  return true;
+}
+async function diracRecoveryPasswordFailureV492(req, owner) {
+  const key = diracRecoveryPasswordFailureKeyV492(owner);
+  const prior = await diracRecoveryPasswordFailureReadV492(key);
+  if (prior.count >= 3) return Object.freeze({ banned: true });
+  const taken = await diracCentralAtomicConsumeV230({
+    namespace: 'recovery_password_fail_v492',
+    jti: diracCentralHashV146([key, prior.count, prior.revision].join('|')),
+    expiresAt: Math.floor(Date.now() / 1000) + 900, contextHash: key
+  });
+  if (!taken || taken.ok !== true) throw new Error('RECOVERY_PASSWORD_RATE_CONFLICT');
+  const next = prior.count + 1;
+  if (next >= 3) {
+    const ban = await diracCentralBanAuthorityBanV354(req, 'recovery_account_password_invalid_three_times', 10 * 365 * 24 * 60 * 60);
+    if (!ban || ban.ok !== true) throw new Error('RECOVERY_PASSWORD_CENTRAL_BAN_UNAVAILABLE');
+  }
+  await diracRecoveryPasswordFailureWriteV492(key, next);
+  return Object.freeze({ banned: next >= 3 });
+}
+async function diracRecoveryPasswordFailureResetV492(owner) {
+  const key = diracRecoveryPasswordFailureKeyV492(owner);
+  const prior = await diracRecoveryPasswordFailureReadV492(key);
+  if (prior.count >= 3) throw new Error('RECOVERY_PASSWORD_PERMANENTLY_BANNED');
+  if (prior.count !== 0) await diracRecoveryPasswordFailureWriteV492(key, 0);
+  return true;
 }
 
 function customerSecurityBuildEncryptedRecoveryPdfV156(input) {
@@ -16482,9 +16631,15 @@ async function customerSecurityGenerateRecoveryCodes(req, res, action, override 
     }
     const verifiedPassword = await customerSecurityVerifyAccountPasswordForPdfV156(owner.email, accountPassword, owner.authUserId);
     if (!verifiedPassword.ok) {
+      if (verifiedPassword.invalidCredentials !== true) return res.status(503).json({ ok: false, code: 'RECOVERY_PASSWORD_VERIFICATION_UNAVAILABLE', message: 'Verifikasi kata sandi belum dapat diselesaikan dengan aman.' });
+      let strike; try { strike = await diracRecoveryPasswordFailureV492(req, owner); }
+      catch (_) { return res.status(503).json({ ok: false, code: 'RECOVERY_PASSWORD_RATE_UNAVAILABLE', message: 'Status pembatasan kata sandi tidak dapat diverifikasi.' }); }
+      if (strike.banned) return res.status(423).json({ ok: false, code: 'RECOVERY_PASSWORD_PERMANENTLY_BANNED', message: 'Sumber permintaan diblokir setelah tiga kegagalan kata sandi.' });
       await customerSecurityRegisterFailedVerification(req, action, 'recovery_pdf_account_password_invalid', access.customerId);
       return res.status(403).json({ ok: false, code: 'ACCOUNT_PASSWORD_INVALID', message: 'Password akun belum sesuai.' });
     }
+    try { await diracRecoveryPasswordFailureResetV492(owner); }
+    catch (_) { return res.status(503).json({ ok: false, code: 'RECOVERY_PASSWORD_RATE_UNAVAILABLE', message: 'Penghitung keamanan kata sandi belum dapat direset.' }); }
     const websiteRecoveryCode = customerSecurityGenerateWebsiteRecoveryCodeV156();
     const emailPdfCode = customerSecurityGenerateEmailPdfCodeV156();
     const pdfPasswordContext = customerSecurityBuildPdfPasswordContextV156(accountPassword, websiteRecoveryCode, emailPdfCode);
@@ -48999,9 +49154,9 @@ function customerSecurityLostPasskeyEmail100BindingMatchV349(metadata, observedB
 
 function customerSecurityLostPasskeyEmail100CooldownMsV374(attempt) {
   if (attempt === 1) return 5 * 60 * 1000;
-  if (attempt === 2) return 30 * 60 * 1000;
+  if (attempt === 2) return 15 * 60 * 1000;
   if (attempt === 3) return 60 * 60 * 1000;
-  if (attempt === 4) return 3 * 24 * 60 * 60 * 1000;
+  if (attempt === 4) return 24 * 60 * 60 * 1000;
   return 0;
 }
 
@@ -49048,6 +49203,8 @@ async function customerSecurityLostPasskeyEmail100IssuanceGateV349(req, owner, o
   }
   if (attemptCount >= DIRAC_RECOVERY_EMAIL100_ISSUANCE_LIMIT_V349) return { ok: true, banned: true, retryAfterSeconds: 0 };
   if (blockedUntilMs > Date.now()) return { ok: true, limited: true, retryAfterSeconds: Math.max(1, Math.ceil((blockedUntilMs - Date.now()) / 1000)), attemptCount };
+  const consumedV374 = await diracCentralAtomicConsumeV230({ namespace: 'recovery_smtp_rate_v374', jti: diracCentralHashV146([identity.key, attemptCount, record ? record.updated_at_ms : 'initial'].join('|')), expiresAt: Math.floor(Date.now() / 1000) + 900, contextHash: identity.key });
+  if (!consumedV374 || consumedV374.ok !== true) return { ok: false, code: 'RECOVERY_EMAIL100_RATE_CONFLICT' };
   const nextAttempt = attemptCount + 1;
   if (nextAttempt >= DIRAC_RECOVERY_EMAIL100_ISSUANCE_LIMIT_V349) {
     const banned = await diracCentralBanAuthorityBanV354(req, 'smtp_recovery_request_attempt_limit', 10 * 365 * 24 * 60 * 60);
@@ -49097,9 +49254,15 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
 
   const verifiedPassword = await customerSecurityVerifyAccountPasswordForPdfV156(owner.email, passwordMaterial, owner.authUserId);
   if (!verifiedPassword.ok) {
+    if (verifiedPassword.invalidCredentials !== true) return res.status(503).json({ ok: false, code: 'RECOVERY_PASSWORD_VERIFICATION_UNAVAILABLE', message: 'Layanan verifikasi kata sandi belum tersedia.' });
+    let strike; try { strike = await diracRecoveryPasswordFailureV492(req, owner); }
+    catch (_) { return res.status(503).json({ ok: false, code: 'RECOVERY_PASSWORD_RATE_UNAVAILABLE', message: 'Status pembatasan kata sandi tidak dapat diverifikasi.' }); }
+    if (strike.banned) return res.status(423).json({ ok: false, code: 'RECOVERY_PASSWORD_PERMANENTLY_BANNED', message: 'Sumber permintaan diblokir setelah tiga kegagalan kata sandi.' });
     await customerSecurityRegisterFailedVerification(req, action, 'recovery_account_password_invalid', access.customerId);
     return res.status(403).json({ ok: false, code: 'ACCOUNT_PASSWORD_INVALID', message: 'Password akun belum sesuai.' });
   }
+  try { await diracRecoveryPasswordFailureResetV492(owner); }
+  catch (_) { return res.status(503).json({ ok: false, code: 'RECOVERY_PASSWORD_RATE_UNAVAILABLE', message: 'Penghitung keamanan kata sandi belum dapat direset.' }); }
 
   const activePasskeys = localWorker && override && Array.isArray(override.activePasskeys)
     ? override.activePasskeys
@@ -49125,13 +49288,13 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
       return res.status(423).json({ ok: false, code: 'RECOVERY_EMAIL100_PERMANENTLY_BANNED', message: 'Permintaan kode recovery mencapai batas keamanan. Central ban/global ban permanen telah diterapkan.' });
     }
     if (issuanceGateV349.limited === true) {
-      const retryAfterSecondsV349 = Math.max(1, Math.min(3 * 24 * 60 * 60, Number(issuanceGateV349.retryAfterSeconds || 60)));
+      const retryAfterSecondsV349 = Math.max(1, Math.min(24 * 60 * 60, Number(issuanceGateV349.retryAfterSeconds || 60)));
       try { res.setHeader('Retry-After', String(Math.ceil(retryAfterSecondsV349))); } catch (_) {}
       return res.status(429).json({
         ok: false,
         code: 'RECOVERY_EMAIL100_ISSUANCE_RATE_LIMITED',
-        message: 'Batas penerbitan kode recovery baru tercapai. Gunakan kode terakhir yang masih berlaku atau coba lagi setelah masa tunggu.',
-        retry_after_seconds: Math.ceil(retryAfterSecondsV349)
+        message: 'Kode recovery baru masih dibatasi. Gunakan kode yang masih berlaku atau tunggu sampai waktu berikutnya.',
+        retry_after_seconds: Math.ceil(retryAfterSecondsV349), reset_at: new Date(Date.now() + Math.ceil(retryAfterSecondsV349) * 1000).toISOString()
       });
     }
   }
@@ -49839,9 +50002,15 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
   }
   const verifiedPassword = await customerSecurityVerifyAccountPasswordForPdfV156(owner.email, passwordMaterial, owner.authUserId);
   if (!verifiedPassword.ok) {
+    if (verifiedPassword.invalidCredentials !== true) return res.status(503).json({ ok: false, code: 'RECOVERY_PASSWORD_VERIFICATION_UNAVAILABLE', message: 'Layanan verifikasi kata sandi belum tersedia.' });
+    let strike; try { strike = await diracRecoveryPasswordFailureV492(req, owner); }
+    catch (_) { return res.status(503).json({ ok: false, code: 'RECOVERY_PASSWORD_RATE_UNAVAILABLE', message: 'Status pembatasan kata sandi tidak dapat diverifikasi.' }); }
+    if (strike.banned) return res.status(423).json({ ok: false, code: 'RECOVERY_PASSWORD_PERMANENTLY_BANNED', message: 'Sumber permintaan diblokir setelah tiga kegagalan kata sandi.' });
     await customerSecurityRegisterFailedVerification(req, action, 'recovery_account_password_invalid_on_verify', access.customerId).catch(() => null);
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 403, 'recovery_account_password_invalid_on_verify', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
+  try { await diracRecoveryPasswordFailureResetV492(owner); }
+  catch (_) { return res.status(503).json({ ok: false, code: 'RECOVERY_PASSWORD_RATE_UNAVAILABLE', message: 'Penghitung keamanan kata sandi belum dapat direset.' }); }
 
   vaultSecrets = customerSecurityLostPasskeySecretsForMetadataV281(metadata, vaultSecrets);
   if (!vaultSecrets.ok) {
@@ -49982,6 +50151,10 @@ async function customerSecurityVerifyRecoveryCodeLocalWorkerRecoV251(req, res, a
       return customerSecurityLostPasskeyGenericWorkerErrorV157(res, 503, 'recovery_failure_state_unavailable', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: expectedBinding, recoveryCodeOk: codeOk, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
     }
     await customerSecurityRegisterFailedVerification(req, action, failure.locked ? 'recovery_code_locked' : 'recovery_code_not_matched', access.customerId).catch(() => null);
+    if (failure.locked) {
+      const permanentlyBanned = await diracCentralBanAuthorityBanV354(req, 'recovery_code_invalid_three_times', 10 * 365 * 24 * 60 * 60);
+      if (!permanentlyBanned || permanentlyBanned.ok !== true) return res.status(503).json({ ok: false, code: 'RECOVERY_CODE_PERMANENT_BAN_UNAVAILABLE', message: 'Status pengamanan gagal diverifikasi.' });
+    }
     return customerSecurityLostPasskeyGenericWorkerErrorV157(res, failure.locked ? 423 : 403, failure.locked ? 'recovery_code_locked' : 'recovery_code_not_matched', { request_id: requestId, customer_id: owner.customerId, auth_user_id: owner.authUserId, email: owner.email, worker_action: DIRAC_RECOVERY_WORKER_TASK_VERIFY }, { owner, bindings, requestId, code, row, metadata, bindingCommitmentOk: expectedBinding, recoveryCodeOk: codeOk, workerAction: DIRAC_RECOVERY_WORKER_TASK_VERIFY });
   }
 

@@ -462,6 +462,7 @@ async function passwordResetEngine(req, res, ops, body) {
         const resolved = await ops.resolveOwner();
         if (!resolved || !resolved.owner || !safeEqual(normalizeAuthEmail(resolved.owner.email || ''), email)) throw resetError('PASSWORD_CHANGE_ACCOUNT_BINDING_INVALID', 403);
         await ops.verifyPassword(resolved.owner, String(inner.current_password || ''));
+        await diracSecuritySmtpRequestRateResetV374(req, 'password_change_password_invalid', resolved.owner);
         inner.current_password = '';
         const active = await ops.listActive(resolved.owner);
         if (!Array.isArray(active) || active.length !== 1 || !ops.validateOwnerRow(active[0], resolved.owner)) throw resetError('PASSWORD_CHANGE_ACCOUNT_SECURITY_STATE_INVALID', 409);
@@ -495,6 +496,8 @@ async function passwordResetEngine(req, res, ops, body) {
           credential: inner.credential,
           device_binding: String(inner.device_binding || '')
         });
+        const verifiedContext = diracCentralCurrentContextV149();
+        if (verifiedContext && verifiedContext.active && verifiedContext.banChecked && verifiedContext.browserChecked && verifiedContext.__diracPasswordResetVerifiedOwnerV333) await diracSecuritySmtpRequestRateResetV374(req, 'password_change_passkey_invalid', verifiedContext.__diracPasswordResetVerifiedOwnerV333);
         diracResetDiagnosticV335(req, 'verify.passkey', 'success', { owner_bound: true, security_epoch: Number(verified && verified.security_epoch || 0), device_binding_key_id_present: Boolean(verified && verified.device_binding_key_id) });
         const grant = await ops.issueGrant(verified, bindingContext);
         if (!/^[A-Za-z0-9_-]{156}$/.test(String(grant || ''))) throw resetError('PASSWORD_RESET_GRANT_ISSUE_FAILED', 503);
@@ -543,10 +546,12 @@ async function passwordResetEngine(req, res, ops, body) {
     } else {
       throw resetError('PASSWORD_RESET_OPERATION_INVALID', 400);
     }
-  } catch (error) {
+  } catch (cause) {
+    const error = await diracSecurityCountInvalidCredentialV374(req, cause, 'password_change');
     diracResetDiagnosticV335(req, 'confirm.operation', 'error', { op: String(inner.op || '') }, error);
     responseStatus = Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503));
-    payload = { ok: false, op: String(inner.op || ''), code: String(error && error.code || 'PASSWORD_RESET_REQUEST_REJECTED'), message: 'Permintaan perubahan kata sandi tidak dapat diproses.' };
+    const retryAfter = Number(error && error.retryAfterSeconds || 0);
+    payload = { ok: false, op: String(inner.op || ''), code: String(error && error.code || 'PASSWORD_RESET_REQUEST_REJECTED'), message: retryAfter > 0 ? 'Permintaan kode dibatasi. Coba lagi dalam ' + String(retryAfter) + ' detik (hingga ' + String(error.resetAt || '') + ').' : responseStatus === 423 ? 'Sumber akses diblokir permanen setelah mencapai batas verifikasi. Hubungi administrator.' : 'Permintaan perubahan kata sandi tidak dapat diproses.', ...(retryAfter > 0 ? { retry_after_seconds: retryAfter, reset_at: String(error.resetAt || '') } : {}) };
   }
   diracResetDiagnosticV335(req, 'd10.seal', 'begin', { op: String(inner.op || ''), payload_ok: payload && payload.ok === true, payload_code: String(payload && payload.code || '') });
   const challenge = await sealD10Response(payload, opened.context);
@@ -3486,10 +3491,12 @@ async function diracSecurityPasskeyResetVerifyPasswordV363(owner, password) {
     const verified = await supabaseFetch('/auth/v1/token?grant_type=password', { method: 'POST', auth: 'anon', body: { email: owner.email, password: value } });
     const user = verified && verified.ok === true && verified.data && verified.data.user && typeof verified.data.user === 'object' ? verified.data.user : null;
     const accessToken = String(verified && verified.data && verified.data.access_token || '');
-    if (!verified || verified.ok !== true || !user || !accessToken
-        || !safeEqual(String(user.id || ''), owner.authUserId) || !safeEqual(normalizeAuthEmail(user.email || ''), owner.email)) {
-      throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_INVALID', 403);
+    if (!verified || verified.ok !== true) {
+      const providerCode = String(verified && verified.data && (verified.data.error_code || verified.data.code) || '').toLowerCase();
+      if ([400, 401, 403].includes(Number(verified && verified.status || 0)) && /^(invalid_credentials|invalid_login_credentials)$/.test(providerCode)) throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_INVALID', 403);
+      throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_SERVICE_UNAVAILABLE', 503);
     }
+    if (!user || !accessToken || !safeEqual(String(user.id || ''), owner.authUserId) || !safeEqual(normalizeAuthEmail(user.email || ''), owner.email)) throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_PROVIDER_CONTRACT_INVALID', 503);
     ctx.__diracPasskeyResetEphemeralAccessDigestV363 = diracSecurityPasskeyResetSha256V363(accessToken);
     const logout = await supabaseFetch('/auth/v1/logout?scope=local', { method: 'POST', auth: 'anon', bearer: accessToken });
     if (!logout || logout.ok !== true) throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_SESSION_CLEANUP_FAILED', 503);
@@ -3523,7 +3530,8 @@ async function diracSecurityPasskeyReplacementVerifyPasswordV367(owner, password
     const verified = await supabaseFetch('/auth/v1/token?grant_type=password', { method: 'POST', auth: 'anon', body: { email: owner.email, password: value } });
     const upstreamStatus = Number(verified && verified.status || 0);
     if (!verified || verified.ok !== true) {
-      if (upstreamStatus === 400 || upstreamStatus === 401 || upstreamStatus === 403) throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_INVALID', 422);
+      const providerCode = String(verified && verified.data && (verified.data.error_code || verified.data.code) || '').toLowerCase();
+      if ([400, 401, 403].includes(upstreamStatus) && /^(invalid_credentials|invalid_login_credentials)$/.test(providerCode)) throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_INVALID', 422);
       throw resetError('SECURITY_PASSKEY_RESET_PASSWORD_SERVICE_UNAVAILABLE', 503);
     }
     const user = verified.data && verified.data.user && typeof verified.data.user === 'object' ? verified.data.user : null;
@@ -3631,9 +3639,9 @@ function diracSecuritySmtpRequestRateFlowV374(label) {
 
 function diracSecuritySmtpRequestRateCooldownMsV374(attempt) {
   if (attempt === 1) return 5 * 60 * 1000;
-  if (attempt === 2) return 30 * 60 * 1000;
+  if (attempt === 2) return 15 * 60 * 1000;
   if (attempt === 3) return 60 * 60 * 1000;
-  if (attempt === 4) return 3 * 24 * 60 * 60 * 1000;
+  if (attempt === 4) return 24 * 60 * 60 * 1000;
   return 0;
 }
 
@@ -3671,8 +3679,9 @@ async function diracSecuritySmtpRequestRateTakeV374(req, flow, owner) {
       || Number(row.blocked_until_ms || 0) !== Number(record.blocked_until_ms))) throw resetError('SECURITY_SMTP_REQUEST_RATE_STATE_INVALID', 503);
   const currentAttempt = row ? Number(record.attempt_count) : 0;
   const currentBlockedUntil = row ? Number(record.blocked_until_ms) : 0;
-  if (currentAttempt >= 5) throw resetError('SECURITY_SMTP_REQUEST_PERMANENTLY_BANNED', 423);
-  if (currentBlockedUntil > Date.now()) throw resetError('SECURITY_SMTP_REQUEST_RATE_LIMITED', 429);
+  const credentialFailure = /^(?:password_change|passkey_reset)_(?:password|code|passkey)_invalid$/.test(flow);
+  if (currentAttempt >= (credentialFailure ? 3 : 5)) throw resetError(credentialFailure ? 'SECURITY_CREDENTIAL_PERMANENTLY_BANNED' : 'SECURITY_SMTP_REQUEST_PERMANENTLY_BANNED', 423);
+  if (currentBlockedUntil > Date.now()) { const error = resetError('SECURITY_SMTP_REQUEST_RATE_LIMITED', 429); error.retryAfterSeconds = Math.max(1, Math.ceil((currentBlockedUntil - Date.now()) / 1000)); error.resetAt = new Date(currentBlockedUntil).toISOString(); throw error; }
   const consumed = await diracCentralAtomicConsumeV230({
     namespace: 'smtp_request_rate_v374',
     jti: diracCentralHashV146([key, currentAttempt, record ? record.updated_at_ms : 'initial'].join('|')),
@@ -3681,14 +3690,14 @@ async function diracSecuritySmtpRequestRateTakeV374(req, flow, owner) {
   });
   if (!consumed || consumed.ok !== true) throw resetError('SECURITY_SMTP_REQUEST_RATE_CONFLICT', 409);
   const nextAttempt = currentAttempt + 1;
-  if (nextAttempt >= 5) {
+  if (nextAttempt >= (credentialFailure ? 3 : 5)) {
     const authority = securityResetCentralBanAuthorityV354();
-    const banned = await authority.ban(req, 'smtp_request_attempt_limit', 10 * 365 * 24 * 60 * 60);
+    const banned = await authority.ban(req, credentialFailure ? 'credential_invalid_three_times' : 'smtp_request_attempt_limit', 10 * 365 * 24 * 60 * 60);
     if (!banned || banned.ok !== true) throw resetError('SECURITY_SMTP_REQUEST_PERMANENT_BAN_FAILED', 503);
-    await diracSecuritySmtpRequestRateWriteV374(req, flow, owner, 5, DIRAC_SECURITY_SMTP_REQUEST_RATE_PERMANENT_UNTIL_MS_V374);
-    throw resetError('SECURITY_SMTP_REQUEST_PERMANENTLY_BANNED', 423);
+    await diracSecuritySmtpRequestRateWriteV374(req, flow, owner, credentialFailure ? 3 : 5, DIRAC_SECURITY_SMTP_REQUEST_RATE_PERMANENT_UNTIL_MS_V374);
+    throw resetError(credentialFailure ? 'SECURITY_CREDENTIAL_PERMANENTLY_BANNED' : 'SECURITY_SMTP_REQUEST_PERMANENTLY_BANNED', 423);
   }
-  const blockedUntilMs = Date.now() + diracSecuritySmtpRequestRateCooldownMsV374(nextAttempt);
+  const blockedUntilMs = credentialFailure ? 0 : Date.now() + diracSecuritySmtpRequestRateCooldownMsV374(nextAttempt);
   await diracSecuritySmtpRequestRateWriteV374(req, flow, owner, nextAttempt, blockedUntilMs);
   return true;
 }
@@ -3697,12 +3706,37 @@ async function diracSecuritySmtpRequestRateResetV374(req, flow, owner) {
   return diracSecuritySmtpRequestRateWriteV374(req, flow, owner, 0, 0);
 }
 
+async function diracSecurityCountInvalidCredentialV374(req, error, mode) {
+  const code = String(error && error.code || '');
+  const kinds = mode === 'password_change' ? {
+    SECURITY_PASSKEY_RESET_PASSWORD_INVALID: 'password',
+    PASSWORD_CHANGE_SMTP_CODE_INVALID: 'code',
+    PASSWORD_RESET_PASSKEY_RESPONSE_INVALID: 'passkey',
+    PASSWORD_RESET_WEBAUTHN_CLIENT_DATA_INVALID: 'passkey',
+    PASSWORD_RESET_WEBAUTHN_ORIGIN_INVALID: 'passkey',
+    PASSKEY_SIGNATURE_INVALID: 'passkey'
+  } : mode === 'passkey_reset' ? {
+    SECURITY_PASSKEY_RESET_PASSWORD_INVALID: 'password',
+    SECURITY_PASSKEY_RESET_EMAIL_CODE_INVALID: 'code',
+    SECURITY_PASSKEY_RESET_ASSERTION_INVALID: 'passkey',
+    SECURITY_PASSKEY_RESET_ASSERTION_REJECTED: 'passkey',
+    SECURITY_PASSKEY_RESET_DEVICE_BINDING_INVALID: 'passkey'
+  } : {};
+  const kind = kinds[code];
+  if (!kind) return error;
+  const ctx = diracCentralCurrentContextV149();
+  const owner = ctx && ctx.active && ctx.banChecked && ctx.browserChecked ? ctx.__diracPasswordResetVerifiedOwnerV333 : null;
+  if (!owner || !customerSecurityLooksLikeUuid(String(owner.authUserId || '')) || !customerSecurityLooksLikeUuid(String(owner.customerId || ''))) return error;
+  try { await diracSecuritySmtpRequestRateTakeV374(req, mode + '_' + kind + '_invalid', owner); return error; }
+  catch (rateError) { return rateError; }
+}
+
 async function diracSecurityPasskeyResetEmailRateV364(req, label, identity, limit, windowSeconds, blockSeconds) {
   const flow = diracSecuritySmtpRequestRateFlowV374(label);
   if (flow) {
     const context = diracCentralCurrentContextV149(), owner = context && context.__diracPasswordResetVerifiedOwnerV333;
     if (!owner || !customerSecurityLooksLikeUuid(String(owner.authUserId || '')) || !customerSecurityLooksLikeUuid(String(owner.customerId || ''))) throw resetError('SECURITY_SMTP_REQUEST_OWNER_REQUIRED', 503);
-    if (String(label || '').toLowerCase().endsWith('success')) return diracSecuritySmtpRequestRateResetV374(req, flow, owner);
+    if (String(label || '').toLowerCase().endsWith('success')) { await diracSecuritySmtpRequestRateResetV374(req, flow + '_code_invalid', owner); return diracSecuritySmtpRequestRateResetV374(req, flow, owner); }
     return diracSecuritySmtpRequestRateTakeV374(req, flow, owner);
   }
   const ip = trustedClientIp(req, process.env);
@@ -4133,6 +4167,7 @@ async function diracSecurityPasskeyResetRecordAssertionV363({req,row,owner,paylo
   await diracSecurityPasskeyResetConsumeTokenV363(setupToken,payload);
   const recorded=await supabaseFetch('/rest/v1/rpc/dirac_passkey_record_assertion_v237',{method:'POST',auth:'service',prefer:'return=representation',body:{p_customer_id:owner.customerId,p_passkey_id:String(row.id),p_expected_sign_count:previous,p_new_sign_count:next,p_backup_state:assertion.backupState===true,p_credential_json:updated,p_confirm_pending:confirmPending===true,p_auth_user_id:owner.authUserId,p_assertion_purpose:String(purpose),p_rotation_id:rotationId||null,p_expected_security_epoch:Number(payload.securityEpoch),p_current_auth_session_id:String(payload.rpcAuthSessionId)}});
   const recordedData=diracSecurityPasskeyResetRpcDataV363(recorded);if(!recorded||recorded.ok!==true||!recordedData||recordedData.ok!==true||!safeEqual(String(recordedData.passkey_id||''),String(row.id)))throw resetError('SECURITY_PASSKEY_RESET_ASSERTION_COMMIT_FAILED',503);
+  await diracSecuritySmtpRequestRateResetV374(req, 'passkey_reset_passkey_invalid', owner);
   return{nextSignCount:next,deviceBindingKeyId:device.keyId,clientData,assertion,rpcData:recordedData};
 }
 
@@ -4140,6 +4175,7 @@ async function diracSecurityPasskeyResetStartV363(req,res,body) {
   if(!exactKeys(body,['action','password']))throw resetError('SECURITY_PASSKEY_RESET_START_BODY_INVALID',400);
   const resolved=await diracSecurityPasskeyResetResolveOwnerV363(req),passwordAuth=await diracSecurityPasskeyReplacementVerifyPasswordV367(resolved.owner,body.password);let retainAuthSession=false;
   try{
+    await diracSecuritySmtpRequestRateResetV374(req, 'passkey_reset_password_invalid', resolved.owner);
     const serverDevice=diracSecurityPasskeyResetServerDeviceAuthorityV367().ensure(req,res,resolved.owner);
     if(!serverDevice||serverDevice.ok!==true||!/^[a-f0-9]{64}$/.test(String(serverDevice.keyId||'')))throw resetError(serverDevice&&serverDevice.tampered===true?'SECURITY_PASSKEY_RESET_DEVICE_COOKIE_TAMPERED':'SECURITY_PASSKEY_RESET_DEVICE_BINDING_UNAVAILABLE',serverDevice&&serverDevice.tampered===true?403:503);
     const active=await diracSecurityPasskeyResetListActiveV363(resolved.owner);if(active.length!==1||!diracSecurityPasskeyResetValidateOwnerRowV363(active[0],resolved.owner))throw resetError(active.length===0?'SECURITY_PASSKEY_RESET_ACTIVE_PASSKEY_REQUIRED':'SECURITY_PASSKEY_RESET_ACTIVE_PASSKEY_AMBIGUOUS',409);
@@ -4894,7 +4930,7 @@ async function keamananDispatchV361(req, res) {
   if (parsed.passkeyReset && parsed.method === 'OPTIONS') return handleResetPreflight(req, res);
   if (parsed.passkeyReset && parsed.method === 'POST') {
     try { return await handleStandalonePasskeyResetPostV363(req, res, parsed); }
-    catch (error) { securityResetApplyHeadersV334(req, res, requestOrigin(req)); return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_PASSKEY_RESET_ENGINE_FAILED'), message:'Reset Passkey ditolak oleh sistem keamanan.' }); }
+    catch (cause) { const error = await diracSecurityCountInvalidCredentialV374(req, cause, 'passkey_reset'); securityResetApplyHeadersV334(req, res, requestOrigin(req)); const retryAfter = Number(error && error.retryAfterSeconds || 0); if (retryAfter > 0) try { res.setHeader('Retry-After', String(retryAfter)); } catch (_) {} return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_PASSKEY_RESET_ENGINE_FAILED'), message: retryAfter > 0 ? 'Permintaan kode dibatasi. Coba lagi dalam ' + String(retryAfter) + ' detik (hingga ' + String(error.resetAt || '') + ').' : Number(error && error.statusCode) === 423 ? 'Sumber akses diblokir permanen setelah tiga kesalahan verifikasi. Hubungi administrator.' : 'Reset Passkey ditolak oleh sistem keamanan.', ...(retryAfter > 0 ? { retry_after_seconds: retryAfter, reset_at: String(error.resetAt || '') } : {}) }); }
   }
   if (parsed.trustCurrentDeviceStandalone && parsed.method === 'OPTIONS') return handleResetPreflight(req, res);
   if (parsed.trustCurrentDeviceStandalone && parsed.method === 'POST') {
