@@ -26292,15 +26292,16 @@ function diracPasskeyRotateDashboardOriginChainV311(req, res, chain) {
     try {
       const sourceHeaders = req && req.headers || {};
       const sourceReferer = new URL(String(sourceHeaders.referer || sourceHeaders.referrer || '').trim());
+      const sourceTargetV481 = Array.from(DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313).map(diracAppOriginHandoffTargetV313).find((target) => target && target.role !== 'panel' && target.origin === requestedSourceOrigin && new URL(target.redirectUrl).pathname === sourceReferer.pathname);
       exactParfumSource = Boolean(
         chain && chain.patch === DIRAC_DASHBOARD_PARFUM_BINDING_RETURN_V318
         && req && req.method === 'GET'
-        && requestedSourceOrigin === parfumOrigin
-        && sourceOrigin === parfumOrigin
+        && sourceTargetV481
+        && sourceOrigin === sourceTargetV481.origin
         && sourceReferer.protocol === 'https:'
         && !sourceReferer.port && !sourceReferer.username && !sourceReferer.password
-        && sourceReferer.origin.toLowerCase() === parfumOrigin
-        && sourceReferer.pathname === '/parfum.html'
+        && sourceReferer.origin.toLowerCase() === sourceTargetV481.origin
+        && sourceReferer.pathname === new URL(sourceTargetV481.redirectUrl).pathname
         && !sourceReferer.search && !sourceReferer.hash
       );
     } catch (_) {}
@@ -26603,8 +26604,10 @@ function diracDashboardStaleBindingDecisionV312(req) {
       return decision('not_applicable', 'dashboard_stale_binding_failure_not_origin_pair');
     }
 
-    const parfumOrigin = diracBaseOriginV250().toLowerCase();
-    const parfumUrl = parfumOrigin + '/parfum.html';
+    const sourceMfaPayloadV481 = decodeCustomerDashboardMfaToken(selected[CUSTOMER_MFA_COOKIE]);
+    const sourceTargetV481 = Array.from(DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313).map(diracAppOriginHandoffTargetV313).find((target) => target && target.role !== 'panel' && diracDashboardMfaOriginMatchV366(sourceMfaPayloadV481, target.origin));
+    const parfumOrigin = sourceTargetV481 ? sourceTargetV481.origin : diracBaseOriginV250().toLowerCase();
+    const parfumUrl = sourceTargetV481 ? sourceTargetV481.redirectUrl : parfumOrigin + '/parfum.html';
     const parfumReq = {
       method: 'GET',
       headers: Object.assign({}, panelReq.headers, {
@@ -26711,15 +26714,17 @@ function diracDashboardCommitParfumDeviceConsistencyV318(sourceReq) {
     if (!sourceReq || sourceReq.method !== 'GET' || typeof diracAppOriginHandoffDeviceConsistencyHashV317 !== 'function') {
       return Object.freeze({ ok: false, updated: false });
     }
-    const parfumOrigin = diracBaseOriginV250().toLowerCase();
+    const parfumOrigin = String(requestOrigin(sourceReq) || '').toLowerCase();
     const dashboardOrigin = ('https://panel.' + diracBaseDomainV250()).toLowerCase();
     const sourceHeaders = sourceReq.headers || {};
     const sourceReferer = new URL(String(sourceHeaders.referer || sourceHeaders.referrer || '').trim());
-    if (String(requestOrigin(sourceReq) || '').toLowerCase() !== parfumOrigin
+    const sourceTargetV481 = Array.from(DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313).map(diracAppOriginHandoffTargetV313).find((target) => target && target.role !== 'panel' && target.origin === parfumOrigin && new URL(target.redirectUrl).pathname === sourceReferer.pathname);
+    if (!sourceTargetV481
+        || String(requestOrigin(sourceReq) || '').toLowerCase() !== parfumOrigin
         || sourceReferer.protocol !== 'https:' || sourceReferer.port
         || sourceReferer.username || sourceReferer.password
         || sourceReferer.origin.toLowerCase() !== parfumOrigin
-        || sourceReferer.pathname !== '/parfum.html'
+        || sourceReferer.pathname !== new URL(sourceTargetV481.redirectUrl).pathname
         || sourceReferer.search || sourceReferer.hash) {
       return Object.freeze({ ok: false, updated: false });
     }
@@ -58988,7 +58993,7 @@ function diracCentralIdleResumeCredentialProofV377(req, ctx, tokenOverrideV377) 
     if (!req || String(req.method || '').toUpperCase() !== 'GET'
         || !ctx || String(ctx.action || '') !== 'domain_dashboard_me'
         || String(ctx.classification || '') !== 'browser'
-        || String(ctx.authentication || '') !== 'browser'
+        || String(ctx.authentication || '') !== 'customer' || !ctx.policy || ctx.policy.authentication !== 'customer'
         || (BigInt(ctx.passport || 0n) & priorDeviceMaskV377) !== priorDeviceMaskV377) return null;
 
     const queryV377 = req.query && typeof req.query === 'object' ? req.query : {};
@@ -59069,7 +59074,7 @@ async function diracCentralIdleResumeSignedContinuityV378(req, ctx, idleResumeV3
         || String(req.method || '').toUpperCase() !== 'GET'
         || String(ctx.action || '') !== 'domain_dashboard_me'
         || String(ctx.classification || '') !== 'browser'
-        || String(ctx.authentication || '') !== 'browser') return null;
+        || String(ctx.authentication || '') !== 'customer' || !ctx.policy || ctx.policy.authentication !== 'customer') return null;
 
     const authentication = authenticationV378 && authenticationV378.ok === true
       ? authenticationV378
@@ -59435,7 +59440,11 @@ try {
       }
       if (decision.blocked) {
         diracDiscardAuthPublicationV321(req);
-        clearSessionCookies(res);
+        clearCurrentRequestSessionCookiesV235(req, res);
+        appendSetCookie(res, [
+          makeCookie(diracCentralDeviceSessionCookieNameV223(), '', { maxAge: 0, domain: '' }),
+          makeCookie(diracCentralDeviceCookieNameV221(), '', { maxAge: 0, domain: '' })
+        ]);
         const retryAfter = Math.max(1, Number(decision.retry_after_seconds || 300));
         try { res.setHeader('Retry-After', String(retryAfter)); } catch (banBlockedHeaderErrorV320) { diracCentralRecordSuppressedExceptionV221(banBlockedHeaderErrorV320); }
         try {
@@ -72419,7 +72428,7 @@ function diracAppOriginHandoffTrailingSourceProofV365(req, ctx, tokenOverrideV36
     if (!req || String(req.method || '').toUpperCase() !== 'GET'
         || !ctx || String(ctx.action || '') !== 'domain_dashboard_me'
         || String(ctx.classification || '') !== 'browser'
-        || String(ctx.authentication || '') !== 'browser'
+        || String(ctx.authentication || '') !== 'customer' || !ctx.policy || ctx.policy.authentication !== 'customer'
         || (BigInt(ctx.passport || 0n) & priorDeviceMaskV365) !== priorDeviceMaskV365) return null;
 
     const sessionKeyV365 = String(diracCentralRequestSessionHashV146(req) || '');
