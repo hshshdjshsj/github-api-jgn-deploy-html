@@ -26439,14 +26439,18 @@ function diracPasskeyRotateDashboardOriginChainV311(req, res, chain) {
   try {
     const authOrigin = diracRoleOriginV250('auth').toLowerCase();
     const parfumOrigin = diracBaseOriginV250().toLowerCase();
-    const dashboardOrigin = ('https://panel.' + diracBaseDomainV250()).toLowerCase();
+    const destinationV482 = chain && chain.destination
+      ? diracAppOriginHandoffExactSourceV320({ method: 'POST', headers: { origin: chain.destination.origin, referer: chain.destination.redirectUrl } })
+      : diracAppOriginHandoffTargetV313('panel');
+    if (!destinationV482) return fail('passkey_dashboard_origin_rotation_destination_invalid');
+    const dashboardOrigin = destinationV482.origin;
     const sourceOrigin = String(requestOrigin(req) || '').toLowerCase();
     const requestedSourceOrigin = String(chain && chain.sourceOrigin || '').trim().toLowerCase();
     let exactParfumSource = false;
     try {
       const sourceHeaders = req && req.headers || {};
       const sourceReferer = new URL(String(sourceHeaders.referer || sourceHeaders.referrer || '').trim());
-      const sourceTargetV481 = Array.from(DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313).map(diracAppOriginHandoffTargetV313).find((target) => target && target.role !== 'panel' && target.origin === requestedSourceOrigin && new URL(target.redirectUrl).pathname === sourceReferer.pathname);
+      const sourceTargetV481 = Array.from(DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313).map(diracAppOriginHandoffTargetV313).find((target) => target && target.origin === requestedSourceOrigin && new URL(target.redirectUrl).pathname === sourceReferer.pathname);
       exactParfumSource = Boolean(
         chain && chain.patch === DIRAC_DASHBOARD_PARFUM_BINDING_RETURN_V318
         && req && req.method === 'GET'
@@ -26469,7 +26473,7 @@ function diracPasskeyRotateDashboardOriginChainV311(req, res, chain) {
         || !customerSecurityLooksLikeUuid(userId)
         || !isValidAuthEmail(email)
         || !Number.isSafeInteger(securityEpoch) || securityEpoch < 1
-        || !Number.isSafeInteger(expiresAtMs) || expiresAtMs <= Date.now() + 30_000
+        || !Number.isSafeInteger(expiresAtMs) || expiresAtMs <= Date.now() + (chain && chain.destination ? 0 : 30_000)
         || !res || typeof res.getHeader !== 'function' || typeof res.setHeader !== 'function') {
       return fail('passkey_dashboard_origin_rotation_context_invalid');
     }
@@ -26518,8 +26522,8 @@ function diracPasskeyRotateDashboardOriginChainV311(req, res, chain) {
     }
     destinationMfaReq.headers = Object.assign({}, destinationMfaReq.headers, {
       origin: dashboardOrigin,
-      referer: dashboardOrigin + '/dashboard.html',
-      referrer: dashboardOrigin + '/dashboard.html'
+      referer: destinationV482.redirectUrl,
+      referrer: destinationV482.redirectUrl
     });
     const destinationCredential = diracCentralDeviceTokenV221(
       destinationMfaReq,
@@ -26663,7 +26667,9 @@ function diracDashboardStaleBindingRequestIsExactV312(req) {
         || (directHost && directHost !== expectedHost)
         || (forwardedHost && forwardedHost !== expectedHost)) return false;
 
-    const panelOrigin = ('https://panel.' + diracBaseDomainV250()).toLowerCase();
+    const destinationV482 = diracAppOriginHandoffExactSourceV320({ method: 'POST', headers: { ...headers, origin: requestOrigin(req) } });
+    if (!destinationV482) return false;
+    const panelOrigin = destinationV482.origin;
     const headerOrigin = normalizeDashboardMfaOrigin(headers.origin).toLowerCase();
     if ((headerOrigin && headerOrigin !== panelOrigin)
         || String(requestOrigin(req) || '').toLowerCase() !== panelOrigin) return false;
@@ -26673,9 +26679,9 @@ function diracDashboardStaleBindingRequestIsExactV312(req) {
     return Boolean(
       refererUrl
       && refererUrl.protocol === 'https:'
-      && refererUrl.port === ''
+      && refererUrl.port === '' && !refererUrl.username && !refererUrl.password
       && refererUrl.origin.toLowerCase() === panelOrigin
-      && refererUrl.pathname === '/dashboard.html'
+      && refererUrl.href === destinationV482.redirectUrl
       && refererUrl.search === ''
       && refererUrl.hash === ''
     );
@@ -26692,6 +26698,8 @@ function diracDashboardStaleBindingDecisionV312(req) {
   });
 
   try {
+    const destinationV482 = diracAppOriginHandoffExactSourceV320({ method: 'POST', headers: { ...(req && req.headers || {}), origin: requestOrigin(req) } });
+    if (!destinationV482) return decision('error', 'dashboard_stale_binding_destination_invalid');
     const cookies = parseCookies(req);
     const deviceSessionName = diracCentralDeviceSessionCookieNameV223();
     const deviceCredentialName = diracCentralDeviceCookieNameV221();
@@ -26759,7 +26767,7 @@ function diracDashboardStaleBindingDecisionV312(req) {
     }
 
     const sourceMfaPayloadV481 = decodeCustomerDashboardMfaToken(selected[CUSTOMER_MFA_COOKIE]);
-    const sourceTargetV481 = Array.from(DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313).map(diracAppOriginHandoffTargetV313).find((target) => target && target.role !== 'panel' && diracDashboardMfaOriginMatchV366(sourceMfaPayloadV481, target.origin));
+    const sourceTargetV481 = Array.from(DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313).map(diracAppOriginHandoffTargetV313).find((target) => target && diracDashboardMfaOriginMatchV366(sourceMfaPayloadV481, target.origin));
     const parfumOrigin = sourceTargetV481 ? sourceTargetV481.origin : diracBaseOriginV250().toLowerCase();
     const parfumUrl = sourceTargetV481 ? sourceTargetV481.redirectUrl : parfumOrigin + '/parfum.html';
     const parfumReq = {
@@ -26802,7 +26810,7 @@ function diracDashboardStaleBindingDecisionV312(req) {
         Number(parfumDeviceSession.payload.exp || 0) * 1000,
         Number(parfumDeviceCredential.payload.exp || 0)
       );
-      if (Number.isSafeInteger(expiresAtMs) && expiresAtMs > Date.now() + 30_000) {
+      if (Number.isSafeInteger(expiresAtMs) && expiresAtMs > Date.now()) {
         return Object.freeze({
           ok: true,
           state: 'stale_parfum_origin',
@@ -26811,6 +26819,7 @@ function diracDashboardStaleBindingDecisionV312(req) {
           rotationChain: Object.freeze({
             patch: DIRAC_DASHBOARD_PARFUM_BINDING_RETURN_V318,
             sourceOrigin: parfumOrigin,
+            destination: destinationV482,
             expiresAtMs,
             userId: identity.id,
             email: identity.email,
@@ -26863,16 +26872,20 @@ function diracDashboardStaleBindingDecisionV312(req) {
   }
 }
 
-function diracDashboardCommitParfumDeviceConsistencyV318(sourceReq) {
+function diracDashboardCommitParfumDeviceConsistencyV318(sourceReq, destinationV482) {
   try {
     if (!sourceReq || sourceReq.method !== 'GET' || typeof diracAppOriginHandoffDeviceConsistencyHashV317 !== 'function') {
       return Object.freeze({ ok: false, updated: false });
     }
     const parfumOrigin = String(requestOrigin(sourceReq) || '').toLowerCase();
-    const dashboardOrigin = ('https://panel.' + diracBaseDomainV250()).toLowerCase();
+    const targetV482 = destinationV482
+      ? diracAppOriginHandoffExactSourceV320({ method: 'POST', headers: { origin: destinationV482.origin, referer: destinationV482.redirectUrl } })
+      : diracAppOriginHandoffTargetV313('panel');
+    if (!targetV482) return Object.freeze({ ok: false, updated: false });
+    const dashboardOrigin = targetV482.origin;
     const sourceHeaders = sourceReq.headers || {};
     const sourceReferer = new URL(String(sourceHeaders.referer || sourceHeaders.referrer || '').trim());
-    const sourceTargetV481 = Array.from(DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313).map(diracAppOriginHandoffTargetV313).find((target) => target && target.role !== 'panel' && target.origin === parfumOrigin && new URL(target.redirectUrl).pathname === sourceReferer.pathname);
+    const sourceTargetV481 = Array.from(DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313).map(diracAppOriginHandoffTargetV313).find((target) => target && target.origin === parfumOrigin && new URL(target.redirectUrl).pathname === sourceReferer.pathname);
     if (!sourceTargetV481
         || String(requestOrigin(sourceReq) || '').toLowerCase() !== parfumOrigin
         || sourceReferer.protocol !== 'https:' || sourceReferer.port
@@ -26886,8 +26899,8 @@ function diracDashboardCommitParfumDeviceConsistencyV318(sourceReq) {
       method: 'GET',
       headers: Object.assign({}, sourceHeaders, {
         origin: dashboardOrigin,
-        referer: dashboardOrigin + '/dashboard.html',
-        referrer: dashboardOrigin + '/dashboard.html'
+        referer: targetV482.redirectUrl,
+        referrer: targetV482.redirectUrl
       })
     };
     const sourceSessionKey = String(diracCentralRequestSessionHashV146(sourceReq) || '');
@@ -26902,11 +26915,14 @@ function diracDashboardCommitParfumDeviceConsistencyV318(sourceReq) {
       return Object.freeze({ ok: false, updated: false });
     }
 
-    const current = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sourceSessionKey);
+    let current = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sourceSessionKey);
     const until = Number(current && current.until || 0);
     if (!current || until <= Date.now()) return Object.freeze({ ok: true, updated: false });
+    if (safeEqual(String(current.hash || ''), destinationHash)) return Object.freeze({ ok: true, updated: false });
     if (!safeEqual(String(current.hash || ''), sourceHash)) {
-      return Object.freeze({ ok: false, updated: false });
+      if (!diracCentralDeviceConsistencySignedReconcileV325(sourceReq, sourceSessionKey, sourceHash, current)) return Object.freeze({ ok: false, updated: false });
+      current = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sourceSessionKey);
+      if (!current || Number(current.until || 0) !== until || !safeEqual(String(current.hash || ''), sourceHash)) return Object.freeze({ ok: false, updated: false });
     }
     DIRAC_CENTRAL_DEVICE_BINDINGS_V146.set(sourceSessionKey, { hash: destinationHash, until });
     const committed = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sourceSessionKey);
@@ -27040,7 +27056,7 @@ function diracDashboardStaleBindingPreflightV312(req, res) {
         binding.rotationChain
       );
       const consistency = rotation && rotation.ok === true
-        ? diracDashboardCommitParfumDeviceConsistencyV318(binding.sourceRequest)
+        ? diracDashboardCommitParfumDeviceConsistencyV318(binding.sourceRequest, binding.rotationChain.destination)
         : null;
       if (!rotation || rotation.ok !== true || !consistency || consistency.ok !== true) {
         try {
@@ -64785,15 +64801,7 @@ function diracCentralDeviceConsistencyGuardV146(req, ctx) {
       && !DIRAC_CENTRAL_ADMIN_ACTIONS_V146.has(ctx.action)) return { ok: true };
   const sessionKey = diracCentralRequestSessionHashV146(req);
   if (!sessionKey) return { ok: false, reason: 'device_session_hash_missing' };
-  const headers = req && req.headers || {};
-  const stableOrigin = diracCentralNormalizeOriginV146(headers.origin || headers.referer || headers.referrer || '');
-  const current = diracCentralHashV146([
-    headers['user-agent'],
-    stableOrigin,
-    headers['sec-ch-ua'],
-    headers['sec-ch-ua-platform'],
-    headers['accept-language']
-  ].map((v) => String(v || '').slice(0, 160)).join('|'));
+  const current = diracCentralDeviceFingerprintV221(req);
   const previous = DIRAC_CENTRAL_DEVICE_BINDINGS_V146.get(sessionKey);
   if (!previous) {
     const now = Date.now();
@@ -72489,17 +72497,7 @@ const DIRAC_APP_ORIGIN_HANDOFF_TRAILING_SOURCE_GRACE_MS_V365 = 5000;
 
 function diracAppOriginHandoffDeviceConsistencyHashV317(req) {
   try {
-    const headers = req && req.headers || {};
-    const stableOrigin = diracCentralNormalizeOriginV146(
-      headers.origin || headers.referer || headers.referrer || ''
-    );
-    const hash = diracCentralHashV146([
-      headers['user-agent'],
-      stableOrigin,
-      headers['sec-ch-ua'],
-      headers['sec-ch-ua-platform'],
-      headers['accept-language']
-    ].map((value) => String(value || '').slice(0, 160)).join('|'));
+    const hash = diracCentralDeviceFingerprintV221(req);
     return /^[a-f0-9]{64}$/.test(String(hash || '')) ? String(hash) : '';
   } catch (_) {
     return '';
@@ -72748,7 +72746,7 @@ function diracAppOriginHandoffRotateProofsV313(req, res, access, source, target,
         || Number(sourceMfa.securityEpoch || 0) !== epoch
         || Number(sourceMfaPayload.securityEpoch || 0) !== epoch
         || Number(sourceMfa.expiresAtMs || 0) !== Number(sourceMfaPayload.expiresAtMs || 0)
-        || Number(sourceMfa.expiresAtMs || 0) <= Date.now() + 30_000
+        || Number(sourceMfa.expiresAtMs || 0) <= Date.now()
         || !safeEqual(String(sourceMfa.sessionHash || ''), String(sourceMfaPayload.sessionHash || ''))
         || !deviceSession || !deviceSession.identity
         || String(deviceSession.identity.userId || '') !== userId
