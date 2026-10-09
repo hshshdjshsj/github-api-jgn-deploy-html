@@ -696,8 +696,8 @@ function invoiceVerifiedPagesV464(doc,pages){
       if(op.kind==='social'&&op.x>=72&&op.y>=1514&&op.y<1600)op.x=72+Math.round((op.x-72)/374)*294;
       if(op.kind==='text'&&op.y>=1514&&op.y<1605&&op.x>=105)op.x=105+Math.round((op.x-105)/374)*294;
     }
-    page.push({kind:'text',copy:'Verification ID: '+id,x:72,y:1455,font:'400 13px Arial',color:'#24354b'});
-    page.push({kind:'text',copy:'QR dapat disalin; status resmi hanya berlaku bila hash berkas asli cocok.',x:72,y:1475,font:'400 13px Arial',color:'#647084'});
+    page.push({kind:'text',copy:'Nomor verifikasi: '+id,x:72,y:1455,font:'400 13px Arial',color:'#24354b'});
+    page.push({kind:'text',copy:'Periksa keaslian melalui kode QR dan berkas asli. Kode QR saja tidak membuktikan keaslian dokumen.',x:72,y:1475,font:'400 13px Arial',color:'#647084'});
     page.push({kind:'rect',x:990,y:1507,w:178,h:178,color:'#ffffff'});
     const cell=178/(qr.size+8);
     for(let row=0;row<qr.size;row++)for(let col=0;col<qr.size;col++)if(qr.data[row*qr.size+col])page.push({kind:'rect',x:990+(col+4)*cell,y:1507+(row+4)*cell,w:cell,h:cell,color:'#000000'});
