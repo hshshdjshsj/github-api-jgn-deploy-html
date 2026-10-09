@@ -2586,8 +2586,23 @@ function documentSignedV464(record) {
   const unsigned = { ...record }; delete unsigned.mac;
   return safeEqual(record.mac, documentMacV464(unsigned));
 }
+// V495: seven invoice geometry markers are derived from the existing server secret and signed issuance identity.
+function documentInvoicePatternsV495(value) {
+  const key = deriveSecret('invoice-visual-pattern-v495');
+  let seed;
+  try {
+    seed = crypto.createHmac('sha512', key).update(stableJson({ version: value.version, issuer: value.issuer, owner_scope: value.owner_scope, kind: value.kind,
+      reference: value.reference, content_sha256: value.content_sha256, page_count: value.page_count })).digest();
+    return { version: 'dirac-invoice-pattern-v495', din_tracking: 6 + seed[0] % 13, din_font: seed[1] % 2 ? 'bold' : 'regular',
+      din_size: 30 + seed[2] % 3, logo_size: 193 + seed[3] % 7, social_pitch: 292 + seed[4] % 5,
+      social_size: 22 + seed[5] % 3, footer_rule: 88 + seed[6] % 9 };
+  } finally { key.fill(0); if (seed) seed.fill(0); }
+}
 function documentIdentityValidV464(value) {
-  return !!(value && Object.keys(value).sort().join(',') === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version'
+  return !!(value && (Object.keys(value).sort().join(',') === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version'
+      || (Object.keys(value).sort().join(',') === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version,visual_patterns'
+        && value.kind === 'invoice' && value.visual_patterns && typeof value.visual_patterns === 'object' && !Array.isArray(value.visual_patterns)
+        && stableJson(value.visual_patterns) === stableJson(documentInvoicePatternsV495(value))))
     && value.version === DOCUMENT_VERSION_V464 && /^DV-[a-f0-9]{48}$/.test(value.id)
     && value.issuer === 'PT Dirac Inovasi Nusantara' && DOCUMENT_KINDS_V464.includes(value.kind)
     && typeof value.reference === 'string' && value.reference.length >= 1 && value.reference.length <= 253 && !/[\u0000-\u001f\u007f]/.test(value.reference)
@@ -2620,6 +2635,7 @@ async function documentPrepareV464(meta, ownerScope, origin, claim, assertContex
       || !/^[a-f0-9]{64}$/.test(ownerScope) || !Number.isInteger(meta.page_count) || meta.page_count < 1 || meta.page_count > 64) documentErrorV464('META_INVALID', 400);
   const value = { version: DOCUMENT_VERSION_V464, id: 'DV-' + crypto.randomBytes(24).toString('hex'), issuer: 'PT Dirac Inovasi Nusantara',
     owner_scope: ownerScope, kind: meta.kind, reference: meta.reference, content_sha256: meta.content_sha256, page_count: meta.page_count, created_at: Date.now() };
+  if (value.kind === 'invoice') value.visual_patterns = documentInvoicePatternsV495(value);
   const identity = { ...value, mac: documentMacV464(value) };
   if (await claim(DOCUMENT_PREFIX_V464 + 'id:' + identity.id, identity) !== true) documentErrorV464('IDENTITY_WRITE_UNCONFIRMED');
   assertContext();
@@ -2721,6 +2737,8 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
     return { ok: true, verified: true, status: 'authentic_file', integrity_verified: true, qr_authentic: qrProof ? true : undefined, issuer: seal.identity.issuer,
       document_id: seal.identity.id, reference: seal.identity.reference, kind: seal.identity.kind, format: seal.format, page: seal.page,
       page_count: seal.identity.page_count, issued_at: new Date(seal.created_at).toISOString(), file_sha256: fileSha, content_sha256: seal.identity.content_sha256,
+      ...(seal.identity.visual_patterns ? { pattern_verification: { version: seal.identity.visual_patterns.version, verified: true, count: 7,
+        checks: ['din_tracking','din_font','din_size','logo_size','social_pitch','social_size','footer_rule'], method: 'registered_file_sha256_hmac_sha512' } } : {}),
       identical_copies_possible: true, message: 'Berkas ini sesuai dengan dokumen asli yang diterbitkan. Kode QR yang disalin ke berkas lain tidak membuktikan keaslian berkas tersebut.' };
   }
   if (!documentIdentityValidV464(record)) documentErrorV464('RECORD_INVALID');
@@ -2763,7 +2781,7 @@ async function businessDocumentV464(operation, body, origin, assertContext) {
 }
 const DOCUMENT_SERVICE_V464 = Object.freeze({ version: DOCUMENT_VERSION_V464, prepare: documentPrepareV464, seal: documentSealV464, verify: documentVerifyV464, same: (left,right) => stableJson(left) === stableJson(right) });
 
-const ADMIN_PARTNER_REQUEST_TYPES_V478 = Object.freeze(['partner_reseller_invite','partner_customer_referral','partner_withdrawal','partner_commission_review','partner_support']);
+const ADMIN_PARTNER_REQUEST_TYPES_V478 = Object.freeze(['partner_customer_referral','partner_support']);
 function adminPartnerRequestTypeV478(value) {
   const type = String(value || '').trim().toLowerCase();
   return ADMIN_PARTNER_REQUEST_TYPES_V478.includes(type) ? type : '';
@@ -2787,9 +2805,7 @@ function adminPartnerRequestMetaV478(value) {
     partner_email: isEmail(meta.partner_email) ? String(meta.partner_email).trim().toLowerCase() : '',
     email: isEmail(meta.email) ? String(meta.email).trim().toLowerCase() : '',
     name: String(meta.name || '').slice(0, 120), phone: String(meta.phone || '').slice(0, 24),
-    amount: Number.isSafeInteger(Number(meta.amount)) ? Number(meta.amount) : 0,
-    bank_name: String(meta.bank_name || '').slice(0, 80), account_name: String(meta.account_name || '').slice(0, 120), account_number: String(meta.account_number || '').slice(0, 32),
-    period: String(meta.period || '').slice(0, 16), message: String(meta.message || '').slice(0, 1200),
+    message: String(meta.message || '').slice(0, 1200),
     admin_note: String(meta.admin_note || '').slice(0, 1200), reseller_auth_user_id: isUuid(meta.reseller_auth_user_id) ? String(meta.reseller_auth_user_id).toLowerCase() : ''
   };
 }

@@ -673,9 +673,11 @@ function invoicePdfObjectsV440(doc,assets){
       else if(op.kind==='logo'||op.kind==='signature'){const image=images[op.kind==='logo'?'logo':'signature'],scale=Math.min(op.w/image.width,op.h/image.height),w=image.width*scale,h=image.height*scale;content+=placeImage(image,op.x+(op.w-w)/2,op.y+(op.h-h)/2,w,h);}
       else if(op.kind==='social'){if(!images[op.platform])throw new Error('INVOICE_PDF_ASSET_INVALID');content+=placeImage(images[op.platform],op.x,op.y,op.w,op.h);}
       else if(op.kind==='watermark'){
-        const angle=-Math.PI/5,a=Math.cos(angle),b=Math.sin(angle),width=invoiceMeasure('DIN','700 31px Arial');
+        const pattern=op.pattern,size=pattern?pattern.din_size:31,key=pattern?pattern.din_font:'bold',tracking=pattern?pattern.din_tracking/10:0;
+        const angle=-Math.PI/5,a=Math.cos(angle),b=Math.sin(angle),width=invoiceMeasure('DIN',(key==='bold'?'700':'400')+' '+size+'px Arial')+tracking*2;
+        const glyphs=pattern?'[<'+invoicePdfTextBytes('D',key).toString('hex')+'> '+num(-tracking*1000/size)+' <'+invoicePdfTextBytes('I',key).toString('hex')+'> '+num(-tracking*1000/size)+' <'+invoicePdfTextBytes('N',key).toString('hex')+'>] TJ':'<'+invoicePdfTextBytes('DIN',key).toString('hex')+'> Tj';
         content+='q /WM gs '+color('#425671');
-        for(let row=0;row<22;row++)for(let col=0;col<14;col++)content+='q '+[a,b,-b,a,(col+.5)*1240/14,(row+.5)*1754/22].map(num).join(' ')+' cm BT /F2 31 Tf 1 0 0 -1 '+num(-width/2)+' 9.3 Tm <'+invoicePdfTextBytes('DIN','bold').toString('hex')+'> Tj ET Q\n';
+        for(let row=0;row<22;row++)for(let col=0;col<14;col++)content+='q '+[a,b,-b,a,(col+.5)*1240/14,(row+.5)*1754/22].map(num).join(' ')+' cm BT /'+(key==='bold'?'F2':'F1')+' '+num(size)+' Tf 1 0 0 -1 '+num(-width/2)+' '+num(size*.3)+' Tm '+glyphs+' ET Q\n';
         content+='Q\n';
       }else throw new Error('INVOICE_PDF_OPERATION_INVALID');
       if(content.length>2000000)throw new Error('INVOICE_PDF_PAGE_LIMIT');
@@ -691,10 +693,15 @@ function invoiceVerifiedPagesV464(doc,pages){
   if(!doc.verification)return pages;
   const verification=doc.verification,qr=verification.qr,id=verification.identity&&verification.identity.id;
   if(!/^DV-[a-f0-9]{48}$/.test(String(id||''))||!qr||!Number.isInteger(qr.size)||qr.size<21||qr.size>81||qr.quiet!==4||!Array.isArray(qr.data)||qr.data.length!==qr.size*qr.size||qr.data.some(v=>v!==0&&v!==1)||!/^[A-Za-z0-9_-]{43}$/.test(String(qr.proof||'')))throw new Error('INVOICE_VERIFICATION_INVALID');
+  const pattern=verification.identity.visual_patterns;
+  if(pattern&&(Object.keys(pattern).sort().join(',')!=='din_font,din_size,din_tracking,footer_rule,logo_size,social_pitch,social_size,version'||pattern.version!=='dirac-invoice-pattern-v495'||!['regular','bold'].includes(pattern.din_font)||!Number.isInteger(pattern.din_tracking)||pattern.din_tracking<6||pattern.din_tracking>18||!Number.isInteger(pattern.din_size)||pattern.din_size<30||pattern.din_size>32||!Number.isInteger(pattern.logo_size)||pattern.logo_size<193||pattern.logo_size>199||!Number.isInteger(pattern.social_pitch)||pattern.social_pitch<292||pattern.social_pitch>296||!Number.isInteger(pattern.social_size)||pattern.social_size<22||pattern.social_size>24||!Number.isInteger(pattern.footer_rule)||pattern.footer_rule<88||pattern.footer_rule>96))throw new Error('INVOICE_VISUAL_PATTERN_INVALID');
   for(const page of pages){
     for(const op of page){
-      if(op.kind==='social'&&op.x>=72&&op.y>=1514&&op.y<1600)op.x=72+Math.round((op.x-72)/374)*294;
-      if(op.kind==='text'&&op.y>=1514&&op.y<1605&&op.x>=105)op.x=105+Math.round((op.x-105)/374)*294;
+      if(op.kind==='social'&&op.x>=72&&op.y>=1514&&op.y<1600){op.x=72+Math.round((op.x-72)/374)*(pattern?pattern.social_pitch:294);if(pattern){op.y+=(23-pattern.social_size)/2;op.w=op.h=pattern.social_size;}}
+      if(op.kind==='text'&&op.y>=1514&&op.y<1605&&op.x>=105)op.x=105+Math.round((op.x-105)/374)*(pattern?pattern.social_pitch:294);
+      if(pattern&&op.kind==='logo'&&op.x===56&&op.y===37&&op.w===196&&op.h===196){op.x+=(196-pattern.logo_size)/2;op.y+=(196-pattern.logo_size)/2;op.w=op.h=pattern.logo_size;}
+      if(pattern&&op.kind==='rect'&&op.x===72&&op.y===1500&&op.w===92&&op.h===3)op.w=pattern.footer_rule;
+      if(pattern&&op.kind==='watermark')op.pattern=pattern;
     }
     page.push({kind:'text',copy:'Nomor verifikasi: '+id,x:72,y:1455,font:'400 13px Arial',color:'#24354b'});
     page.push({kind:'text',copy:'Periksa keaslian melalui kode QR dan berkas asli. Kode QR saja tidak membuktikan keaslian dokumen.',x:72,y:1475,font:'400 13px Arial',color:'#647084'});
@@ -737,8 +744,9 @@ function invoicePngV464(doc,pageNumber){
       ctx.drawImage(image,op.x+(op.w-w)/2,op.y+(op.h-h)/2,w,h);
     }else if(op.kind==='social')ctx.drawImage(invoiceCanvasAssetsV464[op.platform],op.x,op.y,op.w,op.h);
     else if(op.kind==='watermark'){
-      ctx.save();ctx.fillStyle='rgba(66,86,113,.085)';ctx.font='700 31px DiracInvoiceV464';ctx.textAlign='center';ctx.textBaseline='middle';
-      for(let row=0;row<22;row++)for(let col=0;col<14;col++){ctx.save();ctx.translate((col+.5)*1240/14,(row+.5)*1754/22);ctx.rotate(-Math.PI/5);ctx.fillText('DIN',0,0);ctx.restore();}ctx.restore();
+      const pattern=op.pattern,font=(pattern&&pattern.din_font==='regular'?'400':'700')+' '+(pattern?pattern.din_size:31)+'px Arial',tracking=pattern?pattern.din_tracking/10:0,left=-invoiceMeasure('DIN',font)/2-tracking;
+      ctx.save();ctx.fillStyle='rgba(66,86,113,.085)';ctx.font=font.replace('Arial','DiracInvoiceV464');ctx.textAlign=pattern?'left':'center';ctx.textBaseline='middle';
+      for(let row=0;row<22;row++)for(let col=0;col<14;col++){ctx.save();ctx.translate((col+.5)*1240/14,(row+.5)*1754/22);ctx.rotate(-Math.PI/5);if(pattern){ctx.fillText('D',left,0);ctx.fillText('I',left+invoiceMeasure('D',font)+tracking,0);ctx.fillText('N',left+invoiceMeasure('DI',font)+tracking*2,0);}else ctx.fillText('DIN',0,0);ctx.restore();}ctx.restore();
     }else throw new Error('INVOICE_PNG_OPERATION_INVALID');
   }
   return canvas.toBuffer('image/png');
