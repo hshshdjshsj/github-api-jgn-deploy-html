@@ -1886,7 +1886,8 @@ async function execute(ops) {
     const recoveryState = adminPasskeyRecoverySecretState(); if (!recoveryState.configured) fail('ADMIN_PASSKEY_RECOVERY_NOT_CONFIGURED', 503);
     const entry = await adminPasskeyRecoveryTicket(ops, scope, body.ticket), enrolled = await config(ops, scope);
     await throttle(ops, scope, 'passkey-recovery-hour', 2, 3600);
-    if (!enrolled || enrolled.enrollmentState !== 'active' || !verifyAdminPasskeyRecoverySecret(body.recovery_secret)) fail('ADMIN_PASSKEY_RECOVERY_INVALID', 403);
+    if (!verifyAdminPasskeyRecoverySecret(body.recovery_secret)) fail('ADMIN_PASSKEY_RECOVERY_INVALID', 403);
+    if (!enrolled || enrolled.enrollmentState !== 'active') fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409);
     assertAdminFactorGuardV466(enrolled);
     await adminVerifyRecoveryTotp(ops, scope, enrolled, body.totp_code);
     await consume(ops, entry);
