@@ -192,6 +192,12 @@ const D10 = Object.freeze({
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
+function securityRateTimeWibV495(value) {
+  const stamp = Date.parse(String(value || ''));
+  if (!Number.isFinite(stamp)) return 'masa tunggu selesai';
+  return new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'long', timeStyle: 'medium', hourCycle: 'h23' }).format(new Date(stamp)) + ' WIB';
+}
+
 function resetError(code, statusCode, message) {
   const error = new Error(String(message || code || 'PASSWORD_RESET_FAILED'));
   error.code = String(code || 'PASSWORD_RESET_FAILED');
@@ -551,7 +557,7 @@ async function passwordResetEngine(req, res, ops, body) {
     diracResetDiagnosticV335(req, 'confirm.operation', 'error', { op: String(inner.op || '') }, error);
     responseStatus = Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503));
     const retryAfter = Number(error && error.retryAfterSeconds || 0);
-    payload = { ok: false, op: String(inner.op || ''), code: String(error && error.code || 'PASSWORD_RESET_REQUEST_REJECTED'), message: retryAfter > 0 ? 'Permintaan kode dibatasi. Coba lagi dalam ' + String(retryAfter) + ' detik (hingga ' + String(error.resetAt || '') + ').' : responseStatus === 423 ? 'Sumber akses diblokir permanen setelah mencapai batas verifikasi. Hubungi administrator.' : 'Permintaan perubahan kata sandi tidak dapat diproses.', ...(retryAfter > 0 ? { retry_after_seconds: retryAfter, reset_at: String(error.resetAt || '') } : {}) };
+    payload = { ok: false, op: String(inner.op || ''), code: String(error && error.code || 'PASSWORD_RESET_REQUEST_REJECTED'), message: retryAfter > 0 ? 'Permintaan kode dibatasi. Coba lagi dalam ' + String(retryAfter) + ' detik (hingga ' + securityRateTimeWibV495(error.resetAt) + ').' : responseStatus === 423 ? 'Sumber akses diblokir permanen setelah mencapai batas verifikasi. Hubungi administrator.' : 'Permintaan perubahan kata sandi tidak dapat diproses.', ...(retryAfter > 0 ? { retry_after_seconds: retryAfter, reset_at: String(error.resetAt || '') } : {}) };
   }
   diracResetDiagnosticV335(req, 'd10.seal', 'begin', { op: String(inner.op || ''), payload_ok: payload && payload.ok === true, payload_code: String(payload && payload.code || '') });
   const challenge = await sealD10Response(payload, opened.context);
@@ -4931,7 +4937,7 @@ async function keamananDispatchV361(req, res) {
   if (parsed.passkeyReset && parsed.method === 'OPTIONS') return handleResetPreflight(req, res);
   if (parsed.passkeyReset && parsed.method === 'POST') {
     try { return await handleStandalonePasskeyResetPostV363(req, res, parsed); }
-    catch (cause) { const error = await diracSecurityCountInvalidCredentialV374(req, cause, 'passkey_reset'); securityResetApplyHeadersV334(req, res, requestOrigin(req)); const retryAfter = Number(error && error.retryAfterSeconds || 0); if (retryAfter > 0) try { res.setHeader('Retry-After', String(retryAfter)); } catch (_) {} return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_PASSKEY_RESET_ENGINE_FAILED'), message: retryAfter > 0 ? 'Permintaan kode dibatasi. Coba lagi dalam ' + String(retryAfter) + ' detik (hingga ' + String(error.resetAt || '') + ').' : Number(error && error.statusCode) === 423 ? 'Sumber akses diblokir permanen setelah tiga kesalahan verifikasi. Hubungi administrator.' : 'Reset Passkey ditolak oleh sistem keamanan.', ...(retryAfter > 0 ? { retry_after_seconds: retryAfter, reset_at: String(error.resetAt || '') } : {}) }); }
+    catch (cause) { const error = await diracSecurityCountInvalidCredentialV374(req, cause, 'passkey_reset'); securityResetApplyHeadersV334(req, res, requestOrigin(req)); const retryAfter = Number(error && error.retryAfterSeconds || 0); if (retryAfter > 0) try { res.setHeader('Retry-After', String(retryAfter)); } catch (_) {} return resetResponse(res, Math.max(400, Math.min(599, Number(error && error.statusCode || 503) || 503)), { ok:false, code:String(error && error.code || 'SECURITY_PASSKEY_RESET_ENGINE_FAILED'), message: retryAfter > 0 ? 'Permintaan kode dibatasi. Coba lagi dalam ' + String(retryAfter) + ' detik (hingga ' + securityRateTimeWibV495(error.resetAt) + ').' : Number(error && error.statusCode) === 423 ? 'Sumber akses diblokir permanen setelah tiga kesalahan verifikasi. Hubungi administrator.' : 'Reset Passkey ditolak oleh sistem keamanan.', ...(retryAfter > 0 ? { retry_after_seconds: retryAfter, reset_at: String(error.resetAt || '') } : {}) }); }
   }
   if (parsed.trustCurrentDeviceStandalone && parsed.method === 'OPTIONS') return handleResetPreflight(req, res);
   if (parsed.trustCurrentDeviceStandalone && parsed.method === 'POST') {
