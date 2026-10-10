@@ -2133,7 +2133,7 @@ async function businessOrdersSingleV480(body) {
   if (!result.ok || !Array.isArray(result.data) || result.data.length > 41) fail('ADMIN_DATA_UNAVAILABLE', 503); const rows = result.data, orders = rows.slice(0, 40).map(row => orderPublic(row, kind)), keys = orders.map(row => shipmentKey(kind, row.id));
   let shipments = []; if (keys.length) { const shipped = await dbFetch('/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=in.(' + keys.map(encodeURIComponent).join(',') + ')&limit=' + keys.length, { method: 'GET' }, 'security'); if (!shipped.ok || !Array.isArray(shipped.data) || shipped.data.length > keys.length) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); shipments = shipped.data; }
   const map = new Map(); shipments.forEach(row => { if (!keys.includes(row && row.security_key) || map.has(row.security_key)) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); const value = validateShipmentRow(row, row.security_key), order = orders.find(item => item.id === (value && value.order_id)); if (!value || !order || (order.customer_id !== value.customer_id && value.updated_by !== ADMIN_USER_ID)) fail('ADMIN_SHIPMENT_OWNER_MISMATCH', 503); map.set(row.security_key, value); });
-  return { ok: true, kind, offset: Number(offsetRaw), has_more: rows.length === 41, tracking_api_ready: shipmentTrackingConfigV500().ready, orders: orders.map(row => ({ ...row, shipment: shipmentPublic(map.get(shipmentKey(kind, row.id))) })), time: new Date().toISOString() };
+  return { ok: true, kind, offset: Number(offsetRaw), has_more: rows.length === 41, orders: orders.map(row => ({ ...row, shipment: shipmentPublic(map.get(shipmentKey(kind, row.id))) })), time: new Date().toISOString() };
 }
 function businessOrdersBundleSourceV480(result, kind) {
   return result && result.ok === true && result.data && result.data.kind === kind ? { ok: true, kind, data: result.data } : { ok: false, kind };
@@ -2182,7 +2182,7 @@ async function businessOrders(body) {
   ]);
   const sources = [businessOrdersBundleSourceV480(bundled[0], 'regular'), businessOrdersBundleSourceV480(bundled[1], 'laboratorium'), businessOrdersBundleSourceV480(bundled[2], 'domain')];
   if (!sources[0].ok && !sources[1].ok && !sources[2].ok) fail('ADMIN_DATA_UNAVAILABLE', 503);
-  return { ok: true, kind: 'all', offset: Number(offsetRaw), tracking_api_ready: shipmentTrackingConfigV500().ready, sources, time: new Date().toISOString() };
+  return { ok: true, kind: 'all', offset: Number(offsetRaw), sources, time: new Date().toISOString() };
 }
 async function loadOrder(kind, id, database = dbFetch) {
   const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&id=eq.' + encodeURIComponent(id) + '&limit=2', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await database(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
@@ -2207,41 +2207,17 @@ async function businessShipment(body, cancel, origin, assertContext) {
   if (mailStage) { const notice = await shipmentNotifyV450(result.data[0], mailStage, order, origin, dbFetch, sendCustomerMail, assertContext); return { ok: true, shipment: shipmentPublic(notice.row.record_json), shipment_notification: notice.notification }; }
   return { ok: true, shipment: shipmentPublic(confirmed) };
 }
-/* Scheduled carrier checks are opt-in and run only through the already guarded
- * support monitor_run cron action. No new public endpoint or database table. */
-const SHIPMENT_TRACKING_COURIERS_V500 = Object.freeze({
-  jne: 'jne', 'jne express': 'jne', pos: 'pos', 'pos indonesia': 'pos',
-  jnt: 'jnt', 'j&t': 'jnt', 'j&t express': 'jnt', 'jnt express': 'jnt',
-  sicepat: 'sicepat', 'sicepat express': 'sicepat', tiki: 'tiki',
-  anteraja: 'anteraja', wahana: 'wahana', 'wahana express': 'wahana',
-  ninja: 'ninja', 'ninja express': 'ninja', 'ninja xpress': 'ninja',
-  lion: 'lion', 'lion parcel': 'lion'
-});
-function shipmentTrackingCourierV500(name) {
-  const key = String(name || '').normalize('NFC').trim().toLowerCase().replace(/\s+/g, ' ');
-  return Object.prototype.hasOwnProperty.call(SHIPMENT_TRACKING_COURIERS_V500, key) ? SHIPMENT_TRACKING_COURIERS_V500[key] : '';
-}
-function shipmentTrackingConfigV500() {
-  const provider = String(process.env.DIRAC_TRACKING_PROVIDER || '').trim().toLowerCase();
-  const credential = provider === 'binderbyte' ? String(process.env.DIRAC_TRACKING_BINDERBYTE_KEY || '').trim()
-    : provider === 'kiosweb' ? String(process.env.DIRAC_TRACKING_KIOSWEB_MEMBER_CODE || '').trim() : '';
-  const cron = String(process.env.CRON_SECRET || '');
-  const freeConfirmed = process.env.DIRAC_TRACKING_FREE_TIER_CONFIRMED === '1';
-  const rawLimit = String(process.env.DIRAC_TRACKING_DAILY_LIMIT || '8');
-  const dailyLimit = /^(?:[1-9]|1[0-6])$/.test(rawLimit) ? Number(rawLimit) : 0;
-  return Object.freeze({ provider, ready: ['binderbyte','kiosweb'].includes(provider) &&
-    /^[A-Za-z0-9._-]{8,160}$/.test(credential) && freeConfirmed &&
-    Buffer.byteLength(cron, 'utf8') >= 32 && dailyLimit > 0, dailyLimit });
-}
+/* Shipment notices use manual updates only. Legacy signed state remains readable.
+ * No carrier API, worker queue, new table, or new environment variable is used. */
 const SHIPMENT_LEASE_V450 = 180000;
 const SHIPMENT_OPTION_KEYS_V450 = Object.freeze(['enabled', 'courier_code', 'tracking_id', 'smtp_provider', 'mode', 'journey']);
 function shipmentOptionsV450(input) {
   if (input === undefined) return null;
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !SHIPMENT_OPTION_KEYS_V450.includes(key)) || typeof input.enabled !== 'boolean') fail('SHIPMENT_OPTIONS_INVALID', 400);
-  if (input.mode !== undefined && !['manual', 'api'].includes(input.mode)) fail('SHIPMENT_OPTIONS_INVALID', 400);
+  if (input.mode !== undefined && input.mode !== 'manual') fail('SHIPMENT_OPTIONS_INVALID', 400);
   const fields = ['courier_code', 'tracking_id', 'smtp_provider'];
   if (fields.some(key => input[key] !== undefined && typeof input[key] !== 'string')) fail('SHIPMENT_OPTIONS_INVALID', 400);
-  const out = { enabled: input.enabled, mode: input.mode === 'api' ? 'api' : 'manual', courier_code: String(input.courier_code || 'manual').trim(), tracking_id: String(input.tracking_id || '').trim(), smtp_provider: String(input.smtp_provider || 'auto').trim() };
+  const out = { enabled: input.enabled, mode: 'manual', courier_code: String(input.courier_code || 'manual').trim(), tracking_id: String(input.tracking_id || '').trim(), smtp_provider: String(input.smtp_provider || 'auto').trim() };
   if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(out.courier_code) || !/^[A-Za-z0-9._-]{0,120}$/.test(out.tracking_id) || !['auto', 'google', 'mailjet', 'brevo', 'resend'].includes(out.smtp_provider)) fail('SHIPMENT_OPTIONS_INVALID', 400);
   if (input.journey !== undefined) out.journey = shipmentJourneyV452(input.journey);
   return out;
@@ -2264,7 +2240,7 @@ function shipmentAutomationV450(value) {
 function shipmentAutomationPublicV450(value) {
   const a = shipmentAutomationV450(value); if (!a) return null;
   const expiredClaim = a.lease_until_ms <= Date.now();
-  return { enabled: a.enabled, polling: false, mode: a.mode === 'api' ? 'api' : 'manual', courier_code: a.courier_code, tracking_id: a.tracking_id, smtp_provider: a.smtp_provider, next_check_ms: a.mode === 'api' ? a.next_check_ms || null : null, last_attempt_ms: a.last_attempt_ms || null, last_check_ms: a.last_check_ms || null, last_error: a.last_error || '', provider_status: String(a.provider_status || '').slice(0, 80), mail: Object.fromEntries(['initial', 'transit', 'delivered'].map(stage => [stage, expiredClaim && a.mail[stage] === 'claimed' ? 'uncertain' : a.mail[stage]])) };
+  return { enabled: a.enabled, polling: false, mode: 'manual', courier_code: a.courier_code, tracking_id: a.tracking_id, smtp_provider: a.smtp_provider, next_check_ms: null, last_attempt_ms: a.last_attempt_ms || null, last_check_ms: a.last_check_ms || null, last_error: a.last_error || '', provider_status: String(a.provider_status || '').slice(0, 80), mail: Object.fromEntries(['initial', 'transit', 'delivered'].map(stage => [stage, expiredClaim && a.mail[stage] === 'claimed' ? 'uncertain' : a.mail[stage]])) };
 }
 function shipmentStageV450(value, firstSave) {
   const a = value.automation; if (!a || !a.enabled || value.state !== 'active') return '';
@@ -2281,25 +2257,23 @@ async function prepareShipmentV450(body, cancel, current, next, order, origin) {
   const previous = current.value ? shipmentAutomationV450(current.value) : null, options = cancel ? null : shipmentOptionsV450(body.tracking_options);
   if (previous && previous.lease_until_ms > Date.now()) fail('SHIPMENT_BUSY', 409);
   shipmentJourneyApplyV452(options, cancel, current, next);
-  if (!previous && (!options || (!options.enabled && options.mode !== 'api'))) return '';
-  if (options && options.mode === 'api' && (!shipmentTrackingConfigV500().ready || !shipmentTrackingCourierV500(next.courier) || !/^[A-Za-z0-9][A-Za-z0-9._-]{2,99}$/.test(next.tracking_number))) fail('SHIPMENT_TRACKING_API_NOT_READY', 409);
-  if (options && options.mode === 'api' && next.journey) fail('SHIPMENT_TRACKING_JOURNEY_CONFLICT', 409);
+  if (!previous && (!options || !options.enabled)) return '';
   if (previous && !options) {
     if (!cancel && (next.tracking_number !== current.value.tracking_number || next.courier !== current.value.courier)) fail('SHIPMENT_OPTIONS_REQUIRED', 409);
     next.automation = JSON.parse(JSON.stringify(previous));
-  } else if (options && (options.enabled || options.mode === 'api')) {
-    if (options.enabled && !isEmail(order.customer_email)) fail('SHIPMENT_CUSTOMER_EMAIL_REQUIRED', 409);
-    if (options.enabled && !customerMailConfiguredV451('auto')) fail('SHIPMENT_SMTP_NOT_CONFIGURED', 503);
+  } else if (options && options.enabled) {
+    if (!isEmail(order.customer_email)) fail('SHIPMENT_CUSTOMER_EMAIL_REQUIRED', 409);
+    if (!customerMailConfiguredV451('auto')) fail('SHIPMENT_SMTP_NOT_CONFIGURED', 503);
     // Keep the existing generation and mail receipts when converting an API row.
     const sameShipment = previous && current.value.tracking_number === next.tracking_number && current.value.courier === next.courier;
     const generation = sameShipment ? previous.generation : digest([next.order_kind, next.order_id, next.tracking_number, next.courier, options.courier_code, options.tracking_id].join('\0'));
     next.automation = sameShipment ? JSON.parse(JSON.stringify(previous)) : { version: 450, generation, enabled: true, polling: false, mode: 'manual', courier_code: options.courier_code, tracking_id: options.tracking_id, smtp_provider: 'auto', next_check_ms: 0, last_attempt_ms: 0, last_check_ms: 0, lease_until_ms: 0, last_error: '', provider_status: '', mail: { initial: 'pending', transit: 'pending', delivered: 'pending' } };
-    next.automation.enabled = options.enabled; next.automation.smtp_provider = 'auto';
+    next.automation.enabled = true; next.automation.smtp_provider = 'auto';
   } else { next.automation = JSON.parse(JSON.stringify(previous)); next.automation.enabled = false; }
   const a = next.automation;
   if (cancel) a.enabled = false;
-  a.mode = cancel ? 'manual' : options ? options.mode : a.mode; a.polling = false; a.next_check_ms = a.mode === 'api' ? (a.next_check_ms || 0) : 0;
-  const stage = options && options.enabled === false ? '' : shipmentStageV450(next, !previous);
+  a.mode = 'manual'; a.polling = false; a.next_check_ms = 0;
+  const stage = shipmentStageV450(next, !previous);
   if (stage) { a.mail[stage] = 'claimed'; a.lease_until_ms = Date.now() + SHIPMENT_LEASE_V450; }
   shipmentSignV450(next); return stage;
 }
@@ -2338,96 +2312,12 @@ async function shipmentNotifyV450(row, stage, order, origin, database, send, ass
   try { const updated = await shipmentCasV450(row, value, database); if (updated) return { row: updated, notification: outcome }; } catch (_) { /* Do not resubmit an ambiguous SMTP transaction. */ }
   return { row, notification: 'uncertain' };
 }
-function shipmentTrackingInterpretV500(payload, awb) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
-    ![true, 200].includes(payload.status) || !payload.data || typeof payload.data !== 'object' || Array.isArray(payload.data) ||
-    !payload.data.summary || typeof payload.data.summary !== 'object' || Array.isArray(payload.data.summary)) fail('SHIPMENT_PROVIDER_RESPONSE_INVALID', 503);
-  const summary = payload.data.summary;
-  if (String(summary.awb || '').trim().toUpperCase() !== String(awb).trim().toUpperCase()) fail('SHIPMENT_PROVIDER_AWB_MISMATCH', 503);
-  const rawStatus = businessText(String(summary.status || ''), 80, true);
-  const normal = rawStatus.toLowerCase().replace(/[_-]+/g,' ').replace(/\s+/g,' ').trim();
-  const current = /^(?:delivered|terkirim|diterima|sudah diterima|success|received by recipient|delivered to recipient)$/.test(normal) ? 'delivered'
-    : /(?:transit|on process|on proccess|in process|in delivery|out for delivery|out for deliver|pengiriman|dalam perjalanan|sorting|distribution|at hub)/.test(normal) ? 'in_transit'
-    : /(?:shipped|picked up|pickup|manifest|shipment received|paket diterima kurir|accepted by courier|received at origin)/.test(normal) ? 'shipped'
-    : /(?:created|pending|order received|belum dikirim|belum diproses)/.test(normal) ? 'prepared' : '';
-  if (!current) fail('SHIPMENT_PROVIDER_STATUS_UNKNOWN', 503);
-  const history = Array.isArray(payload.data.history) ? payload.data.history.slice(0, 32) : [];
-  const newest = history.find(entry => entry && typeof entry === 'object' && !Array.isArray(entry) && typeof entry.desc === 'string' && entry.desc.trim());
-  const description = newest && !/(?:cancelled|canceled|not delivered|delivery failed)/i.test(newest.desc) ? businessText(newest.desc.slice(0, 300), 300, true) : 'Status terbaru dari API kurir: ' + rawStatus;
-  const location = newest && typeof newest.location === 'string' ? businessText(newest.location.slice(0, 160),160) : '';
-  return Object.freeze({ status: current, rawStatus, description, location });
-}
 async function shipmentDailyV450(req, transport) {
   const passport = req && Object.getOwnPropertyDescriptor(req, '__diracSupportCentralSecurityGuardPassedV146');
   const secret = String(process.env.CRON_SECRET || ''), supplied = String(req && req.headers && req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (!passport || passport.value !== true || passport.writable !== false || passport.configurable !== false || req.diracSupportAction !== 'monitor_run' || !['GET', 'POST'].includes(String(req.method || '').toUpperCase()) || Buffer.byteLength(secret) < 32 || !safeEqual(secret, supplied) || !transport || typeof transport.assert !== 'function' || typeof transport.request !== 'function') fail('SHIPMENT_FULL_GUARD_REQUIRED', 403);
   transport.assert();
-  const cfg = shipmentTrackingConfigV500();
-  if (!cfg.ready) return { ok: true, disabled: true, reason: 'tracking_api_not_configured', checked: 0, changed: 0, failed: 0, notified: 0, notification_uncertain: 0, batch_full: false };
-  const path = '/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=like.' + encodeURIComponent(SHIPMENT_PREFIX + '*') + '&record_json->automation->>mode=eq.api&record_json->>state=eq.active&record_json->>status=neq.delivered&order=updated_at.asc&limit=256';
-  const found = await dbFetch(path, { method: 'GET' }, 'security');
-  if (!found.ok || !Array.isArray(found.data) || found.data.length > 256) fail('SHIPMENT_DAILY_READ_FAILED', 503);
-  const now = Date.now();
-  const eligible = found.data.filter(row => {
-    const value = validateShipmentRow(row, row && row.security_key);
-    if (!value) fail('SHIPMENT_DAILY_ROW_INVALID', 503);
-    const a = shipmentAutomationV450(value);
-    return a && a.mode === 'api' && value.state === 'active' && value.status !== 'delivered' && value.status !== 'cancelled' && !value.journey &&
-      !!shipmentTrackingCourierV500(value.courier) && /^[A-Za-z0-9][A-Za-z0-9._-]{2,99}$/.test(value.tracking_number) &&
-      a.next_check_ms <= now && a.lease_until_ms <= now && a.last_attempt_ms <= now - 82800000;
-  }).slice(0, cfg.dailyLimit);
-  const executions = await Promise.allSettled(eligible.map(async row => {
-    transport.assert();
-    const value = JSON.parse(JSON.stringify(row.record_json));
-    const claimTime = Date.now();
-    value.automation.last_attempt_ms = claimTime;
-    value.automation.next_check_ms = claimTime + 82800000;
-    value.automation.lease_until_ms = claimTime + SHIPMENT_LEASE_V450;
-    value.automation.last_error = '';
-    const claimed = await shipmentCasV450(row, value, dbFetch);
-    if (!claimed) return { checked: 0, changed: 0, failed: 0, conflict: true };
-    const next = JSON.parse(JSON.stringify(claimed.record_json));
-    let detail = null;
-    let failure = '';
-    try {
-      transport.assert();
-      const carrierPayload = await transport.request(Object.freeze({ provider: cfg.provider, courier: shipmentTrackingCourierV500(next.courier), awb: next.tracking_number }));
-      transport.assert();
-      detail = shipmentTrackingInterpretV500(carrierPayload, next.tracking_number);
-    } catch (error) {
-      failure = /^(?:SHIPMENT_PROVIDER_|CENTRAL_)/.test(String(error && error.code || '')) ? String(error.code).slice(0, 80) : 'SHIPMENT_PROVIDER_UNAVAILABLE';
-    }
-    const previousStatus = next.status;
-    let changed = 0;
-    if (detail && !failure) {
-      const rank = { prepared: 0, shipped: 1, in_transit: 2, delivered: 3 };
-      const backwards = rank[detail.status] < rank[next.status];
-      const prematureDelivery = detail.status === 'delivered' && next.status === 'prepared';
-      if (prematureDelivery) failure = 'SHIPMENT_PROVIDER_REVIEW_REQUIRED';
-      else if (!backwards) {
-        const newLocation = detail.location || next.location;
-        if (detail.status !== next.status || newLocation !== next.location) {
-          next.status = detail.status; next.location = newLocation;
-          if (next.status === 'delivered' && !next.delivery_ref) next.delivery_ref = digest(stableJson(['delivery-v453', next.order_kind, next.order_id, next.customer_id, next.tracking_number, next.courier, claimed.updated_at]));
-          next.events = next.events.slice(-49).concat([{ timestamp: new Date(Math.max(Date.now(), Date.parse(claimed.updated_at) + 1)).toISOString(), status: next.status, location: next.location, description: detail.description || 'Pembaruan status dari layanan pelacakan kurir.', revision: next.revision + 1 }]);
-          changed = 1;
-        }
-      }
-      next.automation.provider_status = detail.rawStatus;
-      next.automation.last_check_ms = Date.now();
-    }
-    next.automation.lease_until_ms = 0;
-    next.automation.last_error = failure;
-    transport.assert();
-    const saved = await shipmentCasV450(claimed, next, dbFetch);
-    return { checked: 1, changed: saved ? changed : 0, failed: failure ? 1 : 0, conflict: !saved };
-  }));
-  const totals = executions.reduce((out,item) => {
-    if (item.status === 'rejected') { out.failed += 1; return out; }
-    out.checked += item.value.checked; out.changed += item.value.changed; out.failed += item.value.failed; out.conflicts += Number(item.value.conflict === true);
-    return out;
-  }, { checked: 0, changed: 0, failed: 0, conflicts: 0 });
-  return { ok: true, disabled: false, checked: totals.checked, changed: totals.changed, failed: totals.failed, conflicts: totals.conflicts, notified: 0, notification_uncertain: 0, batch_full: eligible.length === cfg.dailyLimit };
+  return { ok: true, disabled: true, reason: 'manual_only', checked: 0, failed: 0, notified: 0, notification_uncertain: 0, batch_full: false };
 }
 
 function accessBlockKey(blockId) { return isUuid(blockId) ? 'customer-access-block-v325:event:' + String(blockId).toLowerCase() : ''; }
