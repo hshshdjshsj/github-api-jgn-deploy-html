@@ -1,0 +1,197 @@
+
+name: DIRAC daily shipment tracking
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dirac-shipment-daily
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Resolve active API domain and run secured monitor
+        shell: bash
+
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+
+        run: |
+          node <<'NODE'
+          'use strict';
+
+          (async () => {
+            const {
+              VERCEL_TOKEN: token,
+              VERCEL_PROJECT_ID: project,
+              VERCEL_TEAM_ID: team,
+              CRON_SECRET: secret
+            } = process.env;
+
+            if (
+              !token ||
+              !/^prj_[A-Za-z0-9]+$/.test(project || '') ||
+              (team && !/^team_[A-Za-z0-9]+$/.test(team)) ||
+              Buffer.byteLength(secret || '', 'utf8') < 32
+            ) {
+              throw new Error('Secure configuration missing');
+            }
+
+            // Vercel provider API, not a DIRAC domain.
+            const deploymentsUrl = new URL(
+              'https://api.vercel.com/v6/deployments'
+            );
+
+            deploymentsUrl.searchParams.set('projectId', project);
+            deploymentsUrl.searchParams.set('target', 'production');
+            deploymentsUrl.searchParams.set('state', 'READY');
+            deploymentsUrl.searchParams.set('limit', '1');
+
+            if (team) {
+              deploymentsUrl.searchParams.set('teamId', team);
+            }
+
+            const vercelGet = async (url) => {
+              const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  Accept: 'application/json'
+                },
+                redirect: 'error',
+                signal: AbortSignal.timeout(20000)
+              });
+
+              if (response.status !== 200) {
+                throw new Error(
+                  `Vercel API HTTP ${response.status}`
+                );
+              }
+
+              return response.json();
+            };
+
+            const list = await vercelGet(deploymentsUrl);
+
+            const deployment = Array.isArray(list.deployments)
+              ? list.deployments[0]
+              : null;
+
+            if (
+              !deployment ||
+              deployment.projectId !== project ||
+              deployment.target !== 'production' ||
+              !['READY', undefined].includes(deployment.readyState) ||
+              !/^dpl_[A-Za-z0-9]+$/.test(deployment.uid || '')
+            ) {
+              throw new Error(
+                'Verified production deployment not found'
+              );
+            }
+
+            // Discover actual production domain dynamically.
+            const aliasesUrl = new URL(
+              `https://api.vercel.com/v2/deployments/${encodeURIComponent(deployment.uid)}/aliases`
+            );
+
+            if (team) {
+              aliasesUrl.searchParams.set('teamId', team);
+            }
+
+            const data = await vercelGet(aliasesUrl);
+
+            if (!Array.isArray(data.aliases)) {
+              throw new Error('Deployment aliases unavailable');
+            }
+
+            // Select only an API custom domain.
+            // Fail closed if multiple domains are ambiguous.
+            const valid = data.aliases.filter(
+              (item) =>
+                item &&
+                !item.redirect &&
+                typeof item.alias === 'string' &&
+                /^api\.(?:[a-z0-9-]+\.)+[a-z]{2,63}$/i.test(item.alias) &&
+                !item.alias.toLowerCase().endsWith('.vercel.app')
+            );
+
+            if (valid.length !== 1) {
+              throw new Error(
+                'Active API domain missing or ambiguous'
+              );
+            }
+
+            const endpoint = new URL(
+              `https://${valid[0].alias}/api/support`
+            );
+
+            endpoint.searchParams.set(
+              'action',
+              'monitor_run'
+            );
+
+            // Existing Central Guard remains mandatory.
+            const response = await fetch(endpoint, {
+              method: 'GET',
+              headers: {
+                Authorization: `Bearer ${secret}`,
+                Accept: 'application/json',
+                'User-Agent': 'DIRAC-Scheduled-Tracking/1.0'
+              },
+              redirect: 'error',
+              signal: AbortSignal.timeout(210000)
+            });
+
+            if (response.status !== 200) {
+              throw new Error(
+                `Monitor HTTP ${response.status}`
+              );
+            }
+
+            const result = await response.json();
+            const shipments = result && result.shipments;
+
+            if (
+              !result ||
+              result.ok !== true ||
+              result.code !== 'MONITOR_RUN_COMPLETE' ||
+              !shipments ||
+              shipments.ok !== true ||
+              shipments.disabled === true ||
+              !Number.isSafeInteger(shipments.checked) ||
+              !Number.isSafeInteger(shipments.changed) ||
+              !Number.isSafeInteger(shipments.failed) ||
+              shipments.failed !== 0
+            ) {
+              throw new Error(
+                'Tracking did not complete successfully'
+              );
+            }
+
+            process.stdout.write(
+              JSON.stringify({
+                checked: shipments.checked,
+                changed: shipments.changed,
+                failed: shipments.failed
+              }) + '\n'
+            );
+
+          })().catch((error) => {
+            console.error(
+              String(error && error.message || 'Tracking failed')
+            );
+            process.exitCode = 1;
+          });
+          NODE
