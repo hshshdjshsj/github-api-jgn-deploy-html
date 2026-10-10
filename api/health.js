@@ -8559,6 +8559,362 @@ function readDiracSupabaseCredentialsLegacyV1(targetKey) {
   };
 }
 
+// Storage projection only: logical operations reach this layer after their
+// existing guard contracts. Physical operations re-enter the secure gateway.
+const DIRAC_BAN_STORAGE_CONTEXT_V501 = new (require('async_hooks').AsyncLocalStorage)();
+const DIRAC_BAN_STORAGE_REQUESTS_V501 = new WeakMap();
+const DIRAC_BAN_STORAGE_PREFIX_V501 = 'global-ban-active:bundle:';
+
+function diracBanStorageFailureV501() {
+  return { ok: false, status: 503, data: { code: 'BAN_STORAGE_BINDING_UNVERIFIED' } };
+}
+
+function diracBanStorageCanonicalV501(value, depth = 0) {
+  if (depth > 16) throw new Error('BAN_STORAGE_DEPTH_INVALID');
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number' && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value) && value.length <= 128) return '[' + value.map(item => diracBanStorageCanonicalV501(item, depth + 1)).join(',') + ']';
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('BAN_STORAGE_VALUE_INVALID');
+  const keys = Object.keys(value).sort();
+  if (keys.length > 128 || keys.some(key => /^(?:__proto__|constructor|prototype)$/.test(key))) throw new Error('BAN_STORAGE_KEYS_INVALID');
+  return '{' + keys.map(key => JSON.stringify(key) + ':' + diracBanStorageCanonicalV501(value[key], depth + 1)).join(',') + '}';
+}
+
+function diracBanStorageSignV501(record) {
+  const { signature, ...unsigned } = record;
+  const canonical = diracBanStorageCanonicalV501(unsigned);
+  if (Buffer.byteLength(canonical, 'utf8') > 256 * 1024) throw new Error('BAN_STORAGE_SIZE_INVALID');
+  const secret = Buffer.from(diracCentralDeriveSecretV146('compact-ban-storage-v501'));
+  try { return crypto.createHmac('sha512', secret).update(canonical, 'utf8').digest('hex'); }
+  finally { secret.fill(0); }
+}
+
+function diracBanStoragePrefixV501(key) {
+  const match = /^(customer-access-block-v325:(?:event:|(?:account|ip|device):[a-f0-9]{64}:))[a-f0-9-]{36}$/.exec(key);
+  return match ? match[1] : '';
+}
+
+function diracBanStoragePrefixesV501(entries) {
+  return Array.from(new Set(entries.flatMap(entry => [
+    diracBanStoragePrefixV501(entry.security_key),
+    entry.record_json && entry.record_json.schema === 'dirac.customer_access_block' && entry.record_json.customer_id
+      ? customerSecurityPersistentAccessBlockScopePrefixV325('account', entry.record_json.customer_id) : ''
+  ]).filter(Boolean))).sort();
+}
+
+function diracBanStorageEligibleRowV501(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)
+      || !/^[A-Za-z0-9:._-]{1,500}$/.test(String(row.security_key || ''))
+      || String(row.security_key).startsWith(DIRAC_BAN_STORAGE_PREFIX_V501)
+      || !row.record_json || typeof row.record_json !== 'object' || Array.isArray(row.record_json)
+      || !Number.isSafeInteger(Number(row.blocked_until_ms)) || Number(row.blocked_until_ms) <= 0
+      || !Number.isFinite(Date.parse(String(row.expires_at || '')))) return false;
+  const record = row.record_json;
+  if (record.schema === 'dirac.customer_access_block') {
+    return record.state === 'active' && /^(?:central_guard_|wrong_password_rate_limit_)/.test(String(record.reason || ''));
+  }
+  return diracPersistentSecurityRecordIsBanV363(record, row.security_key);
+}
+
+function diracBanStorageValidateV501(row) {
+  const record = row && row.record_json;
+  if (!row || !record || record.storage_version !== 501 || record.type !== 'central_guard_global_ban_v146'
+      || !/^[a-f0-9]{64}$/.test(String(record.ban_id || ''))
+      || row.security_key !== DIRAC_BAN_STORAGE_PREFIX_V501 + record.ban_id
+      || !/^[a-f0-9]{128}$/.test(String(record.signature || ''))
+      || !Array.isArray(record.entries) || !record.entries.length || record.entries.length > 128
+      || !Array.isArray(record.aliases) || !Array.isArray(record.alias_hashes) || !Array.isArray(record.prefixes)
+      || Number(row.blocked_until_ms) !== DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
+      || record.blocked_until_ms !== DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
+      || Date.parse(String(row.expires_at || '')) !== DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
+      || !record.entries.every(entry => diracBanStorageEligibleRowV501(entry)
+        || entry && entry.record_json && entry.record_json.schema === 'dirac.customer_access_block'
+          && entry.record_json.state === 'revoked' && customerSecurityValidatePersistentAccessBlockRowV325(entry))) throw new Error('BAN_STORAGE_RECORD_INVALID');
+  const aliases = record.entries.map(entry => entry.security_key).sort();
+  const prefixes = diracBanStoragePrefixesV501(record.entries);
+  const aliasHashes = aliases.map(key => diracCentralHashV146('compact-ban-alias-v501:' + key)).sort();
+  if (new Set(aliases).size !== aliases.length
+      || aliases.join('\n') !== record.aliases.join('\n')
+      || aliasHashes.join('\n') !== record.alias_hashes.join('\n')
+      || prefixes.join('\n') !== record.prefixes.join('\n')
+      || !safeEqual(record.signature, diracBanStorageSignV501(record))) throw new Error('BAN_STORAGE_SIGNATURE_INVALID');
+  return record;
+}
+
+function diracBanStorageOriginV501(req, operation) {
+  if (!req || typeof req !== 'object' || typeof operation !== 'function') throw new Error('BAN_STORAGE_ORIGIN_INVALID');
+  return DIRAC_BAN_STORAGE_CONTEXT_V501.run({ origin: req }, operation);
+}
+
+function diracBanStorageTransportDigestV501(path, options) {
+  return crypto.createHash('sha512').update(JSON.stringify({ path, method: String(options.method || 'GET').toUpperCase(), auth: options.auth, prefer: options.prefer || '', body: options.body === undefined ? null : options.body })).digest('hex');
+}
+
+async function diracBanStorageTransportV501(path, options) {
+  const current = DIRAC_BAN_STORAGE_CONTEXT_V501.getStore();
+  if (current && current.physical === true) return diracBanStorageFailureV501();
+  const origin = current && current.origin || (diracCentralCurrentContextV149() || {}).req;
+  const permit = Object.freeze({ origin, physical: true, digest: diracBanStorageTransportDigestV501(path, options) });
+  return DIRAC_BAN_STORAGE_CONTEXT_V501.run(permit, () => diracCentralRunInternalComplianceContextV230(
+    () => supabaseFetch(path, options)
+  ));
+}
+
+function diracBanStorageSelectV501(params) {
+  const value = String(params.get('select') || 'security_key,record_json,blocked_until_ms,updated_at,expires_at');
+  const fields = value.split(',');
+  return fields.length && fields.every(field => ['security_key', 'record_json', 'blocked_until_ms', 'updated_at', 'expires_at'].includes(field)) ? fields : null;
+}
+
+function diracBanStorageProjectV501(row, fields) {
+  return Object.fromEntries(fields.filter(field => Object.prototype.hasOwnProperty.call(row, field)).map(field => [field, row[field]]));
+}
+
+function diracBanStorageSelectorV501(filter) {
+  const value = String(filter || '');
+  if (value.startsWith('eq.') && /^[A-Za-z0-9:._-]{1,500}$/.test(value.slice(3))) {
+    const key = value.slice(3); return { keys: [key], matches: candidate => candidate === key };
+  }
+  if (value.startsWith('in.(') && value.endsWith(')')) {
+    const keys = value.slice(4, -1).split(',');
+    if (!keys.length || keys.length > 40 || keys.some(key => !/^[A-Za-z0-9:._-]{1,500}$/.test(key))) return null;
+    return { keys: Array.from(new Set(keys)), matches: candidate => keys.includes(candidate) };
+  }
+  const prefix = /^like\.(customer-access-block-v325:(?:event:|(?:account|ip|device):[a-f0-9]{64}:))\*$/.exec(value);
+  return prefix ? { prefix: prefix[1], matches: candidate => candidate.startsWith(prefix[1]) } : null;
+}
+
+function diracBanStorageQueryV501(selector) {
+  const terms = selector.prefix
+    ? ['record_json->prefixes.cs.' + JSON.stringify([selector.prefix])]
+    : selector.keys.map(key => 'record_json->alias_hashes.cs.' + JSON.stringify([diracCentralHashV146('compact-ban-alias-v501:' + key)]));
+  const filter = '(' + terms.join(',') + ')';
+  if (Buffer.byteLength(filter, 'utf8') > 8192) throw new Error('BAN_STORAGE_QUERY_INVALID');
+  return '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
+    + '?select=security_key,record_json,blocked_until_ms,updated_at,expires_at'
+    + '&security_key=like.' + encodeURIComponent(DIRAC_BAN_STORAGE_PREFIX_V501 + '*')
+    + '&or=' + encodeURIComponent(filter) + '&limit=41';
+}
+
+function diracBanStorageIdV501(req, rows) {
+  const headers = req.headers || {};
+  const ip = diracTrustedClientIpV357(req);
+  if (!ip || ip === 'unknown' || ip === 'no-ip') {
+    return diracCentralHashV146('compact-ban-id-v501:key:' + String(rows[0].security_key));
+  }
+  const origin = diracCentralNormalizeOriginV146(headers.origin || headers.referer || headers.referrer || '');
+  const hint = ['sec-ch-ua', 'sec-ch-ua-platform', 'sec-ch-ua-mobile', 'accept-language', 'accept']
+    .map(name => String(headers[name] || '').slice(0, 160)).join('|');
+  return diracCentralHashV146('compact-ban-id-v501:identity:' + JSON.stringify([
+    ip, String(headers['user-agent'] || '').slice(0, 500), origin, hint
+  ]));
+}
+
+async function diracBanStorageBeginV501(path, options) {
+  const physical = DIRAC_BAN_STORAGE_CONTEXT_V501.getStore();
+  if (physical && physical.physical === true) {
+    return safeEqual(physical.digest, diracBanStorageTransportDigestV501(path, options)) ? null : diracBanStorageFailureV501();
+  }
+  if (options.auth !== 'service' || !/^\/rest\/v1\/dirac_persistent_bans(?:\?|$)/.test(path)) return null;
+  const method = String(options.method || 'GET').toUpperCase();
+  if (!['POST', 'PATCH'].includes(method)) return null;
+  const rows = Array.isArray(options.body) ? options.body : [options.body];
+  if (!rows.some(diracBanStorageEligibleRowV501)) return null;
+  if (!rows.length || rows.length > 128 || !rows.every(diracBanStorageEligibleRowV501)) return diracBanStorageFailureV501();
+  const params = new URL(path, 'https://' + diracBaseDomainV250()).searchParams;
+  const fields = diracBanStorageSelectV501(params);
+  if (!fields) return diracBanStorageFailureV501();
+  const req = physical && physical.origin || (diracCentralCurrentContextV149() || {}).req;
+  if (!req || typeof req !== 'object') return diracBanStorageFailureV501();
+  let state = DIRAC_BAN_STORAGE_REQUESTS_V501.get(req);
+  if (!state) {
+    state = { id: diracBanStorageIdV501(req, rows), tail: Promise.resolve(), entries: new Map() };
+    DIRAC_BAN_STORAGE_REQUESTS_V501.set(req, state);
+  }
+  const incoming = JSON.parse(JSON.stringify(rows));
+  incoming.forEach(entry => {
+    const old = state.entries.get(entry.security_key);
+    if (!old || Number(entry.blocked_until_ms) >= Number(old.blocked_until_ms)) state.entries.set(entry.security_key, entry);
+  });
+  const operation = state.tail.then(() => diracBanStorageCommitV501(state, incoming, fields, String(options.prefer || ''))).catch(() => diracBanStorageFailureV501());
+  state.tail = operation.then(() => undefined, () => undefined);
+  return operation;
+}
+
+async function diracBanStorageCommitV501(state, incoming, fields, prefer) {
+  if (state.committed && incoming.every(entry => state.committed.entries.some(saved =>
+      saved.security_key === entry.security_key && diracBanStorageCanonicalV501(saved) === diracBanStorageCanonicalV501(entry)))) {
+    return { ok: true, status: 200, data: prefer.includes('return=representation') ? incoming.map(entry => diracBanStorageProjectV501(entry, fields)) : null };
+  }
+  const key = DIRAC_BAN_STORAGE_PREFIX_V501 + state.id;
+  const lookupPath = '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE + '?select=security_key,record_json,blocked_until_ms,updated_at,expires_at&security_key=eq.' + encodeURIComponent(key) + '&limit=2';
+  const observed = await diracBanStorageTransportV501(lookupPath, { method: 'GET', auth: 'service' });
+  if (!observed || observed.ok !== true || !Array.isArray(observed.data) || observed.data.length > 1) return diracBanStorageFailureV501();
+  const previous = observed.data.length ? observed.data[0] : null;
+  if (previous) diracBanStorageValidateV501(previous).entries.forEach(entry => {
+    const pending = state.entries.get(entry.security_key);
+    if (!pending || Number(entry.blocked_until_ms) > Number(pending.blocked_until_ms)) state.entries.set(entry.security_key, entry);
+  });
+  incoming.forEach(entry => {
+    const old = state.entries.get(entry.security_key);
+    if (!old || Number(entry.blocked_until_ms) >= Number(old.blocked_until_ms)) state.entries.set(entry.security_key, entry);
+  });
+  if (!state.entries.size || state.entries.size > 128) return diracBanStorageFailureV501();
+  const entries = Array.from(state.entries.values()).sort((a, b) => a.security_key.localeCompare(b.security_key));
+  const aliases = entries.map(entry => entry.security_key).sort();
+  const prefixes = diracBanStoragePrefixesV501(entries);
+  const attributed = entries.map(entry => entry.record_json).find(record => record.identity_email_verified === true && isValidAuthEmail(normalizeAuthEmail(record.identity_email || '')))
+    || entries.map(entry => entry.record_json.metadata).find(meta => meta && meta.identity_email_verified === true && isValidAuthEmail(normalizeAuthEmail(meta.identity_email || '')));
+  const original = entries[0].record_json;
+  const now = Math.max(Date.now(), previous && Number.isFinite(Date.parse(previous.updated_at)) ? Date.parse(previous.updated_at) + 1 : 0);
+  const record = {
+    type: 'central_guard_global_ban_v146', storage_version: 501, ban_id: state.id,
+    aliases, alias_hashes: aliases.map(key => diracCentralHashV146('compact-ban-alias-v501:' + key)).sort(), prefixes, entries, blocked_until_ms: DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335,
+    created_at: previous ? previous.record_json.created_at : new Date(now).toISOString(), updated_at: new Date(now).toISOString(),
+    identity_email: attributed ? normalizeAuthEmail(attributed.identity_email) : null,
+    identity_email_verified: Boolean(attributed), identity_email_source: attributed ? String(attributed.identity_email_source || 'record') : 'unavailable_unauthenticated',
+    reason: String(original.reason || 'security_ban').slice(0, 500), source: 'compact_ban_storage_v501',
+    risk: String(original.risk || original.severity || 'high').slice(0, 40),
+    action: String(original.action || '').slice(0, 120), method: String(original.method || '').slice(0, 12)
+  };
+  record.signature = diracBanStorageSignV501(record);
+  const row = { security_key: key, record_json: record, blocked_until_ms: DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335, updated_at: record.updated_at, expires_at: new Date(DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335).toISOString() };
+  const writePath = '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE + (previous
+    ? '?security_key=eq.' + encodeURIComponent(key) + '&updated_at=eq.' + encodeURIComponent(String(previous.updated_at))
+    : '?on_conflict=security_key');
+  const written = await diracBanStorageTransportV501(writePath, {
+    method: previous ? 'PATCH' : 'POST', auth: 'service',
+    prefer: previous ? 'return=representation' : 'resolution=ignore-duplicates,return=representation',
+    body: previous ? row : [row]
+  });
+  if (!written || written.ok !== true || !Array.isArray(written.data) || written.data.length !== 1) return diracBanStorageFailureV501();
+  const committed = diracBanStorageValidateV501(written.data[0]);
+  if (!safeEqual(committed.signature, record.signature)
+      || incoming.some(entry => !committed.entries.some(saved => saved.security_key === entry.security_key && Number(saved.blocked_until_ms) >= Number(entry.blocked_until_ms)))) return diracBanStorageFailureV501();
+  state.committed = JSON.parse(JSON.stringify(committed));
+  return { ok: true, status: previous ? 200 : 201, data: prefer.includes('return=representation') ? incoming.map(entry => diracBanStorageProjectV501(entry, fields)) : null };
+}
+
+async function diracBanStorageRevokeMirrorV501(params, options, result) {
+  const body = options.body;
+  if (!body || !body.record_json || body.record_json.schema !== 'dirac.customer_access_block'
+      || body.record_json.state !== 'revoked') return result;
+  const selector = diracBanStorageSelectorV501(params.get('security_key'));
+  const fields = diracBanStorageSelectV501(params);
+  const keys = selector && selector.keys;
+  const now = Number(body.blocked_until_ms);
+  if (!keys || ![3, 4].includes(keys.length) || !fields
+      || !Number.isSafeInteger(now) || now > Date.now() || now < Date.now() - 30_000
+      || params.get('blocked_until_ms') !== 'gt.' + now
+      || Object.keys(body).sort().join(',') !== 'blocked_until_ms,record_json'
+      || keys.some(key => !customerSecurityValidatePersistentAccessBlockRowV325({
+        security_key: key, record_json: body.record_json, blocked_until_ms: now,
+        expires_at: new Date(DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335).toISOString()
+      }))) return diracBanStorageFailureV501();
+  const found = await diracBanStorageTransportV501(diracBanStorageQueryV501(selector), { method: 'GET', auth: 'service' });
+  if (!found || found.ok !== true || !Array.isArray(found.data) || found.data.length > 1) return diracBanStorageFailureV501();
+  if (!found.data.length) return result;
+  const previous = found.data[0];
+  const packet = diracBanStorageValidateV501(previous);
+  const matched = packet.entries.filter(entry => keys.includes(entry.security_key));
+  if (matched.length !== keys.length || result.data.some(row => keys.includes(String(row && row.security_key || '')))
+      || matched.some(entry => {
+        const row = customerSecurityValidatePersistentAccessBlockRowV325(entry);
+        const expected = row && { ...row.record, reason: body.record_json.reason,
+          blocked_until_ms: now, updated_at_ms: now, state: 'revoked', revocation: body.record_json.revocation };
+        return !row || row.state !== 'active' || row.blocked_until_ms <= now
+          || customerSecurityPersistentAccessBlockRecordFingerprintV325(expected)
+            !== customerSecurityPersistentAccessBlockRecordFingerprintV325(body.record_json);
+      })) return diracBanStorageFailureV501();
+  const updatedAt = new Date(Math.max(Date.now(), Date.parse(previous.updated_at) + 1)).toISOString();
+  const record = { ...packet, updated_at: updatedAt, entries: packet.entries.map(entry =>
+    keys.includes(entry.security_key) ? { ...entry, record_json: body.record_json, blocked_until_ms: now } : entry) };
+  record.signature = diracBanStorageSignV501(record);
+  const row = { ...previous, record_json: record, updated_at: updatedAt };
+  const written = await diracBanStorageTransportV501('/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
+    + '?security_key=eq.' + encodeURIComponent(previous.security_key)
+    + '&updated_at=eq.' + encodeURIComponent(previous.updated_at), {
+      method: 'PATCH', auth: 'service', prefer: 'return=representation', body: row
+    });
+  if (!written || written.ok !== true || !Array.isArray(written.data) || written.data.length !== 1
+      || !safeEqual(diracBanStorageValidateV501(written.data[0]).signature, record.signature)) return diracBanStorageFailureV501();
+  return { ...result, data: [...result.data, ...record.entries.filter(entry => keys.includes(entry.security_key))
+    .map(entry => diracBanStorageProjectV501(entry, fields))] };
+}
+
+function diracBanStorageReadPriorityV501(row) {
+  const record = row.record_json || {};
+  const req = (diracCentralCurrentContextV149() || {}).req;
+  const retired = diracPersistentSecurityRetiredAdminReportBanV446(record)
+    || diracPersistentSecurityRetiredSecurityReportMirrorBanV453(record)
+    || diracCentralStaleOriginMigrationBanV452(req, { record });
+  const until = retired ? 0 : diracPersistentSecurityRecordIsPermanentV335(record, row.security_key)
+    ? DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
+    : Math.max(Number(row.blocked_until_ms || 0), Number(record.blocked_until_ms || 0), Number(record.blockedUntilMs || 0));
+  const updated = Number(record.updated_at_ms || record.created_at_ms || 0)
+    || Date.parse(String(record.updated_at || record.created_at || row.updated_at || '')) || 0;
+  return [until, updated];
+}
+
+async function diracBanStorageReadV501(path, options, result) {
+  const physical = DIRAC_BAN_STORAGE_CONTEXT_V501.getStore();
+  if (physical && physical.physical === true || options.auth !== 'service'
+      || !['GET', 'PATCH'].includes(String(options.method || 'GET').toUpperCase())
+      || !/^\/rest\/v1\/dirac_persistent_bans(?:\?|$)/.test(path)
+      || !result || result.ok !== true || !Array.isArray(result.data)) return result;
+  try {
+    const params = new URL(path, 'https://' + diracBaseDomainV250()).searchParams;
+    if (String(options.method || 'GET').toUpperCase() === 'PATCH') return await diracBanStorageRevokeMirrorV501(params, options, result);
+    if (params.getAll('security_key').length !== 1) return result;
+    let selector = diracBanStorageSelectorV501(params.get('security_key'));
+    if (!selector && params.get('security_key') === 'like.customer-access-block-v325:*') {
+      const match = /record_json->>customer_id\.eq\.([a-f0-9-]{36})\)\)\)$/.exec(String(params.get('or') || ''));
+      const id = match && match[1];
+      if (id && customerSecurityLooksLikeUuid(id)) selector = {
+        prefix: customerSecurityPersistentAccessBlockScopePrefixV325('account', id),
+        matches: (key, entry) => key.startsWith(customerSecurityPersistentAccessBlockScopePrefixV325('account', id))
+          || entry.record_json && entry.record_json.schema === 'dirac.customer_access_block'
+            && entry.record_json.customer_id === id && Array.isArray(entry.record_json.storage_keys) && entry.record_json.storage_keys.length === 3
+            && key === customerSecurityPersistentAccessBlockEventKeyV325(entry.record_json.block_id)
+      };
+    }
+    const fields = diracBanStorageSelectV501(params);
+    if (!selector || !fields) return result;
+    if (new Set(result.data.map(row => row && row.security_key)).size !== result.data.length
+        || result.data.some(row => !row || typeof row.security_key !== 'string' || !selector.matches(row.security_key, row))) return diracBanStorageFailureV501();
+    const relevant = selector.prefix || selector.keys.some(key => /^(?:global-ban|global-api-threat-ban:|central-ban|sqlmap-ban:|bola-idor-global-ban:|domain-login-(?:account|ip|device):|customer-access-block-v325:|xss-)/.test(key));
+    if (!relevant) return result;
+    const originalLimitV501 = Number(params.get('limit') || 41);
+    if (!Number.isSafeInteger(originalLimitV501) || originalLimitV501 < 1 || originalLimitV501 > 100
+        || result.data.length > originalLimitV501 || result.data.some(row => {
+          const record = row.record_json;
+          const candidates = [row.blocked_until_ms, record && record.blocked_until_ms, record && record.blockedUntilMs].map(diracPersistentBlockedUntilCandidateV331);
+          return candidates.some(candidate => !candidate.ok)
+            || record != null && (typeof record !== 'object' || Array.isArray(record))
+            || row.expires_at != null && (typeof row.expires_at !== 'string' || !Number.isFinite(Date.parse(row.expires_at)));
+        })) return diracBanStorageFailureV501();
+    const found = await diracBanStorageTransportV501(diracBanStorageQueryV501(selector), { method: 'GET', auth: 'service' });
+    if (!found || found.ok !== true || !Array.isArray(found.data) || found.data.length > 40
+        || new Set(found.data.map(row => row && row.security_key)).size !== found.data.length) return diracBanStorageFailureV501();
+    const candidates = found.data.flatMap(row => diracBanStorageValidateV501(row).entries.filter(entry => selector.matches(entry.security_key, entry)));
+    const effective = new Map();
+    [...result.data, ...candidates.map(entry => diracBanStorageProjectV501(entry, fields))].forEach(row => {
+      const old = effective.get(row.security_key);
+      const rank = diracBanStorageReadPriorityV501(row);
+      const oldRank = old && diracBanStorageReadPriorityV501(old);
+      if (!old || rank[0] > oldRank[0] || rank[0] === oldRank[0] && rank[1] > oldRank[1]) effective.set(row.security_key, row);
+    });
+    const ordered = Array.from(effective.values());
+    const after = /^gt\.([0-9]{1,16})$/.exec(String(params.get('blocked_until_ms') || ''));
+    if (after && result.data.some(row => !Number.isSafeInteger(Number(row.blocked_until_ms)) || Number(row.blocked_until_ms) <= Number(after[1]))) return diracBanStorageFailureV501();
+    const filtered = after ? ordered.filter(row => Number(row.blocked_until_ms) > Number(after[1])) : ordered;
+    if (String(params.get('order') || '').startsWith('blocked_until_ms.desc')) filtered.sort((a, b) => Number(b.blocked_until_ms) - Number(a.blocked_until_ms) || String(a.security_key).localeCompare(String(b.security_key)));
+    const limit = Number(params.get('limit') || 41);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) return diracBanStorageFailureV501();
+    return { ...result, data: filtered.slice(0, limit) };
+  } catch (_) { return diracBanStorageFailureV501(); }
+}
+
 async function supabaseFetch(path, options = {}) {
   const cleanPath = String(path || '');
   if ((!cleanPath.startsWith('/rest/v1/') && !cleanPath.startsWith('/auth/v1/'))
@@ -8628,6 +8984,11 @@ async function supabaseFetch(path, options = {}) {
 
   if (options.body !== undefined) {
     fetchOptions.body = JSON.stringify(options.body);
+  }
+
+  if (options.auth === 'service' && /^\/rest\/v1\/dirac_persistent_bans(?:\?|$)/.test(cleanPath)) {
+    const compactBanResultV501 = await diracBanStorageBeginV501(cleanPath, options);
+    if (compactBanResultV501) return compactBanResultV501;
   }
 
   const timeoutMs = Math.max(1000, Math.min(30000, Number(options.timeoutMs || process.env.DIRAC_SUPABASE_FETCH_TIMEOUT_MS || 6500) || 6500));
@@ -8734,7 +9095,8 @@ async function supabaseFetch(path, options = {}) {
       )
     });
   }
-  return result;
+  return options.auth === 'service' && ['GET', 'PATCH'].includes(method) && /^\/rest\/v1\/dirac_persistent_bans(?:\?|$)/.test(cleanPath)
+    ? await diracBanStorageReadV501(cleanPath, options, result) : result;
 }
 
 
@@ -13022,7 +13384,9 @@ function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, opt
 
     if (operation === 'scope_read') {
       if (String(method || '').toUpperCase() !== 'GET' || !exactOptionKeys(['auth', 'method'])
-          || !exactQueryKeys(['blocked_until_ms', 'limit', 'order', 'security_key', 'select'])
+          || !exactQueryKeys(params.has('or')
+            ? ['blocked_until_ms', 'limit', 'order', 'or', 'security_key', 'select']
+            : ['blocked_until_ms', 'limit', 'order', 'security_key', 'select'])
           || params.get('select') !== select
           || params.get('order') !== 'blocked_until_ms.desc,security_key.asc'
           || params.get('limit') !== String(CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_MAX_ROWS_V325 + 1)) return false;
@@ -13030,6 +13394,15 @@ function customerSecurityPersistentAccessBlockCentralContractV325(ctx, path, opt
       const match = filter.match(/^like\.customer-access-block-v325:(account|ip|device):([a-f0-9]{64}):\*$/);
       const afterMatch = String(params.get('blocked_until_ms') || '').match(/^gt\.([0-9]{1,16})$/);
       const afterMs = afterMatch ? Number(afterMatch[1]) : NaN;
+      if (params.has('or')) {
+        const ownerMatchV501 = /record_json->>customer_id\.eq\.([a-f0-9-]{36})\)\)\)$/.exec(String(params.get('or') || ''));
+        const ownerIdV501 = ownerMatchV501 && ownerMatchV501[1];
+        if (!customerSecurityLooksLikeUuid(ownerIdV501) || filter !== 'like.customer-access-block-v325:*') return false;
+        const expectedPathV501 = customerSecurityPersistentAccessBlockScopeReadPathV325('account', ownerIdV501, afterMs);
+        const expectedParamsV501 = new URL(expectedPathV501, 'https://' + diracBaseDomainV250()).searchParams;
+        return Number.isSafeInteger(afterMs) && afterMs >= now - 120_000 && afterMs <= now
+          && params.get('or') === expectedParamsV501.get('or');
+      }
       return Boolean(match && Number.isSafeInteger(afterMs) && afterMs >= now - 120_000 && afterMs <= now);
     }
 
@@ -13217,15 +13590,15 @@ function customerSecurityPersistentAccessBlockScopeKeyV325(scope, value, blockId
   return prefix && eventKey ? prefix + String(blockId || '').trim().toLowerCase() : '';
 }
 
-function customerSecurityPersistentAccessBlockStorageKeysV325(blockId, customerId, ipHash, deviceHash) {
+function customerSecurityPersistentAccessBlockStorageKeysV325(blockId, customerId, ipHash, deviceHash, legacyAccountIndex = false) {
   const eventKey = customerSecurityPersistentAccessBlockEventKeyV325(blockId);
   const ipKey = customerSecurityPersistentAccessBlockScopeKeyV325('ip', ipHash, blockId);
   const deviceKey = customerSecurityPersistentAccessBlockScopeKeyV325('device', deviceHash, blockId);
   const accountKey = customerId
     ? customerSecurityPersistentAccessBlockScopeKeyV325('account', customerId, blockId)
     : '';
-  const keys = [eventKey, accountKey, ipKey, deviceKey].filter(Boolean).sort();
-  return eventKey && ipKey && deviceKey && keys.length === (customerId ? 4 : 3) ? keys : [];
+  const keys = [eventKey, legacyAccountIndex ? accountKey : '', ipKey, deviceKey].filter(Boolean).sort();
+  return eventKey && ipKey && deviceKey && keys.length === (customerId && legacyAccountIndex ? 4 : 3) ? keys : [];
 }
 
 function customerSecurityPersistentAccessBlockScopeReadPathV325(scope, value, afterMs) {
@@ -13234,7 +13607,10 @@ function customerSecurityPersistentAccessBlockScopeReadPathV325(scope, value, af
   if (!prefix || !Number.isSafeInteger(safeAfterMs) || safeAfterMs < 0) return '';
   return '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
     + '?select=' + encodeURIComponent(CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_SELECT_V325)
-    + '&security_key=like.' + encodeURIComponent(prefix + '*')
+    + (String(scope || '').trim().toLowerCase() === 'account'
+      ? '&security_key=like.customer-access-block-v325:*&or=' + encodeURIComponent(
+        '(security_key.like.' + prefix + '*,and(security_key.like.customer-access-block-v325:event:*,record_json->storage_keys->>3.is.null,or(record_json->metadata->>account_binding.eq.' + customerSecurityPersistentAccessBlockDigestV325('account', value) + ',record_json->>customer_id.eq.' + customerSecurityPersistentAccessBlockCanonicalValueV325('account', value) + ')))')
+      : '&security_key=like.' + encodeURIComponent(prefix + '*'))
     + '&blocked_until_ms=gt.' + encodeURIComponent(String(safeAfterMs))
     + '&order=' + encodeURIComponent('blocked_until_ms.desc,security_key.asc')
     + '&limit=' + String(CUSTOMER_SECURITY_PERSISTENT_ACCESS_BLOCK_MAX_ROWS_V325 + 1);
@@ -13261,7 +13637,8 @@ function customerSecurityPersistentAccessBlockRecordFingerprintV325(record) {
       user_agent_hash: metadata.user_agent_hash,
       identity_email: metadata.identity_email,
       identity_email_verified: metadata.identity_email_verified,
-      identity_email_source: metadata.identity_email_source
+      identity_email_source: metadata.identity_email_source,
+      ...(Object.prototype.hasOwnProperty.call(metadata, 'account_binding') ? { account_binding: metadata.account_binding } : {})
     },
     reason: source.reason,
     revocation: revocation ? {
@@ -13330,9 +13707,13 @@ function customerSecurityValidatePersistentAccessBlockRowV325(row, options = {})
   const metadataKeysV363 = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
     ? Object.keys(metadata).sort().join(',') : '';
   const metadataLegacyV363 = metadataKeysV363 === 'origin,source,user_agent_hash';
-  const metadataEmailV363 = metadataKeysV363 === 'identity_email,identity_email_source,identity_email_verified,origin,source,user_agent_hash';
+  const metadataAccountV501 = metadataKeysV363 === 'account_binding,identity_email,identity_email_source,identity_email_verified,origin,source,user_agent_hash';
+  const metadataEmailV363 = metadataAccountV501 || metadataKeysV363 === 'identity_email,identity_email_source,identity_email_verified,origin,source,user_agent_hash';
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
       || (!metadataLegacyV363 && !metadataEmailV363)
+      || (metadataAccountV501 && (!customerId || typeof metadata.account_binding !== 'string'
+        || !safeEqual(metadata.account_binding, customerSecurityPersistentAccessBlockDigestV325('account', customerId))))
+      || (customerId && Array.isArray(record.storage_keys) && record.storage_keys.length === 3 && !metadataAccountV501)
       || metadata.source !== 'customer_security_gate'
       || typeof metadata.user_agent_hash !== 'string'
       || !/^[a-f0-9]{64}$/.test(String(metadata.user_agent_hash || ''))
@@ -13360,7 +13741,7 @@ function customerSecurityValidatePersistentAccessBlockRowV325(row, options = {})
   const storageKeys = Array.isArray(record.storage_keys) && record.storage_keys.every((key) => typeof key === 'string')
     ? record.storage_keys.slice()
     : [];
-  const expectedKeys = customerSecurityPersistentAccessBlockStorageKeysV325(blockId, customerId, ipHash, deviceHash);
+  const expectedKeys = customerSecurityPersistentAccessBlockStorageKeysV325(blockId, customerId, ipHash, deviceHash, storageKeys.length === 4);
   if (!expectedKeys.length
       || storageKeys.length !== expectedKeys.length
       || new Set(storageKeys).size !== storageKeys.length
@@ -13369,11 +13750,14 @@ function customerSecurityValidatePersistentAccessBlockRowV325(row, options = {})
   if (options.expected_key && securityKey !== String(options.expected_key)) return null;
   if (options.canonical_only && securityKey !== customerSecurityPersistentAccessBlockEventKeyV325(blockId)) return null;
   if (options.expected_scope) {
-    const expectedScopeKey = customerSecurityPersistentAccessBlockScopeKeyV325(
-      options.expected_scope,
-      options.expected_value,
-      blockId
-    );
+    const expectedScopeKey = String(options.expected_scope || '').trim().toLowerCase() === 'account' && storageKeys.length === 3
+        && customerId === customerSecurityPersistentAccessBlockCanonicalValueV325('account', options.expected_value)
+      ? customerSecurityPersistentAccessBlockEventKeyV325(blockId)
+      : customerSecurityPersistentAccessBlockScopeKeyV325(
+        options.expected_scope,
+        options.expected_value,
+        blockId
+      );
     if (!expectedScopeKey || securityKey !== expectedScopeKey) return null;
   }
   const activeAfterMs = Number(options.active_after_ms);
@@ -13539,6 +13923,7 @@ async function customerSecurityCreatePersistentAccessBlockV325(identity, action,
     state: 'active',
     storage_keys: storageKeys,
     metadata: {
+      ...(canonicalCustomerId ? { account_binding: customerSecurityPersistentAccessBlockDigestV325('account', canonicalCustomerId) } : {}),
       source: 'customer_security_gate',
       origin: identity && identity.origin ? String(identity.origin).slice(0, 320) : null,
       user_agent_hash: customerSecuritySha256('ua:' + String(identity && identity.ua || '')),
@@ -21193,6 +21578,20 @@ function midtransRevokeWebhookCapabilityV350(ctx) {
   }
 }
 
+// A purpose-bound return capability uses the existing Midtrans binding secret.
+// It is distinct from webhook proofs and grants no payment or session authority.
+function midtransReturnGrantV500(transactionId, customerId, gatewayReference, raw) {
+  const secret=midtransWebhookBindingSecret();
+  if (!secret || !customerSecurityLooksLikeUuid(transactionId) || !customerSecurityLooksLikeUuid(customerId)
+      || typeof gatewayReference !== 'string' || !/^PAY-[A-Za-z0-9._:@-]{1,116}$/.test(gatewayReference)) return null;
+  const finish=new URL('/pesanan.html', 'https://order.' + diracBaseDomainV250());
+  const proof=crypto.createHmac('sha512',secret).update(JSON.stringify([
+    'dirac-midtrans-return-v500',finish.href,transactionId,customerId,gatewayReference
+  ]),'utf8').digest('hex');
+  finish.searchParams.set('__dirac_midtrans_return',proof);
+  return Object.freeze({proof,mode:raw && raw.request && raw.request.return_url===finish.href ? 'bound' : 'legacy'});
+}
+
 async function midtransCreateSnapPayment(input) {
   const amount = midtransMoney(input.amount);
   const transactionId = String(input && input.transactionId || '').trim();
@@ -21240,7 +21639,11 @@ async function midtransCreateSnapPayment(input) {
     return { ok: false, status: 503, message: 'Binding Midtrans tidak dapat dibuat.', error: 'midtrans_binding_unavailable' };
   }
 
-  const returnUrl = new URL('/pesanan.html', 'https://order.' + diracBaseDomainV250()).toString();
+  const returnGrantV500=midtransReturnGrantV500(transactionId,customerId,gatewayReference);
+  if (!returnGrantV500) return { ok:false,status:503,message:'Binding balik Midtrans belum tersedia.',error:'midtrans_return_binding_unavailable' };
+  const finishV500=new URL('/pesanan.html', 'https://order.' + diracBaseDomainV250());
+  finishV500.searchParams.set('__dirac_midtrans_return',returnGrantV500.proof);
+  const returnUrl=finishV500.href;
   const payload = {
     transaction_details: {
       order_id: gatewayReference,
@@ -31884,6 +32287,7 @@ async function diracUniversalPesananCreatePayment(req, res) {
       payment_status: existing.transaction.payment_status || 'unpaid',
       payment_url: existing.transaction.payment_url,
       payment_provider: existing.transaction.gateway_name || null,
+      payment_return: midtransReturnGrantV500(existing.transaction.id,customerId,String(existing.transaction.gateway_reference || ''),existing.transaction.metadata && existing.transaction.metadata.gateway_raw),
       amount_source: paymentInput.amountSource,
       ownership_locked: true,
       amount_locked: true,
@@ -31992,6 +32396,7 @@ async function diracUniversalPesananCreatePayment(req, res) {
     payment_status: 'unpaid',
     payment_url: gateway.paymentUrl,
     payment_provider: gateway.provider || gatewayName,
+    payment_return: midtransReturnGrantV500(transaction.id,customerId,gatewayReference,gateway.raw),
     invoice_id: gateway.invoiceId || null,
     amount_source: paymentInput.amountSource,
     ownership_locked: true,
@@ -61688,6 +62093,16 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
 function diracCentralApplyHeadersV146(res) {
   if (!res || typeof res.setHeader !== 'function') return;
   try {
+    const ctx=diracCentralCurrentContextV149();
+    const origin=String(ctx && ctx.req && ctx.req.headers && ctx.req.headers.origin || '');
+    // Guard terminals run before the business handler that normally applies CORS.
+    // Publish only to the existing origin allowlist; every checkpoint still runs.
+    if (ctx && ctx.action==='security_report' && DIRAC_CENTRAL_ALLOWED_ORIGINS_V146.has(origin)
+        && (typeof res.getHeader!=='function' || res.getHeader('Access-Control-Allow-Origin')!==origin)) {
+      setCors(ctx.req,res,{isDomainAction:true});
+    }
+  } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
+  try {
     const ctx = diracCentralCurrentContextV149();
     if (ctx && ctx.requestId) res.setHeader('X-Dirac-Request-Id', String(ctx.requestId).slice(0, 64));
   } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
@@ -69749,7 +70164,7 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
     };
     let write = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      write = await diracCentralBanAuthorityDatabaseV355('write', rows).catch(() => null);
+      write = await diracBanStorageOriginV501(req, () => diracCentralBanAuthorityDatabaseV355('write', rows)).catch(() => null);
       if (write && write.ok === true) break;
     }
     if (!write || write.ok !== true) {
@@ -69813,6 +70228,14 @@ function diracCentralBlockedResponseV146(res, reason) {
     payload.ban_active = true;
     payload.ban_scope = 'persistent_security';
     payload.message = 'Akses diblokir karena status ban keamanan masih aktif.';
+  }
+  if (ctx && ctx.action==='security_report' && reason==='html_security_report'
+      && ctx.terminalBlockReason==='html_security_report' && ctx.__diracCentralPersistentBanWrittenV194===true
+      && diracCentralPermanentBanDecisionV281(ctx,reason).permanent===true) {
+    payload.security_report_received=true;
+    payload.persistent_ban_written=true;
+    payload.ban_active=true;
+    payload.ban_scope='persistent_security';
   }
   if (authenticationRequiredCode) {
     payload.code = 'SESSION_AUTHENTICATION_REQUIRED';
