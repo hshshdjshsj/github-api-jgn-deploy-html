@@ -57774,7 +57774,7 @@ function diracCentralCanonicalVariantsV221(value) {
 function diracCentralThreatFieldsV221(req, ctx) {
   const fields = [];
   const push = (path, value, source) => {
-    const key = diracCentralNormalizeKeyV146(String(path || '').split('.').pop());
+    const key = diracCentralNormalizeKeyV146(String(path || '').replace(/(?:\.\d+)+$/, '').split('.').pop());
     const sensitive = diracCentralSensitiveKeyV146(key);
     const text = String(value === undefined || value === null ? '' : value);
     fields.push(Object.freeze({
@@ -57806,10 +57806,11 @@ function diracCentralUrlLikeFieldV221(field) {
     || field && field.source === 'url';
 }
 
-const DIRAC_CENTRAL_INPUT_POLICY_V498 = /(?:^|[^a-z0-9_])(?:union|javascript|vbscript|alert|confirm|prompt|xss|sqli|csrf|ssrf|xxe|ssti|rce|lfi|rfi|jndi|log4shell|shellshock|sqlmap|sqlninja|havij|nuclei|nikto|nmap|gobuster|ffuf|dalfox|acunetix|burpsuite|metasploit|msfvenom|msfconsole|netcat|ncat|powershell|cmd\.exe|whoami|onerror|onload|onclick|onfocus|onblur|onmouseover|onanimationstart|onpointerenter|srcdoc|xlink|__proto__|__schema|__type|introspectionquery|xp_cmdshell|load_file|pg_read_file|pg_sleep|benchmark|information_schema|pg_catalog|sqlite_master|sysobjects|syscolumns|mysql\.user|eval|atob|btoa|shell_exec|passthru|proc_open|popen|base64_decode|unserialize|innerhtml|outerhtml|insertadjacenthtml|document\.cookie|document\.write|document\.writeln)(?=$|[^a-z0-9_])|^\s*(?:j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t|one\s+error)\s*$/i;
+const DIRAC_CENTRAL_INPUT_POLICY_V498 = /(?:^|[^a-z0-9_])(?:union|javascript|vbscript|alert|confirm|prompt|xss|sqli|csrf|ssrf|xxe|ssti|rce|lfi|rfi|jndi|log4shell|shellshock|sqlmap|sqlninja|havij|nuclei|nikto|nmap|gobuster|ffuf|dalfox|acunetix|burpsuite|metasploit|msfvenom|msfconsole|netcat|ncat|powershell|cmd\.exe|whoami|onerror|onload|onclick|onfocus|onblur|onmouseover|onanimationstart|onpointerenter|srcdoc|xlink|__proto__|__schema|__type|introspectionquery|xp_cmdshell|load_file|pg_read_file|pg_sleep|benchmark|information_schema|pg_catalog|sqlite_master|sysobjects|syscolumns|mysql\.user|eval|atob|btoa|shell_exec|passthru|proc_open|popen|base64_decode|unserialize|innerhtml|outerhtml|insertadjacenthtml|document\.cookie|document\.write|document\.writeln|oninput|onsubmit|ontoggle|onkeydown|onkeyup|onpointerdown|onpointerup|onmouseenter|onmouseleave|onabort|onanimationend|ontransitionend|formaction|execscript|settimeout|setinterval|fromcharcode|unescape|mshta|rundll32|certutil|regsvr32|wmic|cscript|wscript|bitsadmin|mimikatz|cobaltstrike|bloodhound|ysoserial|phpinfo|php_uname|getenv|readfile|file_get_contents|file_put_contents|create_function|call_user_func|document\.domain|location\.assign|location\.replace)(?=$|[^a-z0-9_])|^\s*(?:j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t|one\s+error)\s*$/i;
 
 function diracCentralContextualThreatGuardV221(req, ctx) {
   const fields = diracCentralThreatFieldsV221(req, ctx);
+  const canonicalMemoV499 = new Map();
   for (const field of fields) {
     const path = String(field.path || '');
     const key = String(field.key || '');
@@ -57817,11 +57818,13 @@ function diracCentralContextualThreatGuardV221(req, ctx) {
       return { detected: true, kind: 'prototype_pollution', field: path };
     }
     if (field.sensitive) continue;
-    const variants = diracCentralCanonicalVariantsV221(field.value);
+    const variants = canonicalMemoV499.get(field.value) || diracCentralCanonicalVariantsV221(field.value);
+    if (canonicalMemoV499.size < 32 && field.value.length <= 1024) canonicalMemoV499.set(field.value, variants);
     const policyInputV498 = /^(?:body|query)$/.test(String(field.source || ''))
-      && /^(?:report_sample|identifier|email|name|full_?name|phone|customer_(?:address|note)|address|address_detail|detail|note|message|body|content|text|query|q|search|promo|promo_code|title|product_title|subject|description)$/i.test(key);
+      && /^(?:report_sample|identifier|email|name|full_?name|phone|customer_(?:address|note)|address|address_detail|detail|note|message|body|content|text|query|q|search|promo|promo_code|title|product_title|subject|description|reason|summary|body_text|notes|recipient|recipients|purpose|closing|signer|signer_?role|courier|tracking_?number|location|origin_text|destination_text|unit|attachment_?note|customer_?reference|payment_?method|reference|referral_code|menu_q|customer_(?:name|email|phone)|shipping_address|delivery_address|recipient_(?:name|email|phone|address))$/i.test(key);
     for (const candidate of variants) {
-      if (policyInputV498 && DIRAC_CENTRAL_INPUT_POLICY_V498.test(candidate)) return { detected: true, kind: 'policy_keyword', field: path };
+      const policyKeywordV499 = policyInputV498 && DIRAC_CENTRAL_INPUT_POLICY_V498.test(candidate);
+      if (policyKeywordV499 && key !== 'reason') return { detected: true, kind: 'policy_keyword', field: path };
       if (/(?:^|[.\[\]{}\s'"])(?:__proto__|prototype)\s*(?:[.\[]|['"]?\s*[:=])/i.test(candidate)
           || /constructor\s*(?:\.|\[)\s*['"]?prototype/i.test(candidate)) {
         return { detected: true, kind: 'prototype_pollution', field: path };
@@ -57833,6 +57836,7 @@ function diracCentralContextualThreatGuardV221(req, ctx) {
         pattern.lastIndex = 0;
         if (pattern.test(candidate)) return { detected: true, kind, field: path };
       }
+      if (policyKeywordV499) return { detected: true, kind: 'policy_keyword', field: path };
       if (diracCentralUrlLikeFieldV221(field)) {
         let parsed = null;
         const rawUrlCandidate = String(candidate || '').trim();

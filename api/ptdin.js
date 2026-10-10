@@ -190,6 +190,25 @@ function projectResponse(action, view, payload, profile) {
   } else if (action === 'my_orders') {
     out.view = view || 'invoice';
     const allOrders = ownRows(payload.orders, 120);
+    if (out.view === 'assistant') {
+      const partial = Boolean(payload.diagnostics && (payload.diagnostics.generic_orders_ready === false || payload.diagnostics.domain_orders_ready === false))
+        || allOrders.some(order => order.shipment_data_ready === false);
+      const orders = allOrders.map(order => {
+        const source = order.shipment && typeof order.shipment === 'object' && !Array.isArray(order.shipment) ? order.shipment : null;
+        const latestEvent = source && Array.isArray(source.events) ? source.events.filter(event => event && Number.isFinite(Date.parse(event.timestamp))).slice(0, 300)
+          .reduce((latest, event) => !latest || Date.parse(event.timestamp) > Date.parse(latest.timestamp) ? event : latest, null) : null;
+        const shipment = source ? {
+          state: cleanText(source.state, 40), status: cleanText(source.status, 80), location: cleanText(source.location, 300),
+          updated_at: cleanText(source.updated_at, 64), tracking_number: cleanText(source.tracking_number, 100), courier: cleanText(source.courier, 80),
+          events: latestEvent ? [{ timestamp: cleanText(latestEvent.timestamp, 64), location: cleanText(latestEvent.location, 300), status: cleanText(latestEvent.status, 80) }] : []
+        } : null;
+        return { id: order.id, order_id: cleanText(order.order_id, 253), invoice_code: cleanText(order.invoice_code, 253),
+          order_status: cleanText(order.order_status, 80), payment_status: cleanText(order.payment_status, 80),
+          paid_at: cleanText(order.paid_at, 64), payment_confirmed_at: cleanText(order.payment_confirmed_at, 64),
+          shipment_data_ready: order.shipment_data_ready === true, shipment };
+      });
+      return { ok: true, service: 'dirac-ptdin', view: 'assistant', orders, partial };
+    }
     out.orders = ['invoice','assistant'].includes(out.view) ? allOrders : allOrders.filter((order) => orderMatchesView(order, out.view));
     out.summary = orderSummary(out.orders);
     out.analytics = orderAnalytics(out.orders);
