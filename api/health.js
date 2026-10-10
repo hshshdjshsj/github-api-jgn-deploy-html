@@ -13000,10 +13000,7 @@ async function customerSecurityCreateAccountRequest(req, res, action) {
   const allowed = new Set(['security_review', 'export_data', 'deactivate_account', 'reactivate_account']);
   const requestType = String(body.request_type || 'security_review').trim().toLowerCase();
   const accountPolicy = diracAccountPolicyFromUserV472(access.user), partnerRequest = CUSTOMER_SECURITY_PARTNER_REQUEST_TYPES_V478.has(requestType);
-  if (String(req.headers && req.headers.origin || '').trim().toLowerCase() === diracRoleOriginV250('panel').toLowerCase()
-      && (accountPolicy.role !== 'partner' || !partnerRequest)) {
-    return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Hanya pengajuan Partner terverifikasi yang diterima dari dashboard.' });
-  }
+  if (String(req && req.headers && req.headers.origin || '') === diracRoleOriginV250('panel') && (!partnerRequest || accountPolicy.role !== 'partner')) return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Dashboard Partner hanya menerima pengajuan milik Partner terverifikasi.' });
   if (['partner_reseller_invite','partner_withdrawal','partner_commission_review'].includes(requestType)) return res.status(403).json({ ok: false, code: 'PARTNER_REQUEST_FORBIDDEN', message: 'Akses Partner terbatas pada referral customer dan bantuan layanan.' });
   if (requestType.startsWith('partner_') && !partnerRequest) return res.status(400).json({ ok: false, code: 'PARTNER_REQUEST_TYPE_INVALID', message: 'Jenis request partner tidak valid.' });
   if (partnerRequest && accountPolicy.role !== 'partner') return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Fitur ini hanya tersedia untuk akun Partner terverifikasi.' });
@@ -34379,10 +34376,6 @@ __diracV202RegisterMiddleware(async function customerSecurityFeatureReadWrapper(
       rateLimit: { limit: 90, windowMs: 60_000 }
     });
     if (!access) return;
-    if (String(req.headers && req.headers.origin || '').trim().toLowerCase() === diracRoleOriginV250('panel').toLowerCase()
-        && diracAccountPolicyFromUserV472(access.user).role !== 'partner') {
-      return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Akses ini hanya untuk akun Partner terverifikasi.' });
-    }
 
     const overviewResult = await customerSecurityFetchOverviewData(access.customerId).catch((error) => ({
       ok: false,
@@ -34456,6 +34449,7 @@ __diracV202RegisterMiddleware(async function customerSecurityFeatureReadWrapper(
 
     if (action === 'customer_security_request_tracker') {
       const accountPolicyV478 = diracAccountPolicyFromUserV472(access.user);
+      if (String(req && req.headers && req.headers.origin || '') === diracRoleOriginV250('panel') && accountPolicyV478.role !== 'partner') return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Hanya Partner terverifikasi yang dapat membaca pengajuan Partner.' });
       const partnerTrackerV478 = accountPolicyV478.role === 'partner' ? await customerSecurityPartnerTrackerV478(access.customerId) : null;
       return res.status(200).json({
         ok: true,
@@ -64455,21 +64449,6 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
       const expectedOrigin = diracRoleOriginV250('security').toLowerCase();
       const headers = req && req.headers || {};
       const origin = String(headers.origin || '').trim().toLowerCase();
-      if ((clean === 'customer_security_request_tracker' || clean === 'customer_security_account_request')
-          && origin === diracRoleOriginV250('panel').toLowerCase()) {
-        const expectedMethod = clean === 'customer_security_request_tracker' ? 'GET' : 'POST';
-        const method = String(req && req.method || '').trim().toUpperCase();
-        if (method === 'OPTIONS') {
-          if (String(headers['access-control-request-method'] || '').trim().toUpperCase() !== expectedMethod) {
-            return { ok: false, reason: 'partner_portal_preflight_method_invalid' };
-          }
-        } else if (method !== expectedMethod) return { ok: false, reason: 'partner_portal_method_invalid' };
-        const referer = new URL(String(headers.referer || headers.referrer || '').trim());
-        if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
-            || referer.origin.toLowerCase() !== origin || referer.pathname !== '/dashboard.html'
-            || referer.search || referer.hash) return { ok: false, reason: 'partner_portal_referer_invalid' };
-        return { ok: true };
-      }
       if (origin === expectedOrigin) {
         const method = String(req && req.method || '').trim().toUpperCase();
         const contract = diracCentralContractForActionV146(clean);
@@ -64498,6 +64477,20 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
     }
   }
 
+  // The authenticated Partner dashboard is an exact, independently guarded source for only these two existing Partner actions.
+  if (role === 'auth' && (clean === 'customer_security_request_tracker' || clean === 'customer_security_account_request')) {
+    const headers = req && req.headers || {};
+    const method = String(req && req.method || '').toUpperCase();
+    const expected = clean === 'customer_security_request_tracker' ? 'GET' : 'POST';
+    const invoked = method === 'OPTIONS' ? String(headers['access-control-request-method'] || '').toUpperCase() : method;
+    const panelOrigin = diracRoleOriginV250('panel');
+    const referer = String(headers.referer || headers.referrer || '').trim();
+    const contract = diracCentralContractForActionV146(clean);
+    if (String(headers.origin || '').trim() === panelOrigin && invoked === expected &&
+        (method === expected || method === 'OPTIONS') &&
+        (method === 'OPTIONS' ? (!referer || referer === panelOrigin + '/dashboard.html') : referer === panelOrigin + '/dashboard.html') &&
+        contract && Array.isArray(contract.methods) && contract.methods.includes(expected)) return { ok: true };
+  }
   if (role === 'auth' && auth.has(clean)) return { ok: true };
   if (role === 'dashboard' && dashboard.has(clean)) return { ok: true };
   if (role === 'security' && /^(?:dirac_mfa_passkey_start|dirac_mfa_passkey_verify)$/.test(clean)

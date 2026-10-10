@@ -1997,6 +1997,48 @@ async function probeTarget(target) {
   });
 }
 
+async function supportTrackingRequestV500(input) {
+  const ctx = supportCentralCurrentContextV146();
+  if (!ctx || ctx.action !== 'monitor_run' || ctx.fullyPassed !== true || !['handler','audit'].includes(ctx.phase)) throw new PublicError(403, 'SHIPMENT_FULL_GUARD_REQUIRED', 'Pemeriksaan keamanan pengiriman belum lengkap.');
+  supportCentralAssertDynamicEgress('https');
+  const provider = String(process.env.DIRAC_TRACKING_PROVIDER || '').trim().toLowerCase();
+  if (!input || input.provider !== provider || !['binderbyte','kiosweb'].includes(provider) ||
+      !/^(?:jne|pos|jnt|sicepat|tiki|anteraja|wahana|ninja|lion)$/.test(String(input.courier || '')) ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{2,99}$/.test(String(input.awb || ''))) throw new PublicError(400, 'SHIPMENT_PROVIDER_INPUT_INVALID', 'Permintaan pelacakan tidak valid.');
+  const key = provider === 'binderbyte' ? String(process.env.DIRAC_TRACKING_BINDERBYTE_KEY || '').trim() : String(process.env.DIRAC_TRACKING_KIOSWEB_MEMBER_CODE || '').trim();
+  if (process.env.DIRAC_TRACKING_FREE_TIER_CONFIRMED !== '1' || !/^[A-Za-z0-9._-]{8,160}$/.test(key)) throw new PublicError(503, 'SHIPMENT_PROVIDER_NOT_CONFIGURED', 'Kredensial pelacakan belum siap.');
+  const url = new URL(provider === 'binderbyte' ? 'https://api.binderbyte.com/v1/track' : 'https://api.kiosweb.id/resi/track');
+  url.searchParams.set(provider === 'binderbyte' ? 'api_key' : 'member_code', key);
+  url.searchParams.set('courier', input.courier);
+  url.searchParams.set('awb', input.awb);
+  const chosen = await resolveMonitorAddress(url);
+  return new Promise((resolve, reject) => {
+    let finished = false, deadline, chunks = [], received = 0;
+    const finish = (error, value) => { if (finished) return; finished = true; if (deadline) clearTimeout(deadline); chunks = []; if (error) reject(error); else resolve(value); };
+    const request = https.request(url, { method: 'GET', headers: { Accept: 'application/json', 'User-Agent': 'DIRAC-Delivery-Tracking/1.0', Connection: 'close' },
+      family: chosen.family, autoSelectFamily: false, lookup: (_hostname, options, callback) => options && options.all ? callback(null, [{ address: chosen.address, family: chosen.family }]) : callback(null, chosen.address, chosen.family),
+      servername: url.hostname, rejectUnauthorized: true }, response => {
+      if (response.statusCode !== 200 || response.headers.location || response.headers['content-encoding']) {
+        response.resume(); return finish(new PublicError(503,'SHIPMENT_PROVIDER_HTTP_INVALID','Penyedia pelacakan tidak tersedia.'));
+      }
+      response.on('data', chunk => {
+        received += chunk.length;
+        if (received > 65536) request.destroy(new Error('TRACKING_RESPONSE_LIMIT'));
+        else chunks.push(chunk);
+      });
+      response.on('end', () => {
+        try { finish(null, parseStrictJson(Buffer.concat(chunks), { maxBytes: 65536, maxDepth: 10, maxNodes: 1024 })); }
+        catch (_) { finish(new PublicError(503,'SHIPMENT_PROVIDER_RESPONSE_INVALID','Respons pelacakan tidak valid.')); }
+      });
+      response.on('aborted', () => finish(new PublicError(503,'SHIPMENT_PROVIDER_UNAVAILABLE','Penyedia pelacakan terputus.')));
+      response.on('error', () => finish(new PublicError(503,'SHIPMENT_PROVIDER_UNAVAILABLE','Penyedia pelacakan bermasalah.')));
+    });
+    deadline = setTimeout(() => request.destroy(new Error('TRACKING_TIMEOUT')), 8000);
+    request.on('error', () => finish(new PublicError(503,'SHIPMENT_PROVIDER_UNAVAILABLE','Koneksi pelacakan gagal.')));
+    request.end();
+  });
+}
+
 async function actionMonitorRun(req, res) {
   const cfg = config(); const expected = env('CRON_SECRET'); const authorization = String(req.headers && req.headers.authorization || ''); const candidate = authorization.replace(/^Bearer\s+/i, '');
   const cronReused = [cfg.cookieSecret, cfg.csrfSecret, cfg.ipSecret, cfg.mfaEnrollmentSecret].some((secret) => timingEqual(expected, secret));
@@ -2008,7 +2050,13 @@ async function actionMonitorRun(req, res) {
     if (error instanceof PublicError && error.code === 'RATE_LIMITED') return json(res, 200, { ok: true, code: 'MONITOR_RUN_SKIPPED', reason: 'overlap_or_duplicate' });
     throw error;
   }
-  const shipments = { ok: true, disabled: true, reason: 'manual_only', checked: 0, failed: 0, notified: 0 };
+  const loaded = await import('./admin.js');
+  const admin = loaded && (loaded.default || loaded);
+  if (typeof admin !== 'function' || !Object.isFrozen(admin) || typeof admin.__diracShipmentDailyV450 !== 'function') throw new PublicError(503, 'SHIPMENT_DAILY_HANDLER_INVALID', 'Modul pengiriman tidak tersedia.');
+  const shipments = await admin.__diracShipmentDailyV450(req, Object.freeze({
+    assert: () => { const current = supportCentralCurrentContextV146(); if (!current || current.fullyPassed !== true || current.action !== 'monitor_run' || !['handler','audit'].includes(current.phase)) throw new PublicError(403, 'SHIPMENT_FULL_GUARD_REQUIRED','Keamanan pengiriman tidak valid.'); },
+    request: supportTrackingRequestV500
+  }));
   let targets = await rpc('support_monitor_targets', {});
   if (targets && Array.isArray(targets.targets)) targets = targets.targets;
   if (!Array.isArray(targets) || targets.length > 16) throw new PublicError(503, 'MONITOR_TARGETS_INVALID', 'Daftar target monitor tidak valid.');
