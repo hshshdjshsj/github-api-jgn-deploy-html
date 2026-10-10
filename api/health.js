@@ -13000,6 +13000,10 @@ async function customerSecurityCreateAccountRequest(req, res, action) {
   const allowed = new Set(['security_review', 'export_data', 'deactivate_account', 'reactivate_account']);
   const requestType = String(body.request_type || 'security_review').trim().toLowerCase();
   const accountPolicy = diracAccountPolicyFromUserV472(access.user), partnerRequest = CUSTOMER_SECURITY_PARTNER_REQUEST_TYPES_V478.has(requestType);
+  if (String(req.headers && req.headers.origin || '').trim().toLowerCase() === diracRoleOriginV250('panel').toLowerCase()
+      && (accountPolicy.role !== 'partner' || !partnerRequest)) {
+    return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Hanya pengajuan Partner terverifikasi yang diterima dari dashboard.' });
+  }
   if (['partner_reseller_invite','partner_withdrawal','partner_commission_review'].includes(requestType)) return res.status(403).json({ ok: false, code: 'PARTNER_REQUEST_FORBIDDEN', message: 'Akses Partner terbatas pada referral customer dan bantuan layanan.' });
   if (requestType.startsWith('partner_') && !partnerRequest) return res.status(400).json({ ok: false, code: 'PARTNER_REQUEST_TYPE_INVALID', message: 'Jenis request partner tidak valid.' });
   if (partnerRequest && accountPolicy.role !== 'partner') return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Fitur ini hanya tersedia untuk akun Partner terverifikasi.' });
@@ -34375,6 +34379,10 @@ __diracV202RegisterMiddleware(async function customerSecurityFeatureReadWrapper(
       rateLimit: { limit: 90, windowMs: 60_000 }
     });
     if (!access) return;
+    if (String(req.headers && req.headers.origin || '').trim().toLowerCase() === diracRoleOriginV250('panel').toLowerCase()
+        && diracAccountPolicyFromUserV472(access.user).role !== 'partner') {
+      return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Akses ini hanya untuk akun Partner terverifikasi.' });
+    }
 
     const overviewResult = await customerSecurityFetchOverviewData(access.customerId).catch((error) => ({
       ok: false,
@@ -64447,6 +64455,21 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
       const expectedOrigin = diracRoleOriginV250('security').toLowerCase();
       const headers = req && req.headers || {};
       const origin = String(headers.origin || '').trim().toLowerCase();
+      if ((clean === 'customer_security_request_tracker' || clean === 'customer_security_account_request')
+          && origin === diracRoleOriginV250('panel').toLowerCase()) {
+        const expectedMethod = clean === 'customer_security_request_tracker' ? 'GET' : 'POST';
+        const method = String(req && req.method || '').trim().toUpperCase();
+        if (method === 'OPTIONS') {
+          if (String(headers['access-control-request-method'] || '').trim().toUpperCase() !== expectedMethod) {
+            return { ok: false, reason: 'partner_portal_preflight_method_invalid' };
+          }
+        } else if (method !== expectedMethod) return { ok: false, reason: 'partner_portal_method_invalid' };
+        const referer = new URL(String(headers.referer || headers.referrer || '').trim());
+        if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
+            || referer.origin.toLowerCase() !== origin || referer.pathname !== '/dashboard.html'
+            || referer.search || referer.hash) return { ok: false, reason: 'partner_portal_referer_invalid' };
+        return { ok: true };
+      }
       if (origin === expectedOrigin) {
         const method = String(req && req.method || '').trim().toUpperCase();
         const contract = diracCentralContractForActionV146(clean);
