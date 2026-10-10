@@ -57637,7 +57637,9 @@ const DIRAC_CENTRAL_CONFIRMED_ATTACK_KINDS_V281 = Object.freeze(new Set([
   'log4shell',
   'crlf_header_injection',
   'webshell',
-  'upload_webshell'
+  'upload_webshell',
+  'policy_keyword',
+  'forbidden_html_suffix'
 ]));
 
 function diracCentralPermanentBanDecisionV281(ctx, reason) {
@@ -57647,7 +57649,11 @@ function diracCentralPermanentBanDecisionV281(ctx, reason) {
     : null;
   const evidenceKind = String(evidence && evidence.kind || '').trim().toLowerCase();
   const evidenceConfirmed = DIRAC_CENTRAL_CONFIRMED_ATTACK_KINDS_V281.has(evidenceKind)
-    && (!cleanReason || cleanReason === evidenceKind);
+    && (!cleanReason || cleanReason === evidenceKind
+      || cleanReason === 'html_security_report' && ctx.action === 'security_report' && ctx.method === 'POST'
+        && ctx.terminalBlockReason === 'html_security_report' && ctx.classification === 'browser'
+        && ctx.passport === DIRAC_V202_ALL_CHECKPOINTS && !ctx.failedStageV211
+        && ctx.guardPassport && Object.keys(DIRAC_V202_CHECKPOINT_BY_STAMP).every((stamp) => ctx.guardPassport[stamp] === true));
   const corroborated = Boolean(ctx && ctx.__diracCentralCorroboratedAttackV281 === true)
     && DIRAC_CENTRAL_CONFIRMED_ATTACK_KINDS_V281.has(cleanReason);
   const body = ctx && ctx.body && typeof ctx.body === 'object' && !Array.isArray(ctx.body) ? ctx.body : null;
@@ -57800,6 +57806,8 @@ function diracCentralUrlLikeFieldV221(field) {
     || field && field.source === 'url';
 }
 
+const DIRAC_CENTRAL_INPUT_POLICY_V498 = /(?:^|[^a-z0-9_])(?:union|javascript|vbscript|alert|confirm|prompt|xss|sqli|csrf|ssrf|xxe|ssti|rce|lfi|rfi|jndi|log4shell|shellshock|sqlmap|sqlninja|havij|nuclei|nikto|nmap|gobuster|ffuf|dalfox|acunetix|burpsuite|metasploit|msfvenom|msfconsole|netcat|ncat|powershell|cmd\.exe|whoami|onerror|onload|onclick|onfocus|onblur|onmouseover|onanimationstart|onpointerenter|srcdoc|xlink|__proto__|__schema|__type|introspectionquery|xp_cmdshell|load_file|pg_read_file|pg_sleep|benchmark|information_schema|pg_catalog|sqlite_master|sysobjects|syscolumns|mysql\.user|eval|atob|btoa|shell_exec|passthru|proc_open|popen|base64_decode|unserialize|innerhtml|outerhtml|insertadjacenthtml|document\.cookie|document\.write|document\.writeln)(?=$|[^a-z0-9_])|^\s*(?:j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t|one\s+error)\s*$/i;
+
 function diracCentralContextualThreatGuardV221(req, ctx) {
   const fields = diracCentralThreatFieldsV221(req, ctx);
   for (const field of fields) {
@@ -57810,7 +57818,10 @@ function diracCentralContextualThreatGuardV221(req, ctx) {
     }
     if (field.sensitive) continue;
     const variants = diracCentralCanonicalVariantsV221(field.value);
+    const policyInputV498 = /^(?:body|query)$/.test(String(field.source || ''))
+      && /^(?:report_sample|identifier|email|name|full_?name|phone|customer_(?:address|note)|address|address_detail|detail|note|message|body|content|text|query|q|search|promo|promo_code|title|product_title|subject|description)$/i.test(key);
     for (const candidate of variants) {
+      if (policyInputV498 && DIRAC_CENTRAL_INPUT_POLICY_V498.test(candidate)) return { detected: true, kind: 'policy_keyword', field: path };
       if (/(?:^|[.\[\]{}\s'"])(?:__proto__|prototype)\s*(?:[.\[]|['"]?\s*[:=])/i.test(candidate)
           || /constructor\s*(?:\.|\[)\s*['"]?prototype/i.test(candidate)) {
         return { detected: true, kind: 'prototype_pollution', field: path };
@@ -65085,6 +65096,21 @@ function diracCentralSecurityReportGuardV146(req, ctx) {
   if (reason === 'html_detected_attack'
       && /^(?:url_guard|input_guard)$/.test(String(body.type || ''))
       && /^family=[a-z0-9_-]{1,64};field=[a-z0-9_-]{1,64};source=html_boundary$/.test(evidenceV441)) return rejectedV441;
+  if (reason === 'html_detected_attack' && body.type === 'url_guard'
+      && evidenceV441.startsWith('family=forbidden_html_suffix;field=url;source=html_boundary')) {
+    const suffixV498 = /^family=forbidden_html_suffix;field=url;source=html_boundary;sample=([^\r\n]{1,768})$/.exec(evidenceV441);
+    if (!suffixV498 || body.event !== 'forbidden_html_url_suffix' || body.version !== 'dirac-html-shell-v1'
+        || !DIRAC_CENTRAL_ALLOWED_REFERER_PATHS_V146.has('/' + String(body.page || ''))) return rejectedV441;
+    let reportedV498;
+    try { reportedV498 = new URL(suffixV498[1]); } catch (_) { return rejectedV441; }
+    const originV498 = String(req && req.headers && req.headers.origin || '');
+    const cleanV498 = originV498 + '/' + body.page;
+    if (!DIRAC_CENTRAL_ALLOWED_ORIGINS_V146.has(originV498) || reportedV498.origin !== originV498
+        || String(req && req.headers && (req.headers.referer || req.headers.referrer) || '') !== cleanV498
+        || reportedV498.username || reportedV498.password || reportedV498.href.indexOf(cleanV498) !== 0
+        || reportedV498.href.length <= cleanV498.length) return rejectedV441;
+    ctx.threatEvidenceV221 = Object.freeze({ kind: 'forbidden_html_suffix', field_hash: diracCentralHashV146('body.evidence').slice(0, 32) });
+  }
   if (reason === 'html_detected_attack' && body.type === 'input_guard'
       && evidenceV441.includes(';source=html_boundary;sample=')) {
     const sampleV441 = /^family=([a-z0-9_-]{1,64});field=([a-z0-9_-]{1,64});source=html_boundary;sample=([\s\S]{1,768})$/.exec(evidenceV441);
