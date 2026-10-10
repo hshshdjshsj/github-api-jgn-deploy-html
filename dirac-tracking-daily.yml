@@ -1,0 +1,39 @@
+name: DIRAC daily shipment tracking
+on:
+  schedule:
+    - cron: '17 2 * * *' # 09:17 Asia/Jakarta; best-effort execution
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: dirac-shipment-daily
+  cancel-in-progress: false
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call existing secured daily monitor
+        env:
+          DIRAC_TRACKING_CRON_URL: ${{ secrets.DIRAC_TRACKING_CRON_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          node - <<'NODE'
+          const { URL } = require('node:url');
+          const endpoint = process.env.DIRAC_TRACKING_CRON_URL || '';
+          const secret = process.env.CRON_SECRET || '';
+          const url = new URL(endpoint);
+          if (url.protocol !== 'https:' || url.username || url.password || url.port ||
+              url.pathname !== '/api/support' || url.search !== '?action=monitor_run' ||
+              url.hash || secret.length < 32) throw new Error('Secure cron configuration missing');
+          fetch(url, { method: 'GET', headers: { Authorization: `Bearer ${secret}`, Accept: 'application/json', 'User-Agent': 'DIRAC-Scheduled-Tracking/1.0' }, redirect: 'error', signal: AbortSignal.timeout(210000) })
+            .then(async response => {
+              if (response.status !== 200) throw new Error(`Monitor HTTP ${response.status}`);
+              const result = await response.json();
+              if (!result || result.ok !== true || result.code !== 'MONITOR_RUN_COMPLETE' ||
+                  !result.shipments || result.shipments.ok !== true || result.shipments.disabled === true ||
+                  result.shipments.failed > 0) throw new Error('Daily tracking unavailable or failed');
+              process.stdout.write(JSON.stringify({ checked: result.shipments.checked, changed: result.shipments.changed, failed: result.shipments.failed }) + '\n');
+            })
+            .catch(error => { process.stderr.write(String(error && error.message || 'Tracking job failed') + '\n'); process.exitCode = 1; });
+          NODE
