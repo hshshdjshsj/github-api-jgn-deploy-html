@@ -10827,7 +10827,7 @@ async function customerSecurityFetchOverviewData(customerId) {
     return Array.isArray(result.data) ? result.data : [];
   }
 
-  const settingsResult = await customerSecurityFetchRows(
+  const settingsResultPromise = customerSecurityFetchRows(
     'security_customer_settings',
     [
       'email_active',
@@ -10847,7 +10847,7 @@ async function customerSecurityFetchOverviewData(customerId) {
     1
   ).catch((error) => ({ ok: false, status: 500, data: { message: String(error && error.message ? error.message : error) } }));
 
-  const sessionsResult = await customerSecurityFetchRows(
+  const sessionsResultPromise = customerSecurityFetchRows(
     'security_customer_sessions',
     [
       'id',
@@ -10870,7 +10870,7 @@ async function customerSecurityFetchOverviewData(customerId) {
     10
   ).catch((error) => ({ ok: false, status: 500, data: { message: String(error && error.message ? error.message : error) } }));
 
-  const loginLogsResult = await customerSecurityFetchRows(
+  const loginLogsResultPromise = customerSecurityFetchRows(
     'security_customer_login_logs',
     [
       'id',
@@ -10890,7 +10890,7 @@ async function customerSecurityFetchOverviewData(customerId) {
     10
   ).catch((error) => ({ ok: false, status: 500, data: { message: String(error && error.message ? error.message : error) } }));
 
-  const eventsResult = await customerSecurityFetchRows(
+  const eventsResultPromise = customerSecurityFetchRows(
     'security_customer_events',
     [
       'id',
@@ -10905,7 +10905,7 @@ async function customerSecurityFetchOverviewData(customerId) {
     20
   ).catch((error) => ({ ok: false, status: 500, data: { message: String(error && error.message ? error.message : error) } }));
 
-  const requestsResult = await customerSecurityFetchRows(
+  const requestsResultPromise = customerSecurityFetchRows(
     'security_customer_account_requests',
     [
       'id',
@@ -10921,6 +10921,8 @@ async function customerSecurityFetchOverviewData(customerId) {
     'created_at.desc',
     10
   ).catch((error) => ({ ok: false, status: 500, data: { message: String(error && error.message ? error.message : error) } }));
+
+  const [settingsResult, sessionsResult, loginLogsResult, eventsResult, requestsResult] = await Promise.all([settingsResultPromise, sessionsResultPromise, loginLogsResultPromise, eventsResultPromise, requestsResultPromise]);
 
   const settingsRows = rowsOrEmpty(settingsResult, 'settings');
   const sessions = rowsOrEmpty(sessionsResult, 'sessions');
@@ -18623,8 +18625,11 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
   const access = await requireDomainDashboardAccess(req, res);
   if (!access || !access.user) return;
 
-  const laboratoryCheckoutTarget = diracAppOriginHandoffTargetV313('laboratorium');
-  const laboratoryCheckoutOrder = Boolean(laboratoryCheckoutTarget && diracCsrfRequestOrigin(req) === laboratoryCheckoutTarget.origin);
+  const checkoutPage = diracAppPageSourceV503(req);
+  if (!checkoutPage || (checkoutPage.role !== 'parfum' && checkoutPage.role !== 'laboratorium')) {
+    return res.status(403).json({ ok: false, message: 'Halaman asal checkout tidak valid.' });
+  }
+  const laboratoryCheckoutOrder = checkoutPage.role === 'laboratorium';
   const body = await readBody(req);
   const user = access.user || {};
   const authUserId = String(user.id || '').trim();
@@ -18645,9 +18650,10 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
   const customerPhone = normalizePhone(body.customer_phone || body.phone || body.whatsapp || body.customer_whatsapp || '');
   const requestedName = String(sessionOwnershipCheckoutUserMetadataName(user) || '').trim();
   const accountPolicyV472 = diracAccountPolicyFromUserV472(user);
-  const serviceType = laboratoryCheckoutOrder
-    ? 'laboratorium'
-    : sessionOwnershipCheckoutNormalizeServiceType(body.service_type || body.service || 'parfum');
+  const serviceType = laboratoryCheckoutOrder ? 'laboratorium' : 'parfum';
+  if (sessionOwnershipCheckoutNormalizeServiceType(body.service_type || body.service || serviceType) !== serviceType) {
+    return res.status(409).json({ ok: false, message: 'Jenis layanan tidak cocok dengan halaman checkout.' });
+  }
   const quantity = sessionOwnershipCheckoutPositiveInteger(body.quantity || body.qty || 1, 1, 999);
   const requestedProductTitle = sessionOwnershipCheckoutBuildProductTitle(body, serviceType);
   const shippingAddress = sessionOwnershipCheckoutBuildShippingAddress(body);
