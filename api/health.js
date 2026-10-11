@@ -21458,7 +21458,7 @@ function midtransStatusBaseUrlV350() {
   return midtransIsProduction() ? 'https://api.midtrans.com' : 'https://api.sandbox.midtrans.com';
 }
 
-async function midtransFetchAuthoritativeStatusV350(gatewayTransactionId, diagnosticReqV620) {
+async function midtransFetchAuthoritativeStatusV350(gatewayTransactionId, diagnosticReqV620, forceSnapHeaderV625 = false) {
   const reference = midtransSafeText(gatewayTransactionId || '', 120);
   if (!/^[A-Za-z0-9-]{16,120}$/.test(reference) && !/^PAY-[A-Za-z0-9._:@-]{1,116}$/.test(reference)) {
     diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'status_id_rejected', { reason: 'invalid_gateway_transaction_id', http_status: 400 });
@@ -21469,13 +21469,15 @@ async function midtransFetchAuthoritativeStatusV350(gatewayTransactionId, diagno
     const authorization = midtransBasicAuthHeader();
     let response = await fetch(statusUrl, {
       method: 'GET',
-      headers: { Accept: 'application/json', Authorization: authorization }
+      headers: forceSnapHeaderV625
+        ? { Accept: 'application/json', Authorization: authorization, 'transaction-source': 'SNAP_API' }
+        : { Accept: 'application/json', Authorization: authorization }
     });
     let data = await parseFetchResponse(response);
     diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'midtrans_status_primary_response', { ok: !!(response && response.ok),
       upstream_http_status: response && response.status, gateway_code: data && data.status_code,
       error_code: data && data.error_code });
-    if (response && response.status === 404) {
+    if (!forceSnapHeaderV625 && response && (response.status === 404 || String(data && data.status_code || '') === '404')) {
       diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'midtrans_status_snap_retry', { retry: true, upstream_http_status: response.status });
       response = await fetch(statusUrl, {
         method: 'GET',
@@ -22409,6 +22411,11 @@ function diracMidtransWebhookDiagMarkV620(req, stage, values) {
     if (data.order_database) point.order_database = diracMidtransWebhookDiagCodeV620(data.order_database);
     if (data.event_status) point.event_status = diracMidtransWebhookDiagCodeV620(data.event_status);
     if (data.reference_hash) point.reference_hash = /^[a-f0-9]{20}$/.test(data.reference_hash) ? data.reference_hash : '';
+    if (data.signed_order_hash) point.signed_order_hash = /^[a-f0-9]{20}$/.test(data.signed_order_hash) ? data.signed_order_hash : '';
+    if (data.upstream_order_hash) point.upstream_order_hash = /^[a-f0-9]{20}$/.test(data.upstream_order_hash) ? data.upstream_order_hash : '';
+    if (typeof data.upstream_order_present === 'boolean') point.upstream_order_present = data.upstream_order_present;
+    if (typeof data.upstream_signature_valid === 'boolean') point.upstream_signature_valid = data.upstream_signature_valid;
+    if (typeof data.upstream_signature_for_signed_order === 'boolean') point.upstream_signature_for_signed_order = data.upstream_signature_for_signed_order;
     record.last_stage = point.stage;
     if (record.checkpoints.length < 80) record.checkpoints.push(point);
     else record.overflow = true;
@@ -22523,26 +22530,52 @@ async function midtransHandleWebhook(req, res) {
     webhookTransactionId: body.transaction_id || ''
   });
   if (!authoritativeBinding.ok && authoritativeBinding.reason === 'midtrans_status_order_mismatch') {
+    const upstreamOrderV625 = String(authoritativeStatus.data && authoritativeStatus.data.order_id || '');
+    const upstreamSignatureV625 = String(authoritativeStatus.data && authoritativeStatus.data.signature_key || '').trim().toLowerCase();
+    const upstreamCodeV625 = String(authoritativeStatus.data && authoritativeStatus.data.status_code || '');
+    const upstreamGrossV625 = String(authoritativeStatus.data && authoritativeStatus.data.gross_amount || '');
+    const upstreamHasSignatureV625 = /^[a-f0-9]{128}$/.test(upstreamSignatureV625);
     diracMidtransWebhookDiagMarkV620(req, 'status_order_exact_lookup_begin', {
       signed_order_hash: diracMidtransWebhookDiagHashV620(gatewayReference),
-      upstream_order_hash: diracMidtransWebhookDiagHashV620(authoritativeStatus.data && authoritativeStatus.data.order_id || '')
+      upstream_order_hash: diracMidtransWebhookDiagHashV620(upstreamOrderV625),
+      upstream_order_present: upstreamOrderV625.length > 0,
+      upstream_signature_valid: upstreamHasSignatureV625 && safeEqual(upstreamSignatureV625, midtransExpectedSignature(upstreamOrderV625, upstreamCodeV625, upstreamGrossV625)),
+      upstream_signature_for_signed_order: upstreamHasSignatureV625 && safeEqual(upstreamSignatureV625, midtransExpectedSignature(gatewayReference, upstreamCodeV625, upstreamGrossV625))
     });
-    const exactOrderStatus = await midtransFetchAuthoritativeStatusV350(gatewayReference, req);
-    const exactOrderBinding = midtransAuthoritativeStatusMatchesBindingV350(exactOrderStatus, {
-      gatewayReference,
-      grossAmount,
-      currency,
-      webhookTransactionId: body.transaction_id || ''
+    // BI-SNAP status may require its own header even when the legacy request
+    // returned HTTP 200. Retry by the same transaction ID; keep all binding checks.
+    const snapTransactionStatusV625 = await midtransFetchAuthoritativeStatusV350(body.transaction_id, req, true);
+    const snapTransactionBindingV625 = midtransAuthoritativeStatusMatchesBindingV350(snapTransactionStatusV625, {
+      gatewayReference, grossAmount, currency, webhookTransactionId: body.transaction_id || ''
     });
-    diracMidtransWebhookDiagMarkV620(req, 'status_order_exact_lookup_result', {
-      ok: exactOrderBinding.ok === true,
-      reason: exactOrderBinding.reason || exactOrderStatus.reason || '',
-      upstream_http_status: exactOrderStatus.status,
-      upstream_order_hash: diracMidtransWebhookDiagHashV620(exactOrderStatus.data && exactOrderStatus.data.order_id || '')
+    diracMidtransWebhookDiagMarkV620(req, 'status_transaction_snap_exact_result', {
+      ok: snapTransactionBindingV625.ok === true,
+      reason: snapTransactionBindingV625.reason || snapTransactionStatusV625.reason || '',
+      upstream_http_status: snapTransactionStatusV625.status,
+      upstream_order_hash: diracMidtransWebhookDiagHashV620(snapTransactionStatusV625.data && snapTransactionStatusV625.data.order_id || '')
     });
-    if (exactOrderBinding.ok === true) {
-      authoritativeStatus = exactOrderStatus;
-      authoritativeBinding = exactOrderBinding;
+    if (snapTransactionBindingV625.ok === true) {
+      authoritativeStatus = snapTransactionStatusV625;
+      authoritativeBinding = snapTransactionBindingV625;
+    }
+    if (!authoritativeBinding.ok) {
+      const exactOrderStatus = await midtransFetchAuthoritativeStatusV350(gatewayReference, req);
+      const exactOrderBinding = midtransAuthoritativeStatusMatchesBindingV350(exactOrderStatus, {
+        gatewayReference,
+        grossAmount,
+        currency,
+        webhookTransactionId: body.transaction_id || ''
+      });
+      diracMidtransWebhookDiagMarkV620(req, 'status_order_exact_lookup_result', {
+        ok: exactOrderBinding.ok === true,
+        reason: exactOrderBinding.reason || exactOrderStatus.reason || '',
+        upstream_http_status: exactOrderStatus.status,
+        upstream_order_hash: diracMidtransWebhookDiagHashV620(exactOrderStatus.data && exactOrderStatus.data.order_id || '')
+      });
+      if (exactOrderBinding.ok === true) {
+        authoritativeStatus = exactOrderStatus;
+        authoritativeBinding = exactOrderBinding;
+      }
     }
   }
   if (!authoritativeBinding.ok) {
