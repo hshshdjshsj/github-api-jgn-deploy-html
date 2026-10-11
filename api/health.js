@@ -188,13 +188,14 @@ function diracSmtpHeaderImageUrlV332() {
 const DIRAC_REQUEST_PERFORMANCE_STATE_V340 = {
   requests: new WeakMap(),
   windowStartedAt: 0,
-  admitted: 0
+  admitted: 0,
+  admittedWebhook: 0
 };
 const DIRAC_REQUEST_PERFORMANCE_ACTIONS_V340 = Object.freeze({
   domain_login: 'POST', domain_register: 'POST',
   dirac_mfa_passkey_start: 'POST', dirac_mfa_passkey_verify: 'POST',
   domain_dashboard_me: 'GET', domain_health: 'GET', my_orders: 'GET',
-  checkout_order: 'POST', create_payment: 'POST',
+  checkout_order: 'POST', create_payment: 'POST', midtrans_webhook: 'POST',
   customer_session_handoff_issue: 'POST', customer_session_handoff_consume: 'POST'
 });
 const DIRAC_REQUEST_PERFORMANCE_PHASES_V340 = new Set([
@@ -232,10 +233,16 @@ function diracRequestPerformanceBeginV340(req, res) {
     if (!admission.windowStartedAt || now - admission.windowStartedAt >= 60000) {
       admission.windowStartedAt = now;
       admission.admitted = 0;
+      admission.admittedWebhook = 0;
     }
     admission.requests.set(req, null);
-    if (admission.admitted >= 16) return null;
-    admission.admitted += 1;
+    if (action === 'midtrans_webhook') {
+      if (admission.admittedWebhook >= 128) return null;
+      admission.admittedWebhook += 1;
+    } else {
+      if (admission.admitted >= 16) return null;
+      admission.admitted += 1;
+    }
     const record = {
       action, method, startedAt: now, emitted: false, returnedAt: 0,
       phases: new Map(), stages: new Map(), database: new Map()
@@ -280,7 +287,8 @@ function diracRequestPerformanceDatabaseStartV340(ctx, path, options) {
     const classified = diracLoginFatalDatabaseRouteV324(path);
     const route = ['auth:token', 'auth:user', 'auth:admin_user'].includes(classified)
       ? classified
-      : classified.startsWith('table:') && DIRAC_REQUEST_PERFORMANCE_TABLES_V340.has(classified.slice(6))
+      : classified.startsWith('table:') && (DIRAC_REQUEST_PERFORMANCE_TABLES_V340.has(classified.slice(6))
+        || (record.action === 'midtrans_webhook' && classified === 'table:payment_gateway_events'))
         ? classified
         : classified.startsWith('rpc:') ? 'rpc' : 'other';
     const rawMethod = String(options && options.method || 'GET').toUpperCase();
@@ -298,7 +306,9 @@ function diracRequestPerformanceDatabaseStartV340(ctx, path, options) {
     });
     const aggregate = record.database.get(key);
     aggregate.calls += 1;
-    return { record, aggregate, startedAt: Date.now(), completed: false };
+    return { record, aggregate, req: record.action === 'midtrans_webhook' ? ctx.req : null,
+      dbAlias: options && /^(security|paymentService)$/.test(String(options.db || '')) ? String(options.db) : 'default',
+      startedAt: Date.now(), completed: false };
   } catch (_) { return null; }
 }
 
@@ -310,7 +320,8 @@ function diracRequestPerformanceTransportStartV340(ctx, path, method) {
     const classified = diracLoginFatalDatabaseRouteV324(path);
     const route = ['auth:token', 'auth:user', 'auth:admin_user'].includes(classified)
       ? classified
-      : classified.startsWith('table:') && DIRAC_REQUEST_PERFORMANCE_TABLES_V340.has(classified.slice(6))
+      : classified.startsWith('table:') && (DIRAC_REQUEST_PERFORMANCE_TABLES_V340.has(classified.slice(6))
+        || (record.action === 'midtrans_webhook' && classified === 'table:payment_gateway_events'))
         ? classified
         : classified.startsWith('rpc:') ? 'rpc' : 'other';
     const rawMethod = String(method || 'GET').toUpperCase();
@@ -376,6 +387,14 @@ function diracRequestPerformanceDatabaseEndV340(marker, result, error) {
       const bucket = Object.prototype.hasOwnProperty.call(counts, code) || Object.keys(counts).length < 8 ? code : 'OTHER';
       counts[bucket] = (counts[bucket] || 0) + 1;
     }
+    if (marker.req) diracMidtransWebhookDiagMarkV620(marker.req, 'database_result', {
+      ok: !error && !!result && result.ok === true,
+      http_status: status, source: aggregate.route, method: aggregate.method,
+      phase: aggregate.phase, order_database: marker.dbAlias,
+      error_code: error && error.code || result && result.data && result.data.code || result && result.code || '',
+      reason: error ? 'database_transport_exception' : (!result || result.ok !== true ? 'database_operation_rejected' : 'database_operation_completed'),
+      duration_ms: duration
+    });
   } catch (_) {}
 }
 
@@ -21439,9 +21458,10 @@ function midtransStatusBaseUrlV350() {
   return midtransIsProduction() ? 'https://api.midtrans.com' : 'https://api.sandbox.midtrans.com';
 }
 
-async function midtransFetchAuthoritativeStatusV350(gatewayTransactionId) {
+async function midtransFetchAuthoritativeStatusV350(gatewayTransactionId, diagnosticReqV620) {
   const reference = midtransSafeText(gatewayTransactionId || '', 120);
   if (!/^[A-Za-z0-9-]{16,120}$/.test(reference)) {
+    diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'status_id_rejected', { reason: 'invalid_gateway_transaction_id', http_status: 400 });
     return { ok: false, status: 400, reason: 'invalid_gateway_transaction_id' };
   }
   try {
@@ -21452,20 +21472,34 @@ async function midtransFetchAuthoritativeStatusV350(gatewayTransactionId) {
       headers: { Accept: 'application/json', Authorization: authorization }
     });
     let data = await parseFetchResponse(response);
+    diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'midtrans_status_primary_response', { ok: !!(response && response.ok),
+      upstream_http_status: response && response.status, gateway_code: data && data.status_code,
+      error_code: data && data.error_code });
     if (response && response.status === 404) {
+      diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'midtrans_status_snap_retry', { retry: true, upstream_http_status: response.status });
       response = await fetch(statusUrl, {
         method: 'GET',
         headers: { Accept: 'application/json', Authorization: authorization, 'transaction-source': 'SNAP_API' }
       });
       data = await parseFetchResponse(response);
     }
+      diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'midtrans_status_snap_response', { ok: !!(response && response.ok),
+        upstream_http_status: response && response.status, gateway_code: data && data.status_code,
+        error_code: data && data.error_code });
     if (!response || response.ok !== true || !data || typeof data !== 'object' || Array.isArray(data)) {
+      diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'midtrans_status_rejected', { reason: 'midtrans_status_api_rejected',
+        upstream_http_status: response && response.status, gateway_code: data && data.status_code, error_code: data && data.error_code });
       return { ok: false, status: Number(response && response.status || 502), reason: 'midtrans_status_api_rejected' };
     }
     const authoritativeStatus = midtransMappedPaymentStatus(data);
     if (!authoritativeStatus) {
+      diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'midtrans_unknown_state', { reason: 'midtrans_status_unknown',
+        gateway_status: data && data.transaction_status, payment_type: data && data.payment_type });
       return { ok: false, status: 409, reason: 'midtrans_status_unknown' };
     }
+    diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'midtrans_status_accepted', { ok: true,
+      gateway_status: data && data.transaction_status, payment_status: authoritativeStatus,
+      gateway_code: data && data.status_code, payment_type: data && data.payment_type });
     return {
       ok: true,
       data,
@@ -21473,6 +21507,8 @@ async function midtransFetchAuthoritativeStatusV350(gatewayTransactionId) {
       success: midtransSuccessStatus(data)
     };
   } catch (error) {
+    diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'midtrans_status_exception', { reason: 'midtrans_status_api_unavailable',
+      error_code: error && (error.code || error.name) || '' });
     return { ok: false, status: 502, reason: 'midtrans_status_api_unavailable', error: lockedPaymentSafeError(error) };
   }
 }
@@ -22209,6 +22245,7 @@ function diracPaidContinuationCreateV441(req, input) {
   return job;
 }
 async function diracMidtransPaidContinuationV441(req, res, input) {
+  diracMidtransWebhookDiagMarkV620(req, 'invoice_continuation_enter', { reason: 'paid_payment_committed' });
   let job = null, ownerResult = null, customerResult = null;
   let attached = false, settled = false, eventFinalized = false, customerResolved = false;
   let customerStatus = 'pending', ownerStatus = 'pending', phase = 'identity';
@@ -22221,6 +22258,8 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
         customer: { status: customerStatus, accepted: customerStatus === 'accepted' },
         owner: { status: ownerStatus, accepted: ownerStatus === 'accepted' } } }
       : { ok: false, code: 'PAID_INVOICE_PREPARATION_UNAVAILABLE', message: 'Pembayaran sudah tersimpan; pengiriman invoice belum terkonfirmasi.' };
+    diracMidtransWebhookDiagMarkV620(req, 'invoice_continuation_reply', { http_status: status,
+      reason: status === 200 ? 'invoice_continuation_acknowledged' : 'invoice_continuation_unavailable' });
     res.status(status).json(body); if (job) job.acknowledged = status === 200;
   };
   // Register before starting work. The promise includes BOTH recipients,
@@ -22229,10 +22268,13 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
     try {
       job = diracPaidContinuationCreateV441(req, input);
       await diracInvoiceContinuationIdentityV441(job);
+      diracMidtransWebhookDiagMarkV620(req, 'invoice_identity_verified', { ok: true });
       phase = 'receipt_claims';
       let customerClaimReady = false, ownerClaimReady = false;
       try { await diracPaidOwnerClaimV441(job, 'customer'); customerClaimReady = true; } catch (_) {}
       try { await diracPaidOwnerClaimV441(job); ownerClaimReady = true; } catch (_) {}
+      diracMidtransWebhookDiagMarkV620(req, 'invoice_receipt_claim_results', { ok: customerClaimReady && ownerClaimReady,
+        reason: customerClaimReady && ownerClaimReady ? 'claims_valid' : 'receipt_claim_failed' });
       phase = 'dual_delivery';
       diracPaidMailTimingMarkV371(input.timing, 'mail_start');
       try {
@@ -22241,6 +22283,8 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
         customerResolved = true;
       } catch (_) { customerResult = { sent: false, status: 'failed' }; }
       customerStatus = customerResult && ['idle','pending','accepted','failed','unknown'].includes(customerResult.status) ? customerResult.status : 'failed';
+      diracMidtransWebhookDiagMarkV620(req, 'invoice_customer_delivery_result', {
+        ok: customerStatus === 'accepted', event_status: customerStatus });
       try {
         const ownerConfigForDispatchV449 = orderMailSmtpConfig('owner');
         const ownerRecipientsForDispatchV449 = ownerConfigForDispatchV449 && Array.isArray(ownerConfigForDispatchV449.recipients)
@@ -22261,10 +22305,13 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
       } catch (_) { ownerStatus = 'unknown'; ownerResult = { sent: false, status: 'unknown' }; }
       settled = true;
       const dualAccepted = customerResolved && customerStatus === 'accepted' && ownerStatus === 'accepted';
+      diracMidtransWebhookDiagMarkV620(req, 'invoice_dual_delivery_result', { ok: dualAccepted,
+        event_status: ownerStatus, reason: dualAccepted ? 'dual_delivery_accepted' : 'dual_delivery_incomplete' });
       if (dualAccepted) {
         phase = 'finalize';
         const finalized = await midtransFinalizeGatewayEventV350(job.cap.gatewayEventId, job.cap.customerId);
         if (!finalized || finalized.ok !== true) throw new Error('PAID_EVENT_FINALIZE_UNAVAILABLE');
+        diracMidtransWebhookDiagMarkV620(req, 'invoice_gateway_event_finalized', { ok: true });
         eventFinalized = true;
       } else {
         phase = 'dual_delivery_incomplete';
@@ -22280,7 +22327,9 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
       }
       reply(eventFinalized ? 200 : 503);
       return { handled: true, acknowledged: job.acknowledged };
-    } catch (_) {
+    } catch (diagnosticErrorV620) {
+      diracMidtransWebhookDiagMarkV620(req, 'invoice_continuation_exception', { reason: 'invoice_continuation_exception',
+        phase, error_code: diagnosticErrorV620 && (diagnosticErrorV620.code || diagnosticErrorV620.name) || '' });
       if (!job || !job.acknowledged) reply(503);
       return { handled: true, acknowledged: !!(job && job.acknowledged) };
     } finally {
@@ -22302,18 +22351,107 @@ async function diracMidtransPaidContinuationV441(req, res, input) {
   return await tracked.promise;
 }
 
+// V620: read-only forensic trace, scoped strictly to the Midtrans webhook.
+// Never log notification bodies, signature keys, server keys, customer PII,
+// credentials, payment URLs, SQL bodies, or upstream response messages.
+const DIRAC_MIDTRANS_WEBHOOK_DIAG_V620 = new WeakMap();
+function diracMidtransWebhookDiagHashV620(value) {
+  try { const key = midtransWebhookBindingSecret(); return key ? crypto.createHmac('sha256', key).update(String(value || ''), 'utf8').digest('hex').slice(0, 20) : ''; }
+  catch (_) { return ''; }
+}
+function diracMidtransWebhookDiagCodeV620(value) {
+  const token = typeof value === 'string' ? value : '';
+  return /^[A-Za-z0-9_.:-]{1,90}$/.test(token) ? token : (token ? 'REDACTED_OR_UNKNOWN' : '');
+}
+function diracMidtransWebhookDiagStatusV620(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 100 && n <= 599 ? n : 0;
+}
+function diracMidtransWebhookDiagBeginV620(req, res) {
+  try {
+    if (!req || typeof req !== 'object' || !res || typeof res !== 'object') return;
+    if (DIRAC_MIDTRANS_WEBHOOK_DIAG_V620.has(req)) return;
+    const record = { started_at: Date.now(), checkpoints: [], last_stage: 'handler_enter', emitted: false, overflow: false };
+    DIRAC_MIDTRANS_WEBHOOK_DIAG_V620.set(req, record);
+    if (typeof res.once === 'function') {
+      res.once('finish', () => diracMidtransWebhookDiagFinishV620(req, res, 'finish'));
+      res.once('close', () => diracMidtransWebhookDiagFinishV620(req, res, 'close'));
+    }
+    diracMidtransWebhookDiagMarkV620(req, 'handler_enter', { reason: 'webhook_handler_entered' });
+  } catch (_) {}
+}
+function diracMidtransWebhookDiagMarkV620(req, stage, values) {
+  try {
+    const record = req && DIRAC_MIDTRANS_WEBHOOK_DIAG_V620.get(req);
+    if (!record || record.emitted) return;
+    const data = values && typeof values === 'object' ? values : {};
+    const point = { stage: diracMidtransWebhookDiagCodeV620(stage) || 'unclassified',
+      elapsed_ms: Math.max(0, Date.now() - record.started_at) };
+    if (typeof data.ok === 'boolean') point.ok = data.ok;
+    if (typeof data.success === 'boolean') point.success = data.success;
+    if (typeof data.duplicate === 'boolean') point.duplicate = data.duplicate;
+    if (typeof data.present === 'boolean') point.present = data.present;
+    if (typeof data.guard_passed === 'boolean') point.guard_passed = data.guard_passed;
+    if (typeof data.retry === 'boolean') point.retry = data.retry;
+    if (typeof data.row_count === 'number' && Number.isInteger(data.row_count) && data.row_count >= 0 && data.row_count < 10000) point.row_count = data.row_count;
+    if (typeof data.duration_ms === 'number' && Number.isFinite(data.duration_ms)) point.duration_ms = Math.max(0, Math.min(86400000, data.duration_ms));
+    if (data.http_status !== undefined) point.http_status = diracMidtransWebhookDiagStatusV620(data.http_status);
+    if (data.upstream_http_status !== undefined) point.upstream_http_status = diracMidtransWebhookDiagStatusV620(data.upstream_http_status);
+    if (data.reason) point.reason = diracMidtransWebhookDiagCodeV620(data.reason);
+    if (data.error_code) point.error_code = diracMidtransWebhookDiagCodeV620(data.error_code);
+    if (data.source) point.source = diracMidtransWebhookDiagCodeV620(data.source);
+    if (data.method) point.method = diracMidtransWebhookDiagCodeV620(data.method);
+    if (data.phase) point.phase = diracMidtransWebhookDiagCodeV620(data.phase);
+    if (data.payment_type) point.payment_type = diracMidtransWebhookDiagCodeV620(data.payment_type);
+    if (data.payment_status) point.payment_status = diracMidtransWebhookDiagCodeV620(data.payment_status);
+    if (data.gateway_status) point.gateway_status = diracMidtransWebhookDiagCodeV620(data.gateway_status);
+    if (data.gateway_code) point.gateway_code = diracMidtransWebhookDiagCodeV620(data.gateway_code);
+    if (data.order_database) point.order_database = diracMidtransWebhookDiagCodeV620(data.order_database);
+    if (data.event_status) point.event_status = diracMidtransWebhookDiagCodeV620(data.event_status);
+    if (data.reference_hash) point.reference_hash = /^[a-f0-9]{20}$/.test(data.reference_hash) ? data.reference_hash : '';
+    record.last_stage = point.stage;
+    if (record.checkpoints.length < 80) record.checkpoints.push(point);
+    else record.overflow = true;
+    const reqId = String(req.__diracCentralRequestIdV211 || '');
+    console.info('[dirac-midtrans-webhook-diag-v620]', JSON.stringify({
+      version: 'v620', event: 'checkpoint', request_id: /^[a-f0-9]{32}$/.test(reqId) ? reqId : '', ...point
+    }));
+  } catch (_) {}
+}
+function diracMidtransWebhookDiagFinishV620(req, res, event) {
+  try {
+    const record = req && DIRAC_MIDTRANS_WEBHOOK_DIAG_V620.get(req);
+    if (!record || record.emitted) return;
+    record.emitted = true;
+    const reqId = String(req.__diracCentralRequestIdV211 || '');
+    const code = diracMidtransWebhookDiagStatusV620(res && res.statusCode);
+    const payload = { version: 'v620', event: 'terminal',
+      request_id: /^[a-f0-9]{32}$/.test(reqId) ? reqId : '',
+      response_event: event === 'finish' ? 'finish' : 'close', http_status: code,
+      response_finished: event === 'finish', elapsed_ms: Math.max(0, Date.now() - record.started_at),
+      last_stage: record.last_stage, checkpoint_count: record.checkpoints.length,
+      truncated: record.overflow, checkpoints: record.checkpoints };
+    if (code >= 400 || event !== 'finish') console.warn('[dirac-midtrans-webhook-diag-v620]', JSON.stringify(payload));
+    else console.info('[dirac-midtrans-webhook-diag-v620]', JSON.stringify(payload));
+  } catch (_) {}
+}
+
 async function midtransHandleWebhook(req, res) {
+  diracMidtransWebhookDiagBeginV620(req, res);
   const paidMailTimingV371 = diracPaidMailTimingCreateV371(req);
   if (!midtransPaymentIsConfigured()) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_configuration', { reason: 'midtrans_server_key_unavailable', http_status: 503 });
     return res.status(503).json({ ok: false, message: 'MIDTRANS_SERVER_KEY belum disetel.' });
   }
 
   const body = req && req.__diracCentralParsedBodyV146;
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_parsed_body', { reason: 'payload_missing_or_invalid', http_status: 400 });
     return res.status(400).json({ ok: false, message: 'Payload Midtrans tidak valid.' });
   }
 
   if (!midtransVerifySignature(body)) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_signature', { reason: 'midtrans_signature_invalid', http_status: 403 });
     return res.status(403).json({ ok: false, message: 'Signature Midtrans tidak valid.' });
   }
 
@@ -22321,6 +22459,7 @@ async function midtransHandleWebhook(req, res) {
   const gatewayEventId = midtransGatewayEventId(body);
   const strictGrossAmountV350 = midtransStrictMoneyV350(body.gross_amount);
   if (strictGrossAmountV350 === null) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_gross_amount', { reason: 'invalid_money_format', http_status: 400 });
     return res.status(400).json({ ok: false, message: 'Format gross_amount Midtrans tidak valid.' });
   }
   const grossAmount = strictGrossAmountV350;
@@ -22332,11 +22471,13 @@ async function midtransHandleWebhook(req, res) {
   let success = midtransSuccessStatus(body);
 
   if (!gatewayReference || !gatewayEventId || grossAmount <= 0) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_required_fields', { reason: 'required_field_missing', http_status: 400 });
     return res.status(400).json({ ok: false, message: 'Payload Midtrans kurang lengkap.' });
   }
   if (!customerSecurityLooksLikeUuid(bindingTransactionId)
       || !customerSecurityLooksLikeUuid(bindingCustomerId)
       || !binding) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_binding_fields', { reason: 'binding_required_fields_invalid', http_status: 403 });
     return res.status(403).json({ ok: false, message: 'Binding webhook Midtrans tidak valid.' });
   }
 
@@ -22353,14 +22494,23 @@ async function midtransHandleWebhook(req, res) {
     currency
   }, binding.signature);
   if (!bindingValid) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_binding_signature', { reason: 'binding_signature_invalid', http_status: 403 });
     return res.status(403).json({ ok: false, message: 'Signature binding webhook Midtrans tidak valid.' });
   }
+  diracMidtransWebhookDiagMarkV620(req, 'verified_webhook_identity', { ok: true,
+    payment_type: body.payment_type, gateway_status: body.transaction_status,
+    order_database: binding.orderDatabase, reference_hash: diracMidtransWebhookDiagHashV620(gatewayReference) });
 
   // Do not trust financial state from the notification alone. Resolve the
   // current state directly from Midtrans using the Server Key and bind it to
   // the same order, amount, currency and transaction id before any DB write.
-  const authoritativeStatus = await midtransFetchAuthoritativeStatusV350(body.transaction_id);
+  diracMidtransWebhookDiagMarkV620(req, 'status_authoritative_lookup_begin', { reference_hash: diracMidtransWebhookDiagHashV620(body.transaction_id) });
+  const authoritativeStatus = await midtransFetchAuthoritativeStatusV350(body.transaction_id, req);
+  diracMidtransWebhookDiagMarkV620(req, 'status_authoritative_lookup_result', { ok: authoritativeStatus.ok, upstream_http_status: authoritativeStatus.status,
+    reason: authoritativeStatus.reason || '', payment_status: authoritativeStatus.mappedStatus || '', success: authoritativeStatus.success });
   if (!authoritativeStatus.ok) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_authoritative_status', { reason: authoritativeStatus.reason || 'status_verification_failed',
+      upstream_http_status: authoritativeStatus.status, http_status: authoritativeStatus.status >= 500 ? 503 : 409, error_code: authoritativeStatus.error_code || '' });
     return res.status(authoritativeStatus.status >= 500 ? 503 : 409).json({
       ok: false,
       message: 'Status transaksi Midtrans belum dapat diverifikasi secara otoritatif.'
@@ -22373,10 +22523,13 @@ async function midtransHandleWebhook(req, res) {
     webhookTransactionId: body.transaction_id || ''
   });
   if (!authoritativeBinding.ok) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_authoritative_binding', { reason: authoritativeBinding.reason || 'gateway_binding_mismatch', http_status: 409 });
     return res.status(409).json({ ok: false, message: 'Status Midtrans tidak cocok dengan binding transaksi.' });
   }
   mappedStatus = authoritativeStatus.mappedStatus;
   success = authoritativeStatus.success;
+  diracMidtransWebhookDiagMarkV620(req, 'status_verified', { ok: true, payment_status: mappedStatus, success,
+    gateway_status: authoritativeStatus.data && authoritativeStatus.data.transaction_status, payment_type: authoritativeStatus.data && authoritativeStatus.data.payment_type });
 
   const capabilityContextV350 = midtransGrantWebhookCapabilityV350(req, {
     payload: body,
@@ -22395,13 +22548,16 @@ async function midtransHandleWebhook(req, res) {
     authoritativeStatus
   });
   if (!capabilityContextV350) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_capability', { reason: 'strict_guard_capability_missing', http_status: 503 });
     return res.status(503).json({ ok: false, message: 'Capability webhook Midtrans tidak dapat dibentuk secara aman.' });
   }
 
   try {
+  diracMidtransWebhookDiagMarkV620(req, 'capability_verified', { ok: true, guard_passed: true, order_database: binding.orderDatabase });
   const boundOwnerLookupV375 = binding.parentType === 'd'
     ? { domain_order_id: binding.parentId, customer_id: bindingCustomerId, order_database: 'domain' }
     : { order_id: binding.parentId, customer_id: bindingCustomerId, order_database: binding.orderDatabase };
+  diracMidtransWebhookDiagMarkV620(req, 'database_parallel_checks_begin', { reason: 'transaction_event_owner_queries' });
   const [txResult, existingEvent, ownerCheck] = await Promise.all([
     midtransFetchPaymentTransaction({
       transactionId: bindingTransactionId,
@@ -22417,17 +22573,26 @@ async function midtransHandleWebhook(req, res) {
     midtransFetchGatewayEvent(gatewayEventId, bindingCustomerId),
     midtransVerifyTransactionOwnerAndAmount(boundOwnerLookupV375, grossAmount)
   ]);
+  diracMidtransWebhookDiagMarkV620(req, 'database_parallel_checks_result', {
+    ok: !!(txResult.ok && existingEvent.ok && ownerCheck.ok),
+    source: 'payment_transactions_payment_gateway_events_parent_order',
+    reason: !txResult.ok ? 'payment_transaction_lookup_failed' : !existingEvent.ok ? 'gateway_event_lookup_failed' : !ownerCheck.ok ? ownerCheck.reason || 'parent_lookup_failed' : 'all_verified',
+    http_status: !txResult.ok ? txResult.status : !existingEvent.ok ? existingEvent.status : !ownerCheck.ok ? ownerCheck.status : 200
+  });
   if (!txResult.ok) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_payment_transaction', { reason: 'database_transaction_binding_rejected', http_status: txResult.status || 404 });
     await diracCentralBanCurrentContextV146('midtrans_transaction_not_found').catch(() => null);
     return res.status(txResult.status || 404).json({ ok: false, message: txResult.message || 'Payment transaction tidak ditemukan.' });
   }
 
   const tx = txResult.transaction;
   if (!midtransPaymentTransitionAllowedV350(tx.payment_status, mappedStatus)) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_state_transition', { reason: 'payment_state_machine_disallowed', payment_status: tx.payment_status, http_status: 409 });
     return res.status(409).json({ ok: false, message: 'Transisi status pembayaran ditolak oleh state machine.' });
   }
   const paymentAlreadyMatchedEarlyV372 = midtransAlreadyHasPaymentStatus(tx, mappedStatus);
   if (!existingEvent.ok) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_idempotency_read', { reason: existingEvent.reason || 'gateway_event_read_unavailable', http_status: existingEvent.status || 409 });
     return res.status(existingEvent.status >= 500 ? 503 : (existingEvent.status || 409)).json({
       ok: false,
       message: 'Idempotency event Midtrans tidak dapat diverifikasi.'
@@ -22436,11 +22601,13 @@ async function midtransHandleWebhook(req, res) {
   const duplicateEvent = Boolean(existingEvent.exists);
   if (duplicateEvent && (!existingEvent.event
       || String(existingEvent.event.payment_transaction_id || '') !== String(tx.id))) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_idempotency_binding', { reason: 'event_transaction_binding_mismatch', http_status: 409 });
     await diracCentralBanCurrentContextV146('midtrans_gateway_event_binding_mismatch_v351').catch(() => null);
     return res.status(409).json({ ok: false, message: 'Binding idempotency event Midtrans tidak cocok.' });
   }
   const transactionAmount = midtransMoney(tx.amount);
   if (transactionAmount !== grossAmount) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_db_amount', { reason: 'db_transaction_amount_mismatch', http_status: 409 });
     await diracCentralBanCurrentContextV146('midtrans_amount_mismatch').catch(() => null);
     await midtransInsertGatewayEventSafe(tx.id, tx.customer_id, gatewayEventId, 'failed', body, {
       reason: 'amount_mismatch',
@@ -22451,6 +22618,7 @@ async function midtransHandleWebhook(req, res) {
   }
 
   if (!ownerCheck.ok) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_parent_binding', { reason: ownerCheck.reason || 'parent_binding_invalid', http_status: ownerCheck.status || 409 });
     await diracCentralBanCurrentContextV146(ownerCheck.reason || 'midtrans_owner_or_amount_mismatch').catch(() => null);
     await midtransInsertGatewayEventSafe(tx.id, tx.customer_id, gatewayEventId, 'failed', body, {
       reason: ownerCheck.reason || 'owner_or_amount_mismatch'
@@ -22458,9 +22626,12 @@ async function midtransHandleWebhook(req, res) {
     return res.status(ownerCheck.status || 409).json({ ok: false, message: ownerCheck.message || 'Payment tidak cocok dengan order/customer.' });
   }
   if (!midtransBindWebhookStateV352(capabilityContextV350.ctx, tx, ownerCheck.order)) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_order_state_capability', { reason: 'order_mutation_not_authorized', http_status: 409 });
     return res.status(409).json({ ok: false, message: 'Status order tidak mengizinkan mutasi payment.' });
   }
   diracPaidMailTimingMarkV371(paidMailTimingV371, 'payment_verified');
+  diracMidtransWebhookDiagMarkV620(req, 'transaction_and_parent_verified', { ok: true, duplicate: !!existingEvent.exists,
+    payment_status: mappedStatus, success, order_database: binding.orderDatabase });
 
   // Paid-mail prefetch is allowed only after the strict Midtrans capability
   // has been bound to the verified transaction + order state. This preserves
@@ -22489,6 +22660,9 @@ async function midtransHandleWebhook(req, res) {
       gateway_reference: gatewayReference
     });
 
+  diracMidtransWebhookDiagMarkV620(req, 'event_insert_result', { ok: !!eventInsert.ok, duplicate: !!eventInsert.duplicate,
+    http_status: eventInsert.status, reason: eventInsert.reason || (eventInsert.ok ? 'event_recorded' : 'event_insert_failed'),
+    error_code: eventInsert.data && eventInsert.data.code });
   if (!eventInsert.ok && !eventInsert.duplicate) {
     return res.status(eventInsert.status || 500).json({ ok: false, message: 'Gagal menyimpan event webhook Midtrans.' });
   }
@@ -22496,6 +22670,7 @@ async function midtransHandleWebhook(req, res) {
   const duplicateEventRowV368 = duplicateEvent ? existingEvent.event : (eventInsert && eventInsert.duplicate ? eventInsert.data : null);
   const duplicateEventStatusV368 = effectiveDuplicateEventV351 ? String(duplicateEventRowV368 && duplicateEventRowV368.event_status || '').trim().toLowerCase() : '';
   if (effectiveDuplicateEventV351 && !/^(received|processed)$/.test(duplicateEventStatusV368)) {
+    diracMidtransWebhookDiagMarkV620(req, 'reject_event_state', { reason: 'event_state_invalid', event_status: duplicateEventStatusV368, http_status: 409 });
     return res.status(409).json({ ok: false, message: 'Status idempotency event Midtrans tidak valid untuk diproses ulang.' });
   }
   const retryPendingMailEventV368 = effectiveDuplicateEventV351 && duplicateEventStatusV368 === 'received';
@@ -22509,6 +22684,9 @@ async function midtransHandleWebhook(req, res) {
   const orderMailItemsPrefetchV369 = null;
 
   const txPatch = await midtransPatchPaymentTransaction(tx, mappedStatus, body, success);
+  diracMidtransWebhookDiagMarkV620(req, 'payment_mutation_result', { ok: txPatch.ok, http_status: txPatch.status,
+    reason: txPatch.reason || (txPatch.skipped ? 'already_target_status' : txPatch.ok ? 'payment_mutation_committed' : 'payment_mutation_failed'),
+    error_code: txPatch.data && txPatch.data.code });
   if (!txPatch.ok) {
     try { console.warn('[dirac-paid-commit]', JSON.stringify({ stage: 'payment_transaction', status: Number(txPatch.status || 500), code: /^[A-Z0-9_]{1,48}$/.test(String(txPatch.data && txPatch.data.code || '')) ? txPatch.data.code : '' })); } catch (_) {}
     return res.status(txPatch.status || 500).json({ ok: false, message: 'Gagal update payment transaction dari webhook Midtrans.' });
@@ -22527,6 +22705,8 @@ async function midtransHandleWebhook(req, res) {
       if (!freshOwnerV442 || freshOwnerV442.ok !== true || !freshOrderV442
           || freshOrderV442.id !== binding.parentId || freshOrderV442.customer_id !== bindingCustomerId
           || midtransStrictMoneyV350(binding.parentType === 'd' ? freshOrderV442.total_price : freshOrderV442.total) !== grossAmount) {
+        diracMidtransWebhookDiagMarkV620(req, 'reject_parent_recheck', { reason: freshOwnerV442 && freshOwnerV442.reason || 'parent_recheck_invalid',
+          http_status: 503 });
         try { console.warn('[dirac-paid-commit]', JSON.stringify({ stage: 'parent_recheck', status: Number(freshOwnerV442 && freshOwnerV442.status || 409), code: 'PAID_PARENT_RECHECK_FAILED' })); } catch (_) {}
         return res.status(503).json({ ok: false, message: 'Payment valid, tetapi status order terbaru belum dapat diverifikasi.' });
       }
@@ -22536,6 +22716,8 @@ async function midtransHandleWebhook(req, res) {
       ? { ok: true, skipped: true, reason: 'order_already_paid' }
       : await midtransPatchRelatedOrderPaid(tx, body);
     if (!orderPatch.ok) {
+      diracMidtransWebhookDiagMarkV620(req, 'reject_parent_update', { reason: orderPatch.reason || 'parent_update_failed',
+        http_status: orderPatch.status || 500, error_code: orderPatch.data && orderPatch.data.code });
       try { console.warn('[dirac-paid-commit]', JSON.stringify({ stage: 'parent_update', status: Number(orderPatch.status || 500), code: /^[A-Z0-9_]{1,48}$/.test(String(orderPatch.data && orderPatch.data.code || '')) ? orderPatch.data.code : '' })); } catch (_) {}
       return res.status(orderPatch.status || 500).json({ ok: false, message: 'Payment valid, tetapi gagal update status order.' });
     }
@@ -22549,7 +22731,9 @@ async function midtransHandleWebhook(req, res) {
       : (orderAlreadyPaid && paidOrderPrefetchAfterBindingV376
         ? paidOrderPrefetchAfterBindingV376
         : null);
+    diracMidtransWebhookDiagMarkV620(req, 'parent_paid_committed', { ok: true, payment_status: mappedStatus, success });
     if (orderMailDeliveryRequiredV368 || processedDuplicateEventV368) {
+      diracMidtransWebhookDiagMarkV620(req, 'paid_invoice_continuation_begin', { reason: 'dual_receipt_dispatch' });
       return await diracMidtransPaidContinuationV441(req, res, {
         reconcileOnly: !orderMailDeliveryRequiredV368,
         transaction: txPatch.skipped === true ? tx : txPatch.data && txPatch.data[0],
@@ -22563,16 +22747,22 @@ async function midtransHandleWebhook(req, res) {
     orderMailNotification = orderMailPaidWebhookSkipSummary('midtrans', processedDuplicateEventV368 ? 'duplicate_event_reconciled' : 'already_paid');
   } else if (mappedStatus === 'refunded') {
     orderPatch = await midtransPatchRelatedOrderRefundedV350(tx);
+    diracMidtransWebhookDiagMarkV620(req, 'refund_parent_update_result', { ok: orderPatch.ok,
+      http_status: orderPatch.status, reason: orderPatch.reason || (orderPatch.ok ? 'refund_update_committed' : 'refund_update_failed') });
     if (!orderPatch.ok) {
       return res.status(orderPatch.status || 500).json({ ok: false, message: 'Refund valid, tetapi gagal sinkronisasi status order.' });
     }
   }
 
   const eventFinalize = await midtransFinalizeGatewayEventV350(gatewayEventId, tx.customer_id);
+  diracMidtransWebhookDiagMarkV620(req, 'gateway_event_finalize_result', { ok: eventFinalize.ok,
+    http_status: eventFinalize.status, reason: eventFinalize.reason || (eventFinalize.ok ? 'event_finalized' : 'finalization_failed') });
   if (!eventFinalize.ok) {
     return res.status(eventFinalize.status || 500).json({ ok: false, message: 'Mutasi payment selesai, tetapi event audit belum dapat difinalisasi.' });
   }
 
+  diracMidtransWebhookDiagMarkV620(req, 'webhook_acknowledge_200', { ok: true, http_status: 200, payment_status: mappedStatus,
+    duplicate: effectiveDuplicateEventV351 });
   return res.status(200).json({
     ok: true,
     provider: 'midtrans',
@@ -22585,6 +22775,11 @@ async function midtransHandleWebhook(req, res) {
     duplicate: effectiveDuplicateEventV351,
     idempotent: effectiveDuplicateEventV351
   });
+  } catch (diagnosticErrorV620) {
+    diracMidtransWebhookDiagMarkV620(req, 'handler_uncaught_exception', {
+      reason: 'webhook_handler_exception', error_code: diagnosticErrorV620 && (diagnosticErrorV620.code || diagnosticErrorV620.name) || ''
+    });
+    throw diagnosticErrorV620;
   } finally {
     midtransRevokeWebhookCapabilityV350(capabilityContextV350.ctx);
   }
