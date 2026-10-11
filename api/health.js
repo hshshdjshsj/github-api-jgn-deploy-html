@@ -8943,7 +8943,7 @@ function diracBanStorageReadPriorityV501(row) {
   return [until, updated];
 }
 
-async function diracBanStorageReadV501(path, options, result) {
+async function diracBanStorageReadV501(path, options, result, preparedReadV501) {
   const physical = DIRAC_BAN_STORAGE_CONTEXT_V501.getStore();
   if (physical && physical.physical === true || options.auth !== 'service'
       || !['GET', 'PATCH'].includes(String(options.method || 'GET').toUpperCase())
@@ -8980,7 +8980,7 @@ async function diracBanStorageReadV501(path, options, result) {
             || record != null && (typeof record !== 'object' || Array.isArray(record))
             || row.expires_at != null && (typeof row.expires_at !== 'string' || !Number.isFinite(Date.parse(row.expires_at)));
         })) return diracBanStorageFailureV501();
-    const found = await diracBanStorageTransportV501(diracBanStorageQueryV501(selector), { method: 'GET', auth: 'service' });
+    const found = await (preparedReadV501 || diracBanStorageTransportV501(diracBanStorageQueryV501(selector), { method: 'GET', auth: 'service' }));
     if (!found || found.ok !== true || !Array.isArray(found.data) || found.data.length > 40
         || new Set(found.data.map(row => row && row.security_key)).size !== found.data.length) return diracBanStorageFailureV501();
     const candidates = found.data.flatMap(row => diracBanStorageValidateV501(row).entries.filter(entry => selector.matches(entry.security_key, entry)));
@@ -9076,6 +9076,23 @@ async function supabaseFetch(path, options = {}) {
   if (options.auth === 'service' && /^\/rest\/v1\/dirac_persistent_bans(?:\?|$)/.test(cleanPath)) {
     const compactBanResultV501 = await diracBanStorageBeginV501(cleanPath, options);
     if (compactBanResultV501) return compactBanResultV501;
+  }
+
+  let compactBanReadV501 = null;
+  if (options.auth === 'service' && method === 'GET'
+      && /^\/rest\/v1\/dirac_persistent_bans(?:\?|$)/.test(cleanPath)
+      && !(DIRAC_BAN_STORAGE_CONTEXT_V501.getStore() || {}).physical) {
+    try {
+      const paramsV501 = new URL(cleanPath, 'https://' + diracBaseDomainV250()).searchParams;
+      const selectorV501 = paramsV501.getAll('security_key').length === 1
+        ? diracBanStorageSelectorV501(paramsV501.get('security_key')) : null;
+      const limitV501 = Number(paramsV501.get('limit') || 41);
+      if (selectorV501 && selectorV501.keys && diracBanStorageSelectV501(paramsV501)
+          && Number.isSafeInteger(limitV501) && limitV501 >= 1 && limitV501 <= 100
+          && selectorV501.keys.some(key => /^(?:global-ban|global-api-threat-ban:|central-ban|sqlmap-ban:|bola-idor-global-ban:|domain-login-(?:account|ip|device):|customer-access-block-v325:|xss-)/.test(key))) {
+        compactBanReadV501 = diracBanStorageTransportV501(diracBanStorageQueryV501(selectorV501), { method: 'GET', auth: 'service' }).catch(() => diracBanStorageFailureV501());
+      }
+    } catch (_) { compactBanReadV501 = Promise.resolve(diracBanStorageFailureV501()); }
   }
 
   const timeoutMs = Math.max(1000, Math.min(30000, Number(options.timeoutMs || process.env.DIRAC_SUPABASE_FETCH_TIMEOUT_MS || 6500) || 6500));
@@ -9183,7 +9200,7 @@ async function supabaseFetch(path, options = {}) {
     });
   }
   return options.auth === 'service' && ['GET', 'PATCH'].includes(method) && /^\/rest\/v1\/dirac_persistent_bans(?:\?|$)/.test(cleanPath)
-    ? await diracBanStorageReadV501(cleanPath, options, result) : result;
+    ? await diracBanStorageReadV501(cleanPath, options, result, compactBanReadV501) : result;
 }
 
 
