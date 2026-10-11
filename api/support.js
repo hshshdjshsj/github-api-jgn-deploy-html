@@ -359,7 +359,7 @@ function allowedOrigins() {
   const cachedOriginsV404 = requestMemoV404 && requestMemoV404.get('allowedOrigins');
   if (cachedOriginsV404 instanceof Set) return cachedOriginsV404;
   const values = env('DIRAC_SUPPORT_ALLOWED_ORIGINS').split(',').map((value) => value.trim()).filter(Boolean);
-  if (isProduction()) values.push('https://cs.' + supportBaseDomain());
+  if (isProduction()) values.push('https://pt.' + supportBaseDomain());
   else values.push('http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173', 'http://127.0.0.1:5173');
   const resolvedOriginsV404 = new Set(values.map((value) => {
     try { return new URL(value).origin; } catch (_) { return ''; }
@@ -496,7 +496,7 @@ function mainIdentityRoute(req) {
   if (frontend.origin !== requestOrigin(req) || !allowedOrigins().has(frontend.origin)) throw new PublicError(403, 'ORIGIN_NOT_ALLOWED', 'Origin permintaan tidak diizinkan.');
   if (isProduction() && frontend.protocol !== 'https:') throw new PublicError(403, 'ORIGIN_NOT_ALLOWED', 'Origin HTTPS wajib digunakan.');
   const frontendHost = frontend.hostname.toLowerCase().replace(/\.$/, '');
-  if (!/^cs\.[a-z0-9.-]+$/.test(frontendHost)) throw new PublicError(503, 'MAIN_IDENTITY_ROUTE_INVALID', 'Origin frontend tidak dapat dipetakan ke API utama.');
+  if (!/^pt\.[a-z0-9.-]+$/.test(frontendHost)) throw new PublicError(503, 'MAIN_IDENTITY_ROUTE_INVALID', 'Origin frontend tidak dapat dipetakan ke API utama.');
   const expectedHostname = 'api.' + frontendHost.slice(3);
   const expectedAuthority = expectedHostname + (frontend.port ? ':' + frontend.port : '');
   const hostHeaders = [req.headers && req.headers['x-forwarded-host'], req.headers && req.headers.host].filter(Boolean);
@@ -2266,7 +2266,7 @@ function supportCentralExpectedAuthoritiesV146() {
     try {
       const parsed = new URL(origin);
       const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
-      if (!hostname.startsWith('cs.')) continue;
+      if (!hostname.startsWith('pt.')) continue;
       values.add('api.' + hostname.slice(3) + (parsed.port ? ':' + parsed.port : ''));
     } catch (_) {}
   }

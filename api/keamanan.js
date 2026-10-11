@@ -430,7 +430,7 @@ async function passwordResetEngine(req, res, ops, body) {
     const browserHash = String(await ops.hashBinding('browser', inner.browser_binding));
     const keyId = opened.context.keyId;
     const bindingContext = { browserHash, requestBinding: bindingNow, keyId };
-    const authPasskeyFlow = safeEqual(normalizeDashboardMfaOrigin(requestOrigin(req)), normalizeDashboardMfaOrigin(String(ops.authOrigin())));
+    const authPasskeyFlow = securityResetPageRoleV334(req) === 'auth';
     diracResetDiagnosticV335(req, 'confirm.binding', 'success', { op: String(inner.op || ''), request_binding_length: bindingNow.length, browser_hash_length: browserHash.length, key_id_length: String(keyId || '').length, auth_passkey_flow: authPasskeyFlow });
     if (inner.op === 'start') {
       diracResetDiagnosticV335(req, 'start', 'begin', { auth_passkey_flow: authPasskeyFlow });
@@ -628,7 +628,7 @@ function diracBaseDomainV250() {
 function diracRoleOriginV250(role) {
   const base = diracBaseDomainV250();
   if (role === 'auth') return 'https://auth.' + base;
-  if (role === 'security') return 'https://security.' + base;
+  if (role === 'security') return 'https://pt.' + base;
   if (role === 'www') return 'https://www.' + base;
   return 'https://' + base;
 }
@@ -967,10 +967,11 @@ function securityResetSessionBindingV334(req) {
 }
 function securityResetRequestFingerprintV334(req) {
   const origin = requestOrigin(req);
+  const page = securityResetPageRoleV334(req) === 'auth' ? '/masuk.html' : '/keamanan.html';
   const ua = requestUserAgent(req);
   const al = securityResetHeaderV334(req, 'accept-language').slice(0, 200);
   const ch = securityResetHeaderV334(req, 'sec-ch-ua').slice(0, 300);
-  return crypto.createHash('sha256').update([origin, ua, al, ch].join('\n')).digest('hex');
+  return crypto.createHash('sha256').update([origin, page, ua, al, ch].join('\n')).digest('hex');
 }
 function securityResetTokenSignV334(payload, scope) {
   const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -1133,7 +1134,7 @@ function securityResetApplyHeadersV334(req, res, origin) {
   try {
     if (!res || typeof res.setHeader !== 'function') throw new Error('RESET_RESPONSE_HEADERS_UNAVAILABLE');
     const base = diracBaseDomainV250();
-    if (['https://' + base, 'https://auth.' + base, 'https://security.' + base].includes(allowed)) res.setHeader('Access-Control-Allow-Origin', allowed);
+    if (allowed === diracRoleOriginV250('auth') || allowed === diracRoleOriginV250('security')) res.setHeader('Access-Control-Allow-Origin', allowed);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Expose-Headers', 'X-Dirac-CSRF-Token, X-CSRF-Token, X-Dirac-Page-Nonce, X-Page-Nonce');
     res.setHeader('Vary', 'Origin');
@@ -1148,29 +1149,25 @@ function securityResetApplyHeadersV334(req, res, origin) {
     if (process.env.NODE_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
   } catch (_) { throw resetError('SECURITY_RESET_RESPONSE_HEADERS_FAILED', 503); }
 }
+function securityResetPageRoleV334(req) {
+  const origin = requestOrigin(req);
+  if (origin !== diracRoleOriginV250('auth') && origin !== diracRoleOriginV250('security')) throw resetError('SECURITY_RESET_ORIGIN_INVALID', 403);
+  const referer = securityResetHeaderV334(req, 'referer').trim();
+  if (origin === diracRoleOriginV250('auth') && referer === origin + '/masuk.html') return 'auth';
+  if (origin === diracRoleOriginV250('security') && referer === origin + '/keamanan.html') return 'security';
+  throw resetError('SECURITY_RESET_REFERER_INVALID', 403);
+}
 function securityResetValidateBrowserV334(req, method) {
   const base = diracBaseDomainV250();
   const origin = requestOrigin(req);
-  const allowedOrigins = new Set(['https://' + base, 'https://auth.' + base, 'https://security.' + base]);
+  const allowedOrigins = new Set([diracRoleOriginV250('auth'), diracRoleOriginV250('security')]);
   if (!allowedOrigins.has(origin)) throw resetError('SECURITY_RESET_ORIGIN_INVALID', 403);
   const host = securityResetHeaderV334(req, 'host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
   const xhost = securityResetHeaderV334(req, 'x-forwarded-host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
   if (host !== 'api.' + base || (xhost && xhost !== 'api.' + base)) throw resetError('SECURITY_RESET_HOST_INVALID', 403);
   const proto = securityResetHeaderV334(req, 'x-forwarded-proto').split(',')[0].trim().toLowerCase();
   if (process.env.NODE_ENV === 'production' ? proto !== 'https' : (proto && proto !== 'https')) throw resetError('SECURITY_RESET_HTTPS_REQUIRED', 403);
-  const referer = securityResetHeaderV334(req, 'referer').trim();
-  if (referer) {
-    let ref;
-    try { ref = new URL(referer); } catch (_) { throw resetError('SECURITY_RESET_REFERER_INVALID', 403); }
-    const refOrigin = ref.origin.toLowerCase();
-    const securityOrigin = 'https://security.' + base;
-    const securityRequest = origin === securityOrigin;
-    const securityReferer = refOrigin === securityOrigin;
-    const allowedRefererPaths = securityReferer
-      ? new Set(['/','/keamanan.html'])
-      : new Set(['/','/masuk.html','/html/masuk.html']);
-    if (!allowedOrigins.has(refOrigin) || securityRequest !== securityReferer || !allowedRefererPaths.has(ref.pathname)) throw resetError('SECURITY_RESET_REFERER_INVALID', 403);
-  }
+  securityResetPageRoleV334(req);
   const site = securityResetHeaderV334(req, 'sec-fetch-site').trim().toLowerCase();
   const mode = securityResetHeaderV334(req, 'sec-fetch-mode').trim().toLowerCase();
   const dest = securityResetHeaderV334(req, 'sec-fetch-dest').trim().toLowerCase();
@@ -1834,10 +1831,11 @@ function diracPasswordResetBindingHashV333(scope, value) {
 
 function diracPasswordResetRequestBindingV333(req) {
   const origin = normalizeDashboardMfaOrigin(requestOrigin(req) || '');
+  const page = securityResetPageRoleV334(req) === 'auth' ? '/masuk.html' : '/keamanan.html';
   const ua = String(requestUserAgent(req) || '').slice(0, 1000);
   const acceptLanguage = String(req && req.headers && req.headers['accept-language'] || '').slice(0, 200);
   const secChUa = String(req && req.headers && req.headers['sec-ch-ua'] || '').slice(0, 300);
-  return diracPasswordResetBindingHashV333('request', [origin, ua, acceptLanguage, secChUa].join('\n'));
+  return diracPasswordResetBindingHashV333('request', [origin, page, ua, acceptLanguage, secChUa].join('\n'));
 }
 
 function diracPasswordResetChallengeTokenKeyV333() {
@@ -3221,7 +3219,7 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
   const epoch = await diracPasskeyA2FReadSecurityEpoch(owner);
   diracResetDiagnosticV335(req, 'commit.security_epoch', 'success', { current_security_epoch: Number(epoch || 0), grant_security_epoch: Number(state.security_epoch || 0), match: Number(epoch) === Number(state.security_epoch) });
   if (!Number.isSafeInteger(epoch) || epoch !== Number(state.security_epoch)) throw diracPasswordResetErrorV333('PASSWORD_RESET_SECURITY_EPOCH_CHANGED', 409);
-  const authPasskeyFlow = safeEqual(normalizeDashboardMfaOrigin(requestOrigin(req)), normalizeDashboardMfaOrigin(diracRoleOriginV250('auth')));
+  const authPasskeyFlow = securityResetPageRoleV334(req) === 'auth';
   let preservedSessionId = '';
   if (!authPasskeyFlow) {
     const currentSecuritySession = await diracSecurityPasskeyResetResolveOwnerV363(req);
@@ -4584,7 +4582,7 @@ function handleResetPreflight(req, res) {
   const baseDomain = resetPreflightBaseDomain();
   if (!baseDomain) return reject(res, 503, 'SECURITY_RESET_PREFLIGHT_DOMAIN_INVALID');
   const origin = resetPreflightHeader(req, 'origin').trim().toLowerCase();
-  const allowedOrigins = new Set(['https://' + baseDomain, 'https://auth.' + baseDomain, 'https://security.' + baseDomain]);
+  const allowedOrigins = new Set(['https://auth.' + baseDomain, 'https://pt.' + baseDomain]);
   if (!allowedOrigins.has(origin)) return reject(res, 403, 'SECURITY_RESET_PREFLIGHT_ORIGIN_INVALID');
   const expectedHost = 'api.' + baseDomain;
   const forwardedHost = resetPreflightHeader(req, 'x-forwarded-host').split(',')[0].trim().toLowerCase().replace(/:443$/, '');
@@ -4815,7 +4813,7 @@ function securityTrustCurrentDeviceOsV366(userAgent) {
 }
 async function handleStandaloneTrustCurrentDeviceV366(req, res, parsed) {
   const origin = securityResetValidateBrowserV334(req, 'POST');
-  if (!safeEqual(origin, diracRoleOriginV250('security'))) throw resetError('SECURITY_TRUST_DEVICE_ORIGIN_INVALID', 403);
+  if (!safeEqual(origin, diracRoleOriginV250('security')) || securityResetPageRoleV334(req) !== 'security') throw resetError('SECURITY_TRUST_DEVICE_ORIGIN_INVALID', 403);
   securityResetApplyHeadersV334(req, res, origin);
   await securityResetCheckCentralBanV354(req);
   const primary = securityResetHeaderV334(req, 'x-dirac-csrf-token').trim(), compat = securityResetHeaderV334(req, 'x-csrf-token').trim();

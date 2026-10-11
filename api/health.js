@@ -799,6 +799,68 @@ function diracRoleOriginV250(role) {
   return 'https://' + diracRoleHostnameV250(role);
 }
 
+// Browser documents share PT; API/S2S deployment roles remain independent.
+function diracAppPageOriginV503() {
+  return 'https://pt.' + diracBaseDomainV250();
+}
+
+function diracAppPageRoleV503(pathname) {
+  const roles = {
+    '/masuk.html': 'auth', '/dashboard.html': 'panel', '/parfum.html': 'parfum',
+    '/website.html': 'website', '/pesanan.html': 'pesanan', '/keamanan.html': 'security',
+    '/chat.html': 'cs', '/chat-admin.html': 'cs', '/admin.html': 'admin',
+    '/cekresi.html': 'pt', '/detail-project.html': 'pt', '/domain.html': 'domain',
+    '/invoice.html': 'pt', '/laboratorium.html': 'laboratorium', '/notifikasi.html': 'pt',
+    '/profil.html': 'pt', '/tiket-bantuan.html': 'pt', '/topup.html': 'topup'
+  };
+  return Object.prototype.hasOwnProperty.call(roles, pathname) ? roles[pathname] : '';
+}
+
+function diracAppPageSourceV503(req) {
+  try {
+    const headers = req && req.headers || {};
+    const raw = String(headers.referer || headers.referrer || '').trim();
+    const page = new URL(raw);
+    const origin = page.pathname === '/masuk.html' ? diracRoleOriginV250('auth') : diracAppPageOriginV503();
+    const role = diracAppPageRoleV503(page.pathname);
+    if (!role || String(headers.origin || '').trim() !== origin || page.origin !== origin
+        || page.protocol !== 'https:' || page.port || page.username || page.password
+        || page.search || page.hash || raw !== origin + page.pathname) return null;
+    return Object.freeze({ role, origin, pathname: page.pathname, redirectUrl: raw });
+  } catch (_) { return null; }
+}
+
+function diracAppSameOriginChainV503(req, target, expected) {
+  try {
+    const source = diracAppPageSourceV503(req);
+    const destination = target && diracAppPageSourceV503({ headers: { origin: target.origin, referer: target.redirectUrl } });
+    if (!source || !destination || source.origin !== destination.origin
+        || destination.origin !== diracAppPageOriginV503() || !expected
+        || !customerSecurityLooksLikeUuid(expected.userId) || !isValidAuthEmail(expected.email)
+        || !Number.isSafeInteger(expected.securityEpoch) || expected.securityEpoch < 1
+        || !Number.isSafeInteger(expected.expiresAtMs) || expected.expiresAtMs <= Date.now()
+        || !/^[a-f0-9]{64}$/.test(String(expected.sessionHash || ''))
+        || !/^[a-f0-9]{64}$/.test(String(expected.deviceBinding || '')) || !expected.credential) return null;
+    const destinationReq = { ...req, headers: { ...(req.headers || {}), origin: destination.origin,
+      referer: destination.redirectUrl, referrer: destination.redirectUrl } };
+    const identity = { id: expected.userId, email: expected.email };
+    const mfa = verifyCustomerDashboardMfaCookie(destinationReq, identity);
+    const session = diracCentralVerifyDeviceSessionCookieV223(destinationReq);
+    const credential = diracCentralVerifyDeviceTokenV221(destinationReq, expected.credential);
+    if (!mfa || mfa.ok !== true || mfa.method !== 'passkey' || mfa.source !== 'http_only_cookie'
+        || Number(mfa.securityEpoch || 0) !== expected.securityEpoch
+        || !safeEqual(String(mfa.sessionHash || ''), expected.sessionHash)
+        || Number(mfa.expiresAtMs || 0) < expected.expiresAtMs
+        || !session || !session.identity || String(session.identity.userId || '') !== expected.userId
+        || normalizeAuthEmail(session.identity.email || '') !== expected.email
+        || !safeEqual(String(session.binding || ''), expected.deviceBinding)
+        || !credential || credential.ok !== true || !credential.payload
+        || !safeEqual(String(credential.payload.session || ''), expected.deviceBinding)) return null;
+    return Object.freeze({ ok: true, sameOrigin: true, destinationOrigin: destination.origin,
+      expiresAtMs: expected.expiresAtMs, mfaRotated: false, deviceCredentialRotated: false });
+  } catch (_) { return null; }
+}
+
 function diracBaseOriginV250() {
   return 'https://' + diracBaseDomainV250();
 }
@@ -13025,7 +13087,7 @@ async function customerSecurityCreateAccountRequest(req, res, action) {
   const allowed = new Set(['security_review', 'export_data', 'deactivate_account', 'reactivate_account']);
   const requestType = String(body.request_type || 'security_review').trim().toLowerCase();
   const accountPolicy = diracAccountPolicyFromUserV472(access.user), partnerRequest = CUSTOMER_SECURITY_PARTNER_REQUEST_TYPES_V478.has(requestType);
-  if (String(req && req.headers && req.headers.origin || '') === diracRoleOriginV250('panel') && (!partnerRequest || accountPolicy.role !== 'partner')) return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Dashboard Partner hanya menerima pengajuan milik Partner terverifikasi.' });
+  if (Boolean(diracAppPageSourceV503(req) && diracAppPageSourceV503(req).role === 'panel') && (!partnerRequest || accountPolicy.role !== 'partner')) return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Dashboard Partner hanya menerima pengajuan milik Partner terverifikasi.' });
   if (['partner_reseller_invite','partner_withdrawal','partner_commission_review'].includes(requestType)) return res.status(403).json({ ok: false, code: 'PARTNER_REQUEST_FORBIDDEN', message: 'Akses Partner terbatas pada referral customer dan bantuan layanan.' });
   if (requestType.startsWith('partner_') && !partnerRequest) return res.status(400).json({ ok: false, code: 'PARTNER_REQUEST_TYPE_INVALID', message: 'Jenis request partner tidak valid.' });
   if (partnerRequest && accountPolicy.role !== 'partner') return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Fitur ini hanya tersedia untuk akun Partner terverifikasi.' });
@@ -16087,11 +16149,13 @@ const DIRAC_RECOVERY_BROWSER_RESPONSE_VERSION_V287 = 'dirac-recovery-browser-res
 const DIRAC_RECOVERY_BROWSER_TRANSPORT_SUITE_V287 = 'ECDH-P256+HKDF-SHA256+AES-256-GCM';
 const DIRAC_RECOVERY_BROWSER_TRANSPORT_TTL_MS_V287 = 60 * 1000;
 const DIRAC_RECOVERY_BROWSER_ORIGIN_V287 = diracRoleOriginV250('auth');
-const DIRAC_RECOVERY_BROWSER_SECURITY_ORIGIN_V362 = diracRoleOriginV250('security');
+const DIRAC_RECOVERY_BROWSER_SECURITY_ORIGIN_V362 = diracAppPageOriginV503();
 function diracRecoveryBrowserOriginAllowedV362(req, origin) {
   const clean = String(origin || '');
-  if (clean === DIRAC_RECOVERY_BROWSER_ORIGIN_V287) return true;
-  return clean === DIRAC_RECOVERY_BROWSER_SECURITY_ORIGIN_V362
+  const page = diracAppPageSourceV503(req);
+  if (!page || clean !== page.origin) return false;
+  if (page.pathname === '/masuk.html' && clean === DIRAC_RECOVERY_BROWSER_ORIGIN_V287) return true;
+  return page.pathname === '/keamanan.html' && clean === DIRAC_RECOVERY_BROWSER_SECURITY_ORIGIN_V362
     && Boolean(req && req.__diracKeamananSecurityGatewayV362 === true);
 }
 const DIRAC_RECOVERY_BROWSER_ROOT_CAUSE_DIAGNOSTIC_V344 = 'dirac-recovery-browser-root-cause-v344';
@@ -16422,10 +16486,13 @@ function diracRecoveryBrowserBindingDigestV287(req, body, origin) {
     error.code = 'RECOVERY_BROWSER_TRANSPORT_ACTION_INVALID';
     throw error;
   }
+  const page = diracAppPageSourceV503(req);
+  if (!page || !diracRecoveryBrowserOriginAllowedV362(req, origin)) throw Object.assign(new Error('RECOVERY_BROWSER_TRANSPORT_ORIGIN_INVALID'), { code: 'RECOVERY_BROWSER_TRANSPORT_ORIGIN_INVALID' });
   const material = [
     'dirac/recovery-browser/binding/v287',
     action,
     String(origin || ''),
+    page.pathname,
     csrfPrimary,
     String(body && body.transport_request_id || ''),
     String(body && body.transport_sent_at_ms || ''),
@@ -25744,16 +25811,16 @@ function diracPasskeyRecoveryIdempotencyBindingV310(req, body) {
 
 function diracPasskeyRecoveryBrowserBindingV281(req) {
   const authOrigin = diracRoleOriginV250('auth');
-  const securityOrigin = diracRoleOriginV250('security');
+  const securityOrigin = diracAppPageOriginV503();
   const headers = req && req.headers && typeof req.headers === 'object' ? req.headers : {};
   const origin = String(headers.origin || '').trim();
   const securityGateway = Boolean(req && req.__diracKeamananSecurityGatewayV362 === true);
   const expectedOrigin = securityGateway && origin === securityOrigin ? securityOrigin : authOrigin;
-  const expectedPath = expectedOrigin === securityOrigin ? '/keamanan.html' : '/masuk.html';
+  const expectedPath = securityGateway ? '/keamanan.html' : '/masuk.html';
   const referer = String(headers.referer || headers.referrer || '').trim();
   let parsedReferer = null;
   try { parsedReferer = new URL(referer); } catch (_) { parsedReferer = null; }
-  if (origin !== expectedOrigin
+  if (!diracAppPageSourceV503(req) || origin !== expectedOrigin
       || !parsedReferer
       || parsedReferer.origin !== expectedOrigin
       || parsedReferer.pathname !== expectedPath
@@ -25761,7 +25828,7 @@ function diracPasskeyRecoveryBrowserBindingV281(req) {
       || parsedReferer.hash) {
     return { ok: false, reason: 'passkey_recovery_browser_origin_invalid_v281' };
   }
-  const originHash = customerMfaBindingHash('origin', expectedOrigin);
+  const originHash = customerMfaBindingHash('origin', expectedOrigin + expectedPath);
   const uaHash = customerMfaBindingHash('ua', requestUserAgent(req));
   if (!/^[a-f0-9]{64}$/.test(originHash) || !/^[a-f0-9]{64}$/.test(uaHash)) {
     return { ok: false, reason: 'passkey_recovery_browser_binding_invalid_v281' };
@@ -27096,7 +27163,7 @@ function diracPasskeyRotateDashboardOriginChainV311(req, res, chain) {
 
   try {
     const authOrigin = diracRoleOriginV250('auth').toLowerCase();
-    const parfumOrigin = diracBaseOriginV250().toLowerCase();
+    const parfumOrigin = diracAppPageOriginV503().toLowerCase();
     const destinationV482 = chain && chain.destination
       ? diracAppOriginHandoffExactSourceV320({ method: 'POST', headers: { origin: chain.destination.origin, referer: chain.destination.redirectUrl } })
       : diracAppOriginHandoffTargetV313('panel');
@@ -27121,7 +27188,8 @@ function diracPasskeyRotateDashboardOriginChainV311(req, res, chain) {
         && !sourceReferer.search && !sourceReferer.hash
       );
     } catch (_) {}
-    const trustedSource = (!requestedSourceOrigin && sourceOrigin === authOrigin) || exactParfumSource;
+    const trustedSource = (!requestedSourceOrigin && sourceOrigin === authOrigin
+      && (diracAppPageSourceV503(req) || {}).pathname === '/masuk.html') || exactParfumSource;
     const userId = String(chain && chain.userId || '').trim();
     const email = normalizeAuthEmail(chain && chain.email || '');
     const securityEpoch = Number(chain && chain.securityEpoch || 0);
@@ -27158,6 +27226,16 @@ function diracPasskeyRotateDashboardOriginChainV311(req, res, chain) {
           String(deviceSession.binding || '')
         )) {
       return fail('passkey_dashboard_origin_rotation_source_chain_invalid');
+    }
+
+    if (sourceOrigin === dashboardOrigin && dashboardOrigin === diracAppPageOriginV503()) {
+      const sameOrigin = diracAppSameOriginChainV503(req, destinationV482, {
+        userId, email, securityEpoch, expiresAtMs,
+        sessionHash: String(sourceMfa.sessionHash || ''), deviceBinding: String(deviceSession.binding || ''),
+        credential: sourceCredentials[0]
+      });
+      return sameOrigin ? Object.freeze({ ...sameOrigin, patch: DIRAC_PASSKEY_DASHBOARD_ORIGIN_ROTATION_V311 })
+        : fail('passkey_dashboard_same_origin_chain_invalid_v503');
     }
 
     const destinationOriginHash = customerMfaBindingHash('origin', dashboardOrigin);
@@ -27426,7 +27504,7 @@ function diracDashboardStaleBindingDecisionV312(req) {
 
     const sourceMfaPayloadV481 = decodeCustomerDashboardMfaToken(selected[CUSTOMER_MFA_COOKIE]);
     const sourceTargetV481 = Array.from(DIRAC_APP_ORIGIN_HANDOFF_ROLES_V313).map(diracAppOriginHandoffTargetV313).find((target) => target && diracDashboardMfaOriginMatchV366(sourceMfaPayloadV481, target.origin));
-    const parfumOrigin = sourceTargetV481 ? sourceTargetV481.origin : diracBaseOriginV250().toLowerCase();
+    const parfumOrigin = sourceTargetV481 ? sourceTargetV481.origin : diracAppPageOriginV503().toLowerCase();
     const parfumUrl = sourceTargetV481 ? sourceTargetV481.redirectUrl : parfumOrigin + '/parfum.html';
     const parfumReq = {
       method: 'GET',
@@ -33756,7 +33834,7 @@ function orderMailBuildNewOrderMessages(data) {
     'Rincian pesanan:',
     itemsText,
     '',
-    'Lihat pesanan: ' + diracRoleOriginV250('pesanan') + '/pesanan.html',
+    'Lihat pesanan: ' + diracAppPageOriginV503() + '/pesanan.html',
     'Bantuan resmi PT Dirac Inovasi Nusantara:',
     ...officialSupportText,
     paymentSafetyText,
@@ -33913,7 +33991,7 @@ function orderMailDefaultProductImageUrl() {
 function orderMailOrderUrl(orderCode) {
   // EMAIL TEMPLATE ONLY: link "Lihat pesanan" wajib selalu ke halaman pesanan resmi.
   // Tidak memakai query, payment URL, localStorage, atau data frontend.
-  return diracRoleOriginV250('pesanan') + '/pesanan.html';
+  return diracAppPageOriginV503() + '/pesanan.html';
 }
 function orderMailHtmlShell(title, body, options = {}) {
   const badge = orderMailEscapeHtml(options.badge || 'PAID');
@@ -33924,7 +34002,7 @@ function orderMailHtmlShell(title, body, options = {}) {
   const orderCode = orderMailEscapeHtml(options.orderCode || '');
   const serviceLabel = orderMailEscapeHtml(options.serviceLabel || '');
   const preheader = orderMailEscapeHtml(options.preheader || title || 'Notifikasi pembayaran PT Dirac Inovasi Nusantara.');
-  const orderUrl = diracRoleOriginV250('pesanan') + '/pesanan.html';
+  const orderUrl = diracAppPageOriginV503() + '/pesanan.html';
   let orderHost = diracBaseDomainV250();
   try { orderHost = new URL(orderUrl).hostname; } catch (_) {}
   const supportEmail = diracSupportEmailV250();
@@ -34719,7 +34797,7 @@ __diracV202RegisterMiddleware(async function customerSecurityFeatureReadWrapper(
 
     if (action === 'customer_security_request_tracker') {
       const accountPolicyV478 = diracAccountPolicyFromUserV472(access.user);
-      if (String(req && req.headers && req.headers.origin || '') === diracRoleOriginV250('panel') && accountPolicyV478.role !== 'partner') return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Hanya Partner terverifikasi yang dapat membaca pengajuan Partner.' });
+      if (Boolean(diracAppPageSourceV503(req) && diracAppPageSourceV503(req).role === 'panel') && accountPolicyV478.role !== 'partner') return res.status(403).json({ ok: false, code: 'PARTNER_ROLE_REQUIRED', message: 'Hanya Partner terverifikasi yang dapat membaca pengajuan Partner.' });
       const partnerTrackerV478 = accountPolicyV478.role === 'partner' ? await customerSecurityPartnerTrackerV478(access.customerId) : null;
       return res.status(200).json({
         ok: true,
@@ -54625,7 +54703,7 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
   const warningTitle = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warningTitle || 'PERINGATAN KEAMANAN', 100));
   const warning = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warning || 'Jika aktivitas ini bukan dilakukan oleh Anda, segera amankan akun dan hubungi bantuan resmi PT Dirac Inovasi Nusantara.', 700));
   const supportLead = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.supportLead || 'Butuh bantuan untuk memeriksa aktivitas keamanan? Hubungi tim support melalui kanal resmi berikut.', 300));
-  const actionFallback = diracRoleOriginV250('security') + '/keamanan.html';
+  const actionFallback = diracAppPageOriginV503() + '/keamanan.html';
   const actionUrl = diracSecurityMailEscapeV327(diracSecurityMailOfficialUrlV327(input.actionUrl || actionFallback, actionFallback));
   const actionText = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.actionText || 'BUKA PUSAT KEAMANAN', 80));
   const rowsHtml = diracSecurityMailRowsHtmlV327(input.rows, input.rowValueMaxLength, copyCodeExact, input.brandLabel === 'CENTRAL GUARD SECURITY');
@@ -54727,7 +54805,7 @@ function diracSecurityMailTextV327(input = {}) {
     '',
     diracSecurityMailCleanV327(input.warning || '', 700),
     '',
-    'Pusat keamanan: ' + diracSecurityMailOfficialUrlV327(input.actionUrl || (diracRoleOriginV250('security') + '/keamanan.html'), diracRoleOriginV250('security') + '/keamanan.html'),
+    'Pusat keamanan: ' + diracSecurityMailOfficialUrlV327(input.actionUrl || (diracAppPageOriginV503() + '/keamanan.html'), diracAppPageOriginV503() + '/keamanan.html'),
     'Website Resmi: ' + diracBaseOriginV250() + '/',
     'WhatsApp: 0878 9252 3968',
     'Email Support: ' + diracSupportEmailV250(),
@@ -54793,7 +54871,7 @@ async function diracUserSecurityResolveLoginFailureV336(req, payload, action, ht
       ['WAKTU WIB', typeof formatDiracWibTime === 'function' ? formatDiracWibTime(Date.now()) : new Date().toISOString()],
       ...diracSecurityMailClientRowsV381(client), ['REFERENSI', reference]
     ],
-    actionUrl: diracRoleOriginV250('security') + '/keamanan.html',
+    actionUrl: diracAppPageOriginV503() + '/keamanan.html',
     actionText: 'BUKA PUSAT KEAMANAN',
     warningTitle: 'JIKA INI BUKAN ANDA',
     warning: 'Segera hubungi bantuan resmi dan tinjau keamanan akun. Jangan bagikan password, OTP, token, atau Passkey kepada siapa pun. Tim support tidak akan meminta data rahasia tersebut.',
@@ -54943,7 +55021,7 @@ async function diracUserSecurityResolveAccessBlockV341(req, payload, action, htt
       ['WAKTU WIB', typeof formatDiracWibTime === 'function' ? formatDiracWibTime(Date.now()) : new Date().toISOString()],
       ...diracSecurityMailClientRowsV381(client), ['REFERENSI', reference]
     ],
-    actionUrl: diracRoleOriginV250('security') + '/keamanan.html',
+    actionUrl: diracAppPageOriginV503() + '/keamanan.html',
     actionText: 'BUKA PUSAT KEAMANAN',
     warningTitle: 'JIKA INI BUKAN ANDA',
     warning: 'Jangan membagikan password, OTP, token, cookie, atau Passkey. Tinjau keamanan akun melalui kanal resmi dan hubungi support apabila aktivitas ini tidak Anda kenali.',
@@ -55092,7 +55170,7 @@ function diracUserSecurityResolveEventV327(req, payload, action, committedOnly =
   }
   if (!kind) return null;
   const reference = diracSecurityMailReferenceV327(kind, req, email);
-  const actionUrl = diracRoleOriginV250('security') + '/keamanan.html';
+  const actionUrl = diracAppPageOriginV503() + '/keamanan.html';
   const rows = [
     ['AKTIVITAS', activity],
     ['METODE', method],
@@ -55702,7 +55780,7 @@ function diracSecurityAlertCorporateMimeV327(snapshot, config) {
     detailsLabel: 'DETAIL INSIDEN',
     rows,
     trace: snapshot.trace,
-    actionUrl: diracRoleOriginV250('security') + '/keamanan.html',
+    actionUrl: diracAppPageOriginV503() + '/keamanan.html',
     actionText: 'BUKA PUSAT KEAMANAN',
     warningTitle: 'PRIVASI DAN RESPONS INSIDEN',
     warning,
@@ -57087,7 +57165,7 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
     summary: paid ? 'Pembayaran Anda telah diterima dan diverifikasi. Rincian pembayaran, penerima, alamat pengiriman, dan pesanan tercantum di bawah ini.' : 'Pesanan Anda telah diterima. Rincian penerima, alamat pengiriman, dan pesanan tercantum di bawah ini.',
     statusLabel: 'STATUS PEMBAYARAN', statusValue: paid ? 'LUNAS / PAID' : 'MENUNGGU PEMBAYARAN',
     statusNote: paid ? 'Status paid ditetapkan setelah verifikasi webhook dan status pembayaran resmi.' : 'Periksa kembali rincian pembayaran dan pesanan Anda.', detailsLabel: 'RINCIAN INVOICE & PENGIRIMAN',
-    rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows), trustedDetailsHtml: orderMailProductCardsHtml(data && data.items, currency), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'LIHAT PESANAN',
+    rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows), trustedDetailsHtml: orderMailProductCardsHtml(data && data.items, currency), actionUrl: diracAppPageOriginV503() + '/pesanan.html', actionText: 'LIHAT PESANAN',
     warningTitle: 'KEAMANAN PEMBAYARAN', warning: 'PT Dirac Inovasi Nusantara tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau data kartu melalui balasan email, WhatsApp, Instagram, atau telepon.',
     supportLead: 'Jika membutuhkan bantuan terkait pembayaran, invoice, alamat pengiriman, atau pesanan, gunakan kanal resmi PT Dirac Inovasi Nusantara.'
   };
@@ -57095,7 +57173,7 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
     ...customerInput, brandLabel: 'SECURE PAYMENT ADMIN', eyebrow: paid ? 'VERIFIED PAYMENT RECEIVED' : 'NEW ORDER NOTIFICATION',
     title: paid ? 'Pembayaran\nDiterima' : 'Order Baru\nDiterima', greeting: 'Yth. Admin / Owner PT Dirac Inovasi Nusantara,',
     summary: paid ? 'Pembayaran customer telah tervalidasi oleh backend. Data customer, alamat pengiriman, catatan, nilai transaksi, referensi pembayaran, dan seluruh item yang diperlukan untuk fulfilment tercantum di bawah ini.' : 'Order baru telah tercatat pada backend. Data customer, alamat pengiriman, catatan, dan rincian item tercantum di bawah ini.',
-    rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows), trustedDetailsHtml: orderMailProductCardsHtml(data && data.items, currency), actionUrl: diracRoleOriginV250('pesanan') + '/pesanan.html', actionText: 'BUKA PESANAN'
+    rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows), trustedDetailsHtml: orderMailProductCardsHtml(data && data.items, currency), actionUrl: diracAppPageOriginV503() + '/pesanan.html', actionText: 'BUKA PESANAN'
   };
   return { ...legacy, customerHtml: diracSecurityCorporateEmailHtmlV327(customerInput), ownerHtml: diracSecurityCorporateEmailHtmlV327(ownerInput) };
 };
@@ -58339,7 +58417,7 @@ function diracCentralPermanentBanDecisionV281(ctx, reason) {
   const reportHeaders = ctx && ctx.headers && typeof ctx.headers === 'object' ? ctx.headers : null;
   const reportRequest = ctx && ctx.req && typeof ctx.req === 'object' ? ctx.req : null;
   const reportQuery = reportRequest && reportRequest.query && typeof reportRequest.query === 'object' && !Array.isArray(reportRequest.query) ? reportRequest.query : null;
-  const reportShopOrigin = body && body.page === 'laboratorium.html' ? ('https://pt.' + diracBaseDomainV250()) : diracBaseOriginV250();
+  const reportShopOrigin = diracAppPageOriginV503();
   const reportCatalogPage = body && (body.page === 'parfum.html' || body.page === 'laboratorium.html') ? body.page : '';
   const reportCatalogSource = reportCatalogPage === 'laboratorium.html' ? 'laboratorium_checkout_security' : 'parfum_checkout_security';
   const verifiedParfumSecurityReport = Boolean(
@@ -64002,7 +64080,7 @@ function diracSmartAssistantSourceV464(req) {
   try {
     if (!req || String(req.method || '').toUpperCase() !== 'GET' || String(req.query && req.query.action || '') !== 'my_orders'
         || String(req.query && req.query.type || '') !== 'assistant' || Object.keys(req.query || {}).some(key => !['action','type'].includes(key))) return false;
-    const origin = 'https://cs.' + diracBaseDomainV250(), headers = req.headers || {};
+    const origin = diracAppPageOriginV503(), headers = req.headers || {};
     const page = new URL(String(headers.referer || headers.referrer || ''));
     return String(headers.origin || '').trim().toLowerCase() === origin && page.origin === origin && page.protocol === 'https:'
       && !page.port && !page.username && !page.password && page.pathname === '/chat.html' && !page.search && !page.hash;
@@ -64619,6 +64697,10 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
       && contract && Array.isArray(contract.methods) && contract.methods.includes(expectedMethod)
       ? { ok: true } : { ok: false, reason: 'ptdin_source_action_contract_invalid' };
   }
+  const browserHeadersV503 = req && req.headers || {};
+  const isPtBrowserV503 = String(browserHeadersV503.origin || '').trim() === diracAppPageOriginV503() || String(browserHeadersV503.origin || '').trim() === diracRoleOriginV250('auth');
+  const pageV503 = isPtBrowserV503 && String(req && req.method || '').toUpperCase() !== 'OPTIONS' ? diracAppPageSourceV503(req) : null;
+  if (isPtBrowserV503 && String(req && req.method || '').toUpperCase() !== 'OPTIONS' && !pageV503) return { ok: false, reason: 'app_page_source_invalid_v503' };
   const common = new Set(['domain_health']);
   if (common.has(clean)) return { ok: true };
 
@@ -64662,6 +64744,27 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
   ]);
   const www = new Set(['hostinger_check', 'domain_check']);
 
+  if (pageV503) {
+    const pageRole = pageV503.role;
+    if (pageRole === 'security' && ['dirac_mfa_passkey_start', 'dirac_mfa_passkey_verify'].includes(clean)
+        && req.__diracKeamananSecurityGatewayV362 !== true) return { ok: false, reason: 'security_passkey_gateway_required_v362' };
+    const shared = new Set(['domain_logout', 'domain_me', 'domain_dashboard_me', 'domain_mfa_status', 'security_report']);
+    const securityPasskey = pageRole === 'security' && req.__diracKeamananSecurityGatewayV362 === true
+      && ['dirac_mfa_passkey_start', 'dirac_mfa_passkey_verify', 'customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify', 'customer_security_recovery_hpke_submit'].includes(clean);
+    const pageAllowed = shared.has(clean)
+      || pageRole === 'auth' && auth.has(clean)
+      || pageRole === 'security' && security.has(clean)
+      || securityPasskey
+      || pageRole === 'panel' && (dashboard.has(clean) || ['customer_security_request_tracker', 'customer_security_account_request'].includes(clean))
+      || pageRole === 'parfum' && (parfum.has(clean) || clean === 'checkout_order')
+      || pageRole === 'laboratorium' && clean === 'checkout_order'
+      || pageRole === 'pesanan' && pesanan.has(clean)
+      || ['website', 'domain'].includes(pageRole) && www.has(clean)
+      || clean === 'customer_session_handoff_issue' && Boolean(diracAppOriginHandoffExactSourceV320(req));
+    if (!pageAllowed) return { ok: false, reason: 'app_page_action_not_allowed_v503' };
+  }
+
+
   if (role === 'auth' && clean === 'checkout_order') {
     try {
       const headers = req && req.headers || {};
@@ -64669,8 +64772,9 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
       const method = String(req && req.method || '').trim().toUpperCase();
       const shopTarget = diracAppOriginHandoffTargetV313('parfum');
       const laboratoryTarget = diracAppOriginHandoffTargetV313('laboratorium');
-      const expectedTarget = shopTarget && origin === shopTarget.origin ? shopTarget
-        : laboratoryTarget && origin === laboratoryTarget.origin ? laboratoryTarget : null;
+      const checkoutPage = method === 'OPTIONS' ? null : diracAppPageSourceV503(req);
+      const expectedTarget = shopTarget && origin === shopTarget.origin && (method === 'OPTIONS' || checkoutPage && checkoutPage.pathname === '/parfum.html') ? shopTarget
+        : laboratoryTarget && origin === laboratoryTarget.origin && checkoutPage && checkoutPage.pathname === '/laboratorium.html' ? laboratoryTarget : null;
       if (!expectedTarget) return { ok: false, reason: 'shop_checkout_gateway_origin_invalid' };
       if (method === 'OPTIONS') {
         const requestedMethod = String(headers['access-control-request-method'] || '').trim().toUpperCase();
@@ -64693,7 +64797,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
 
   if (role === 'auth' && (clean === 'my_orders' || clean === 'create_payment')) {
     try {
-      const expectedOrigin = ('https://order.' + diracBaseDomainV250()).toLowerCase();
+      const expectedOrigin = diracAppPageOriginV503().toLowerCase();
       const headers = req && req.headers || {};
       const origin = String(headers.origin || '').trim().toLowerCase();
       const method = String(req && req.method || '').trim().toUpperCase();
@@ -64717,10 +64821,10 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
 
   if (role === 'auth' && security.has(clean) && clean.startsWith('customer_security_')) {
     try {
-      const expectedOrigin = diracRoleOriginV250('security').toLowerCase();
+      const expectedOrigin = diracAppPageOriginV503().toLowerCase();
       const headers = req && req.headers || {};
       const origin = String(headers.origin || '').trim().toLowerCase();
-      if (origin === expectedOrigin) {
+      if (origin === expectedOrigin && (String(req && req.method || '').toUpperCase() === 'OPTIONS' || (diracAppPageSourceV503(req) || {}).role === 'security')) {
         const method = String(req && req.method || '').trim().toUpperCase();
         const contract = diracCentralContractForActionV146(clean);
         const allowedMethods = Array.isArray(contract && contract.methods)
@@ -64754,7 +64858,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
     const method = String(req && req.method || '').toUpperCase();
     const expected = clean === 'customer_security_request_tracker' ? 'GET' : 'POST';
     const invoked = method === 'OPTIONS' ? String(headers['access-control-request-method'] || '').toUpperCase() : method;
-    const panelOrigin = diracRoleOriginV250('panel');
+    const panelOrigin = diracAppPageOriginV503();
     const referer = String(headers.referer || headers.referrer || '').trim();
     const contract = diracCentralContractForActionV146(clean);
     if (String(headers.origin || '').trim() === panelOrigin && invoked === expected &&
@@ -64920,6 +65024,7 @@ function diracCentralValidateRefererV146(value) {
   let url;
   try { url = new URL(raw); } catch (_) { return { ok: false, reason: 'referer_invalid_url' }; }
   if (!DIRAC_CENTRAL_ALLOWED_ORIGINS_V146.has(url.origin)) return { ok: false, reason: 'referer_origin_invalid' };
+  if (url.origin === diracAppPageOriginV503() && !diracAppPageRoleV503(url.pathname)) return { ok: false, reason: 'referer_app_page_invalid_v503' };
   if (!DIRAC_CENTRAL_ALLOWED_REFERER_PATHS_V146.has(url.pathname)) return (() => { const ctx = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null; const req = ctx && ctx.req && typeof ctx.req === 'object' ? ctx.req : null; const headers = req && req.headers && typeof req.headers === 'object' ? req.headers : {}; const csrfPrimary = String(headers['x-dirac-csrf-token'] || '').trim(); const csrfCompat = String(headers['x-csrf-token'] || '').trim(); const pageNonce = String(headers['x-dirac-page-nonce'] || '').trim(); const exactSafariOriginOnlyLogin = Boolean(req && ctx && ctx.action === 'domain_login' && ctx.method === 'POST' && raw === diracRoleOriginV250('auth') + '/' && url.origin === diracRoleOriginV250('auth') && url.pathname === '/' && !url.search && !url.hash && String(headers.origin || '').trim() === diracRoleOriginV250('auth') && String(headers['sec-fetch-site'] || '').toLowerCase() === 'same-site' && String(headers['sec-fetch-mode'] || '').toLowerCase() === 'cors' && ['', 'empty'].includes(String(headers['sec-fetch-dest'] || '').toLowerCase()) && /AppleWebKit/i.test(String(headers['user-agent'] || '')) && /Safari\//i.test(String(headers['user-agent'] || '')) && !/(?:CriOS|FxiOS|EdgiOS|OPiOS|Chrome|Chromium|Firefox|Edg|OPR)/i.test(String(headers['user-agent'] || '')) && csrfPrimary && csrfCompat && (typeof safeEqual === 'function' ? safeEqual(csrfPrimary, csrfCompat) : csrfPrimary === csrfCompat) && pageNonce); if (!exactSafariOriginOnlyLogin) return { ok: false, reason: 'referer_path_invalid' }; const sec = diracCentralSecFetchGuardV146(req, ctx); if (!sec || sec.ok !== true) return { ok: false, reason: 'referer_path_invalid' }; const csrf = typeof diracV138CsrfForceVerify === 'function' ? diracV138CsrfForceVerify(req, ctx.action) : { ok: false }; if (!csrf || csrf.ok !== true) return { ok: false, reason: 'referer_path_invalid' }; const nonce = typeof diracCentralVerifyPageNonceV146 === 'function' ? diracCentralVerifyPageNonceV146(req, pageNonce, ctx.action) : { ok: false }; if (!nonce || nonce.ok !== true || !nonce.payload || !/^[a-f0-9]{64}$/.test(String(nonce.payload.sid || '')) || !/^[a-f0-9]{64}$/.test(String(nonce.payload.oh || ''))) return { ok: false, reason: 'referer_path_invalid' }; return { ok: true }; })();
   if (url.search || url.hash) return { ok: false, reason: 'referer_has_suffix_after_html' };
   const afterOrigin = raw.slice(url.origin.length);
@@ -65364,12 +65469,12 @@ function diracCentralSupportDeviceTransitionRequestV354(req) {
         || parsedRequest.searchParams.getAll('action').length !== 1
         || parsedRequest.searchParams.get('action') !== 'domain_dashboard_me') return null;
     const base = diracBaseDomainV250();
-    const expectedOrigin = 'https://cs.' + base;
+    const expectedOrigin = diracAppPageOriginV503();
     const headers = req.headers || {};
     const origin = diracCentralNormalizeOriginV146(headers.origin || '');
     if (!origin || !safeEqual(origin, expectedOrigin)) return null;
     const referer = new URL(String(headers.referer || headers.referrer || '').trim());
-    const allowedPaths = new Set(['/', '/chat', '/chat/', '/chat.html']);
+    const allowedPaths = new Set(['/chat.html']);
     if (referer.protocol !== 'https:' || referer.port || referer.username || referer.password
         || !safeEqual(referer.origin.toLowerCase(), expectedOrigin)
         || referer.search || referer.hash || !allowedPaths.has(referer.pathname)) return null;
@@ -66673,7 +66778,7 @@ function diracCentralIsExactParfumProductsPublicReadV318(ctx, table, path, optio
         || String(requestQuery.action || '') !== 'parfum_products'
         || String(requestQuery.limit || '') !== '5000') return false;
 
-    const expectedOrigin = diracBaseOriginV250().toLowerCase();
+    const expectedOrigin = diracAppPageOriginV503().toLowerCase();
     const headers = ctx.req.headers && typeof ctx.req.headers === 'object' ? ctx.req.headers : {};
     if (diracCentralNormalizeOriginV146(headers.origin).toLowerCase() !== expectedOrigin) return false;
     const referer = new URL(String(headers.referer || headers.referrer || '').trim());
@@ -73170,17 +73275,17 @@ const DIRAC_APP_ORIGIN_HANDOFF_ACCESS_PROOFS_V318 = new WeakMap();
 function diracAppOriginHandoffTargetV313(targetRole) {
   try {
     const role = diracS2SIdV206(targetRole);
-    const base = diracBaseDomainV250();
+    const pageOrigin = diracAppPageOriginV503();
     const routes = {
-      panel: 'https://panel.' + base + '/dashboard.html',
-      parfum: 'https://' + base + '/parfum.html',
-      laboratorium: 'https://pt.' + base + '/laboratorium.html',
-      pesanan: 'https://order.' + base + '/pesanan.html',
-      security: 'https://security.' + base + '/keamanan.html',
-      website: 'https://' + base + '/website.html',
-      topup: 'https://pt.' + base + '/topup.html',
-      domain: 'https://pt.' + base + '/domain.html',
-      cs: 'https://cs.' + base + '/chat.html'
+      panel: pageOrigin + '/dashboard.html',
+      parfum: pageOrigin + '/parfum.html',
+      laboratorium: pageOrigin + '/laboratorium.html',
+      pesanan: pageOrigin + '/pesanan.html',
+      security: pageOrigin + '/keamanan.html',
+      website: pageOrigin + '/website.html',
+      topup: pageOrigin + '/topup.html',
+      domain: pageOrigin + '/domain.html',
+      cs: pageOrigin + '/chat.html'
     };
     const expectedPath = {
       panel: '/dashboard.html',
@@ -73222,7 +73327,7 @@ function diracAppOriginHandoffExactSourceV320(req) {
       '/cekresi.html', '/detail-domain.html', '/detail-parfum.html', '/detail-project.html', '/detail-tiket.html',
       '/invoice.html', '/notifikasi.html', '/profil.html', '/tiket-bantuan.html'
     ]);
-    if (origin === ptOrigin && ptSourcePaths.has(referer.pathname)) {
+    if (origin === ptOrigin && ptSourcePaths.has(referer.pathname) && diracAppPageRoleV503(referer.pathname)) {
       return Object.freeze({ role: 'pt', origin: ptOrigin, redirectUrl: referer.href });
     }
     return null;
@@ -73521,6 +73626,16 @@ function diracAppOriginHandoffRotateProofsV313(req, res, access, source, target,
     });
     if (coreSessionAlreadyMutated) return fail('app_origin_handoff_core_session_mutated');
 
+    if (sourceOrigin === target.origin && target.origin === diracAppPageOriginV503()) {
+      const sameOrigin = diracAppSameOriginChainV503(req, target, {
+        userId, email, securityEpoch: epoch, expiresAtMs: Number(sourceMfa.expiresAtMs || 0),
+        sessionHash: String(sourceMfa.sessionHash || ''), deviceBinding: String(deviceSession.binding || ''),
+        credential: sourceCredentials[0]
+      });
+      return sameOrigin ? Object.freeze({ ...sameOrigin, patch: DIRAC_APP_ORIGIN_HANDOFF_V313 })
+        : fail('app_same_origin_chain_invalid_v503');
+    }
+
     const destinationOriginHash = customerMfaBindingHash('origin', target.origin);
     if (!/^[a-f0-9]{64}$/.test(String(destinationOriginHash || ''))) {
       return fail('app_origin_handoff_destination_hash_invalid');
@@ -73765,7 +73880,10 @@ async function diracAppOriginHandoffIssueV313(req, res, access, targetRole) {
     return res.status(503).json({ ok: false, code: 'HANDOFF_RESPONSE_PROOF_PUBLICATION_FAILED' });
   }
 
-  if (!diracAppOriginHandoffCommitDeviceConsistencyV317(rotation.deviceConsistencyTransition)) {
+  const sameCanonicalOriginV503 = rotation.sameOrigin === true
+    && source.origin === diracAppPageOriginV503() && target.origin === source.origin
+    && rotation.destinationOrigin === target.origin;
+  if (!sameCanonicalOriginV503 && !diracAppOriginHandoffCommitDeviceConsistencyV317(rotation.deviceConsistencyTransition)) {
     try {
       const previousCookies = Array.isArray(rotation.previousCookies)
         ? rotation.previousCookies.map(String)
@@ -73893,7 +74011,7 @@ async function diracSessionHandoffIssueV250(req, res, ctx) {
     target_role: targetRole,
     ticket,
     expires_at_ms: expiresAtMs,
-    redirect_url: diracRoleOriginV250(targetRole) + '/dashboard.html#handoff=' + encodeURIComponent(ticket)
+    redirect_url: diracAppPageOriginV503() + '/dashboard.html#handoff=' + encodeURIComponent(ticket)
   });
 }
 
@@ -74997,7 +75115,7 @@ function diracPasswordResetMailEventV338(record, client) {
       ...diracSecurityMailClientRowsV381(client),
       ['REFERENSI', reference]
     ],
-    actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN',
+    actionUrl: diracAppPageOriginV503() + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN',
     warningTitle: 'PERINGATAN KEAMANAN',
     warning: 'Jika Anda tidak melakukan perubahan ini, segera tinjau keamanan akun dan hubungi WhatsApp 087892523968 atau email ' + diracSupportEmailV250() + '. Jangan kirim password, OTP, token, atau data rahasia melalui chat maupun email.',
     supportLead: 'Butuh bantuan memeriksa perubahan akun? Hubungi tim support melalui kanal resmi berikut.'
