@@ -38,6 +38,7 @@ function parseStrictJson(input, options = {}) {
   if (!source || Buffer.byteLength(source, 'utf8') > maxBytes) throw inputError('JSON_SIZE_LIMIT');
   let index = 0;
   let nodes = 0;
+  const numberPattern = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
   const fail = (code = 'JSON_INVALID') => { throw inputError(code); };
   const whitespace = () => { while (/[\x20\t\r\n]/.test(source[index] || '\0')) index += 1; };
   const string = () => {
@@ -99,7 +100,8 @@ function parseStrictJson(input, options = {}) {
     for (const literal of ['true', 'false', 'null']) {
       if (source.startsWith(literal, index)) { index += literal.length; return; }
     }
-    const number = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(source.slice(index));
+    numberPattern.lastIndex = index;
+    const number = numberPattern.exec(source);
     if (!number) fail();
     const numeric = Number(number[0]);
     if (!Number.isFinite(numeric) || (Number.isInteger(numeric) && !Number.isSafeInteger(numeric))) fail('JSON_NUMBER_INVALID');
@@ -20107,6 +20109,14 @@ async function myOrdersFetchOrderItems(orderIds, customerIds, database = 'commer
   return map;
 }
 
+function diracCompactAddressForDisplayV634(value) {
+  return String(value == null ? '' : value)
+    .replace(/^Alamat:\s*/i, '')
+    .replace(/(^|\s*\|\s*)(?:Negara|Provinsi\/State\/Region|Kota\/Kabupaten\/City|Kecamatan\/District|Desa\/Kelurahan\/Village):\s*/gi, '$1')
+    .replace(/\s*\|\s*/g, ', ')
+    .trim();
+}
+
 function myOrdersNormalizeGenericOrder(row, items) {
   const total = myOrdersMoney(row.total ?? row.subtotal ?? 0);
   const orderCode = myOrdersCleanText(row.order_id || row.id, 80);
@@ -20121,7 +20131,7 @@ function myOrdersNormalizeGenericOrder(row, items) {
     customer_name: myOrdersCleanText(row.customer_name || '', 120),
     customer_email: normalizeAuthEmail(row.customer_email || ''),
     customer_phone: myOrdersCleanText(row.customer_phone || '', 80),
-    shipping_address: myOrdersCleanText(row.shipping_address || '', 520),
+    shipping_address: diracCompactAddressForDisplayV634(myOrdersCleanText(row.shipping_address || '', 520)),
     subtotal: myOrdersMoney(row.subtotal ?? total),
     shipping_cost: myOrdersMoney(row.shipping_cost ?? 0),
     discount: myOrdersMoney(row.discount ?? 0),
@@ -33695,7 +33705,7 @@ function orderMailBuildNewOrderMessages(data) {
     ? 'Pembayaran pelanggan telah berhasil diterima dan dinyatakan valid oleh webhook payment gateway.'
     : 'Terdapat pesanan baru yang masuk ke sistem.';
   const statusLabel = paid ? 'paid / sudah dibayar' : data.order.payment_status;
-  const shippingAddress = orderMailCleanText(data.order.shipping_address || data.customer.shipping_address || '', 1400);
+  const shippingAddress = diracCompactAddressForDisplayV634(orderMailCleanText(data.order.shipping_address || data.customer.shipping_address || '', 1400));
   const orderNote = orderMailCleanText(data.order.note || '', 700);
   const shippingTextLine = shippingAddress ? `Alamat pengiriman: ${shippingAddress}` : '';
   const noteTextLine = orderNote ? `Catatan: ${orderNote}` : '';
@@ -57019,7 +57029,7 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
   const customerName = orderMailCleanText(data && data.customer && data.customer.name || '', 120) || 'Pengguna PT Dirac Inovasi Nusantara';
   const customerEmail = orderMailNormalizeEmail(data && data.customer && data.customer.email || '') || '-';
   const customerPhone = orderMailCleanText(data && data.customer && data.customer.phone || '', 80) || '-';
-  const shippingAddress = orderMailCleanText(data && data.order && data.order.shipping_address || data && data.customer && data.customer.shipping_address || '', 1400) || '-';
+  const shippingAddress = diracCompactAddressForDisplayV634(orderMailCleanText(data && data.order && data.order.shipping_address || data && data.customer && data.customer.shipping_address || '', 1400)) || '-';
   const orderNote = orderMailCleanText(data && data.order && data.order.note || '', 700) || '-';
   const paymentProvider = orderMailCleanText(data && data.payment && data.payment.provider || '', 60).toUpperCase() || '-';
   const paymentMethod = orderMailCleanText(data && data.payment && data.payment.method || '', 80).toUpperCase() || '-';
@@ -62103,7 +62113,7 @@ function diracCentralCurrentContextV149() {
       if (store) return store.ctx || null;
     }
   } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
-  return DIRAC_CENTRAL_CONTEXT_STACK_V146[DIRAC_CENTRAL_CONTEXT_STACK_V146.length - 1] || null;
+  return null;
 }
 
 async function diracCentralSecurityGuardV146(req, res, nextHandler) {
@@ -68630,6 +68640,7 @@ function diracCentralBoundedReadableStreamV230(incoming, request, maximumBytes) 
   const maximum = Math.max(1, Number(maximumBytes || 0));
   let total = 0;
   const limiter = new Transform({
+    destroy(error, callback) { this.pause(); callback(error); },
     transform(chunk, _encoding, callback) {
       total += Buffer.byteLength(chunk);
       if (total > maximum) {
@@ -68647,6 +68658,9 @@ function diracCentralBoundedReadableStreamV230(incoming, request, maximumBytes) 
   // Other consumers still receive the same stream error and fail closed.
   limiter.on('error', () => {});
   incoming.on('error', (error) => limiter.destroy(error));
+  limiter.once('close', () => {
+    if (!incoming.complete) { incoming.destroy(); request.destroy(); }
+  });
   incoming.pipe(limiter);
   return limiter;
 }
@@ -68744,7 +68758,11 @@ async function diracCentralPinnedHttpsFetchV230(
     });
     if (signal) {
       if (signal.aborted) request.destroy(signal.reason instanceof Error ? signal.reason : new Error('AbortError'));
-      else signal.addEventListener('abort', () => request.destroy(signal.reason instanceof Error ? signal.reason : Object.assign(new Error('AbortError'), { name: 'AbortError' })), { once: true });
+      else {
+        const abortRequest = () => request.destroy(signal.reason instanceof Error ? signal.reason : Object.assign(new Error('AbortError'), { name: 'AbortError' }));
+        signal.addEventListener('abort', abortRequest, { once: true });
+        request.once('close', () => signal.removeEventListener('abort', abortRequest));
+      }
     }
     if (body.length) request.write(body);
     request.end();

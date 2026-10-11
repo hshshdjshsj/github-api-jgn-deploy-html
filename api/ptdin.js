@@ -216,7 +216,7 @@ function projectResponse(action, view, payload, profile) {
     const latestOrder = allOrders[0] || null;
     out.profile_supplement = {
       phone: cleanText(latestOrder && latestOrder.customer_phone, 80),
-      address: cleanText(latestOrder && (latestOrder.shipping_address || latestOrder.customer_address || latestOrder.address || latestOrder.alamat || latestOrder.delivery_address || latestOrder.recipient_address), 520),
+      address: diracCompactAddressForDisplayV634(cleanText(latestOrder && (latestOrder.shipping_address || latestOrder.customer_address || latestOrder.address || latestOrder.alamat || latestOrder.delivery_address || latestOrder.recipient_address), 520)),
       registered_at: cleanText(payload.user && payload.user.created_at, 64) || null,
       customer_since: out.account_analytics.first_order_at
     };
@@ -441,6 +441,14 @@ async function invoiceBusinessV440(req, res, ops) {
   } finally { if (storageKey) storageKey.fill(0); }
 }
 
+function diracCompactAddressForDisplayV634(value) {
+  return String(value == null ? '' : value)
+    .replace(/^Alamat:\s*/i, '')
+    .replace(/(^|\s*\|\s*)(?:Negara|Provinsi\/State\/Region|Kota\/Kabupaten\/City|Kecamatan\/District|Desa\/Kelurahan\/Village):\s*/gi, '$1')
+    .replace(/\s*\|\s*/g, ', ')
+    .trim();
+}
+
 function invoiceDocumentV440(data, identity, issuer) {
   const invalid = () => { throw invoiceErrorV440('INVOICE_DOCUMENT_INVALID'); };
   if (!data || !data.order || !data.transaction || !Array.isArray(data.items) || !data.items.length || data.items.length > 250) return invalid();
@@ -470,7 +478,7 @@ function invoiceDocumentV440(data, identity, issuer) {
   const careEmail = 'care@' + website;
   return {eligible:true,id:row.id,reference:domain ? 'DOM-'+String(row.id).slice(0,8).toUpperCase() : copy(row.order_id || row.id,253),date,currency:'IDR',total,orderStatus:status(row.order_status),paymentStatus:'Sudah dibayar',method,
     issuer:{name:'PT Dirac Inovasi Nusantara',nib:invoiceLegalIdentifier(legal.nib,13,13)||missing,npwp:invoiceLegalIdentifier(legal.npwp,15,16)||missing,address:'GJ3X+HHH, RT.4/RW.1, Kedunggiling, Gelang, Kec. Tulangan, Kabupaten Sidoarjo, Jawa Timur 61273.',email:careEmail,phone:'0878-9252-3968'},
-    buyer:{name:copy(row.customer_name,160,missing),email:copy(row.customer_email || (domain && row.owner_email),254,identity.email),phone:copy(domain?row.customer_whatsapp:row.customer_phone,80,missing),address:copy(row.shipping_address,600,missing)},
+    buyer:{name:copy(row.customer_name,160,missing),email:copy(row.customer_email || (domain && row.owner_email),254,identity.email),phone:copy(domain?row.customer_whatsapp:row.customer_phone,80,missing),address:diracCompactAddressForDisplayV634(copy(row.shipping_address,600,missing))},
     items,totals:[['Subtotal',subtotal],['Ongkos kirim',shipping],['Diskon',discount],['Dasar pengenaan pajak',taxable],['Pajak',tax]],legalMissing:!invoiceLegalIdentifier(legal.nib,13,13)||!invoiceLegalIdentifier(legal.npwp,15,16),website};
 }
 

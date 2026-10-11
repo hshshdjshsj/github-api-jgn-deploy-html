@@ -1313,6 +1313,7 @@ function decodeJwt(token) {
 
 async function refreshAuth(refreshToken) {
   const result = await auth('/token?grant_type=refresh_token', { body: { refresh_token: refreshToken } });
+  if (result && result.ok !== true && (result.status === 429 || (result.status >= 500 && result.status < 600))) throw new PublicError(502, 'UPSTREAM_UNAVAILABLE', 'Layanan data support belum dapat dihubungi.');
   if (!result.ok || !result.data || !result.data.access_token || !result.data.refresh_token || !result.data.user) throw new PublicError(401, 'SESSION_REFRESH_FAILED', 'Sesi sudah berakhir. Silakan masuk kembali.');
   if (!supportProviderUserAllowed(result.data.user)) throw new PublicError(403, 'AUTH_ACCOUNT_BLOCKED', 'Akun tidak diizinkan.');
   supportProviderClaims(result.data);
@@ -1325,7 +1326,7 @@ async function refreshCustomerAuth(res, session, identity) {
     const refreshed = await refreshAuth(session.refreshToken); const material = supportCustomerMaterial(identity);
     return verifySupportAuthSession(refreshed, material);
   } catch (error) {
-    clearCookie(res, CUSTOMER_COOKIE, 'Strict');
+    if (!(error instanceof PublicError && (error.status === 429 || (error.status >= 500 && error.status < 600)))) clearCookie(res, CUSTOMER_COOKIE, 'Strict');
     throw error;
   }
 }
@@ -1686,6 +1687,7 @@ async function actionAdminLogin(req, res, body) {
   req.diracAuthAuditEligible = true;
   const loginBody = { email: adminEmail, password }; if (token) loginBody.gotrue_meta_security = { captcha_token: token };
   const login = await auth('/token?grant_type=password', { body: loginBody });
+  if (login && login.ok !== true && (login.status === 429 || (login.status >= 500 && login.status < 600))) throw new PublicError(502, 'UPSTREAM_UNAVAILABLE', 'Layanan data support belum dapat dihubungi.');
   if (!login.ok || !login.data || !login.data.access_token || !login.data.refresh_token || !login.data.user) throw new PublicError(401, 'CREDENTIALS_INVALID', 'Email atau password belum sesuai.');
   if (!supportProviderUserAllowed(login.data.user)) throw new PublicError(403, 'AUTH_ACCOUNT_BLOCKED', 'Akun tidak diizinkan.');
   const staff = await staffByUser(login.data.user.id); if (String(staff.email).toLowerCase() !== adminEmail) throw new PublicError(403, 'STAFF_IDENTITY_MISMATCH', 'Identitas staff tidak cocok.');
@@ -1729,6 +1731,7 @@ async function actionAdminMfaVerify(req, res, body) {
   await rateLimit(req, 'admin_mfa_ip', 8, 900, 1800, 'verify'); await accountRateLimit('admin_mfa_account', temp.uid, 5, 900, 1800);
   req.diracAuthAuditEligible = true;
   const verified = await auth('/factors/' + encodeURIComponent(temp.factorId) + '/verify', { token: temp.accessToken, body: { challenge_id: temp.challengeId, code } });
+  if (verified && verified.ok !== true && (verified.status === 429 || (verified.status >= 500 && verified.status < 600))) throw new PublicError(502, 'UPSTREAM_UNAVAILABLE', 'Layanan data support belum dapat dihubungi.');
   if (!verified.ok || !verified.data || !verified.data.access_token || !verified.data.refresh_token) throw new PublicError(401, 'MFA_CODE_REJECTED', 'Kode autentikator tidak valid.');
   const claims = supportProviderClaims(verified.data); if (claims.aal !== 'aal2' || String(claims.sub || '') !== String(temp.uid)) throw new PublicError(403, 'MFA_ASSURANCE_INVALID', 'Tingkat jaminan MFA belum terpenuhi.');
   const staff = await staffByUser(temp.uid); const adminSession = await issueAdminSession(res, verified.data, staff, Date.now());
@@ -2552,7 +2555,7 @@ function supportCentralSerializeOutput(payload, status) {
       throw new Error('CENTRAL_OUTPUT_POLICY_REJECTED');
     }
     for (const secret of supportCentralOutputSecretsV146()) {
-      if (secret && body.includes(secret)) throw new Error('CENTRAL_OUTPUT_SECRET_DETECTED');
+      if (secret && (body.includes(secret) || body.includes(JSON.stringify(secret).slice(1, -1)))) throw new Error('CENTRAL_OUTPUT_SECRET_DETECTED');
     }
     return { status: safeStatus, body };
   } catch (error) {
