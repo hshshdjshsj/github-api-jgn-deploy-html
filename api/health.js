@@ -8698,15 +8698,19 @@ function diracBanStorageQueryV501(selector) {
 
 function diracBanStorageIdV501(req, rows) {
   const headers = req.headers || {};
+  const context = diracCentralCurrentContextV149();
+  const verified = context && context.req === req && context.identity;
+  const userId = String(verified && verified.verifiedAuthUserId || '').trim().toLowerCase();
+  const email = normalizeAuthEmail(verified && verified.verifiedAuthEmail || '');
+  if (customerSecurityLooksLikeUuid(userId) && isValidAuthEmail(email)) {
+    return diracCentralHashV146('compact-ban-id-v501:verified-account:' + userId);
+  }
   const ip = diracTrustedClientIpV357(req);
   if (!ip || ip === 'unknown' || ip === 'no-ip') {
     return diracCentralHashV146('compact-ban-id-v501:key:' + String(rows[0].security_key));
   }
-  const origin = diracCentralNormalizeOriginV146(headers.origin || headers.referer || headers.referrer || '');
-  const hint = ['sec-ch-ua', 'sec-ch-ua-platform', 'sec-ch-ua-mobile', 'accept-language', 'accept']
-    .map(name => String(headers[name] || '').slice(0, 160)).join('|');
-  return diracCentralHashV146('compact-ban-id-v501:identity:' + JSON.stringify([
-    ip, String(headers['user-agent'] || '').slice(0, 500), origin, hint
+  return diracCentralHashV146('compact-ban-id-v501:network-agent:' + JSON.stringify([
+    ip, String(headers['user-agent'] || '').slice(0, 500)
   ]));
 }
 
@@ -56943,6 +56947,7 @@ const DIRAC_CENTRAL_VERIFIED_OWNER_ACTIONS_V217 = Object.freeze([
   'domain_orders',
   'customer_security_status',
   'customer_security_overview',
+  'customer_security_request_tracker',
   'customer_security_revoke_session',
   'customer_security_revoke_other_sessions',
   'customer_security_account_request',
