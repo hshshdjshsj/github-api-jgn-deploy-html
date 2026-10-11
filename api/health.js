@@ -6270,8 +6270,9 @@ async function domainDashboardMe(req, res) {
   const checkoutSource = diracAppOriginHandoffTargetV313('parfum');
   const laboratoryCheckoutSource = diracAppOriginHandoffTargetV313('laboratorium');
   const checkoutRequestOrigin = diracCsrfRequestOrigin(req);
-  const checkoutProfileRequested = (checkoutSource && checkoutRequestOrigin === checkoutSource.origin)
-    || (laboratoryCheckoutSource && checkoutRequestOrigin === laboratoryCheckoutSource.origin);
+  const checkoutRequestSource = diracAppPageSourceV503(req);
+  const checkoutProfileRequested = !!checkoutRequestSource && ((checkoutSource && checkoutRequestOrigin === checkoutSource.origin && checkoutRequestSource.redirectUrl === checkoutSource.redirectUrl)
+    || (laboratoryCheckoutSource && checkoutRequestOrigin === laboratoryCheckoutSource.origin && checkoutRequestSource.redirectUrl === laboratoryCheckoutSource.redirectUrl));
   let profileName = '';
   let laboratorySavedAddresses = [];
   if (checkoutProfileRequested) {
@@ -6285,7 +6286,7 @@ async function domainDashboardMe(req, res) {
       return res.status(503).json({ ok: false, code: 'REGISTERED_PROFILE_UNAVAILABLE', message: 'Profil akun belum dapat diverifikasi. Silakan coba lagi.' });
     }
     profileName = String(profile.customer.name || '').trim();
-    if (laboratoryCheckoutSource && checkoutRequestOrigin === laboratoryCheckoutSource.origin) {
+    if (laboratoryCheckoutSource && checkoutRequestOrigin === laboratoryCheckoutSource.origin && checkoutRequestSource.redirectUrl === laboratoryCheckoutSource.redirectUrl) {
       const savedAddressPath = '/rest/v1/orders?select=' + encodeURIComponent('shipping_address')
         + '&customer_id=eq.' + encodeURIComponent(profileId) + '&order=created_at.desc&limit=6';
       const savedAddressResult = await supabaseFetch(savedAddressPath, { method: 'GET', auth: 'service', db: 'security' }).catch(() => null);
@@ -9084,12 +9085,17 @@ async function supabaseFetch(path, options = {}) {
       && !(DIRAC_BAN_STORAGE_CONTEXT_V501.getStore() || {}).physical) {
     try {
       const paramsV501 = new URL(cleanPath, 'https://' + diracBaseDomainV250()).searchParams;
-      const selectorV501 = paramsV501.getAll('security_key').length === 1
+      let selectorV501 = paramsV501.getAll('security_key').length === 1
         ? diracBanStorageSelectorV501(paramsV501.get('security_key')) : null;
+      if (!selectorV501 && paramsV501.getAll('security_key').length === 1 && paramsV501.get('security_key') === 'like.customer-access-block-v325:*') {
+        const matchV501 = /record_json->>customer_id\.eq\.([a-f0-9-]{36})\)\)\)$/.exec(String(paramsV501.get('or') || ''));
+        const idV501 = matchV501 && matchV501[1];
+        if (idV501 && customerSecurityLooksLikeUuid(idV501)) selectorV501 = { prefix: customerSecurityPersistentAccessBlockScopePrefixV325('account', idV501) };
+      }
       const limitV501 = Number(paramsV501.get('limit') || 41);
-      if (selectorV501 && selectorV501.keys && diracBanStorageSelectV501(paramsV501)
+      if (selectorV501 && (selectorV501.keys || selectorV501.prefix) && diracBanStorageSelectV501(paramsV501)
           && Number.isSafeInteger(limitV501) && limitV501 >= 1 && limitV501 <= 100
-          && selectorV501.keys.some(key => /^(?:global-ban|global-api-threat-ban:|central-ban|sqlmap-ban:|bola-idor-global-ban:|domain-login-(?:account|ip|device):|customer-access-block-v325:|xss-)/.test(key))) {
+          && (selectorV501.prefix || selectorV501.keys.some(key => /^(?:global-ban|global-api-threat-ban:|central-ban|sqlmap-ban:|bola-idor-global-ban:|domain-login-(?:account|ip|device):|customer-access-block-v325:|xss-)/.test(key)))) {
         compactBanReadV501 = diracBanStorageTransportV501(diracBanStorageQueryV501(selectorV501), { method: 'GET', auth: 'service' }).catch(() => diracBanStorageFailureV501());
       }
     } catch (_) { compactBanReadV501 = Promise.resolve(diracBanStorageFailureV501()); }
