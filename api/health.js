@@ -21221,16 +21221,15 @@ function midtransSafeText(value, maxLength) {
 function midtransSuccessStatus(payload) {
   const status = String(payload && payload.transaction_status || '').trim().toLowerCase();
   const fraud = String(payload && payload.fraud_status || '').trim().toLowerCase();
-  if (status === 'settlement') return true;
-  if (status === 'capture') return fraud === 'accept';
+  if (status === 'settlement' || status === 'capture') return (fraud === 'accept' || !fraud) && String(payload && payload.status_code || '').trim() === '200';
   return false;
 }
 
 function midtransMappedPaymentStatus(payload) {
   const status = String(payload && payload.transaction_status || '').trim().toLowerCase();
   const fraud = String(payload && payload.fraud_status || '').trim().toLowerCase();
-  if (status === 'settlement') return 'paid';
-  if (status === 'capture' && fraud === 'accept') return 'paid';
+  if (status === 'settlement' && midtransSuccessStatus(payload)) return 'paid';
+  if (status === 'capture' && midtransSuccessStatus(payload)) return 'paid';
   if (status === 'authorize' || status === 'pending') return 'pending';
   if (status === 'expire') return 'expired';
   if (status === 'cancel') return 'cancelled';
@@ -21440,20 +21439,26 @@ function midtransStatusBaseUrlV350() {
   return midtransIsProduction() ? 'https://api.midtrans.com' : 'https://api.sandbox.midtrans.com';
 }
 
-async function midtransFetchAuthoritativeStatusV350(gatewayReference) {
-  const reference = midtransSafeText(gatewayReference || '', 120);
-  if (!reference || !reference.startsWith('PAY-') || !/^[A-Za-z0-9._:@-]{3,120}$/.test(reference)) {
-    return { ok: false, status: 400, reason: 'invalid_gateway_reference' };
+async function midtransFetchAuthoritativeStatusV350(gatewayTransactionId) {
+  const reference = midtransSafeText(gatewayTransactionId || '', 120);
+  if (!/^[A-Za-z0-9-]{16,120}$/.test(reference)) {
+    return { ok: false, status: 400, reason: 'invalid_gateway_transaction_id' };
   }
   try {
-    const response = await fetch(`${midtransStatusBaseUrlV350()}/v2/${encodeURIComponent(reference)}/status`, {
+    const statusUrl = `${midtransStatusBaseUrlV350()}/v2/${encodeURIComponent(reference)}/status`;
+    const authorization = midtransBasicAuthHeader();
+    let response = await fetch(statusUrl, {
       method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: midtransBasicAuthHeader()
-      }
+      headers: { Accept: 'application/json', Authorization: authorization }
     });
-    const data = await parseFetchResponse(response);
+    let data = await parseFetchResponse(response);
+    if (response && response.status === 404) {
+      response = await fetch(statusUrl, {
+        method: 'GET',
+        headers: { Accept: 'application/json', Authorization: authorization, 'transaction-source': 'SNAP_API' }
+      });
+      data = await parseFetchResponse(response);
+    }
     if (!response || response.ok !== true || !data || typeof data !== 'object' || Array.isArray(data)) {
       return { ok: false, status: Number(response && response.status || 502), reason: 'midtrans_status_api_rejected' };
     }
@@ -22354,7 +22359,7 @@ async function midtransHandleWebhook(req, res) {
   // Do not trust financial state from the notification alone. Resolve the
   // current state directly from Midtrans using the Server Key and bind it to
   // the same order, amount, currency and transaction id before any DB write.
-  const authoritativeStatus = await midtransFetchAuthoritativeStatusV350(gatewayReference);
+  const authoritativeStatus = await midtransFetchAuthoritativeStatusV350(body.transaction_id);
   if (!authoritativeStatus.ok) {
     return res.status(authoritativeStatus.status >= 500 ? 503 : 409).json({
       ok: false,
