@@ -21460,7 +21460,7 @@ function midtransStatusBaseUrlV350() {
 
 async function midtransFetchAuthoritativeStatusV350(gatewayTransactionId, diagnosticReqV620) {
   const reference = midtransSafeText(gatewayTransactionId || '', 120);
-  if (!/^[A-Za-z0-9-]{16,120}$/.test(reference)) {
+  if (!/^[A-Za-z0-9-]{16,120}$/.test(reference) && !/^PAY-[A-Za-z0-9._:@-]{1,116}$/.test(reference)) {
     diracMidtransWebhookDiagMarkV620(diagnosticReqV620, 'status_id_rejected', { reason: 'invalid_gateway_transaction_id', http_status: 400 });
     return { ok: false, status: 400, reason: 'invalid_gateway_transaction_id' };
   }
@@ -22505,7 +22505,7 @@ async function midtransHandleWebhook(req, res) {
   // current state directly from Midtrans using the Server Key and bind it to
   // the same order, amount, currency and transaction id before any DB write.
   diracMidtransWebhookDiagMarkV620(req, 'status_authoritative_lookup_begin', { reference_hash: diracMidtransWebhookDiagHashV620(body.transaction_id) });
-  const authoritativeStatus = await midtransFetchAuthoritativeStatusV350(body.transaction_id, req);
+  let authoritativeStatus = await midtransFetchAuthoritativeStatusV350(body.transaction_id, req);
   diracMidtransWebhookDiagMarkV620(req, 'status_authoritative_lookup_result', { ok: authoritativeStatus.ok, upstream_http_status: authoritativeStatus.status,
     reason: authoritativeStatus.reason || '', payment_status: authoritativeStatus.mappedStatus || '', success: authoritativeStatus.success });
   if (!authoritativeStatus.ok) {
@@ -22516,12 +22516,35 @@ async function midtransHandleWebhook(req, res) {
       message: 'Status transaksi Midtrans belum dapat diverifikasi secara otoritatif.'
     });
   }
-  const authoritativeBinding = midtransAuthoritativeStatusMatchesBindingV350(authoritativeStatus, {
+  let authoritativeBinding = midtransAuthoritativeStatusMatchesBindingV350(authoritativeStatus, {
     gatewayReference,
     grossAmount,
     currency,
     webhookTransactionId: body.transaction_id || ''
   });
+  if (!authoritativeBinding.ok && authoritativeBinding.reason === 'midtrans_status_order_mismatch') {
+    diracMidtransWebhookDiagMarkV620(req, 'status_order_exact_lookup_begin', {
+      signed_order_hash: diracMidtransWebhookDiagHashV620(gatewayReference),
+      upstream_order_hash: diracMidtransWebhookDiagHashV620(authoritativeStatus.data && authoritativeStatus.data.order_id || '')
+    });
+    const exactOrderStatus = await midtransFetchAuthoritativeStatusV350(gatewayReference, req);
+    const exactOrderBinding = midtransAuthoritativeStatusMatchesBindingV350(exactOrderStatus, {
+      gatewayReference,
+      grossAmount,
+      currency,
+      webhookTransactionId: body.transaction_id || ''
+    });
+    diracMidtransWebhookDiagMarkV620(req, 'status_order_exact_lookup_result', {
+      ok: exactOrderBinding.ok === true,
+      reason: exactOrderBinding.reason || exactOrderStatus.reason || '',
+      upstream_http_status: exactOrderStatus.status,
+      upstream_order_hash: diracMidtransWebhookDiagHashV620(exactOrderStatus.data && exactOrderStatus.data.order_id || '')
+    });
+    if (exactOrderBinding.ok === true) {
+      authoritativeStatus = exactOrderStatus;
+      authoritativeBinding = exactOrderBinding;
+    }
+  }
   if (!authoritativeBinding.ok) {
     diracMidtransWebhookDiagMarkV620(req, 'reject_authoritative_binding', { reason: authoritativeBinding.reason || 'gateway_binding_mismatch', http_status: 409 });
     return res.status(409).json({ ok: false, message: 'Status Midtrans tidak cocok dengan binding transaksi.' });
