@@ -68137,7 +68137,15 @@ function diracCentralEgressRouteAllowedV228(url, method, ctx, options) {
     if (match) {
       try {
         const reference = decodeURIComponent(match[1]);
-        if (reference.startsWith('PAY-') && /^[A-Za-z0-9._:@-]{3,120}$/.test(reference)) {
+        const signedBodyV350 = ctx && ctx.req && ctx.req.__diracCentralParsedBodyV146;
+        const signedTransactionV350 = signedBodyV350 && signedBodyV350 === ctx.body
+          && /^[A-Za-z0-9-]{16,120}$/.test(reference)
+          && signedBodyV350.transaction_id === reference
+          && typeof diracCentralHandlerContextFullyPassedV211 === 'function'
+          && diracCentralHandlerContextFullyPassedV211(ctx, ctx.req)
+          && typeof midtransVerifySignature === 'function'
+          && midtransVerifySignature(signedBodyV350);
+        if ((reference.startsWith('PAY-') && /^[A-Za-z0-9._:@-]{3,120}$/.test(reference)) || signedTransactionV350) {
           return { ok: true, policy: 'midtrans_authoritative_status_v350', action };
         }
       } catch (errorV350) { diracCentralRecordSuppressedExceptionV221(errorV350); }
