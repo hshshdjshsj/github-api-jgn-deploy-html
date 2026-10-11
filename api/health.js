@@ -21709,7 +21709,7 @@ function midtransReturnGrantV500(transactionId, customerId, gatewayReference, ra
   const secret=midtransWebhookBindingSecret();
   if (!secret || !customerSecurityLooksLikeUuid(transactionId) || !customerSecurityLooksLikeUuid(customerId)
       || typeof gatewayReference !== 'string' || !/^PAY-[A-Za-z0-9._:@-]{1,116}$/.test(gatewayReference)) return null;
-  const finish=new URL('/pesanan.html', 'https://order.' + diracBaseDomainV250());
+  const finish=new URL('/pesanan.html', raw && raw.request && typeof raw.request.return_url === 'string' && raw.request.return_url.startsWith('https://order.' + diracBaseDomainV250() + '/pesanan.html?__dirac_midtrans_return=') ? 'https://order.' + diracBaseDomainV250() : diracAppPageOriginV503());
   const proof=crypto.createHmac('sha512',secret).update(JSON.stringify([
     'dirac-midtrans-return-v500',finish.href,transactionId,customerId,gatewayReference
   ]),'utf8').digest('hex');
@@ -21766,7 +21766,7 @@ async function midtransCreateSnapPayment(input) {
 
   const returnGrantV500=midtransReturnGrantV500(transactionId,customerId,gatewayReference);
   if (!returnGrantV500) return { ok:false,status:503,message:'Binding balik Midtrans belum tersedia.',error:'midtrans_return_binding_unavailable' };
-  const finishV500=new URL('/pesanan.html', 'https://order.' + diracBaseDomainV250());
+  const finishV500=new URL('/pesanan.html', diracAppPageOriginV503());
   finishV500.searchParams.set('__dirac_midtrans_return',returnGrantV500.proof);
   const returnUrl=finishV500.href;
   const payload = {
