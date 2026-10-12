@@ -19565,6 +19565,11 @@ function sessionOwnershipCheckoutBuildOrderNote(body) {
 async function sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, serviceType, shippingInput, accountPolicy) {
   const baseSubtotal = sessionOwnershipCheckoutNonNegativeMoney(subtotal || 0);
   const voucherCode = sessionOwnershipCheckoutExtractVoucherCode(body);
+  if (voucherCode && (serviceType === 'parfum' || serviceType === 'laboratorium')) {
+    const error = new Error('Kode promo tidak tersedia untuk katalog ini.');
+    error.statusCode = 409;
+    throw error;
+  }
 
   // A discount is financial authority. Browser totals never supply it, including
   // when a voucher lookup fails or a legacy client sends a precomputed amount.
