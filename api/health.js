@@ -6277,9 +6277,17 @@ async function domainDashboardMe(req, res) {
   let laboratorySavedAddresses = [];
   if (checkoutProfileRequested) {
     const profileId = String(access.protectedLock && access.protectedLock.customerId || '').trim();
-    const profile = customerSecurityLooksLikeUuid(profileId)
-      ? await sessionOwnershipCheckoutFetchCustomerById(profileId).catch(() => null)
-      : null;
+    const savedAddressPath = '/rest/v1/orders?select=' + encodeURIComponent('customer_id,shipping_address,created_at')
+      + '&customer_id=eq.' + encodeURIComponent(profileId) + '&order=created_at.desc&limit=6';
+    const [profile, savedAddressResults] = customerSecurityLooksLikeUuid(profileId)
+      ? await Promise.all([
+        sessionOwnershipCheckoutFetchCustomerById(profileId).catch(() => null),
+        Promise.all([
+          supabaseFetch(savedAddressPath, { method: 'GET', auth: 'service', db: 'security' }).catch(() => null),
+          supabaseFetch(savedAddressPath, { method: 'GET', auth: 'service', db: 'commerce' }).catch(() => null)
+        ])
+      ])
+      : [null, []];
     if (!profile || profile.ok !== true || !profile.customer
         || String(profile.customer.id || '') !== profileId
         || normalizeAuthEmail(profile.customer.email || '') !== normalizeAuthEmail(user.email || '')) {
@@ -6287,12 +6295,6 @@ async function domainDashboardMe(req, res) {
     }
     profileName = String(profile.customer.name || '').trim();
     if (checkoutProfileRequested) {
-      const savedAddressPath = '/rest/v1/orders?select=' + encodeURIComponent('customer_id,shipping_address,created_at')
-        + '&customer_id=eq.' + encodeURIComponent(profileId) + '&order=created_at.desc&limit=6';
-      const savedAddressResults = await Promise.all([
-        supabaseFetch(savedAddressPath, { method: 'GET', auth: 'service', db: 'security' }).catch(() => null),
-        supabaseFetch(savedAddressPath, { method: 'GET', auth: 'service', db: 'commerce' }).catch(() => null)
-      ]);
       if (savedAddressResults.some(result => result && result.ok === true && Array.isArray(result.data))) {
         const savedRows = savedAddressResults.flatMap(result => result && result.ok === true && Array.isArray(result.data) ? result.data.slice(0, 6) : [])
           .filter(row => row && !Array.isArray(row) && String(row.customer_id || '') === profileId && typeof row.shipping_address === 'string' && Number.isFinite(Date.parse(String(row.created_at || ''))))
