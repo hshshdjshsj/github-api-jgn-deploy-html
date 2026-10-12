@@ -6286,15 +6286,21 @@ async function domainDashboardMe(req, res) {
       return res.status(503).json({ ok: false, code: 'REGISTERED_PROFILE_UNAVAILABLE', message: 'Profil akun belum dapat diverifikasi. Silakan coba lagi.' });
     }
     profileName = String(profile.customer.name || '').trim();
-    if (laboratoryCheckoutSource && checkoutRequestOrigin === laboratoryCheckoutSource.origin && checkoutRequestSource.redirectUrl === laboratoryCheckoutSource.redirectUrl) {
-      const savedAddressPath = '/rest/v1/orders?select=' + encodeURIComponent('shipping_address')
+    if (checkoutProfileRequested) {
+      const savedAddressPath = '/rest/v1/orders?select=' + encodeURIComponent('customer_id,shipping_address,created_at')
         + '&customer_id=eq.' + encodeURIComponent(profileId) + '&order=created_at.desc&limit=6';
-      const savedAddressResult = await supabaseFetch(savedAddressPath, { method: 'GET', auth: 'service', db: 'security' }).catch(() => null);
-      if (savedAddressResult && savedAddressResult.ok === true && Array.isArray(savedAddressResult.data)) {
-        const savedRows = savedAddressResult.data;
+      const savedAddressResults = await Promise.all([
+        supabaseFetch(savedAddressPath, { method: 'GET', auth: 'service', db: 'security' }).catch(() => null),
+        supabaseFetch(savedAddressPath, { method: 'GET', auth: 'service', db: 'commerce' }).catch(() => null)
+      ]);
+      if (savedAddressResults.some(result => result && result.ok === true && Array.isArray(result.data))) {
+        const savedRows = savedAddressResults.flatMap(result => result && result.ok === true && Array.isArray(result.data) ? result.data.slice(0, 6) : [])
+          .filter(row => row && !Array.isArray(row) && String(row.customer_id || '') === profileId && typeof row.shipping_address === 'string' && Number.isFinite(Date.parse(String(row.created_at || ''))))
+          .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at));
         const safeAddress = (row) => {
-          const value = sessionOwnershipCheckoutCleanText(row && row.shipping_address || '', 520);
-          return value.length >= 20 && /^Negara:\s*/.test(value) ? value : '';
+          const value = sessionOwnershipCheckoutCleanText(row && row.shipping_address || '', 1400)
+            .replace(/^Alamat:\s*/, '').split(/\s*\|\s*(?:Detail alamat|Catatan):\s*/)[0].trim();
+          return value.length >= 20 && value.length <= 520 && /^Negara:\s*/.test(value) ? value : '';
         };
         const a0 = safeAddress(savedRows[0]);
         const a1 = safeAddress(savedRows[1]);
@@ -18951,7 +18957,7 @@ const DIRAC_SHIPPING_ORIGINS_V401 = Object.freeze({
 });
 
 const DIRAC_SHIPPING_PROVINCE_CENTROIDS_V401 = Object.freeze({
-  'aceh': [-5.5483,95.3238], 'sumatera utara':[3.5952,98.6722], 'sumatera barat':[-0.9471,100.4172],
+  'aceh': [5.5483,95.3238], 'sumatera utara':[3.5952,98.6722], 'sumatera barat':[-0.9471,100.4172],
   'riau':[0.5333,101.4500], 'kepulauan riau':[0.9167,104.4500], 'jambi':[-1.6101,103.6131],
   'sumatera selatan':[-2.9761,104.7754], 'kepulauan bangka belitung':[-2.1291,106.1133], 'bengkulu':[-3.7928,102.2608],
   'lampung':[-5.3971,105.2668], 'banten':[-6.1200,106.1503], 'dki jakarta':[-6.2088,106.8456],
@@ -19223,7 +19229,7 @@ async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, re
           status: Number(productResult.status) >= 500 ? 503 : 409,
           message: productResult.message || (laboratoryService
             ? `Produk laboratorium "${itemTitle}" tidak ditemukan di katalog backend. Checkout dihentikan supaya nominal tidak bisa dipalsukan.`
-            : `Produk parfum "${itemTitle}" tidak ditemukan di database products. Checkout dihentikan supaya nominal tidak bisa dipalsukan.`)
+            : `Produk parfum "${itemTitle}" tidak ditemukan di katalog JSON PT. Checkout dihentikan supaya nominal tidak bisa dipalsukan.`)
         };
       }
 
@@ -19238,7 +19244,7 @@ async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, re
       }
 
       if (!unitPrice || unitPrice <= 0) {
-        return { ok: false, status: 409, message: `Harga produk ${productTitle || itemTitle} di database masih 0/kosong. Checkout dihentikan supaya nominal tidak bisa dipalsukan.` };
+        return { ok: false, status: 409, message: `Harga produk ${productTitle || itemTitle} di katalog JSON masih 0/kosong. Checkout dihentikan supaya nominal tidak bisa dipalsukan.` };
       }
 
       if (product.is_active === false) {
@@ -33030,12 +33036,7 @@ async function diracUniversalPesananFetchProductsForOrderItems(rows) {
     .filter(Boolean)));
   const productsById = new Map();
   for (const id of ids) {
-    const result = await supabaseFetch(
-      '/rest/v1/products?select=' + encodeURIComponent('doc_id,firebase_id,title,name,img,image_url,description,notes,long_description,category,fragrance_type') +
-      '&or=' + encodeURIComponent('(doc_id.eq.' + id + ',firebase_id.eq.' + id + ')') +
-      '&limit=1',
-      { method: 'GET', auth: 'service' }
-    ).catch(() => null);
+    const result = await diracProductsJsonReadV601('invoice', id).catch(() => null);
     const product = result && result.ok && Array.isArray(result.data) ? result.data[0] : null;
     if (product) {
       if (product.doc_id) productsById.set(lockedPaymentCleanText(product.doc_id, 120), product);
@@ -38519,11 +38520,7 @@ function diracPerfumeCatalogV112IsCatalogAction(action) {
 async function diracPerfumeCatalogV112Handle(req, res) {
   const limitRaw = Number((req && req.query && (req.query.limit || req.query.per_page)) || 100);
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 1), 200) : 100;
-  const select = 'doc_id,firebase_id,title,name,price,stock,status,is_ready,is_active';
-  const result = await supabaseFetch('/rest/v1/products?select=' + encodeURIComponent(select) + '&limit=' + encodeURIComponent(String(limit)), {
-    method: 'GET',
-    auth: 'service'
-  });
+  const result = await diracProductsJsonReadV601('catalog', limit);
 
   if (!result.ok) {
     return res.status(result.status || 500).json({ ok: false, message: 'Produk belum bisa dibaca.' });
@@ -38634,12 +38631,7 @@ async function diracPerfumeCatalogV116Handle(req, res) {
   const limitRaw = Number((req && req.query && (req.query.limit || req.query.per_page)) || 100);
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 1), 200) : 100;
 
-  // slug wajib ikut dibaca karena tabel products user memakai slug sebagai identifier utama.
-  const select = 'slug,doc_id,firebase_id,title,name,price,stock,status,is_ready,is_active';
-  const result = await supabaseFetch('/rest/v1/products?select=' + encodeURIComponent(select) + '&limit=' + encodeURIComponent(String(limit)), {
-    method: 'GET',
-    auth: 'service'
-  });
+  const result = await diracProductsJsonReadV601('catalog', limit);
 
   if (!result.ok) {
     return res.status(result.status || 500).json({ ok: false, message: 'Produk belum bisa dibaca.' });
@@ -38680,6 +38672,81 @@ async function diracPerfumeCatalogV116Handle(req, res) {
   });
 }
 
+/* Product-only published catalog authority. Security context and outbound HTTP policy stay mandatory. */
+const diracProductsJsonFlightV601 = new WeakMap();
+async function diracProductsJsonSnapshotV601() {
+  const ctx = diracCentralCurrentContextV149();
+  if (!ctx || !ctx.req || ctx.req.__diracCentralSecurityGuardPassedV146 !== true
+      || !diracCentralHandlerContextFullyPassedV211(ctx, ctx.req)) throw new Error('PRODUCTS_JSON_CENTRAL_GUARD_REQUIRED');
+  if (diracProductsJsonFlightV601.has(ctx)) return diracProductsJsonFlightV601.get(ctx);
+  const task = (async () => {
+    const origin = diracAppPageOriginV503();
+    const response = await fetch(origin + '/products.json', {
+      method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer',
+      headers: { Accept: 'application/json' }
+    });
+    if (!response || !response.ok || response.status !== 200
+        || !/^application\/json(?:\s*;|$)/i.test(String(response.headers.get('content-type') || ''))
+        || Number(response.headers.get('content-length') || 0) > 2097152) throw new Error('PRODUCTS_JSON_UNAVAILABLE');
+    const body = await response.text();
+    if (!body || Buffer.byteLength(body, 'utf8') > 2097152) throw new Error('PRODUCTS_JSON_SIZE_INVALID');
+    const data = JSON.parse(body);
+    const rows = data && data.schema_version === 1 && Array.isArray(data.products) ? data.products : null;
+    if (!rows || !rows.length || rows.length > 5000 || !rows.every((row) =>
+      row && typeof row === 'object' && !Array.isArray(row)
+      && /^[A-Za-z0-9._:-]{1,80}$/.test(String(row.doc_id || ''))
+      && /^[A-Za-z0-9._:-]{1,80}$/.test(String(row.firebase_id || ''))
+      && /^[a-z0-9][a-z0-9-]{0,119}$/.test(String(row.slug || ''))
+      && typeof row.title === 'string' && row.title.trim().length > 0 && row.title.length <= 180
+      && typeof row.name === 'string' && row.name.trim().length > 0 && row.name.length <= 180
+      && Number.isSafeInteger(row.price) && row.price > 0 && row.price <= 1000000000000
+      && Number.isSafeInteger(row.stock) && row.stock >= 0 && row.stock <= 1000000000
+      && typeof row.is_ready === 'boolean' && typeof row.is_active === 'boolean'
+      && Number.isSafeInteger(row.shipping_weight_grams) && row.shipping_weight_grams >= 1 && row.shipping_weight_grams <= 50000
+      && ['shipping_length_cm','shipping_width_cm','shipping_height_cm'].every((field) => Number.isFinite(row[field]) && row[field] > 0 && row[field] <= 200)
+      && typeof row.shipping_origin_code === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(row.shipping_origin_code)
+    )) throw new Error('PRODUCTS_JSON_SCHEMA_INVALID');
+    const identities = new Map();
+    if (!rows.every((row, index) => [row.slug, row.doc_id, row.firebase_id].every((id) => {
+      if (identities.has(id) && identities.get(id) !== index) return false;
+      identities.set(id, index);
+      return true;
+    }))) throw new Error('PRODUCTS_JSON_IDENTITY_COLLISION');
+    return Object.freeze(rows.map((row) => Object.freeze({
+      slug: row.slug, doc_id: row.doc_id, firebase_id: row.firebase_id,
+      title: row.title, name: row.name, brand: String(row.brand || ''), category: String(row.category || ''),
+      price: row.price, cost_price: 0, stock: row.stock, status: String(row.status || ''),
+      is_ready: row.is_ready, is_active: row.is_active,
+      img: String(row.img || ''), image_url: String(row.image_url || ''),
+      description: String(row.description || ''), notes: String(row.notes || ''),
+      long_description: String(row.long_description || ''), fragrance_type: String(row.fragrance_type || ''),
+      shipping_weight_grams: row.shipping_weight_grams, shipping_length_cm: row.shipping_length_cm,
+      shipping_width_cm: row.shipping_width_cm, shipping_height_cm: row.shipping_height_cm,
+      shipping_origin_code: row.shipping_origin_code
+    })));
+  })();
+  diracProductsJsonFlightV601.set(ctx, task);
+  try { return await task; }
+  finally { if (diracProductsJsonFlightV601.get(ctx) === task) diracProductsJsonFlightV601.delete(ctx); }
+}
+async function diracProductsJsonReadV601(kind, value) {
+  if (!['catalog','checkout','invoice'].includes(kind)) return { ok: false, status: 400, data: null };
+  try {
+    const rows = await diracProductsJsonSnapshotV601();
+    const identity = String(value || '');
+    if (kind === 'catalog') {
+      const limit = Number(value);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5000) return { ok: false, status: 400, data: null };
+      return { ok: true, status: 200, data: rows.slice().sort((a, b) => a.doc_id.localeCompare(b.doc_id)).slice(0, limit) };
+    }
+    if (!/^[A-Za-z0-9._:-]{1,120}$/.test(identity)) return { ok: false, status: 400, data: null };
+    const matches = rows.filter((row) => kind === 'checkout'
+      ? (row.slug === identity || row.doc_id === identity || row.firebase_id === identity)
+      : (row.doc_id === identity || row.firebase_id === identity));
+    return { ok: true, status: 200, data: matches.slice(0, kind === 'checkout' ? 2 : 1) };
+  } catch (_) { return { ok: false, status: 503, data: null, error: 'PRODUCTS_JSON_UNAVAILABLE' }; }
+}
+
 function sessionOwnershipCheckoutProductIdCandidates(body) {
   return Array.from(new Set([
     body.product_slug,
@@ -38704,7 +38771,6 @@ function sessionOwnershipCheckoutV116SafeRestEqValue(value) {
 
 async function sessionOwnershipCheckoutFindProductForCheckout(body, requestedProductTitle) {
   const idCandidates = sessionOwnershipCheckoutProductIdCandidates(body);
-  const select = 'slug,doc_id,firebase_id,title,name,price,cost_price,stock,status,is_ready,is_active,shipping_weight_grams,shipping_length_cm,shipping_width_cm,shipping_height_cm,shipping_origin_code';
   if (!idCandidates.length) {
     return {
       ok: false,
@@ -38721,19 +38787,16 @@ async function sessionOwnershipCheckoutFindProductForCheckout(body, requestedPro
     if (!id) {
       return { ok: false, status: 400, message: 'Format identifier produk checkout tidak valid.' };
     }
-    const path = '/rest/v1/products?select=' + encodeURIComponent(select)
-      + '&or=' + encodeURIComponent(`(slug.eq.${id},doc_id.eq.${id},firebase_id.eq.${id})`)
-      + '&limit=2';
-    const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+    const result = await diracProductsJsonReadV601('checkout', id);
     if (!result || result.ok !== true || !Array.isArray(result.data)) {
       return {
         ok: false,
         status: Number(result && result.status || 0) || 503,
-        message: 'Database products tidak dapat membuktikan identifier checkout.'
+        message: 'Katalog JSON produk tidak dapat membuktikan identifier checkout.'
       };
     }
     if (result.data.length === 0) {
-      return { ok: false, status: 404, message: 'Identifier produk checkout tidak ditemukan di database products.' };
+      return { ok: false, status: 404, message: 'Identifier produk checkout tidak ditemukan di katalog JSON.' };
     }
     if (result.data.length !== 1) {
       return { ok: false, status: 409, message: 'Identifier produk checkout ambigu dan tidak boleh dipakai.' };
@@ -38748,7 +38811,7 @@ async function sessionOwnershipCheckoutFindProductForCheckout(body, requestedPro
     }
     const exactFields = [slug, docId, firebaseId].filter(Boolean);
     if (!exactFields.includes(id)) {
-      return { ok: false, status: 409, message: 'Database mengembalikan produk yang tidak cocok secara exact.' };
+      return { ok: false, status: 409, message: 'Katalog JSON mengembalikan produk yang tidak cocok secara exact.' };
     }
     const identity = JSON.stringify([slug, docId, firebaseId]);
     if (resolvedProduct && identity !== resolvedIdentity) {
@@ -38842,15 +38905,7 @@ async function diracPerfumePublicProductsV117Handle(req, res) {
 
   const limitRaw = Number((req && req.query && (req.query.limit || req.query.per_page)) || 5000);
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 1), 5000) : 5000;
-  const select = 'slug,doc_id,firebase_id,title,name,category,price,stock,status,is_ready,is_active,img,image_url,description,notes,long_description';
-  const path = '/rest/v1/products?select=' + encodeURIComponent(select)
-    + '&order=doc_id.asc'
-    + '&limit=' + encodeURIComponent(String(limit));
-
-  const result = await supabaseFetch(path, {
-    method: 'GET',
-    auth: 'service'
-  });
+  const result = await diracProductsJsonReadV601('catalog', limit);
 
   if (!result.ok) {
     return res.status(result.status || 500).json({ ok: false, message: 'Produk belum bisa dibaca.' });
@@ -68516,6 +68571,19 @@ function diracCentralEgressRouteAllowedV228(url, method, ctx, options) {
     }
   };
 
+  const publishedProducts = exact(new URL(diracAppPageOriginV503()).hostname, '/products.json', ['GET'], [
+    'public_products', 'products_public', 'catalog_products', 'product_catalog', 'public_catalog',
+    'parfum_products', 'perfume_products', 'parfum_catalog', 'katalog_parfum', 'katalog_produk', 'lihat_produk',
+    'checkout_order', 'my_orders', 'customer_orders', 'pesanan_saya', 'my_invoices', 'customer_invoices',
+    'invoices', 'invoice_saya', 'my_bills', 'create_payment', 'midtrans_webhook',
+    'invoice_email_send', 'invoice_document_export'
+  ], 'pt_published_products_json_v601');
+  if (publishedProducts && ctx && ctx.req && diracCentralHandlerContextFullyPassedV211(ctx, ctx.req)
+      && options && Object.keys(options).sort().join(',') === 'cache,credentials,headers,method,redirect,referrerPolicy'
+      && options.method === 'GET' && options.credentials === 'omit' && options.cache === 'no-store'
+      && options.redirect === 'error' && options.referrerPolicy === 'no-referrer'
+      && options.headers && Object.keys(options.headers).join(',') === 'Accept'
+      && options.headers.Accept === 'application/json') return publishedProducts;
   const emailActions = [/^domain_register$/, /^domain_checkout$/, /^create_payment$/, /^midtrans_webhook$/, /^customer_security_/, /^admin_/, /^domain_login$/, /^dirac_mfa_passkey_verify$/, /^domain_mfa_passkey_verify$/];
   const resend = exact('api.resend.com', '/emails', ['POST'], emailActions, 'resend_email');
   if (resend) return resend;
@@ -70129,6 +70197,7 @@ function diracCentralAllowedEgressHostV146(host) {
     'whoisjson.com'
   ]);
   for (const role of DIRAC_UNIVERSAL_APP_ROLES_V250) allowed.add(diracRoleHostnameV250(role));
+  allowed.add(new URL(diracAppPageOriginV503()).hostname);
   [...Object.keys(process.env).filter((name) => /SUPABASE_URL$/.test(name)),
     'NAMECOM_API_BASE', 'NAMESILO_API_BASE', 'WHOISJSON_API_BASE', 'HOSTINGER_API_BASE',
     'DIRAC_RECOVERY_WORKER_URL', 'DIRAC_LOGIN_SECURITY_WEBHOOK_URL'].forEach((name) => {
