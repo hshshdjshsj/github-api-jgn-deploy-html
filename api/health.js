@@ -4044,7 +4044,7 @@ async function notifyLoginSecurityIncidentSafe(incident) {
 const DIRAC_REGISTER_EMAIL_VERIFICATION_PATCH_V331 = 'dirac-register-email-verification-v331';
 const DIRAC_REGISTER_EMAIL_CHALLENGE_COOKIE_V331 = '__Host-dirac_register_email_v331';
 const DIRAC_REGISTER_EMAIL_CHALLENGE_TYPE_V331 = 'dirac-register-email-challenge-v331';
-const DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331 = 2 * 60;
+const DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331 = 5 * 60;
 const DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354 = 512;
 const DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354 = 768;
 const DIRAC_REGISTER_EMAIL_PROOF_SYMBOLS_V374 = '!#$%&()*+,-./:;=?@[]^{|}~';
@@ -4501,12 +4501,12 @@ function diracRegisterEmailMimeV331(message, account) {
     summary: 'Email ini dikirim karena alamat Anda digunakan untuk memulai pendaftaran. Salin kode verifikasi ke halaman pendaftaran yang masih terbuka.',
     statusLabel: 'STATUS VERIFIKASI',
     statusValue: 'MENUNGGU KONFIRMASI',
-    statusNote: 'Kode ' + String(proof.length) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) berlaku selama 2 menit dan hanya dapat digunakan satu kali.',
+    statusNote: 'Kode ' + String(proof.length) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) berlaku selama 5 menit dan hanya dapat digunakan satu kali.',
     detailsLabel: 'DETAIL VERIFIKASI',
     copyCode: proof,
     rows: [
       ['KODE VERIFIKASI', proof],
-      ['MASA BERLAKU', '2 menit'],
+      ['MASA BERLAKU', '5 menit'],
       ['PENGGUNAAN', 'Sekali pakai'],
       ...diracSecurityMailClientRowsV381(message.client),
       ['REFERENSI', reference]
@@ -7766,7 +7766,7 @@ async function checkDomainWithProviders(parts, options = {}) {
         ok: false,
         status: 502,
         provider,
-        message: String(error && error.message ? error.message : error)
+        message: 'Pemeriksaan provider domain gagal. Coba lagi nanti.'
       };
     }
   }
@@ -7777,7 +7777,7 @@ async function checkDomainWithProviders(parts, options = {}) {
     ok: false,
     status: lastError && lastError.status ? lastError.status : 502,
     provider: lastError && lastError.provider ? lastError.provider : null,
-    message: lastError && lastError.message ? lastError.message : 'Semua provider domain gagal mengecek domain.'
+    message: lastError && lastError.status === 429 ? 'Provider domain sedang membatasi permintaan. Coba lagi nanti.' : 'Semua provider domain gagal mengecek domain.'
   };
 }
 
@@ -9206,6 +9206,10 @@ async function supabaseFetch(path, options = {}) {
     data = text ? JSON.parse(text) : null;
   } catch (_) {
     data = text;
+  }
+
+  if (response.ok && /^\/rest\/v1\/(?:payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)(?:\?|$)/.test(cleanPath)) {
+    data = require('../lib/data-protection.js').decode(cleanPath, data);
   }
 
   const result = {
@@ -12637,17 +12641,11 @@ function diracSecurityRedactDiagnosticV210(value, maximum = 180) {
   } else {
     text = String(value || 'internal_error');
   }
-  return text
-    .replace(/-----BEGIN [^-\r\n]{1,80}-----[\s\S]*?-----END [^-\r\n]{1,80}-----/g, '[redacted-key]')
-    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
-    .replace(/\b(authorization|password|passwd|token|secret|cookie|service[_-]?role|api[_-]?key|apikey|pepper|private[_-]?key)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
-    .replace(/\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, '[redacted-jwt]')
-    .replace(/\b[A-Z0-9._%+-]{1,64}@[A-Z0-9.-]{1,190}\.[A-Z]{2,24}\b/gi, '[redacted-email]')
-    .replace(/\b(?:[A-Fa-f0-9]{32,}|[A-Za-z0-9+/_-]{48,}={0,2})\b/g, '[redacted-material]')
-    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, limit) || 'internal_error';
+  const token = text.trim();
+  // Provider free text can contain complete failing rows, names, or addresses.
+  // Keep structural codes only; partial pattern redaction cannot protect them.
+  const structuralCode = /^(?:(?:DIRAC|DATA_PROTECTION|CUSTOMER_SECURITY|RECOVERY|SUPABASE|PASSWORD|AUTH|LOGIN|REGISTER|SESSION|DOMAIN|CENTRAL|SECURITY|MIDTRANS|ORDER|CHECKOUT|PAYMENT|PUBLIC_PRODUCTS|ERR)_[A-Z0-9_]+|PGRST(?:116|125|202|204|205)|(?:42P01|42703|42501|23505|23503|23502|57014|53300|40P01)|(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN)|(?:Type|Range|Syntax|Reference|URI|Eval|Aggregate|Abort)?Error|internal_error|unknown_error)$/.test(token);
+  return structuralCode && token.length <= 120 ? token.slice(0, limit) : '[redacted-diagnostic]';
 }
 
 function customerSecuritySafeLogError(error) {
@@ -15903,7 +15901,7 @@ async function customerSecurityGenerateRecoveryCodesViaWorker(req, res, action, 
           diagnostic_id: workerFailureDiagnosticIdV260,
           response_bytes: workerUpstreamResponseBytesV260,
           encrypted_response_authenticated: true,
-          message: String(workerFailureBody.message || '').slice(0, 200),
+          message: diracSecurityRedactDiagnosticV210(workerFailureBody.message, 200),
           workerHost: target.hostname,
           workerPath: target.pathname,
           secrets_logged: false
@@ -16152,7 +16150,7 @@ async function customerSecurityVerifyRecoveryCodeViaWorker(req, res, action, acc
           status: response.status,
           statusText: response.statusText,
           code: workerFailureBody.code,
-          message: String(workerFailureBody.message || '').slice(0, 200),
+          message: diracSecurityRedactDiagnosticV210(workerFailureBody.message, 200),
           workerHost: target.hostname,
           workerPath: target.pathname
         }));
@@ -16312,7 +16310,7 @@ function diracRecoveryBrowserRootCauseDiagnosticV344(req, body, error, expectedA
         key_id_match: null,
         error_name: diracRecoveryBrowserDiagnosticSafeTextV344(keyError && keyError.name, 80),
         error_code: diracRecoveryBrowserDiagnosticSafeTextV344(keyError && keyError.code, 120),
-        error_message: diracRecoveryBrowserDiagnosticSafeTextV344(keyError && keyError.message, 260)
+        error_message: diracSecurityRedactDiagnosticV210(keyError && keyError.message, 260)
       };
     }
 
@@ -16333,7 +16331,7 @@ function diracRecoveryBrowserRootCauseDiagnosticV344(req, body, error, expectedA
         match: null,
         error_name: diracRecoveryBrowserDiagnosticSafeTextV344(bindingError && bindingError.name, 80),
         error_code: diracRecoveryBrowserDiagnosticSafeTextV344(bindingError && bindingError.code, 120),
-        error_message: diracRecoveryBrowserDiagnosticSafeTextV344(bindingError && bindingError.message, 260)
+        error_message: diracSecurityRedactDiagnosticV210(bindingError && bindingError.message, 260)
       };
     }
 
@@ -16358,14 +16356,14 @@ function diracRecoveryBrowserRootCauseDiagnosticV344(req, body, error, expectedA
         sha256_b64url: null,
         error_name: diracRecoveryBrowserDiagnosticSafeTextV344(aadError && aadError.name, 80),
         error_code: diracRecoveryBrowserDiagnosticSafeTextV344(aadError && aadError.code, 120),
-        error_message: diracRecoveryBrowserDiagnosticSafeTextV344(aadError && aadError.message, 260)
+        error_message: diracSecurityRedactDiagnosticV210(aadError && aadError.message, 260)
       };
     }
 
     const cause = error && error.cause;
-    const stackLines = String(error && error.stack || '').split('\n').slice(0, 10)
+    const stackLines = String(error && error.stack || '').split('\n').slice(1, 10)
       .map((line) => diracRecoveryBrowserDiagnosticSafeTextV344(line, 420));
-    const causeStackLines = String(cause && cause.stack || '').split('\n').slice(0, 6)
+    const causeStackLines = String(cause && cause.stack || '').split('\n').slice(1, 6)
       .map((line) => diracRecoveryBrowserDiagnosticSafeTextV344(line, 420));
 
     return {
@@ -16425,11 +16423,11 @@ function diracRecoveryBrowserRootCauseDiagnosticV344(req, body, error, expectedA
       error: {
         name: diracRecoveryBrowserDiagnosticSafeTextV344(error && error.name, 100),
         code: diracRecoveryBrowserDiagnosticSafeTextV344(error && error.code, 160),
-        message: diracRecoveryBrowserDiagnosticSafeTextV344(error && error.message, 420),
+        message: diracSecurityRedactDiagnosticV210(error && error.message, 400),
         stack: stackLines,
         cause_name: diracRecoveryBrowserDiagnosticSafeTextV344(cause && cause.name, 100),
         cause_code: diracRecoveryBrowserDiagnosticSafeTextV344(cause && cause.code, 160),
-        cause_message: diracRecoveryBrowserDiagnosticSafeTextV344(cause && cause.message, 420),
+        cause_message: diracSecurityRedactDiagnosticV210(cause && cause.message, 400),
         cause_stack: causeStackLines
       },
       secrets_logged: false
@@ -16441,7 +16439,7 @@ function diracRecoveryBrowserRootCauseDiagnosticV344(req, body, error, expectedA
       stage: String(req && req.__diracRecoveryBrowserDiagnosticStageV344 || 'unknown').slice(0, 96),
       diagnostic_error_name: diracRecoveryBrowserDiagnosticSafeTextV344(diagnosticError && diagnosticError.name, 100),
       diagnostic_error_code: diracRecoveryBrowserDiagnosticSafeTextV344(diagnosticError && diagnosticError.code, 160),
-      diagnostic_error_message: diracRecoveryBrowserDiagnosticSafeTextV344(diagnosticError && diagnosticError.message, 420),
+      diagnostic_error_message: diracSecurityRedactDiagnosticV210(diagnosticError && diagnosticError.message, 400),
       secrets_logged: false
     };
   }
@@ -48534,7 +48532,7 @@ const LOST_PASSKEY_DYNAMIC_CODE_MIN_LENGTH_V355 = 512;
 const LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355 = 768;
 const LOST_PASSKEY_DYNAMIC_CODE_SYMBOLS_V374 = '!#$%&()*+,-./:;=?@[]^{|}~';
 const LOST_PASSKEY_DYNAMIC_CODE_ALPHABET_V374 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_' + LOST_PASSKEY_DYNAMIC_CODE_SYMBOLS_V374;
-const DIRAC_LOST_PASSKEY_EMAIL_CODE_TTL_MS_V374 = 120000;
+const DIRAC_LOST_PASSKEY_EMAIL_CODE_TTL_MS_V374 = 300000;
 
 /* RECO donor source lines 2798-2798 */
 const LOST_PASSKEY_LINK_TOKEN_BYTES_V157 = 250;
@@ -50395,12 +50393,12 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
 
       const referenceV346 = crypto.createHash('sha256').update(requestIdV346, 'utf8').digest('hex').slice(0, 10).toUpperCase();
       const htmlInputV346 = {
-        preheader: 'Kode pemulihan Passkey ' + emailCodeLengthV355 + ' karakter acak. Berlaku 2 menit sampai ' + customerSecurityRecoveryFormatWibV326(expiresAtV346) + '.',
+        preheader: 'Kode pemulihan Passkey ' + emailCodeLengthV355 + ' karakter acak. Berlaku 5 menit sampai ' + customerSecurityRecoveryFormatWibV326(expiresAtV346) + '.',
         brandLabel: 'PEMULIHAN AKUN',
         eyebrow: 'PASSKEY RECOVERY CODE',
         title: 'Kode Pemulihan\nPasskey',
         greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
-        summary: 'Password akun sudah diverifikasi. Gunakan kode ' + emailCodeLengthV355 + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) di bawah hanya pada halaman masuk resmi PT Dirac Inovasi Nusantara. Kode berlaku 2 menit.',
+        summary: 'Password akun sudah diverifikasi. Gunakan kode ' + emailCodeLengthV355 + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) di bawah hanya pada halaman masuk resmi PT Dirac Inovasi Nusantara. Kode berlaku 5 menit.',
         statusLabel: 'STATUS PEMULIHAN',
         statusValue: 'PASSWORD TERVERIFIKASI',
         statusNote: 'Kode hanya berlaku untuk request ini dan tidak pernah ditampilkan kembali oleh API.',
@@ -50410,7 +50408,7 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
           ['KODE EMAIL — ' + emailCodeLengthV355 + ' KARAKTER', emailCode100V346],
           ['REFERENSI', referenceV346],
           ['BERLAKU SAMPAI', customerSecurityRecoveryFormatWibV326(expiresAtV346)],
-          ['METODE', 'Password + kode email ' + emailCodeLengthV355 + ' karakter / TTL 2 menit']
+          ['METODE', 'Password + kode email ' + emailCodeLengthV355 + ' karakter / TTL 5 menit']
         ],
         rowValueMaxLength: LOST_PASSKEY_DYNAMIC_CODE_MAX_LENGTH_V355,
         actionUrl: diracRoleOriginV250('auth') + '/masuk.html',
@@ -52067,7 +52065,7 @@ async function diracRecoveryHpkeSendProofV159(env, proofBody) {
       json_parsed: jsonParsed,
       server_ok: Boolean(data && data.ok === true),
       server_code: data && data.code ? String(data.code).slice(0, 100) : '',
-      server_message: data && data.message ? String(data.message).slice(0, 160) : '',
+      server_message: data && data.message ? diracSecurityRedactDiagnosticV210(data.message, 160) : '',
       recovery_session_present: Boolean(data && data.dirac_lost_passkey_recovery_session),
       recovery_expiry_present: Boolean(data && data.recovery_session_expires_at)
     }, response.ok ? 'log' : 'error');
@@ -52084,10 +52082,10 @@ async function diracRecoveryHpkeSendProofV159(env, proofBody) {
       timeout_triggered: timeoutTriggered,
       aborted: Boolean(controller.signal && controller.signal.aborted),
       error_name: error && error.name ? String(error.name).slice(0, 100) : '',
-      error_message: error && error.message ? String(error.message).slice(0, 200) : '',
+      error_message: error && error.message ? diracSecurityRedactDiagnosticV210(error.message, 200) : '',
       cause_name: cause && cause.name ? String(cause.name).slice(0, 100) : '',
       cause_code: cause && cause.code ? String(cause.code).slice(0, 100) : '',
-      cause_message: cause && cause.message ? String(cause.message).slice(0, 200) : ''
+      cause_message: cause && cause.message ? diracSecurityRedactDiagnosticV210(cause.message, 200) : ''
     }, 'error');
     return {
       ok: false,
@@ -56990,10 +56988,10 @@ diracRegisterEmailDeliverV331 = async function diracRegisterEmailDeliverCustomer
     title: 'Verifikasi Email\nPendaftaran', greeting: 'Yth. Calon Customer PT Dirac Inovasi Nusantara,',
     summary: 'Email ini dikirim karena alamat Anda digunakan untuk memulai pendaftaran. Salin kode verifikasi ke halaman pendaftaran yang masih terbuka.',
     statusLabel: 'STATUS VERIFIKASI', statusValue: 'MENUNGGU KONFIRMASI',
-    statusNote: 'Kode ' + String(String(message.proof || '').length) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) berlaku selama 2 menit dan hanya dapat digunakan satu kali.',
+    statusNote: 'Kode ' + String(String(message.proof || '').length) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) berlaku selama 5 menit dan hanya dapat digunakan satu kali.',
     detailsLabel: 'DETAIL VERIFIKASI',
     copyCode: String(message.proof || ''),
-    rows: [['KODE VERIFIKASI', String(message.proof || '')], ['MASA BERLAKU', '2 menit'], ['PENGGUNAAN', 'Sekali pakai'], ...diracSecurityMailClientRowsV381(message.client), ['REFERENSI', String(message.reference || '')]],
+    rows: [['KODE VERIFIKASI', String(message.proof || '')], ['MASA BERLAKU', '5 menit'], ['PENGGUNAAN', 'Sekali pakai'], ...diracSecurityMailClientRowsV381(message.client), ['REFERENSI', String(message.reference || '')]],
     rowValueMaxLength: DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354,
     actionUrl: diracRoleOriginV250('auth') + '/masuk.html', actionText: 'BUKA HALAMAN PENDAFTARAN',
     warningTitle: 'JAGA KERAHASIAAN KODE',
@@ -68948,7 +68946,7 @@ async function diracCentralPinnedHttpsFetchV230(
   const pinnedAgent = diracCentralPinnedHttpsAgentV334(parsedUrl.hostname, pinnedPort, pinnedIp);
   const method = String(options && options.method || 'GET').toUpperCase();
   const headers = diracCentralHeaderObjectV230(options && options.headers);
-  const body = diracCentralBodyBytesV230(options && options.body);
+  let body = diracCentralBodyBytesV230(options && options.body);
   if (body.length && headers['content-length'] === undefined) headers['content-length'] = String(body.length);
   const signal = options && options.signal;
   const streamTimeoutMs =
@@ -68972,6 +68970,17 @@ async function diracCentralPinnedHttpsFetchV230(
   } else if (diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())
       && !diracCentralConsumeDatabaseEgressPermitV362(parsedUrl, method, diracCentralCurrentContextV149(), options)) {
     throw Object.assign(new Error('DIRAC_DATABASE_DISPATCH_PERMIT_REJECTED'), { code: 'DIRAC_DATABASE_DISPATCH_PERMIT_REJECTED' });
+  }
+  if (!supportDispatch && body.length && ['POST', 'PATCH', 'PUT'].includes(method)
+      && headers['content-type'] === 'application/json'
+      && /^\/rest\/v1\/(?:payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)$/.test(parsedUrl.pathname)
+      && diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())) {
+    // Storage encryption starts only after the unchanged one-use egress permit.
+    const storedBody = require('../lib/data-protection.js').encode(parsedUrl.pathname + parsedUrl.search, JSON.parse(body.toString('utf8')));
+    const encodedBody = Buffer.from(JSON.stringify(storedBody), 'utf8');
+    body.fill(0);
+    body = encodedBody;
+    headers['content-length'] = String(body.length);
   }
   return await new Promise((resolve, reject) => {
     let settled = false;
@@ -70116,23 +70125,34 @@ async function diracCentralResolveHostIpsV146(host) {
   if (cached && Number(cached.until || 0) > Date.now()) return cached.ips || [];
   const visited = new Set();
   const ips = new Set();
+  const deadline = Date.now() + (cleanHost === diracRoleHostnameV250('recovery') ? 10000 : 2500);
+  let stopped = false;
+  const assertActive = () => {
+    if (stopped || Date.now() >= deadline) throw new Error('DIRAC_DNS_TIMEOUT');
+  };
   const walk = async (name, depth) => {
+    assertActive();
     const canonical = String(name || '').trim().toLowerCase().replace(/\.$/, '');
     if (!canonical || depth > 8 || visited.has(canonical) || diracCentralIsUnsafeHostV146(canonical)) throw new Error('DIRAC_DNS_CHAIN_INVALID');
+    if (visited.size >= 32) throw new Error('DIRAC_DNS_CHAIN_LIMIT');
     visited.add(canonical);
     const [v4, v6, cnames] = await Promise.all([
       DIRAC_CENTRAL_NATIVE_DNS_RESOLVE4_V230(canonical).catch(() => []),
       DIRAC_CENTRAL_NATIVE_DNS_RESOLVE6_V230(canonical).catch(() => []),
       DIRAC_CENTRAL_NATIVE_DNS_RESOLVE_CNAME_V230(canonical).catch(() => [])
     ]);
+    assertActive();
+    if (cnames.length > 8) throw new Error('DIRAC_DNS_CHAIN_LIMIT');
     for (const ip of [...v4, ...v6]) {
       const clean = String(ip || '').trim();
       if (!clean || diracCentralIsUnsafeIpV146(clean)) throw new Error('DIRAC_DNS_PRIVATE_OR_RESERVED_IP');
       ips.add(clean);
     }
-    for (const cname of cnames.slice(0, 8)) await walk(cname, depth + 1);
+    for (const cname of cnames) await walk(cname, depth + 1);
     if (!v4.length && !v6.length && !cnames.length) {
+      assertActive();
       const rows = await DIRAC_CENTRAL_NATIVE_DNS_LOOKUP_V230(canonical, { all: true, verbatim: true });
+      assertActive();
       for (const row of rows || []) {
         const clean = String(row && row.address || '').trim();
         if (!clean || diracCentralIsUnsafeIpV146(clean)) throw new Error('DIRAC_DNS_PRIVATE_OR_RESERVED_IP');
@@ -70142,7 +70162,7 @@ async function diracCentralResolveHostIpsV146(host) {
   };
   let timer = null;
   try {
-    await Promise.race([walk(cleanHost, 0), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('DIRAC_DNS_TIMEOUT')), cleanHost === diracRoleHostnameV250('recovery') ? 10000 : 2500); })]);
+    await Promise.race([walk(cleanHost, 0), new Promise((_, reject) => { timer = setTimeout(() => { stopped = true; reject(new Error('DIRAC_DNS_TIMEOUT')); }, Math.max(1, deadline - Date.now())); })]);
     const result = Array.from(ips).slice(0, 32);
     const now = Date.now();
     diracBoundedMapSetV321(
@@ -70167,6 +70187,7 @@ async function diracCentralResolveHostIpsV146(host) {
     );
     return [];
   } finally {
+    stopped = true;
     if (timer !== null) clearTimeout(timer);
   }
 }
@@ -75887,7 +75908,7 @@ module.exports = async function diracCentralArchitectureConsolidationV202(req, r
     try {
       console.error('[dirac-v230-compliance-gate]', {
         code: String(error?.code || ''),
-        message: String(error?.message || '').slice(0, 300)
+        message: diracSecurityRedactDiagnosticV210(error?.message, 300)
       });
     } catch (loggingErrorV230) {
       diracCentralRecordSuppressedExceptionV221(loggingErrorV230);

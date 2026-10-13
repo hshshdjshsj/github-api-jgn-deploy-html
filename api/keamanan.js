@@ -675,14 +675,43 @@ function diracResetDiagnosticTraceIdV335(req) {
   try { DIRAC_RESET_DIAGNOSTIC_TRACE_V335.set(req, traceId); } catch (_) {}
   return traceId;
 }
+function securityResetDiagnosticEnumV637(value, allowed) {
+  const text = String(value || '');
+  return !text || allowed.includes(text) ? text : '[redacted]';
+}
+function securityResetDiagnosticAuthorityV637(value, origin) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return '';
+  try {
+    const base = diracBaseDomainV250();
+    const hosts = [base, 'api.' + base, 'auth.' + base, 'pt.' + base, 'www.' + base];
+    return hosts.some((host) => text === (origin ? 'https://' + host : host) || (!origin && text === host + ':443')) ? text : '[redacted]';
+  } catch (_) { return '[redacted]'; }
+}
+function securityResetDiagnosticLengthV637(value) {
+  const text = String(value || '');
+  if (!text) return '';
+  if (!/^(?:0|[1-9][0-9]{0,15})$/.test(text)) return '[redacted]';
+  return Number(text) <= SECURITY_RESET_MAX_BODY_V334 ? text : '[over-limit]';
+}
 function diracResetDiagnosticCookieNamesV335(req) {
-  return securityResetHeaderV334(req, 'cookie').split(';').map((part) => part.split('=')[0].trim()).filter((name) => /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/.test(name)).slice(0, 32).sort();
+  return securityResetHeaderV334(req, 'cookie').split(';').map((part) => part.split('=')[0].trim()).filter((name) => /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/.test(name)).slice(0, 32).map((name) => securityResetDiagnosticEnumV637(name, ['__Host-dirac_csrf_hmac', '__Host-dirac_reset_page_nonce_v334', 'dirac_domain_session', 'dirac_domain_refresh', 'dirac_domain_signed_session', 'dirac_customer_mfa_session'])).sort();
+}
+// Diagnostic identities are fixed machine codes; provider exceptions can contain PII.
+const SECURITY_RESET_DIAGNOSTIC_CODES_V636 = new Set('ABORT_ERR ARGON2ID_DEPENDENCY_MISSING CBOR_BYTES_EOF CBOR_COLLECTION_LIMIT CBOR_COMPLEXITY_OR_EOF CBOR_LENGTH_UNSUPPORTED CBOR_MAP_KEY_INVALID CBOR_SIZE_OR_OFFSET_INVALID CBOR_TYPE_UNSUPPORTED CBOR_UTF8_INVALID CERT_HAS_EXPIRED COSE_ALGORITHM_UNSUPPORTED COSE_ES256_INVALID COSE_KEY_INVALID COSE_RS256_INVALID DIRAC_BASE_DOMAIN_INVALID DIRAC_D10_BASE64URL_INVALID DIRAC_D10_CRYPTO_UNAVAILABLE DIRAC_D10_ENVELOPE_BINDING_INVALID DIRAC_D10_ENVELOPE_FIELDS_INVALID DIRAC_D10_ENVELOPE_LENGTH_INVALID DIRAC_D10_INNER_BINDING_INVALID DIRAC_D10_INNER_PARSE_FAILED DIRAC_D10_KEY_ID_AUTHENTICATION_FAILED DIRAC_D10_KEY_ID_INVALID DIRAC_D10_KEY_ID_LENGTH_INVALID DIRAC_D10_PROFILE_KEY_EXPIRED DIRAC_D10_PROFILE_SIGNATURE_INVALID DIRAC_D10_PROFILE_SIGNING_KEY_INVALID DIRAC_D10_PROFILE_SIGNING_KEY_PIN_MISMATCH DIRAC_D10_PROFILE_SIGNING_KEY_TYPE_INVALID DIRAC_D10_PROFILE_SIGNING_KEY_UNAVAILABLE DIRAC_D10_REQUEST_AUTHENTICATION_FAILED DIRAC_D10_RESPONSE_KEY_WRAP_INVALID DIRAC_D10_RESPONSE_LAYER_INVALID DIRAC_D10_RESPONSE_TOO_LARGE DIRAC_D10_SHARED_SECRET_INVALID DIRAC_D10_X25519_EXPORT_FAILED DIRAC_D10_X25519_PRIVATE_INVALID DIRAC_D10_X25519_UNAVAILABLE DIRAC_SECURITY_ROOT_SECRET_INVALID DIRAC_SECURITY_ROUTE_CENTRAL_HANDLER_INVALID DIRAC_WEBAUTHN_RP_ID_CONFIG_INVALID EAI_AGAIN ECONNREFUSED ECONNRESET ENOTFOUND ERR_CRYPTO_INVALID_KEYLEN ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE ERR_CRYPTO_OPERATION_FAILED ERR_OSSL_ASN1_TOO_LONG ERR_OSSL_PEM_NO_START_LINE ERR_OSSL_UNSUPPORTED ERR_TLS_CERT_ALTNAME_INVALID ETIMEDOUT JSON_COMPLEXITY_LIMIT JSON_DUPLICATE_KEY JSON_INVALID JSON_KEY_REJECTED JSON_NUMBER_INVALID JSON_RAW_BODY_REQUIRED JSON_SIZE_LIMIT JSON_UNICODE_INVALID JSON_UTF8_INVALID PASSKEY_SECURITY_EPOCH_INVALID PASSKEY_SECURITY_EPOCH_READ_FAILED PASSKEY_SECURITY_OWNER_INVALID PASSWORD_CHANGE_ACCOUNT_BINDING_INVALID PASSWORD_CHANGE_ACCOUNT_SECURITY_STATE_CHANGED PASSWORD_CHANGE_ACCOUNT_SECURITY_STATE_INVALID PASSWORD_CHANGE_SMTP_CODE_GENERATION_INVALID PASSWORD_CHANGE_SMTP_CODE_INVALID PASSWORD_CHANGE_SMTP_CONFIGURATION_UNAVAILABLE PASSWORD_CHANGE_SMTP_CONTEXT_INVALID PASSWORD_CHANGE_SMTP_DELIVERY_FAILED PASSWORD_CHANGE_SMTP_TOKEN_INVALID PASSWORD_CHANGE_SMTP_TOKEN_REPLAY PASSWORD_COMPLEXITY_REQUIRED PASSWORD_CONFIRMATION_MISMATCH PASSWORD_CONTAINS_ACCOUNT_IDENTIFIER PASSWORD_FORMAT_INVALID PASSWORD_RESET_ACCOUNT_BLOCKED PASSWORD_RESET_ACCOUNT_SETTINGS_INVALID PASSWORD_RESET_ACTION_INVALID PASSWORD_RESET_AUTHORIZATION_CHANGED PASSWORD_RESET_AUTH_LINK_INVALID PASSWORD_RESET_BAN_STORE_UNAVAILABLE PASSWORD_RESET_CHALLENGE_BINDING_INVALID PASSWORD_RESET_CHALLENGE_ISSUE_FAILED PASSWORD_RESET_CHALLENGE_KEY_INVALID PASSWORD_RESET_CHALLENGE_TOKEN_EXPIRED PASSWORD_RESET_CHALLENGE_TOKEN_INVALID PASSWORD_RESET_CHALLENGE_TOKEN_LENGTH_INVALID PASSWORD_RESET_COMMIT_FIELDS_INVALID PASSWORD_RESET_COMMIT_POSTCONDITION_FAILED PASSWORD_RESET_CREDENTIAL_ID_INVALID PASSWORD_RESET_CREDENTIAL_ID_MISMATCH PASSWORD_RESET_CURRENT_SESSION_INVALID PASSWORD_RESET_DEVICE_BINDING_STATE_CHANGED PASSWORD_RESET_EMAIL_INVALID PASSWORD_RESET_EMAIL_PASSKEY_MISMATCH PASSWORD_RESET_FAILED PASSWORD_RESET_GRANT_BINDING_INVALID PASSWORD_RESET_GRANT_EMAIL_BINDING_INVALID PASSWORD_RESET_GRANT_ISSUE_FAILED PASSWORD_RESET_GRANT_OWNER_CHANGED PASSWORD_RESET_GRANT_OWNER_INVALID PASSWORD_RESET_GRANT_PASSKEY_CHANGED PASSWORD_RESET_GRANT_SECURITY_EPOCH_INVALID PASSWORD_RESET_GRANT_TOKEN_AUTHENTICATION_FAILED PASSWORD_RESET_GRANT_TOKEN_EXPIRED PASSWORD_RESET_GRANT_TOKEN_INVALID PASSWORD_RESET_GRANT_TOKEN_LENGTH_INVALID PASSWORD_RESET_GRANT_TOKEN_PAYLOAD_INVALID PASSWORD_RESET_HASH_PREPARATION_FAILED PASSWORD_RESET_HASH_WRITE_FAILED PASSWORD_RESET_MAIL_CLAIM_UNAVAILABLE_OR_USED PASSWORD_RESET_MAIL_METHOD_INVALID PASSWORD_RESET_MAIL_RECORD_UNCONFIRMED PASSWORD_RESET_MAIL_ROOT_INVALID PASSWORD_RESET_OPERATION_INVALID PASSWORD_RESET_PASSKEY_AMBIGUOUS PASSWORD_RESET_PASSKEY_NOT_FOUND PASSWORD_RESET_PASSKEY_OWNER_BINDING_INVALID PASSWORD_RESET_PASSKEY_OWNER_INVALID PASSWORD_RESET_PASSKEY_POSTCONDITION_FAILED PASSWORD_RESET_PASSKEY_READ_FAILED PASSWORD_RESET_PASSKEY_RESPONSE_INVALID PASSWORD_RESET_PASSKEY_ROW_ID_INVALID PASSWORD_RESET_PASSKEY_ROW_INVALID PASSWORD_RESET_PASSKEY_SESSION_BINDING_INVALID PASSWORD_RESET_PASSKEY_USAGE_POSTCONDITION_FAILED PASSWORD_RESET_PROVIDER_OWNER_CHECK_FAILED PASSWORD_RESET_PROVIDER_SESSION_REVOCATION_FAILED PASSWORD_RESET_PROVIDER_UPDATE_FAILED PASSWORD_RESET_PROVIDER_VERIFY_FAILED PASSWORD_RESET_SECURITY_EPOCH_CHANGED PASSWORD_RESET_SECURITY_EPOCH_INVALID PASSWORD_RESET_SESSION_POSTCONDITION_FAILED PASSWORD_RESET_SESSION_REVOCATION_FAILED PASSWORD_RESET_SIGN_COUNT_INVALID PASSWORD_RESET_START_FIELDS_INVALID PASSWORD_RESET_STATE_REPLAY_OR_UNAVAILABLE PASSWORD_RESET_UUID_DECODE_INVALID PASSWORD_RESET_VERIFY_FIELDS_INVALID PASSWORD_RESET_WEBAUTHN_CLIENT_DATA_INVALID PASSWORD_RESET_WEBAUTHN_ORIGIN_INVALID PASSWORD_RESET_WEBAUTHN_RP_ID_INVALID PASSWORD_RESET_WEBAUTHN_TOP_ORIGIN_INVALID PASSWORD_TOO_COMMON PASSWORD_TOO_SHORT RESET_RESPONSE_HEADERS_UNAVAILABLE SECURITY_PASSKEY_RESET_ACTION_INVALID SECURITY_PASSKEY_RESET_ACTION_MISMATCH SECURITY_PASSKEY_RESET_ACTIVE_SESSION_REQUIRED SECURITY_PASSKEY_RESET_ACTIVE_SET_CHANGED SECURITY_PASSKEY_RESET_ASSERTION_COMMIT_FAILED SECURITY_PASSKEY_RESET_ASSERTION_INVALID SECURITY_PASSKEY_RESET_ASSERTION_REJECTED SECURITY_PASSKEY_RESET_ATTESTATION_INVALID SECURITY_PASSKEY_RESET_CLIENT_DATA_BINDING_INVALID SECURITY_PASSKEY_RESET_CLIENT_DATA_INVALID SECURITY_PASSKEY_RESET_CONFIRM_POSTCONDITION_FAILED SECURITY_PASSKEY_RESET_CONFIRM_TOKEN_INVALID SECURITY_PASSKEY_RESET_CONTENT_TYPE_INVALID SECURITY_PASSKEY_RESET_CONTINUITY_PROOF_CONTEXT_INVALID SECURITY_PASSKEY_RESET_CONTINUITY_PROOF_SIGNING_FAILED SECURITY_PASSKEY_RESET_COUNTER_INVALID SECURITY_PASSKEY_RESET_CREDENTIAL_REUSE_FORBIDDEN SECURITY_PASSKEY_RESET_CSRF_INVALID SECURITY_PASSKEY_RESET_DB_AUTHORIZATION_REQUIRED SECURITY_PASSKEY_RESET_DEVICE_AUTHORITY_INVALID SECURITY_PASSKEY_RESET_DEVICE_BINDING_CHANGED SECURITY_PASSKEY_RESET_DEVICE_BINDING_INVALID SECURITY_PASSKEY_RESET_EMAIL_AUTHORIZATION_REQUIRED SECURITY_PASSKEY_RESET_EMAIL_CODE_INVALID SECURITY_PASSKEY_RESET_EMAIL_CONFIGURATION_UNAVAILABLE SECURITY_PASSKEY_RESET_EMAIL_CONTEXT_INVALID SECURITY_PASSKEY_RESET_EMAIL_DELIVERY_FAILED SECURITY_PASSKEY_RESET_EMAIL_RATE_LIMITED SECURITY_PASSKEY_RESET_EMAIL_RATE_UNAVAILABLE SECURITY_PASSKEY_RESET_EMAIL_TOKEN_INVALID SECURITY_PASSKEY_RESET_EMAIL_TOKEN_REPLAY SECURITY_PASSKEY_RESET_EPHEMERAL_LOGOUT_REJECTED SECURITY_PASSKEY_RESET_FINALIZE_FAILED SECURITY_PASSKEY_RESET_FINAL_BINDING_INVALID SECURITY_PASSKEY_RESET_FINAL_POSTCONDITION_FAILED SECURITY_PASSKEY_RESET_MFA_SESSION_REQUIRED SECURITY_PASSKEY_RESET_NEW_CREDENTIAL_INVALID SECURITY_PASSKEY_RESET_OLD_PASSKEY_AUTHORIZATION_FAILED SECURITY_PASSKEY_RESET_OLD_PASSKEY_POSTCONDITION_FAILED SECURITY_PASSKEY_RESET_OWNER_INVALID SECURITY_PASSKEY_RESET_PAGE_NONCE_INVALID SECURITY_PASSKEY_RESET_PAGE_NONCE_REPLAY SECURITY_PASSKEY_RESET_PASSKEY_READ_FAILED SECURITY_PASSKEY_RESET_PASSWORD_CONTEXT_INVALID SECURITY_PASSKEY_RESET_PASSWORD_IDENTITY_MISMATCH SECURITY_PASSKEY_RESET_PASSWORD_INVALID SECURITY_PASSKEY_RESET_PASSWORD_PROVIDER_CONTRACT_INVALID SECURITY_PASSKEY_RESET_PASSWORD_SERVICE_UNAVAILABLE SECURITY_PASSKEY_RESET_PASSWORD_SESSION_CLEANUP_FAILED SECURITY_PASSKEY_RESET_PENDING_BINDING_INVALID SECURITY_PASSKEY_RESET_PENDING_CONTEXT_INVALID SECURITY_PASSKEY_RESET_PENDING_CREATE_FAILED SECURITY_PASSKEY_RESET_PENDING_EXPIRY_INVALID SECURITY_PASSKEY_RESET_PENDING_POSTCONDITION_FAILED SECURITY_PASSKEY_RESET_PHASE_INVALID SECURITY_PASSKEY_RESET_PUBLIC_KEY_INVALID SECURITY_PASSKEY_RESET_ROTATION_TOKEN_INVALID SECURITY_PASSKEY_RESET_SECURITY_EPOCH_MISMATCH SECURITY_PASSKEY_RESET_SESSION_CONTINUITY_CONTEXT_INVALID SECURITY_PASSKEY_RESET_SESSION_CONTINUITY_DB_REJECTED SECURITY_PASSKEY_RESET_SESSION_CONTINUITY_FAILED SECURITY_PASSKEY_RESET_SESSION_CONTINUITY_POSTCONDITION_FAILED SECURITY_PASSKEY_RESET_SESSION_CONTINUITY_PRECONDITION_FAILED SECURITY_PASSKEY_RESET_SESSION_COOKIE_CONTEXT_INVALID SECURITY_PASSKEY_RESET_SESSION_COOKIE_EXPIRED SECURITY_PASSKEY_RESET_SESSION_COOKIE_INVALID SECURITY_PASSKEY_RESET_SESSION_COOKIE_NAME_INVALID SECURITY_PASSKEY_RESET_SESSION_COOKIE_SIGNING_FAILED SECURITY_PASSKEY_RESET_SESSION_REBIND_CONTEXT_INVALID SECURITY_PASSKEY_RESET_SESSION_REBIND_DB_REJECTED SECURITY_PASSKEY_RESET_SESSION_REBIND_POSTCONDITION_FAILED SECURITY_PASSKEY_RESET_SIGNED_SESSION_INVALID SECURITY_PASSKEY_RESET_SIGNED_SESSION_REQUIRED SECURITY_PASSKEY_RESET_SIGN_COUNT_INVALID SECURITY_PASSKEY_RESET_START_BODY_INVALID SECURITY_PASSKEY_RESET_STATUS_BINDING_INVALID SECURITY_PASSKEY_RESET_STATUS_CREDENTIAL_INVALID SECURITY_PASSKEY_RESET_STATUS_POSTCONDITION_FAILED SECURITY_PASSKEY_RESET_TOKEN_INVALID SECURITY_PASSKEY_RESET_TOKEN_REPLAY SECURITY_PASSKEY_RESET_VERIFY_BODY_INVALID SECURITY_RESET_ACTION_MISMATCH SECURITY_RESET_ATTACK_BAN_UNAVAILABLE SECURITY_RESET_AUTHORIZATION_HEADER_REJECTED SECURITY_RESET_BODY_STREAM_ABORTED SECURITY_RESET_BODY_STREAM_CLOSED SECURITY_RESET_BODY_STREAM_ERROR SECURITY_RESET_BODY_TOO_LARGE SECURITY_RESET_CENTRAL_BAN_ACTIVE SECURITY_RESET_CENTRAL_BAN_AUTHORITY_INVALID SECURITY_RESET_CENTRAL_BAN_CHECK_UNAVAILABLE SECURITY_RESET_CONTENT_ENCODING_REJECTED SECURITY_RESET_CONTENT_LENGTH_INVALID SECURITY_RESET_CONTENT_LENGTH_MISMATCH SECURITY_RESET_CONTENT_TYPE_INVALID SECURITY_RESET_CSRF_INVALID SECURITY_RESET_DB_BODY_TOO_LARGE SECURITY_RESET_DB_CONTEXT_REQUIRED SECURITY_RESET_DB_ENV_MISSING SECURITY_RESET_DB_FIELDS_REJECTED SECURITY_RESET_DB_GRANT_REQUIRED SECURITY_RESET_DB_MAIL_SCOPE_INVALID SECURITY_RESET_DB_METHOD_INVALID SECURITY_RESET_DB_NETWORK_FAILED SECURITY_RESET_DB_OWNER_REQUIRED SECURITY_RESET_DB_PATH_INVALID SECURITY_RESET_DB_PATH_NOT_ALLOWED SECURITY_RESET_DB_QUERY_INVALID SECURITY_RESET_DB_RPC_REJECTED SECURITY_RESET_DB_TABLE_REJECTED SECURITY_RESET_DB_TARGET_UNAVAILABLE SECURITY_RESET_DB_URL_INVALID SECURITY_RESET_DUPLICATE_HEADER SECURITY_RESET_EGRESS_CAPABILITY_REJECTED SECURITY_RESET_EGRESS_CONTEXT_REQUIRED SECURITY_RESET_EGRESS_DESTINATION_REJECTED SECURITY_RESET_FETCH_DEST_INVALID SECURITY_RESET_FETCH_MODE_INVALID SECURITY_RESET_FETCH_SITE_INVALID SECURITY_RESET_HEADERS_TOO_LARGE SECURITY_RESET_HEADER_INVALID SECURITY_RESET_HOST_INVALID SECURITY_RESET_HTTPS_REQUIRED SECURITY_RESET_JSON_INVALID SECURITY_RESET_MAIL_PROVIDER_REJECTED SECURITY_RESET_NATIVE_FETCH_UNAVAILABLE SECURITY_RESET_ORIGIN_INVALID SECURITY_RESET_PAGE_NONCE_INVALID SECURITY_RESET_PAGE_NONCE_REPLAY SECURITY_RESET_RATE_LIMITED SECURITY_RESET_RATE_LIMIT_UNAVAILABLE SECURITY_RESET_RAW_BODY_REQUIRED SECURITY_RESET_REFERER_INVALID SECURITY_RESET_RESPONSE_HEADERS_FAILED SECURITY_RESET_SECURITY_DB_UNAVAILABLE SECURITY_RESET_SMTP_CONTEXT_REQUIRED SECURITY_RESET_SMTP_RESPONSE_TOO_LARGE SECURITY_RESET_TRANSFER_ENCODING_REJECTED SECURITY_RESET_UPSTREAM_JSON_INVALID SECURITY_RESET_UPSTREAM_TOO_LARGE SECURITY_SMTP_REQUEST_OWNER_REQUIRED SECURITY_SMTP_REQUEST_PERMANENT_BAN_FAILED SECURITY_SMTP_REQUEST_RATE_CONFLICT SECURITY_SMTP_REQUEST_RATE_DB_REJECTED SECURITY_SMTP_REQUEST_RATE_LIMITED SECURITY_SMTP_REQUEST_RATE_STATE_INVALID SECURITY_SMTP_REQUEST_RATE_STORAGE_UNAVAILABLE SECURITY_TRUST_DEVICE_AUDIT_CONTRACT_REJECTED SECURITY_TRUST_DEVICE_BODY_INVALID SECURITY_TRUST_DEVICE_CONTEXT_INVALID SECURITY_TRUST_DEVICE_CSRF_INVALID SECURITY_TRUST_DEVICE_DB_CONTRACT_REJECTED SECURITY_TRUST_DEVICE_MFA_ANCHOR_INVALID SECURITY_TRUST_DEVICE_MFA_COOKIE_INVALID SECURITY_TRUST_DEVICE_MFA_INVALID SECURITY_TRUST_DEVICE_MFA_REQUIRED SECURITY_TRUST_DEVICE_ORIGIN_INVALID SECURITY_TRUST_DEVICE_PAGE_NONCE_INVALID SECURITY_TRUST_DEVICE_PAGE_NONCE_REPLAY SECURITY_TRUST_DEVICE_PATCH_POSTCONDITION_FAILED SECURITY_TRUST_DEVICE_SESSION_COOKIE_AMBIGUOUS SECURITY_TRUST_DEVICE_SESSION_COOKIE_INVALID SECURITY_TRUST_DEVICE_SESSION_MATERIAL_INVALID SECURITY_TRUST_DEVICE_SIGNED_SESSION_INVALID SECURITY_TRUST_DEVICE_SIGNED_SESSION_REQUIRED SECURITY_TRUST_DEVICE_TIMESTAMP_INVALID SERVER_DEVICE_BINDING_KEY_MISMATCH SMTP_CONNECTION_CLOSED SMTP_TIMEOUT SMTP_UNEXPECTED_RESPONSE UNABLE_TO_VERIFY_LEAF_SIGNATURE UNCLASSIFIED_ERROR UND_ERR_CONNECT_TIMEOUT UNEXPECTED_ERROR'.split(' '));
+function securityResetDiagnosticNameV636(value) {
+  const name = String(value || '');
+  return ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'AbortError', 'TimeoutError', 'AggregateError'].includes(name) ? name : 'Error';
+}
+function securityResetDiagnosticCodeV636(value) {
+  const code = String(value || '');
+  return SECURITY_RESET_DIAGNOSTIC_CODES_V636.has(code) || (code && securityResetDiagnosticProviderTextV368(code) === code) ? code : 'UNEXPECTED_ERROR';
 }
 function diracResetDiagnosticErrorV335(error) {
   if (!error) return null;
   return {
-    name: String(error.name || 'Error').slice(0, 120),
-    code: String(error.code || 'UNEXPECTED_ERROR').slice(0, 160),
+    name: securityResetDiagnosticNameV636(error.name),
+    code: securityResetDiagnosticCodeV636(error.code),
     status: Math.max(0, Math.min(599, Number(error.statusCode || error.status || 0) || 0)),
     // Stack messages can embed provider response details or sensitive input.
     category: 'security_reset_error'
@@ -697,18 +726,18 @@ function diracResetDiagnosticV335(req, stage, outcome, details, error) {
       trace_id: diracResetDiagnosticTraceIdV335(req),
       stage: String(stage || 'unknown').slice(0, 180),
       outcome: String(outcome || 'info').slice(0, 40),
-      action: String(req && req.query && req.query.action || '').slice(0, 80),
-      method: String(req && req.method || '').toUpperCase().slice(0, 12),
+      action: securityResetDiagnosticEnumV637(req && req.query && req.query.action, ['request_password_reset', 'confirm_password_reset', 'security_passkey_reset_start', 'security_passkey_reset_verify', 'trust_current_device']),
+      method: securityResetDiagnosticEnumV637(String(req && req.method || '').toUpperCase(), ['GET', 'POST', 'OPTIONS', 'HEAD', 'PUT', 'PATCH', 'DELETE']),
       runtime: { node: process.version, node_env: String(process.env.NODE_ENV || '') },
       request: req ? {
-        host: securityResetHeaderV334(req, 'host').slice(0, 180),
-        origin: requestOrigin(req).slice(0, 300),
-        referer: securityResetHeaderV334(req, 'referer').slice(0, 500),
-        fetch_site: securityResetHeaderV334(req, 'sec-fetch-site').slice(0, 40),
-        fetch_mode: securityResetHeaderV334(req, 'sec-fetch-mode').slice(0, 40),
-        fetch_dest: securityResetHeaderV334(req, 'sec-fetch-dest').slice(0, 40),
-        content_type: securityResetHeaderV334(req, 'content-type').slice(0, 120),
-        content_length: securityResetHeaderV334(req, 'content-length').slice(0, 40),
+        host: securityResetDiagnosticAuthorityV637(securityResetHeaderV334(req, 'host'), false),
+        origin: securityResetDiagnosticAuthorityV637(requestOrigin(req), true),
+        referer: securityResetHeaderV334(req, 'referer') ? '[redacted-referer]' : '',
+        fetch_site: securityResetDiagnosticEnumV637(securityResetHeaderV334(req, 'sec-fetch-site'), ['same-site', 'same-origin', 'cross-site', 'none']),
+        fetch_mode: securityResetDiagnosticEnumV637(securityResetHeaderV334(req, 'sec-fetch-mode'), ['cors', 'same-origin', 'navigate', 'no-cors', 'websocket']),
+        fetch_dest: securityResetDiagnosticEnumV637(securityResetHeaderV334(req, 'sec-fetch-dest'), ['empty', 'document', 'iframe', 'script', 'style', 'image', 'font', 'worker', 'serviceworker', 'audio', 'video']),
+        content_type: securityResetDiagnosticEnumV637(securityResetHeaderV334(req, 'content-type').split(';')[0].trim().toLowerCase(), ['application/json', 'text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data', 'application/octet-stream']),
+        content_length: securityResetDiagnosticLengthV637(securityResetHeaderV334(req, 'content-length')),
         cookie_names: diracResetDiagnosticCookieNamesV335(req),
         csrf_header_present: Boolean(securityResetHeaderV334(req, 'x-dirac-csrf-token') || securityResetHeaderV334(req, 'x-csrf-token')),
         page_nonce_header_present: Boolean(securityResetHeaderV334(req, 'x-dirac-page-nonce') || securityResetHeaderV334(req, 'x-page-nonce')),
@@ -724,13 +753,9 @@ function diracResetDiagnosticV335(req, stage, outcome, details, error) {
 function securityResetDiagnosticProviderTextV368(value, maxLen = 800) {
   const raw = String(value == null ? '' : value);
   if (!raw) return '';
-  return raw
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]')
-    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, '[redacted-uuid]')
-    .replace(/\b[a-f0-9]{32,}\b/gi, '[redacted-hash]')
-    .replace(/[A-Za-z0-9_-]{48,}/g, '[redacted-token]')
-    .replace(/[\r\n\t]+/g, ' ')
-    .slice(0, Math.max(1, Math.min(1200, Number(maxLen || 800))));
+  // Only provider codes are diagnostic data; free-form text can contain PII.
+  return /^(?:23502|23503|23505|23514|22001|22003|22P02|42501|42P01|42703|42883|42804|40001|40P01|53300|53400|57014|57P01|08000|08001|08006|XX000|P0001|PGRST[0-9]{3}|invalid_grant|invalid_request|invalid_token|user_banned|email_not_confirmed|over_request_rate_limit)$/.test(raw)
+    ? raw.slice(0, Math.max(1, Math.min(1200, Number(maxLen || 800)))) : '[redacted]';
 }
 function securityResetDiagnosticRpcInputV368(pathname, value) {
   if (String(pathname || '') !== '/rest/v1/rpc/dirac_passkey_create_pending_v237' || !value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -749,7 +774,7 @@ function securityResetDiagnosticRpcInputV368(pathname, value) {
     backup_eligible_boolean: typeof value.p_backup_eligible === 'boolean',
     backup_state_boolean: typeof value.p_backup_state === 'boolean',
     rotation_id_uuid: customerSecurityLooksLikeUuid(String(value.p_rotation_id || '')),
-    rotation_purpose: String(value.p_rotation_purpose || '').slice(0, 32),
+    rotation_purpose: securityResetDiagnosticEnumV637(value.p_rotation_purpose, ['replace']),
     expected_security_epoch_integer: Number.isSafeInteger(Number(value.p_expected_security_epoch)),
     authorizing_hash_state: value.p_authorizing_credential_id_hash === null ? 'null' : (/^[a-f0-9]{64}$/.test(String(value.p_authorizing_credential_id_hash || '')) ? 'sha256' : 'other'),
     current_auth_session_id_uuid: customerSecurityLooksLikeUuid(String(value.p_current_auth_session_id || '')),
@@ -822,7 +847,7 @@ function securityResetPasskeyV237SessionStateV370(result, expectedSessionId, exp
     exact_single_row: Boolean(row),
     id_match: Boolean(row && safeEqual(String(row.id || ''), String(expectedSessionId || ''))),
     owner_match: Boolean(row && safeEqual(String(row.customer_id || ''), String(expectedCustomerId || ''))),
-    status: row ? String(row.status || '').slice(0, 32) : '',
+    status: row ? securityResetDiagnosticEnumV637(row.status, ['active', 'revoked', 'expired', 'pending']) : '',
     security_epoch: row && Number.isSafeInteger(Number(row.security_epoch)) ? Number(row.security_epoch) : null,
     expected_epoch_match: Boolean(row && Number(row.security_epoch) === Number(expectedSecurityEpoch)),
     trusted_device: row ? row.trusted_device === true : null,
@@ -910,8 +935,8 @@ async function securityResetPasskeyV237DbContractDiagnosticV370(req, resolved, p
       rpc_anchor_equals_active_passkey_anchor: Boolean(activePasskeyCurrentAuthSessionId && safeEqual(rpcAuthSessionId, activePasskeyCurrentAuthSessionId)),
       active_passkey_anchor_equals_recovery_session: Boolean(activePasskeyCurrentAuthSessionId && activePasskeyRecoverySessionId && safeEqual(activePasskeyCurrentAuthSessionId, activePasskeyRecoverySessionId)),
       active_passkey_recovery_context_present: Boolean(activeRow && (activeRow.recovery_request_id || activeRow.recovery_session_id || activeRow.recovery_session_hash)),
-      active_passkey_rotation_state: String(activeRow && activeRow.rotation_state || '').slice(0, 32),
-      active_passkey_rotation_purpose: String(activeRow && activeRow.rotation_purpose || '').slice(0, 32),
+      active_passkey_rotation_state: securityResetDiagnosticEnumV637(activeRow && activeRow.rotation_state, ['active', 'pending', 'revoked', 'expired', 'cancelled']),
+      active_passkey_rotation_purpose: securityResetDiagnosticEnumV637(activeRow && activeRow.rotation_purpose, ['replace']),
       active_passkey_is_active: activeRow ? activeRow.is_active === true : null,
       active_passkey_credential_epoch: activeRow && Number.isSafeInteger(Number(activeRow.credential_epoch)) ? Number(activeRow.credential_epoch) : null,
       active_passkey_expected_security_epoch: activeRow && Number.isSafeInteger(Number(activeRow.expected_security_epoch)) ? Number(activeRow.expected_security_epoch) : null,
@@ -1600,7 +1625,7 @@ async function supabaseFetch(path, options = {}) {
   headers.Authorization = 'Bearer ' + (options.bearer ? String(options.bearer) : (options.auth === 'service' ? c.service : c.anon));
   if (options.prefer) headers.Prefer = String(options.prefer);
   let body;
-  if (options.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(options.body); if (Buffer.byteLength(body) > 262144) throw resetError('SECURITY_RESET_DB_BODY_TOO_LARGE', 413); }
+  if (options.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(require('../lib/data-protection.js').encode(cleanPath, options.body)); if (Buffer.byteLength(body) > 262144) throw resetError('SECURITY_RESET_DB_BODY_TOO_LARGE', 413); }
   diracResetDiagnosticV335(null, 'external.call', 'begin', { call_id: callId, method, target, auth_mode: options.bearer ? 'bearer' : String(options.auth || 'anon'), pathname: route.pathname, query_keys: route.query_keys, body_present: body !== undefined, body_bytes: body === undefined ? 0 : Buffer.byteLength(body), timeout_ms: 6500 });
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 6500); if (timer.unref) timer.unref();
   let response, data;
@@ -1609,11 +1634,12 @@ async function supabaseFetch(path, options = {}) {
     const capability = securityResetEgressCapabilityV361(c.url + cleanPath, outbound, 'database');
     response = await securityResetEgressFetchV361(c.url + cleanPath, outbound, capability);
     data = await securityResetReadUpstreamV361(response);
+    if (response.ok) data = require('../lib/data-protection.js').decode(cleanPath, data);
   }
-  catch (cause) { const error = resetError('SECURITY_RESET_DB_NETWORK_FAILED', 503); diracResetDiagnosticV335(null, 'external.call', 'error', { call_id: callId, method, target, pathname: route.pathname, query_keys: route.query_keys, cause_name: String(cause && cause.name || ''), cause_code: String(cause && cause.code || '') }, error); throw error; }
+  catch (cause) { const error = resetError('SECURITY_RESET_DB_NETWORK_FAILED', 503); diracResetDiagnosticV335(null, 'external.call', 'error', { call_id: callId, method, target, pathname: route.pathname, query_keys: route.query_keys, cause_name: securityResetDiagnosticNameV636(cause && cause.name), cause_code: securityResetDiagnosticCodeV636(cause && cause.code) }, error); throw error; }
   finally { clearTimeout(timer); }
   const text = data === null ? '' : JSON.stringify(data);
-  diracResetDiagnosticV335(null, 'external.call', response.ok ? 'success' : 'error', { call_id: callId, method, target, pathname: route.pathname, query_keys: route.query_keys, http_status: Number(response.status || 0), response_ok: response.ok === true, response_bytes: Buffer.byteLength(text || ''), response_type: Array.isArray(data) ? 'array' : (data === null ? 'null' : typeof data), row_count: Array.isArray(data) ? data.length : -1, provider_error: response.ok !== true && data && typeof data === 'object' && !Array.isArray(data) ? { provider_code: securityResetDiagnosticProviderTextV368(data.code, 96), provider_message: securityResetDiagnosticProviderTextV368(data.message, 600), provider_details: securityResetDiagnosticProviderTextV368(data.details, 800), provider_hint: securityResetDiagnosticProviderTextV368(data.hint, 600), provider_keys: Object.keys(data).filter((key) => /^[A-Za-z0-9_.-]{1,80}$/.test(key)).sort().slice(0, 24) } : null, rpc_input_contract: response.ok !== true ? securityResetDiagnosticRpcInputV368(route.pathname, options.body) : null });
+  diracResetDiagnosticV335(null, 'external.call', response.ok ? 'success' : 'error', { call_id: callId, method, target, pathname: route.pathname, query_keys: route.query_keys, http_status: Number(response.status || 0), response_ok: response.ok === true, response_bytes: Buffer.byteLength(text || ''), response_type: Array.isArray(data) ? 'array' : (data === null ? 'null' : typeof data), row_count: Array.isArray(data) ? data.length : -1, provider_error: response.ok !== true && data && typeof data === 'object' && !Array.isArray(data) ? { provider_code: /^(?:[0-9A-Z]{5}|PGRST[0-9]{3}|invalid_grant|invalid_request|invalid_token|user_banned|email_not_confirmed|over_request_rate_limit)$/.test(String(data.code || '')) ? securityResetDiagnosticProviderTextV368(data.code, 96) : 'UNAVAILABLE', provider_message_present: Boolean(data.message), provider_details_present: Boolean(data.details), provider_hint_present: Boolean(data.hint), provider_keys: Object.keys(data).filter((key) => /^(?:code|message|details|hint|error|error_code|error_description|status|status_code)$/.test(key)).sort().slice(0, 24) } : null, rpc_input_contract: response.ok !== true ? securityResetDiagnosticRpcInputV368(route.pathname, options.body) : null });
   return { ok:response.ok, status:response.status, data };
 }
 async function diracCentralAtomicConsumeV230({ namespace, jti, expiresAt, contextHash }) {
@@ -1720,7 +1746,7 @@ function diracPasswordResetSigningKeyV333(req) {
       try { parsePath = 'pkcs8-der-base64'; privateKey = crypto.createPrivateKey({ key: decoded, format: 'der', type: 'pkcs8' }); }
       catch (_) { parsePath = 'pem-base64'; privateKey = crypto.createPrivateKey(decoded.toString('utf8').replace(/\\n/g, '\n')); }
     }
-  } catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_INVALID', 503); diracResetDiagnosticV335(req, 'profile.signing_key.parse', 'error', { representation, raw_length: raw.length, decoded_length: decodedLength, parse_path: parsePath, cause_name: String(cause && cause.name || ''), cause_code: String(cause && cause.code || '') }, error); throw error; }
+  } catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_INVALID', 503); diracResetDiagnosticV335(req, 'profile.signing_key.parse', 'error', { representation, raw_length: raw.length, decoded_length: decodedLength, parse_path: parsePath, cause_name: securityResetDiagnosticNameV636(cause && cause.name), cause_code: securityResetDiagnosticCodeV636(cause && cause.code) }, error); throw error; }
   const keyType = String(privateKey && privateKey.asymmetricKeyType || '');
   diracResetDiagnosticV335(req, 'profile.signing_key.parse', 'success', { representation, raw_length: raw.length, decoded_length: decodedLength, parse_path: parsePath, asymmetric_key_type: keyType });
   if (!privateKey || privateKey.asymmetricKeyType !== 'ed25519') { const error = diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNING_KEY_TYPE_INVALID', 503); diracResetDiagnosticV335(req, 'profile.signing_key.type', 'error', { asymmetric_key_type: keyType }, error); throw error; }
@@ -1791,11 +1817,11 @@ function diracPasswordResetIssueProfileV333(req) {
   const signing = diracPasswordResetSigningKeyV333(req);
   let pair;
   try { pair = crypto.generateKeyPairSync('x25519'); }
-  catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_X25519_UNAVAILABLE', 503); diracResetDiagnosticV335(req, 'profile.x25519.generate', 'error', { cause_name: String(cause && cause.name || ''), cause_code: String(cause && cause.code || '') }, error); throw error; }
+  catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_X25519_UNAVAILABLE', 503); diracResetDiagnosticV335(req, 'profile.x25519.generate', 'error', { cause_name: securityResetDiagnosticNameV636(cause && cause.name), cause_code: securityResetDiagnosticCodeV636(cause && cause.code) }, error); throw error; }
   diracResetDiagnosticV335(req, 'profile.x25519.generate', 'success', { private_key_type: String(pair && pair.privateKey && pair.privateKey.asymmetricKeyType || ''), public_key_type: String(pair && pair.publicKey && pair.publicKey.asymmetricKeyType || '') });
   let privateJwk;
   try { privateJwk = pair.privateKey.export({ format: 'jwk' }); }
-  catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_X25519_EXPORT_FAILED', 503); diracResetDiagnosticV335(req, 'profile.x25519.export', 'error', { cause_name: String(cause && cause.name || ''), cause_code: String(cause && cause.code || '') }, error); throw error; }
+  catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_X25519_EXPORT_FAILED', 503); diracResetDiagnosticV335(req, 'profile.x25519.export', 'error', { cause_name: securityResetDiagnosticNameV636(cause && cause.name), cause_code: securityResetDiagnosticCodeV636(cause && cause.code) }, error); throw error; }
   let rawPrivate;
   try { rawPrivate = Buffer.from(String(privateJwk && privateJwk.d || ''), 'base64url'); } catch (_) { rawPrivate = Buffer.alloc(0); }
   if (rawPrivate.length !== 32) { const error = diracPasswordResetErrorV333('DIRAC_D10_X25519_PRIVATE_INVALID', 503); diracResetDiagnosticV335(req, 'profile.x25519.export', 'error', { raw_private_length: rawPrivate.length }, error); throw error; }
@@ -1817,7 +1843,7 @@ function diracPasswordResetIssueProfileV333(req) {
   };
   let signature;
   try { signature = crypto.sign(null, Buffer.from(diracPasswordResetCanonicalV333(unsigned), 'utf8'), signing.privateKey).toString('base64url'); }
-  catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNATURE_INVALID', 503); diracResetDiagnosticV335(req, 'profile.sign', 'error', { cause_name: String(cause && cause.name || ''), cause_code: String(cause && cause.code || '') }, error); throw error; }
+  catch (cause) { const error = diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNATURE_INVALID', 503); diracResetDiagnosticV335(req, 'profile.sign', 'error', { cause_name: securityResetDiagnosticNameV636(cause && cause.name), cause_code: securityResetDiagnosticCodeV636(cause && cause.code) }, error); throw error; }
   if (!/^[A-Za-z0-9_-]{86}$/.test(signature)) { const error = diracPasswordResetErrorV333('DIRAC_D10_PROFILE_SIGNATURE_INVALID', 503); diracResetDiagnosticV335(req, 'profile.sign', 'error', { signature_length: String(signature || '').length }, error); throw error; }
   diracResetDiagnosticV335(req, 'profile.sign', 'success', { algorithm: 'Ed25519', signature_length: signature.length, fingerprint: signing.fingerprint });
   return { ...unsigned, signature_algorithm: 'Ed25519', signature_b64url: signature };
@@ -3344,7 +3370,7 @@ async function diracPasswordResetCommitPasswordV333(req, state, password, confir
   if (!activeSessions || activeSessions.ok !== true || !sessionPostcondition) throw diracPasswordResetErrorV333('PASSWORD_RESET_SESSION_POSTCONDITION_FAILED', 503);
 
   const passkeyReadback = await diracPasswordResetFetchCredentialByIdV333(credentialId, customerId);
-  diracResetDiagnosticV335(req, 'commit.passkey_postcondition', passkeyReadback && passkeyReadback.is_active === true && String(passkeyReadback.rotation_state || '') === 'active' ? 'success' : 'error', { is_active: passkeyReadback && passkeyReadback.is_active === true, rotation_state: String(passkeyReadback && passkeyReadback.rotation_state || ''), row_id_match: Boolean(passkeyReadback && safeEqual(String(passkeyReadback.id || ''), String(state.passkey_id || ''))) });
+  diracResetDiagnosticV335(req, 'commit.passkey_postcondition', passkeyReadback && passkeyReadback.is_active === true && String(passkeyReadback.rotation_state || '') === 'active' ? 'success' : 'error', { is_active: passkeyReadback && passkeyReadback.is_active === true, rotation_state: securityResetDiagnosticEnumV637(passkeyReadback && passkeyReadback.rotation_state, ['active', 'pending', 'revoked', 'expired', 'cancelled']), row_id_match: Boolean(passkeyReadback && safeEqual(String(passkeyReadback.id || ''), String(state.passkey_id || ''))) });
   if (!passkeyReadback || passkeyReadback.is_active !== true || String(passkeyReadback.rotation_state || '') !== 'active'
       || !safeEqual(String(passkeyReadback.id || ''), String(state.passkey_id || ''))) {
     throw diracPasswordResetErrorV333('PASSWORD_RESET_PASSKEY_POSTCONDITION_FAILED', 503);
@@ -3374,7 +3400,7 @@ const DIRAC_SECURITY_PASSKEY_RESET_TOKEN_TTL_MS_V363 = 180000;
 const DIRAC_SECURITY_PASSKEY_RESET_PENDING_TTL_MS_V363 = 300000;
 const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_V364 = 'dirac-security-passkey-reset-email-v364';
 const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_TOKEN_SCOPE_V364 = 'security-passkey-reset-email-v364';
-const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_TTL_MS_V364 = 120000;
+const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_TTL_MS_V364 = 300000;
 const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MIN_LENGTH_V364 = 512;
 const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_CODE_MAX_LENGTH_V364 = 768;
 const DIRAC_SECURITY_PASSKEY_RESET_EMAIL_SYMBOLS_V374 = '!#$%&()*+,-./:;<=>?@[]^{|}~';
@@ -3772,8 +3798,8 @@ async function diracSecurityPasskeyResetSendEmailCodeV364(req, owner, code, payl
     title: 'Kode Verifikasi\nGanti Passkey', greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
     summary: 'Kata sandi Anda telah diverifikasi. Masukkan kode berikut pada halaman penggantian passkey yang sedang Anda gunakan.',
     copyCode: code,
-    statusLabel: 'KODE VERIFIKASI', statusValue: '__DIRAC_PASSKEY_RESET_CODE_' + reference + '__', statusNote: 'Kode ' + String(payload.codeLength) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) ini berlaku selama 2 menit dan hanya dapat digunakan untuk satu proses penggantian Passkey.',
-    detailsLabel: 'DETAIL VERIFIKASI', rows: [['AKTIVITAS','Penggantian Passkey'],['METODE OTORISASI','Kata sandi akun + kode email satu kali'],['MASA BERLAKU','2 menit'], ...diracSecurityMailClientRowsV381(client), ['REFERENSI',reference]],
+    statusLabel: 'KODE VERIFIKASI', statusValue: '__DIRAC_PASSKEY_RESET_CODE_' + reference + '__', statusNote: 'Kode ' + String(payload.codeLength) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) ini berlaku selama 5 menit dan hanya dapat digunakan untuk satu proses penggantian Passkey.',
+    detailsLabel: 'DETAIL VERIFIKASI', rows: [['AKTIVITAS','Penggantian Passkey'],['METODE OTORISASI','Kata sandi akun + kode email satu kali'],['MASA BERLAKU','5 menit'], ...diracSecurityMailClientRowsV381(client), ['REFERENSI',reference]],
     warningTitle: 'JANGAN BAGIKAN KODE', warning: 'Jangan berikan kode ini kepada siapa pun. Jika Anda tidak meminta penggantian Passkey, abaikan email ini dan periksa sesi aktif pada Pusat Keamanan.',
     actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN'
   };
@@ -3839,7 +3865,7 @@ async function diracSecurityPasskeyResetSendChangedNoticeV372(req, owner, rotati
 
 const DIRAC_PASSWORD_CHANGE_SMTP_V365 = 'dirac-password-change-password-smtp-v365';
 const DIRAC_PASSWORD_CHANGE_SMTP_TOKEN_SCOPE_V365 = 'password-change-smtp-code-v365';
-const DIRAC_PASSWORD_CHANGE_SMTP_TTL_MS_V365 = 120000;
+const DIRAC_PASSWORD_CHANGE_SMTP_TTL_MS_V365 = 300000;
 const DIRAC_PASSWORD_CHANGE_SMTP_CODE_MIN_LENGTH_V365 = 512;
 const DIRAC_PASSWORD_CHANGE_SMTP_CODE_MAX_LENGTH_V365 = 768;
 const DIRAC_PASSWORD_CHANGE_SMTP_SYMBOLS_V365 = '!#$%&()*+,-./:;<=>?@[]^{|}~';
@@ -3938,8 +3964,8 @@ async function diracPasswordChangeSendSmtpCodeV365(req, owner, code, payload) {
     title: 'Kode Verifikasi\nGanti Kata Sandi', greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
     summary: 'Kata sandi Anda telah diverifikasi. Masukkan kode berikut pada halaman penggantian kata sandi yang sedang Anda gunakan.',
     copyCode: code,
-    statusLabel: 'KODE VERIFIKASI', statusValue: '__DIRAC_PASSWORD_CHANGE_CODE_' + reference + '__', statusNote: 'Kode ' + String(payload.codeLength) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) ini berlaku selama 2 menit dan hanya dapat digunakan satu kali.',
-    detailsLabel: 'DETAIL VERIFIKASI', rows: [['AKTIVITAS','Perubahan kata sandi'],['METODE OTORISASI','Kata sandi akun + kode SMTP'],['MASA BERLAKU','2 menit'], ...diracSecurityMailClientRowsV381(client), ['REFERENSI',reference]],
+    statusLabel: 'KODE VERIFIKASI', statusValue: '__DIRAC_PASSWORD_CHANGE_CODE_' + reference + '__', statusNote: 'Kode ' + String(payload.codeLength) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) ini berlaku selama 5 menit dan hanya dapat digunakan satu kali.',
+    detailsLabel: 'DETAIL VERIFIKASI', rows: [['AKTIVITAS','Perubahan kata sandi'],['METODE OTORISASI','Kata sandi akun + kode SMTP'],['MASA BERLAKU','5 menit'], ...diracSecurityMailClientRowsV381(client), ['REFERENSI',reference]],
     warningTitle: 'JANGAN BAGIKAN KODE', warning: 'Jangan berikan kode ini kepada siapa pun. Jika Anda tidak meminta perubahan kata sandi, abaikan email ini dan tinjau sesi aktif di Pusat Keamanan.',
     actionUrl: diracRoleOriginV250('security') + '/keamanan.html', actionText: 'BUKA PUSAT KEAMANAN'
   };

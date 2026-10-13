@@ -289,19 +289,24 @@ function invoiceRandomCodeV440() {
 function invoicePackSecretV440(secret, storageKey, aad) {
   const iv = invoiceCryptoV440.randomBytes(12), cipher = invoiceCryptoV440.createCipheriv('aes-256-gcm', storageKey, iv);
   cipher.setAAD(Buffer.from(aad, 'utf8'));
-  const data = Buffer.concat([cipher.update(JSON.stringify(secret), 'utf8'), cipher.final(), cipher.getAuthTag()]);
-  return { iv: iv.toString('base64url'), data: data.toString('base64url') };
+  const plaintext = Buffer.from(JSON.stringify(secret), 'utf8');
+  try {
+    const data = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
+    return { iv: iv.toString('base64url'), data: data.toString('base64url') };
+  } finally { plaintext.fill(0); }
 }
 function invoiceUnpackSecretV440(record, storageKey, aad) {
   if (!record || !record.secret || !/^[A-Za-z0-9_-]{16}$/.test(String(record.secret.iv || '')) || !/^[A-Za-z0-9_-]{40,120}$/.test(String(record.secret.data || ''))) throw invoiceErrorV440('INVOICE_KEY_UNAVAILABLE');
+  let plaintext = null, tail = null, plain = null;
   try {
     const data = Buffer.from(record.secret.data, 'base64url'), decipher = invoiceCryptoV440.createDecipheriv('aes-256-gcm', storageKey, Buffer.from(record.secret.iv, 'base64url'));
     decipher.setAAD(Buffer.from(aad, 'utf8')); decipher.setAuthTag(data.subarray(-16));
-    const plain = Buffer.concat([decipher.update(data.subarray(0, -16)), decipher.final()]);
-    const secret = JSON.parse(plain.toString('utf8')); plain.fill(0);
+    plaintext = decipher.update(data.subarray(0, -16)); tail = decipher.final(); plain = Buffer.concat([plaintext, tail]);
+    const secret = JSON.parse(plain.toString('utf8'));
     if (Object.keys(secret).join(',') !== 'code' || !/^\d{8}$/.test(secret.code)) throw new Error('invalid');
     return secret;
   } catch (_) { throw invoiceErrorV440('INVOICE_KEY_UNAVAILABLE'); }
+  finally { if (plaintext) plaintext.fill(0); if (tail) tail.fill(0); if (plain) plain.fill(0); }
 }
 async function invoiceBusinessV440(req, res, ops) {
   if (!ops || !Object.isFrozen(ops) || ops.version !== INVOICE_VERSION_V440 || typeof ops.assertFullGuard !== 'function' || !INVOICE_ACTIONS_V440.includes(ops.action)) throw invoiceErrorV440('INVOICE_FULL_GUARD_REQUIRED', 403);

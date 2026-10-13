@@ -659,7 +659,7 @@ function mainIdentityResponseDiagnosticV360(result) {
       kind: objectData ? 'object' : Array.isArray(data) ? 'array' : data === null ? 'null' : typeof data,
       keys: objectData ? Object.keys(objectData).sort().slice(0, 40) : [],
       ok: objectData ? objectData.ok === true : false,
-      code: objectData ? String(objectData.code || '').slice(0, 120) : '',
+      code: objectData ? supportSafeDiagnosticCodeV635(objectData.code) : '',
       message: objectData ? supportSafeDiagnosticMessageV356({ message: objectData.message || '' }) : '',
       requestId: objectData ? String(objectData.requestId || objectData.request_id || '').slice(0, 100) : '',
       userPresent: Boolean(user),
@@ -693,7 +693,7 @@ async function resolveMainIdentity(req, res, required) {
     if (identityDiagnosticV360) {
       identityDiagnosticV360.phase = 'fetch_error';
       identityDiagnosticV360.decision = 'main_identity_unavailable';
-      identityDiagnosticV360.fetchError = { name: String(_ && _.name || '').slice(0, 80), code: String(_ && _.code || '').slice(0, 120), status: Number(_ && _.status || 0), message: supportSafeDiagnosticMessageV356(_) };
+      identityDiagnosticV360.fetchError = { name: supportSafeDiagnosticNameV635(_ && _.name), code: supportSafeDiagnosticCodeV635(_ && _.code), status: Number(_ && _.status || 0), message: supportSafeDiagnosticMessageV356(_) };
     }
     throw new PublicError(502, 'MAIN_IDENTITY_UNAVAILABLE', 'Sesi akun Dirac belum dapat diverifikasi.');
   }
@@ -755,10 +755,13 @@ function seal(name, payload) {
   const cipher = crypto.createCipheriv('aes-256-gcm', sessionKey(), nonce, { authTagLength: 16 });
   cipher.setAAD(Buffer.from(name, 'utf8'));
   const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
-  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  return b64u(Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]));
+  try {
+    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    return b64u(Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]));
+  } finally { plaintext.fill(0); }
 }
 function unseal(name, value) {
+  let plaintext = null, tail = null, decoded = null;
   try {
     const encoded = String(value || '');
     const packed = Buffer.from(encoded, 'base64url');
@@ -767,10 +770,12 @@ function unseal(name, value) {
     const nonce = packed.subarray(0, 12); const tag = packed.subarray(12, 28); const ciphertext = packed.subarray(28);
     const decipher = crypto.createDecipheriv('aes-256-gcm', sessionKey(), nonce, { authTagLength: 16 });
     decipher.setAAD(Buffer.from(name, 'utf8')); decipher.setAuthTag(tag);
-    const payload = parseStrictJson(Buffer.concat([decipher.update(ciphertext), decipher.final()]), { maxBytes: 7000 });
+    plaintext = decipher.update(ciphertext); tail = decipher.final(); decoded = Buffer.concat([plaintext, tail]);
+    const payload = parseStrictJson(decoded, { maxBytes: 7000 });
     if (!payload || payload.v !== 1 || !Number.isSafeInteger(payload.exp) || payload.exp <= Date.now()) return null;
     return payload;
   } catch (_) { return null; }
+  finally { if (plaintext) plaintext.fill(0); if (tail) tail.fill(0); if (decoded) decoded.fill(0); }
 }
 
 function readSession(req, name) {
@@ -1086,7 +1091,7 @@ async function supabase(path, options) {
   const result = await fetchJson(cfg.supabaseUrl + path, { method: settings.method || 'GET', headers, body: settings.body === undefined ? undefined : JSON.stringify(settings.body) }, settings.timeoutMs || 8000);
   if (!result.ok && !settings.allowError) {
     const code = result.data && typeof result.data === 'object' && (result.data.code || result.data.error_code);
-    throw new PublicError(result.status >= 400 && result.status < 600 ? result.status : 502, String(code || 'DATABASE_REQUEST_FAILED').slice(0, 90), 'Operasi database support belum dapat diproses.');
+    throw new PublicError(result.status >= 400 && result.status < 600 ? result.status : 502, supportSafeProviderCodeV636(code), 'Operasi database support belum dapat diproses.');
   }
   return result;
 }
@@ -1432,7 +1437,7 @@ async function recordAdminAuth(req, actorUserId, action, emailValue, outcome, co
       }
     });
   } catch (error) {
-    try { console.error('[dirac-auth-audit]', JSON.stringify({ requestId: String(req && req.diracRequestId || ''), action, code: String(error && (error.code || error.name) || 'AUDIT_FAILED').slice(0, 80) })); } catch (_) {}
+    try { console.error('[dirac-auth-audit]', JSON.stringify({ requestId: String(req && req.diracRequestId || ''), action, code: supportSafeDiagnosticCodeV635(error && error.code || 'AUDIT_FAILED') })); } catch (_) {}
   }
 }
 
@@ -2246,18 +2251,30 @@ function supportCentralRequestFingerprintV146(req) {
 
 function supportCentralRecordSuppressedExceptionV221(error) {
   try {
-    const name = String(error && error.name || 'Error').slice(0, 80);
-    const code = String(error && error.code || 'UNCLASSIFIED').slice(0, 120);
+    const name = supportSafeDiagnosticNameV635(error && error.name);
+    const code = supportSafeDiagnosticCodeV635(error && error.code || 'UNCLASSIFIED');
     console.error('[dirac-support-central-suppressed]', JSON.stringify({ name, code, patch: DIRAC_SUPPORT_CENTRAL_HARDENING_V221 }));
   } catch (_) {}
 }
 
-function supportSafeDiagnosticMessageV356(error) {
-  let value = String(error && error.message || '').replace(/[\r\n\t]+/g, ' ');
-  value = value.replace(/\b(authorization|bearer|cookie|set-cookie|password|secret|access[_ -]?token|refresh[_ -]?token|token|otp|totp)\s*[:=]\s*[^,;\s]{4,}/gi, '$1=[redacted]');
-  value = value.replace(/[A-Za-z0-9_-]{48,}/g, '[redacted]');
-  value = value.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]');
-  return value.slice(0, 160);
+// Diagnostic events retain fixed codes only. Free-form upstream messages may
+// contain names, addresses or credentials that pattern redaction cannot cover.
+const SUPPORT_DIAGNOSTIC_CODES_V635 = new Set('ACTION_INVALID ACTION_NON_CANONICAL ACTION_NOT_FOUND ADMIN_AUTH_SESSION_INVALID ADMIN_BUILD_BINDING_REJECTED ADMIN_BUILD_BINDING_REQUIRED ADMIN_LOGOUT_UPSTREAM_UNCONFIRMED ADMIN_MFA_EXPIRED ADMIN_SESSION_REQUIRED ADMIN_SESSION_REVOKED AUDIT_FAILED AUTH_ACCOUNT_BLOCKED AUTH_PROVIDER_TOKEN_INVALID AUTOMATION_REJECTED BODY_ABORTED BODY_INVALID BODY_READ_FAILED BODY_READ_TIMEOUT BODY_TOO_LARGE BROWSER_SIGNAL_REJECTED CATEGORY_INVALID CENTRAL_BAN_AUTHORITY_INVALID CENTRAL_BAN_CHECK_UNAVAILABLE CENTRAL_BAN_PERSISTENCE_FAILED CENTRAL_BODY_COMPLEXITY_REJECTED CENTRAL_BODY_KEY_REJECTED CENTRAL_BODY_SHAPE_REJECTED CENTRAL_BODY_VALUE_REJECTED CENTRAL_CIRCUIT_OPEN CENTRAL_CLIENT_BLOCKED CENTRAL_COOKIE_INVALID CENTRAL_DYNAMIC_EGRESS_REJECTED CENTRAL_EGRESS_BROKER_INVALID CENTRAL_EGRESS_BROKER_REQUIRED CENTRAL_EGRESS_CONTEXT_REQUIRED CENTRAL_EGRESS_REJECTED CENTRAL_EGRESS_URL_INVALID CENTRAL_GUARD_TIMEOUT CENTRAL_HEADERS_TOO_LARGE CENTRAL_HEADER_INVALID CENTRAL_HOST_POLICY_EMPTY CENTRAL_HOST_REJECTED CENTRAL_HTTPS_REQUIRED CENTRAL_INTEGRITY_FAILED CENTRAL_OUTPUT_POLICY_REJECTED CENTRAL_OUTPUT_SECRET_DETECTED CENTRAL_POLICY_INVALID CENTRAL_RATE_GUARD_UNAVAILABLE CENTRAL_REQUEST_ENCODING_REJECTED CENTRAL_REQUEST_INVALID CENTRAL_THREAT_REJECTED CHAT_OPEN_FAILED CONSENT_REQUIRED CONTENT_ENCODING_REJECTED CONTENT_LENGTH_INVALID CONTENT_LENGTH_MISMATCH CONTENT_TYPE_INVALID CONVERSATION_ASSIGNMENT_REQUIRED CONVERSATION_BLOCKED CONVERSATION_CLOSED CONVERSATION_EXPIRED CONVERSATION_MESSAGE_LIMIT_REACHED CONVERSATION_NOT_FOUND CONVERSATION_UPDATE_FAILED CREDENTIALS_INVALID CRON_ORIGIN_REJECTED CSRF_INVALID CUSTOMER_IDENTITY_MISMATCH CUSTOMER_SESSION_REQUIRED DATABASE_RATE_LIMITED DATABASE_REQUEST_FAILED DIRAC_SUPPORT_CENTRAL_STARTUP_INTEGRITY_FAILED DNS_TIMEOUT EMAIL_INVALID ERROR FETCH_DEST_REJECTED FETCH_MODE_REJECTED FETCH_SITE_REJECTED FIELDS_UNKNOWN FIELD_REQUIRED FIELD_TYPE_INVALID IDEMPOTENCY_KEY_INVALID IDEMPOTENCY_MISMATCH ID_ARRAY_INVALID ID_INVALID IMPACT_INVALID INCIDENT_REVISION_CONFLICT INCIDENT_REVISION_INVALID INCIDENT_STAGE_INVALID INCIDENT_TRANSITION_REJECTED JSON_COMPLEXITY_LIMIT JSON_DUPLICATE_KEY JSON_INVALID JSON_KEY_REJECTED JSON_NUMBER_INVALID JSON_RAW_BODY_REQUIRED JSON_SIZE_LIMIT JSON_UNICODE_INVALID JSON_UTF8_INVALID MAINTENANCE_TIME_INVALID MAIN_COOKIE_CONFIG_INVALID MAIN_IDENTITY_HOST_MISMATCH MAIN_IDENTITY_HTTPS_REQUIRED MAIN_IDENTITY_INVALID MAIN_IDENTITY_ROLE_INVALID MAIN_IDENTITY_ROUTE_INVALID MAIN_IDENTITY_UNAVAILABLE MAIN_LOGIN_REQUIRED MESSAGE_SEND_FAILED MESSAGE_TOO_LARGE METHOD_NOT_ALLOWED MFA_ASSURANCE_INVALID MFA_CHALLENGE_EXPIRED MFA_CHALLENGE_FAILED MFA_CODE_INVALID MFA_CODE_REJECTED MFA_ENROLLMENT_AUTH_REQUIRED MFA_ENROLLMENT_CLEANUP_FAILED MFA_ENROLLMENT_FAILED MFA_SESSION_REQUIRED MONITOR_AUTH_INVALID MONITOR_DNS_UNAVAILABLE MONITOR_ENABLED_INVALID MONITOR_PORT_INVALID MONITOR_RANGE_INVALID MONITOR_TARGETS_INVALID MONITOR_TARGET_INVALID MONITOR_TARGET_UNSAFE MONITOR_URL_REQUIRED OPERATION_INVALID ORIGIN_NOT_ALLOWED PAGE_NONCE_INVALID PREFLIGHT_HEADERS_REJECTED PREFLIGHT_METHOD_REJECTED PRIMARY_ADMIN_BINDING_CONFIG_INVALID PRIMARY_ADMIN_PIN_MISMATCH QUERY_CACHE_BUSTER_INVALID QUERY_FIELD_DUPLICATE QUERY_FIELD_UNKNOWN QUERY_FILTER_INVALID QUERY_INVALID QUERY_NON_CANONICAL QUERY_NUMBER_INVALID QUERY_REPRESENTATION_MISMATCH RATE_LIMITED RAW_BODY_REQUIRED REFERER_REJECTED REQUEST_CONTEXT_REQUIRED RESPONSE_TOO_LARGE SERVICE_STATUS_INVALID SESSION_REFRESH_FAILED STAFF_CAPABILITY_REQUIRED STAFF_IDENTITY_MISMATCH STAFF_NOT_ALLOWED SUPPORT_AUTH_ADMIN_PATH_INVALID SUPPORT_BASE_DOMAIN_CONFIG_INVALID SUPPORT_BASE_DOMAIN_CONFIG_REQUIRED SUPPORT_CONFIG_INVALID SUPPORT_CONVERSATION_INVALID SUPPORT_DB_ADMIN_REQUIRED SUPPORT_DB_CONTEXT_REQUIRED SUPPORT_DB_OWNER_REQUIRED SUPPORT_DB_PATH_REJECTED SUPPORT_DB_RATE_LIMIT_REJECTED SUPPORT_DB_RESOURCE_REQUIRED SUPPORT_DB_RPC_REJECTED SUPPORT_DB_TABLE_REJECTED SUPPORT_IDENTITY_COLLISION SUPPORT_IDENTITY_CREATE_FAILED SUPPORT_IDENTITY_LOGIN_FAILED SUPPORT_IDENTITY_LOOKUP_FAILED SUPPORT_IDENTITY_SCOPE_INVALID SUPPORT_IDENTITY_UPDATE_FAILED SUPPORT_INTERNAL_ERROR SUPPORT_KEYS_INVALID SUPPORT_SECRETS_WEAK TEXT_INVALID TIMEOUT TRANSFER_ENCODING_REJECTED TURNSTILE_CONFIG_MISSING TURNSTILE_FAILED UNCLASSIFIED UPSTREAM_RESPONSE_TOO_LARGE UPSTREAM_TIMEOUT UPSTREAM_UNAVAILABLE'.split(' '));
+const SUPPORT_PROVIDER_CODE_V636 = /^(?:23502|23503|23505|23514|22001|22003|22P02|42501|42P01|42703|42883|42804|40001|40P01|53300|53400|57014|57P01|08000|08001|08006|XX000|P0001|PGRST[0-9]{3}|invalid_grant|invalid_request|invalid_token|user_banned|email_not_confirmed|over_request_rate_limit)$/;
+function supportSafeProviderCodeV636(value) {
+  const code = String(value || '');
+  return SUPPORT_DIAGNOSTIC_CODES_V635.has(code) || SUPPORT_PROVIDER_CODE_V636.test(code) ? code : 'DATABASE_REQUEST_FAILED';
+}
+function supportSafeDiagnosticCodeV635(value) {
+  const code = String(value || '');
+  return SUPPORT_DIAGNOSTIC_CODES_V635.has(code) || SUPPORT_PROVIDER_CODE_V636.test(code) ? code : 'ERROR';
+}
+function supportSafeDiagnosticNameV635(value) {
+  const name = String(value || '');
+  return ['Error', 'PublicError', 'TypeError', 'RangeError', 'SyntaxError', 'AbortError', 'TimeoutError', 'AggregateError'].includes(name) ? name : 'Error';
+}
+function supportSafeDiagnosticMessageV356(_error) {
+  return 'Diagnostic detail withheld';
 }
 
 function supportCentralExpectedAuthoritiesV146() {
@@ -2940,9 +2957,9 @@ async function handler(req, res) {
             requestedAction: diagnosticRequestedActionV359,
             parsedAction: String(ctx.action || '').slice(0, 64),
             status: safe.status,
-            code: safe.code,
-            rawCode: String(error && (error.code || '') || '').slice(0, 80),
-            rawName: String(error && (error.name || '') || '').slice(0, 80),
+            code: supportSafeDiagnosticCodeV635(safe.code),
+            rawCode: supportSafeDiagnosticCodeV635(error && error.code),
+            rawName: supportSafeDiagnosticNameV635(error && error.name),
             boundary: ctx.fullyPassed === true ? 'handler' : 'guard',
             stage: String(ctx.currentStage || '').slice(0, 80),
             passportHex: ctx.passport.toString(16),
@@ -2965,7 +2982,7 @@ async function handler(req, res) {
         } catch (diagnosticErrorV358) { supportCentralRecordSuppressedExceptionV221(diagnosticErrorV358); }
       }
       if (!(error instanceof PublicError)) {
-        try { console.error('[dirac-support]', JSON.stringify({ requestId: ctx.requestId, action: ctx.action, stage: ctx.currentStage, code: String(error && (error.code || error.name) || 'ERROR').slice(0, 80), message: supportSafeDiagnosticMessageV356(error) })); } catch (_) {}
+        try { console.error('[dirac-support]', JSON.stringify({ requestId: ctx.requestId, action: ctx.action, stage: ctx.currentStage, code: supportSafeDiagnosticCodeV635(error && error.code), message: supportSafeDiagnosticMessageV356(error) })); } catch (_) {}
       }
       return json(res, safe.status, { ok: false, code: safe.code, message: safe.message, requestId: ctx.requestId, time: nowIso() });
     } finally {

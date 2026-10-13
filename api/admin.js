@@ -340,13 +340,14 @@ async function dbFetch(path, options = {}, target = '') {
     const headers = { apikey: creds.service, Authorization: 'Bearer ' + creds.service, Accept: 'application/json' };
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
     if (options.prefer) headers.Prefer = options.prefer;
-    const response = await ADMIN_STANDALONE_FETCH(creds.url + cleanPath, { method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), redirect: 'error', signal: controller.signal });
+    const response = await ADMIN_STANDALONE_FETCH(creds.url + cleanPath, { method, headers, body: options.body === undefined ? undefined : JSON.stringify(require('../lib/data-protection.js').encode(cleanPath, options.body)), redirect: 'error', signal: controller.signal });
     const raw = await readAdminUpstreamText(response, MAX_RESPONSE_BYTES, 'ADMIN_DATABASE_RESPONSE_INVALID');
     let data = null; if (raw) { try { data = JSON.parse(raw); } catch (_) { fail('ADMIN_DATABASE_RESPONSE_INVALID', 503); } }
+    if (response.ok) data = require('../lib/data-protection.js').decode(cleanPath, data);
     return { ok: response.ok, status: response.status, data };
   } catch (error) {
     if (error && /^ADMIN_/.test(String(error.code || ''))) throw error;
-    return { ok: false, status: 0, data: null, diagnostic_transport: { name: String(error && error.name || '').slice(0, 120), code: String(error && error.code || '').slice(0, 120), message: String(error && error.message || '').slice(0, 700), aborted: !!(error && (error.name === 'AbortError' || error.code === 'ABORT_ERR')) } };
+    return { ok: false, status: 0, data: null, diagnostic_transport: { name: adminAccountDiagnosticTextV489(error && error.name, 120, true), code: adminAccountDiagnosticTextV489(error && error.code, 120, true), message: '[redacted]', aborted: !!(error && (error.name === 'AbortError' || error.code === 'ABORT_ERR')) } };
   } finally { clearTimeout(timer); }
 }
 async function authAdminUserRequest(path, method, body) {
@@ -371,7 +372,7 @@ async function authAdminUserRequest(path, method, body) {
     return { ok: response.ok, status: response.status, data };
   } catch (error) {
     if (error && /^ADMIN_/.test(String(error.code || ''))) throw error;
-    return { ok: false, status: 0, data: null, diagnostic_transport: { name: String(error && error.name || '').slice(0, 120), code: String(error && error.code || '').slice(0, 120), message: String(error && error.message || '').slice(0, 700), aborted: !!(error && (error.name === 'AbortError' || error.code === 'ABORT_ERR')) } };
+    return { ok: false, status: 0, data: null, diagnostic_transport: { name: adminAccountDiagnosticTextV489(error && error.name, 120, true), code: adminAccountDiagnosticTextV489(error && error.code, 120, true), message: '[redacted]', aborted: !!(error && (error.name === 'AbortError' || error.code === 'ABORT_ERR')) } };
   } finally { clearTimeout(timer); }
 }
 function adminAccountMutationPayload(value) {
@@ -450,13 +451,12 @@ function adminBusinessAccountPublicV479(user) {
   return { user_id: String(user.id).toLowerCase(), email, account_role: role, account_label: adminAccountLabel(role), account_active: accountActive, name: String(meta.name || meta.full_name || '').trim().slice(0, 120), phone: String(meta.phone || '').trim().slice(0, 24), created_at: String(user.created_at || '').slice(0, 48) };
 }
 const ADMIN_ACCOUNT_DELETE_DIAGNOSTIC_V489 = 'dirac-admin-account-delete-diagnostic-v489';
-function adminAccountDiagnosticTextV489(value, max = 700) {
-  return String(value || '')
-    .replace(/https?:\/\/[^\s\"']+/gi, '<url>')
-    .replace(/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/gi, '<email>')
-    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '<uuid>')
-    .replace(/[A-Za-z0-9_-]{43,}/g, '<token>')
-    .slice(0, max);
+function adminAccountDiagnosticTextV489(value, max = 700, codeOnly = false) {
+  const text = String(value || '');
+  if (!text) return '';
+  // Free-form provider errors may include entire rejected rows, including PII.
+  const safeCode = /^(?:23502|23503|23505|23514|22001|22003|22P02|42501|42P01|42703|42883|42804|40001|40P01|53300|53400|57014|57P01|08000|08001|08006|XX000|P0001|PGRST[0-9]{3}|invalid_grant|invalid_request|invalid_token|user_banned|email_not_confirmed|over_request_rate_limit|Error|TypeError|AbortError|TimeoutError|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ABORT_ERR|UND_ERR_CONNECT_TIMEOUT|CERT_HAS_EXPIRED|ERR_TLS_CERT_ALTNAME_INVALID|UNABLE_TO_VERIFY_LEAF_SIGNATURE)$/.test(text);
+  return codeOnly && safeCode ? text.slice(0, max) : '[redacted]';
 }
 function adminAccountDiagnosticRouteV489(table) {
   const alias = table === 'domain_passkeys' ? 'DOMAIN' : (table === 'security_customer_auth_links' || table === 'security_customer_sessions' ? 'CUSTOMER_SECURITY' : 'LEGACY');
@@ -509,12 +509,12 @@ function adminAccountDeleteDiagnosticV489(stage, context) {
       condition_ok_true: row.condition_ok_true === true,
       condition_data_array: row.condition_data_array === true,
       condition_row_count_match: row.condition_row_count_match === true,
-      response_error_code: adminAccountDiagnosticTextV489(objectData && objectData.code, 160),
+      response_error_code: adminAccountDiagnosticTextV489(objectData && objectData.code, 160, true),
       response_error_message: adminAccountDiagnosticTextV489(objectData && objectData.message),
       response_error_details: adminAccountDiagnosticTextV489(objectData && objectData.details),
       response_error_hint: adminAccountDiagnosticTextV489(objectData && objectData.hint),
-      transport_error_name: adminAccountDiagnosticTextV489(transport.name, 120),
-      transport_error_code: adminAccountDiagnosticTextV489(transport.code, 120),
+      transport_error_name: adminAccountDiagnosticTextV489(transport.name, 120, true),
+      transport_error_code: adminAccountDiagnosticTextV489(transport.code, 120, true),
       transport_error_message: adminAccountDiagnosticTextV489(transport.message),
       transport_aborted: transport.aborted === true
     }));
@@ -2607,6 +2607,31 @@ function documentInvoicePatternsV495(value) {
       social_size: 22 + seed[5] % 3, footer_rule: 88 + seed[6] % 9 };
   } finally { key.fill(0); if (seed) seed.fill(0); }
 }
+// V526: five nonvisual, domain-separated invoice bindings. Exact copies remain valid.
+// These authenticate file metadata; they are not five independent security factors.
+const DOCUMENT_HIDDEN_VERSION_V526 = 'dirac-invoice-hidden-v526';
+function documentInvoiceHiddenV526(value) {
+  const key = deriveSecret('invoice-hidden-pattern-v526'), identity = value.identity;
+  const tag = (label, context) => crypto.createHmac('sha512', key).update(DOCUMENT_HIDDEN_VERSION_V526 + '\0' + label + '\0').update(stableJson(context)).digest('base64url');
+  try {
+    return { version: DOCUMENT_HIDDEN_VERSION_V526,
+      identity: tag('identity', { id: identity.id, issuer: identity.issuer, identity_mac: identity.mac }),
+      content: tag('content', { id: identity.id, content_sha256: identity.content_sha256, raw_sha256: value.raw_sha256, raw_bytes: value.raw_bytes }),
+      owner: tag('owner', { id: identity.id, artifact_id: value.artifact_id, owner_scope: identity.owner_scope }),
+      artifact: tag('artifact', { id: identity.id, artifact_id: value.artifact_id, format: value.format, page: value.page, page_count: identity.page_count, raw_sha256: value.raw_sha256 }),
+      issuance: tag('issuance', { id: identity.id, artifact_id: value.artifact_id, reference: identity.reference, identity_created_at: identity.created_at, created_at: value.created_at }) };
+  } finally { key.fill(0); }
+}
+function documentInvoiceHiddenValidV526(value) {
+  const actual = value.hidden_patterns;
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual)
+      || Object.keys(actual).sort().join(',') !== 'artifact,content,identity,issuance,owner,version'
+      || actual.version !== DOCUMENT_HIDDEN_VERSION_V526 || value.identity.kind !== 'invoice') return false;
+  const expected = documentInvoiceHiddenV526(value);
+  const match = (left, right) => typeof left === 'string' && /^[A-Za-z0-9_-]{86}$/.test(left) && safeEqual(left, right);
+  return match(actual.identity, expected.identity) && match(actual.content, expected.content) && match(actual.owner, expected.owner)
+    && match(actual.artifact, expected.artifact) && match(actual.issuance, expected.issuance);
+}
 function documentIdentityValidV464(value) {
   return !!(value && (Object.keys(value).sort().join(',') === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version'
       || (Object.keys(value).sort().join(',') === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version,visual_patterns'
@@ -2691,6 +2716,7 @@ async function documentSealV464(bytes, identity, format, page, ownerScope, read,
   else if (!/^%PDF-1\.[47]\n/.test(bytes.subarray(0,9).toString('ascii')) || !/%%EOF\n$/.test(bytes.subarray(-40).toString('ascii')) || bytes.includes(Buffer.from('%DIRAC-DOCUMENT-V464:'))) documentErrorV464('PDF_INVALID', 400);
   const unsigned = { version: DOCUMENT_VERSION_V464, identity, artifact_id: crypto.randomBytes(24).toString('hex'), format, page,
     raw_sha256: crypto.createHash('sha256').update(bytes).digest('hex'), raw_bytes: bytes.length, created_at: Date.now() };
+  if (identity.kind === 'invoice') unsigned.hidden_patterns = documentInvoiceHiddenV526(unsigned);
   const seal = { ...unsigned, mac: documentMacV464(unsigned) };
   const token = Buffer.from(stableJson(seal), 'utf8').toString('base64url');
   let file;
@@ -2736,11 +2762,13 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
     const seal = record.seal;
     if (Object.keys(record).sort().join(',') !== 'file_bytes,file_sha256,mac,seal,version' || record.version !== DOCUMENT_VERSION_V464
         || record.file_sha256 !== fileSha || !Number.isSafeInteger(record.file_bytes) || record.file_bytes < 10 || record.file_bytes > DOCUMENT_MAX_V464
-        || !documentSignedV464(record) || !seal || Object.keys(seal).sort().join(',') !== 'artifact_id,created_at,format,identity,mac,page,raw_bytes,raw_sha256,version'
+        || !documentSignedV464(record) || !seal || (Object.keys(seal).sort().join(',') !== 'artifact_id,created_at,format,identity,mac,page,raw_bytes,raw_sha256,version'
+          && Object.keys(seal).sort().join(',') !== 'artifact_id,created_at,format,hidden_patterns,identity,mac,page,raw_bytes,raw_sha256,version')
         || seal.version !== DOCUMENT_VERSION_V464 || !documentSignedV464(seal) || !/^[a-f0-9]{48}$/.test(seal.artifact_id)
         || !/^[a-f0-9]{64}$/.test(seal.raw_sha256) || !Number.isSafeInteger(seal.raw_bytes) || seal.raw_bytes < 10 || seal.raw_bytes >= record.file_bytes
         || !Number.isSafeInteger(seal.created_at) || seal.created_at > Date.now() + 1000 || !['png','pdf'].includes(seal.format)
         || !documentIdentityValidV464(seal.identity) || !Number.isInteger(seal.page)
+        || (Object.prototype.hasOwnProperty.call(seal, 'hidden_patterns') && !documentInvoiceHiddenValidV526(seal))
         || (seal.format === 'png' ? seal.page < 1 || seal.page > seal.identity.page_count : seal.page !== 0)) documentErrorV464('RECORD_INVALID');
     if ((id && seal.identity.id !== id) || (ownerScope && seal.identity.owner_scope !== ownerScope) || (qrProof && !documentQrProofMatchesV470(seal.identity, qrProof))) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, qr_authentic: false, message: 'ID, QR, atau pemilik dokumen tidak cocok.' };
     return { ok: true, verified: true, status: 'authentic_file', integrity_verified: true, qr_authentic: qrProof ? true : undefined, issuer: seal.identity.issuer,
@@ -2748,6 +2776,8 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
       page_count: seal.identity.page_count, issued_at: new Date(seal.created_at).toISOString(), file_sha256: fileSha, content_sha256: seal.identity.content_sha256,
       ...(seal.identity.visual_patterns ? { pattern_verification: { version: seal.identity.visual_patterns.version, verified: true, count: 7,
         checks: ['din_tracking','din_font','din_size','logo_size','social_pitch','social_size','footer_rule'], method: 'registered_file_sha256_hmac_sha512' } } : {}),
+      ...(seal.hidden_patterns ? { hidden_pattern_verification: { version: DOCUMENT_HIDDEN_VERSION_V526, verified: true, count: 5,
+        checks: ['identity','content','owner','artifact','issuance'], method: 'registered_file_sha256_domain_hmac_sha512' } } : {}),
       identical_copies_possible: true, message: 'Berkas ini sesuai dengan dokumen asli yang diterbitkan. Kode QR yang disalin ke berkas lain tidak membuktikan keaslian berkas tersebut.' };
   }
   if (!documentIdentityValidV464(record)) documentErrorV464('RECORD_INVALID');
