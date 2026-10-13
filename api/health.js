@@ -3224,6 +3224,15 @@ function diracPersistentSecurityRecordIsBanV363(record, securityKey) {
 }
 
 function diracPersistentSecurityBanIdentityV363(record, context) {
+  const reportContextV504 = context && typeof context === 'object' ? context
+    : (typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null);
+  const reportPageV504 = diracCentralSecurityReportPageV504(reportContextV504 && reportContextV504.req);
+  if (reportPageV504) {
+    const proof = diracCentralReadSecurityReportProofV504(reportContextV504.req, reportContextV504);
+    return Object.freeze(reportPageV504.pathname !== '/masuk.html' && proof && proof.email
+      ? { email: proof.email, verified: true, source: 'verified_html_report_session' }
+      : { email: null, verified: false, source: 'html_report_device_network_only' });
+  }
   const source = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
   const direct = normalizeAuthEmail(source.identity_email || source.identityEmail || source.email
     || source.auth_email || source.user_email || source.customer_email || source.owner_email || '');
@@ -8796,7 +8805,12 @@ function diracBanStorageQueryV501(selector) {
 function diracBanStorageIdV501(req, rows) {
   const headers = req.headers || {};
   const context = diracCentralCurrentContextV149();
-  const verified = context && context.req === req && context.identity;
+  const reportPageV504 = diracCentralSecurityReportPageV504(req);
+  const reportProofV504 = reportPageV504 && diracCentralReadSecurityReportProofV504(req, context);
+  const verified = reportPageV504
+    ? (reportPageV504.pathname !== '/masuk.html' && reportProofV504
+      ? { verifiedAuthUserId: reportProofV504.userId, verifiedAuthEmail: reportProofV504.email } : null)
+    : context && context.req === req && context.identity;
   const userId = String(verified && verified.verifiedAuthUserId || '').trim().toLowerCase();
   const email = normalizeAuthEmail(verified && verified.verifiedAuthEmail || '');
   if (customerSecurityLooksLikeUuid(userId) && isValidAuthEmail(email)) {
@@ -10768,7 +10782,7 @@ async function customerSecurityOverview(req, res) {
     // - Current browser/device is registered in security_customer_sessions.
     // These operations are backend service_role-only and do not touch legacy login/hash/A2F.
     await customerSecurityEnsureSettingsRow(customerId);
-    await customerSecurityTouchCurrentSession(req, customerId);
+    if (!access.protectedLock || access.protectedLock.ok !== true || access.protectedLock.touched !== true || access.protectedLock.customerId !== customerId) await customerSecurityTouchCurrentSession(req, customerId);
 
     const overviewResult = await customerSecurityFetchOverviewData(customerId);
     if (!overviewResult.ok) {
@@ -18774,7 +18788,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
 
   const order = Array.isArray(orderResult.data) ? orderResult.data[0] : orderResult.data;
   if (!order || !order.id) {
-    return res.status(500).json({ ok: false, message: 'Order dibuat, tetapi ID order tidak ditemukan.' });
+    return res.status(500).json({ ok: false, order_created: true, order_code: orderCode, message: 'Order dibuat, tetapi ID order tidak ditemukan.' });
   }
 
   const laboratorySecuritySaved = laboratoryCheckoutOrder;
@@ -18822,6 +18836,9 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
   if (!itemResult.ok) {
     return res.status(itemResult.status || 500).json({
       ok: false,
+      order_created: true,
+      order_code: order.order_id || orderCode,
+      order_id: order.id,
       message: 'Order dibuat, tetapi item order gagal dibuat.',
       error: sessionOwnershipCheckoutSafeUpstreamError(itemResult.data)
     });
@@ -35604,7 +35621,7 @@ async function customerSecurityOverviewSessionLimitV3(req, res) {
   const customerId = String(link.customer_id || '').trim();
 
   await customerSecurityEnsureSettingsRow(customerId);
-  await customerSecurityTouchCurrentSession(req, customerId);
+  if (!access.protectedLock || access.protectedLock.ok !== true || access.protectedLock.touched !== true || access.protectedLock.customerId !== customerId) await customerSecurityTouchCurrentSession(req, customerId);
   const sessionPrune = await customerSecurityFeaturePruneSessionsV3(customerId).catch((error) => ({
     ok: false,
     pruned: 0,
@@ -37410,6 +37427,15 @@ async function diracCentralVerifiedBanAccountKeysV357(req) {
   return ids.flatMap(diracCentralBanAccountKeysV357);
 }
 
+async function diracCentralReportWriteAccountKeysV504(req) {
+  const page = diracCentralSecurityReportPageV504(req);
+  if (page) {
+    const proof = diracCentralReadSecurityReportProofV504(req, diracCentralCurrentContextV149());
+    return page.pathname === '/masuk.html' || !proof ? [] : diracCentralBanAccountKeysV357(proof.userId);
+  }
+  return diracCentralVerifiedBanAccountKeysV357(req);
+}
+
 async function diracCentralLoginPublicationBanV357(req, verifiedUser) {
   const ctx = diracCentralCurrentContextV149();
   const userId = String(verifiedUser && verifiedUser.id || '').trim().toLowerCase();
@@ -37482,7 +37508,7 @@ async function diracV107RegisterHardBan(req, res, action, method, threat) {
   const expiresAt = new Date(blockedUntilMs).toISOString();
   const keys = Array.from(new Map([
     ...diracV107BuildKeys(req),
-    ...await diracCentralVerifiedBanAccountKeysV357(req)
+    ...await diracCentralReportWriteAccountKeysV504(req)
   ].map((item) => [item.key, item])).values());
 
   // Pasang cookie hard-ban untuk browser yang melakukan attack; membantu tetap blokir bila IP/VPN berubah tetapi cookie masih sama.
@@ -43108,7 +43134,7 @@ async function diracBolaIdorV128ResolveRequestOwner(req) {
     return verifiedOwnerV215;
   }
 
-  if (typeof customerSecurityFetchAuthLink !== 'function') return { ok: false };
+  if (typeof diracBolaIdorV133FetchValidAuthLinks !== 'function') return { ok: false };
   const centralCtxV361 = typeof diracCentralCurrentContextV149 === 'function' ? diracCentralCurrentContextV149() : null;
   const bootstrapBindingV361 = centralCtxV361 && centralCtxV361.__diracCentralOwnerBootstrapBindingV213;
   const exactDomainMeBootstrapV361 = centralCtxV361 && centralCtxV361.req === req
@@ -43125,7 +43151,7 @@ async function diracBolaIdorV128ResolveRequestOwner(req) {
   }
   if (!authUserId || !diracBolaIdorV128LooksLikeUuid(authUserId)) return { ok: false };
 
-  const linkResult = await customerSecurityFetchAuthLink(authUserId).catch(() => null);
+  const linkResult = await diracBolaIdorV133FetchValidAuthLinks(authUserId).catch(() => null);
   const rows = linkResult && linkResult.ok && Array.isArray(linkResult.data) ? linkResult.data : [];
   const customerIds = Array.from(new Set(rows
     .filter((row) => row && String(row.link_status || '').toLowerCase() === 'active')
@@ -44400,7 +44426,7 @@ async function diracBolaIdorV132ResolveRequestOwner(req) {
     }
   } catch (_) {}
 
-  if (typeof requireDomainUser !== 'function' || typeof customerSecurityFetchAuthLink !== 'function') return { ok: false };
+  if (typeof requireDomainUser !== 'function' || typeof diracBolaIdorV133FetchValidAuthLinks !== 'function') return { ok: false };
   const fakeRes = typeof diracBolaIdorV128FakeResponse === 'function'
     ? diracBolaIdorV128FakeResponse()
     : { status() { return this; }, json() { return this; }, end() { return this; }, setHeader() {} };
@@ -44408,7 +44434,7 @@ async function diracBolaIdorV132ResolveRequestOwner(req) {
   const authUserId = String(user && user.id || '').trim();
   if (!diracBolaIdorV132LooksLikeUuid(authUserId)) return { ok: false };
 
-  const linkResult = await customerSecurityFetchAuthLink(authUserId).catch(() => null);
+  const linkResult = await diracBolaIdorV133FetchValidAuthLinks(authUserId).catch(() => null);
   const rows = linkResult && linkResult.ok && Array.isArray(linkResult.data) ? linkResult.data : [];
   const customerIds = Array.from(new Set(rows
     .filter((row) => row && String(row.link_status || '').toLowerCase() === 'active')
@@ -58538,57 +58564,10 @@ function diracCentralPermanentBanDecisionV281(ctx, reason) {
         && ctx.guardPassport && Object.keys(DIRAC_V202_CHECKPOINT_BY_STAMP).every((stamp) => ctx.guardPassport[stamp] === true));
   const corroborated = Boolean(ctx && ctx.__diracCentralCorroboratedAttackV281 === true)
     && DIRAC_CENTRAL_CONFIRMED_ATTACK_KINDS_V281.has(cleanReason);
-  const body = ctx && ctx.body && typeof ctx.body === 'object' && !Array.isArray(ctx.body) ? ctx.body : null;
-  const reportPassport = ctx && ctx.guardPassport && typeof ctx.guardPassport === 'object' ? ctx.guardPassport : null;
-  const reportHeaders = ctx && ctx.headers && typeof ctx.headers === 'object' ? ctx.headers : null;
-  const reportRequest = ctx && ctx.req && typeof ctx.req === 'object' ? ctx.req : null;
-  const reportQuery = reportRequest && reportRequest.query && typeof reportRequest.query === 'object' && !Array.isArray(reportRequest.query) ? reportRequest.query : null;
-  const reportShopOrigin = diracAppPageOriginV503();
-  const reportCatalogPage = body && (body.page === 'parfum.html' || body.page === 'laboratorium.html') ? body.page : '';
-  const reportCatalogSource = reportCatalogPage === 'laboratorium.html' ? 'laboratorium_checkout_security' : 'parfum_checkout_security';
-  const verifiedParfumSecurityReport = Boolean(
-    cleanReason === 'html_security_report'
-    && ctx && ctx.action === 'security_report' && ctx.method === 'POST'
-    && ctx.classification === 'browser' && ctx.authentication === 'browser'
-    && ctx.terminalBlockReason === 'html_security_report'
-    && ctx.preflightValidatedV221 !== true && !ctx.failedStageV211
-    && ctx.passport === DIRAC_V202_ALL_CHECKPOINTS
-    && reportHeaders
-    && String(reportHeaders.origin || '').trim() === reportShopOrigin
-    && String(reportHeaders.referer || reportHeaders.referrer || '').trim() === reportShopOrigin + '/' + reportCatalogPage
-    && !Object.keys(reportHeaders).some((name) => /^x-dirac-(?:server-id|target-server-id|network-id|key-version|signature(?:-|$)|worker(?:-|$)|s2s(?:-|$))/i.test(String(name)))
-    && reportRequest && String(reportRequest.url || '') === '/api/health?action=security_report'
-    && reportQuery && Object.keys(reportQuery).length === 1 && reportQuery.action === 'security_report'
-    && reportPassport
-    && Object.keys(DIRAC_V202_CHECKPOINT_BY_STAMP).every((stamp) => reportPassport[stamp] === true)
-    && reportPassport.identity_checked === true
-    && reportPassport.persistent_ban_checked === true
-    && reportPassport.browser_auth_checked === true
-    && reportPassport.csrf_checked === true
-    && reportPassport.page_nonce_checked === true
-    && reportPassport.browser_signal_checked === true
-    && reportPassport.device_checked === true
-    && reportPassport.body_checked === true
-    && reportPassport.light_checked === true
-    && reportPassport.contract_checked === true
-    && reportPassport.security_report_checked === true
-    && reportPassport.integrity_checked === true
-    && body
-    && Object.keys(body).sort().join('|') === 'action|event|evidence|page|reason|type|version'
-    && body.action === 'security_report'
-    && body.reason === 'html_detected_attack'
-    && reportCatalogPage !== '' && body.page === reportCatalogPage
-    && body.version === 'dirac-html-shell-v1'
-    && ((body.evidence === 'family=forbidden_html_suffix;field=url;source=' + reportCatalogSource
-      && body.type === 'url_guard' && body.event === 'forbidden_html_url_suffix')
-      || (/^family=(?:invalid_key|invalid_paste|invalid_drop|invalid_input|frontend_threat);field=(?:name|detail|note|phone|menu|search|promo);source=(?:parfum|laboratorium)_checkout_security$/.test(String(body.evidence || ''))
-        && String(body.evidence).endsWith(';source=' + reportCatalogSource)
-        && body.type === 'input_guard' && body.event === 'fourth_high_confidence_input_violation'))
-  );
   return Object.freeze({
-    permanent: evidenceConfirmed || corroborated || verifiedParfumSecurityReport,
-    kind: evidenceConfirmed ? evidenceKind : (corroborated ? cleanReason : (verifiedParfumSecurityReport ? 'html_security_report' : '')),
-    basis: evidenceConfirmed ? 'central_threat_evidence' : (corroborated ? 'corroborated_attack' : (verifiedParfumSecurityReport ? 'verified_parfum_security_report' : 'transient_or_unconfirmed_failure'))
+    permanent: evidenceConfirmed || corroborated,
+    kind: evidenceConfirmed ? evidenceKind : (corroborated ? cleanReason : ''),
+    basis: evidenceConfirmed ? 'central_threat_evidence' : (corroborated ? 'corroborated_attack' : 'transient_or_unconfirmed_failure')
   });
 }
 
@@ -65836,13 +65815,7 @@ async function diracCentralAtomicRateLimitV230({ key, limit, windowSeconds, bloc
     auth: 'service',
     body: { p_security_key: cleanKey, p_limit: max, p_window_seconds: window, p_block_seconds: block }
   }).catch(() => null);
-  if (result && Number(result.status) >= 500 && Number(result.status) <= 599) {
-    result = await supabaseFetch('/rest/v1/rpc/dirac_central_atomic_rate_limit_v230', {
-      method: 'POST',
-      auth: 'service',
-      body: { p_security_key: cleanKey, p_limit: max, p_window_seconds: window, p_block_seconds: block }
-    }).catch(() => null);
-  }
+  // A failed response can follow a committed counter increment. Never replay this mutation.
   const row = result && result.ok === true && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null;
   if (!row || typeof row !== 'object' || Array.isArray(row) || typeof row.allowed !== 'boolean'
       || !/^(?:0|[1-9][0-9]*)$/.test(String(row.current_count))
@@ -65990,6 +65963,10 @@ function diracCentralContractGuardV146(req, ctx) {
   const source = ctx.method === 'GET' || ctx.method === 'HEAD' ? (req && req.query || {}) : (ctx.body || {});
   const clean = diracCentralFlattenObjectV146(source, 0, '', 400);
   const allowed = new Set(['action'].concat(contract.allowed || []));
+  for (const key of Object.keys(source || {})) {
+    if (!allowed.has(key) && !contract.allowExtra) return { ok: false, reason: 'field_not_allowed_' + key };
+    if (diracCentralProtectedFieldV146(key) && !contract.allowProtectedFields) return { ok: false, reason: 'protected_field_from_frontend_' + key };
+  }
   const required = new Set(contract.required || []);
   for (const key of required) {
     if (!Object.prototype.hasOwnProperty.call(source || {}, key)) return { ok: false, reason: 'required_field_missing_' + key };
@@ -66018,51 +65995,97 @@ function diracCentralContractGuardV146(req, ctx) {
   return { ok: true };
 }
 
+const DIRAC_CENTRAL_HTML_REPORT_PROOFS_V504 = new WeakMap();
+
+function diracCentralSecurityReportPageV504(req) {
+  if (!req || String(req.method || '').toUpperCase() !== 'POST') return null;
+  const ctx = diracCentralCurrentContextV149();
+  const action = ctx && ctx.req === req && ctx.action || req.query && req.query.action;
+  return action === 'security_report' ? diracAppPageSourceV503(req) : null;
+}
+
+function diracCentralReadSecurityReportProofV504(req, ctx) {
+  const proof = req && DIRAC_CENTRAL_HTML_REPORT_PROOFS_V504.get(req);
+  const page = proof && diracCentralSecurityReportPageV504(req);
+  return proof && ctx && proof.ctx === ctx && ctx.req === req && proof.requestId === String(ctx.requestId || '')
+    && page && proof.pathname === page.pathname && proof.origin === page.origin ? proof : null;
+}
+
+function diracCentralVerifyHtmlReportEvidenceV504(body, origin, pageName, action = 'security_report') {
+  const rejected = Object.freeze({ ok: false });
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+      || !['security_report', 'admin_security_report'].includes(action)
+      || Object.keys(body).sort().join('|') !== 'action|event|evidence|page|reason|type|version'
+      || Object.values(body).some((value) => typeof value !== 'string')
+      || body.action !== action || body.reason !== 'html_detected_attack' || body.version !== 'dirac-html-shell-v1'
+      || body.page !== pageName || !diracAppPageRoleV503('/' + pageName)
+      || origin !== (pageName === 'masuk.html' ? diracRoleOriginV250('auth') : diracAppPageOriginV503())) return rejected;
+  const sample = /^family=([a-z0-9_-]{1,64});field=([a-z0-9_-]{1,64});source=html_boundary;sample=([\s\S]{1,768})$/.exec(body.evidence);
+  if (!sample || diracCentralSensitiveKeyV146(sample[2])) return rejected;
+  if (body.type === 'url_guard') {
+    if (sample[1] !== 'forbidden_html_suffix' || sample[2] !== 'url' || body.event !== 'forbidden_html_url_suffix') return rejected;
+    let reported;
+    try { reported = new URL(sample[3]); } catch (_) { return rejected; }
+    const clean = origin + '/' + pageName;
+    if (reported.origin !== origin || reported.username || reported.password
+        || !reported.href.startsWith(clean) || reported.href.length <= clean.length) return rejected;
+    return Object.freeze({ ok: true, kind: 'forbidden_html_suffix' });
+  }
+  if (body.type !== 'input_guard' || body.event !== 'high_confidence_input_violation'
+      || /^(?:restricted_keyword|policy_keyword|oversized_input|control_injection|prompt_injection)$/.test(sample[1])) return rejected;
+  // Only a structurally detected payload is evidence. A neutral field prevents
+  // ordinary singleton words from the general input policy becoming ban proof.
+  const sampleField = /^(?:ssrf|cloud_metadata)$/.test(sample[1]) ? 'url' : 'report_evidence';
+  if (sampleField === 'url') {
+    try {
+      const target = new URL(sample[3]);
+      if (['https:', 'http:'].includes(target.protocol)
+          && diracCentralIsUnsafeIpV146(target.hostname.replace(/^\[|\]$/g, ''))) {
+        return Object.freeze({ ok: true, kind: 'ssrf_private_or_metadata_target' });
+      }
+    } catch (_) { /* The independent contextual detector still evaluates the sample. */ }
+  }
+  const detected = diracCentralContextualThreatGuardV221(
+    { url: '/api/health', query: {}, headers: {} },
+    { action: 'security_report', body: { [sampleField]: sample[3] } }
+  );
+  if (!detected || detected.detected !== true || detected.kind === 'policy_keyword'
+      || !DIRAC_CENTRAL_CONFIRMED_ATTACK_KINDS_V281.has(detected.kind)) return rejected;
+  return Object.freeze({ ok: true, kind: String(detected.kind) });
+}
+
 function diracCentralSecurityReportGuardV146(req, ctx) {
   if (ctx.action !== 'security_report') return { ok: true };
-  const body = ctx.body || {};
-  if (body.target || body.security_key || body.identity || body.ip || body.customer_id || body.user_id) {
-    return { ok: false, reason: 'security_report_target_forbidden' };
+  const rejected = { ok: false, reason: 'security_report_evidence_unconfirmed', directCode: 'SECURITY_REPORT_EVIDENCE_REJECTED' };
+  const page = diracCentralSecurityReportPageV504(req);
+  if (!page || page.pathname === '/admin.html' || ctx.req !== req || ctx.method !== 'POST'
+      || ctx.classification !== 'browser' || ctx.authentication !== 'browser') return rejected;
+  const evidence = diracCentralVerifyHtmlReportEvidenceV504(ctx.body, page.origin, page.pathname.slice(1));
+  if (!evidence.ok) return rejected;
+  let account = null;
+  if (page.pathname !== '/masuk.html') {
+    try {
+      const candidates = readCookieTokenCandidates(parseCookies(req), DOMAIN_SIGNED_SESSION_COOKIE);
+      if (!candidates.length || candidates.length > 8) return rejected;
+      const signed = candidates.map(verifyDomainSessionCookieValue).filter((value) => value
+        && customerSecurityLooksLikeUuid(value.id) && isValidAuthEmail(normalizeAuthEmail(value.email)));
+      account = signed[0];
+      if (!account || signed.length !== candidates.length
+          || signed.some((value) => String(value.id).toLowerCase() !== String(account.id).toLowerCase()
+            || normalizeAuthEmail(value.email) !== normalizeAuthEmail(account.email))) return rejected;
+      const identity = ctx.identity || {};
+      if (identity.verifiedAuthUserId && String(identity.verifiedAuthUserId).toLowerCase() !== String(account.id).toLowerCase()
+          || identity.verifiedAuthEmail && normalizeAuthEmail(identity.verifiedAuthEmail) !== normalizeAuthEmail(account.email)) return rejected;
+    } catch (_) { return rejected; }
   }
-  const reason = String(body.reason || body.type || '').trim().toLowerCase();
-  const allowed = new Set(['xss', 'dom_xss', 'sql_injection', 'csrf', 'clickjacking', 'prototype_pollution', 'open_redirect', 'tamper_detected', 'html_detected_attack']);
-  if (!allowed.has(reason)) return { ok: false, reason: 'security_report_reason_invalid' };
-  const evidenceV441 = String(body.evidence || '');
-  const rejectedV441 = { ok: false, reason: 'security_report_evidence_unconfirmed', directCode: 'SECURITY_REPORT_EVIDENCE_REJECTED' };
-  if (/^family=restricted_keyword;field=[a-z0-9_-]{1,64};source=html_boundary(?:;sample=|$)/.test(evidenceV441)) return rejectedV441;
-  if (reason === 'html_detected_attack'
-      && /^(?:url_guard|input_guard)$/.test(String(body.type || ''))
-      && /^family=[a-z0-9_-]{1,64};field=[a-z0-9_-]{1,64};source=html_boundary$/.test(evidenceV441)) return rejectedV441;
-  if (reason === 'html_detected_attack' && body.type === 'url_guard'
-      && evidenceV441.startsWith('family=forbidden_html_suffix;field=url;source=html_boundary')) {
-    const suffixV498 = /^family=forbidden_html_suffix;field=url;source=html_boundary;sample=([^\r\n]{1,768})$/.exec(evidenceV441);
-    if (!suffixV498 || body.event !== 'forbidden_html_url_suffix' || body.version !== 'dirac-html-shell-v1'
-        || !DIRAC_CENTRAL_ALLOWED_REFERER_PATHS_V146.has('/' + String(body.page || ''))) return rejectedV441;
-    let reportedV498;
-    try { reportedV498 = new URL(suffixV498[1]); } catch (_) { return rejectedV441; }
-    const originV498 = String(req && req.headers && req.headers.origin || '');
-    const cleanV498 = originV498 + '/' + body.page;
-    if (!DIRAC_CENTRAL_ALLOWED_ORIGINS_V146.has(originV498) || reportedV498.origin !== originV498
-        || String(req && req.headers && (req.headers.referer || req.headers.referrer) || '') !== cleanV498
-        || reportedV498.username || reportedV498.password || reportedV498.href.indexOf(cleanV498) !== 0
-        || reportedV498.href.length <= cleanV498.length) return rejectedV441;
-    ctx.threatEvidenceV221 = Object.freeze({ kind: 'forbidden_html_suffix', field_hash: diracCentralHashV146('body.evidence').slice(0, 32) });
-  }
-  if (reason === 'html_detected_attack' && body.type === 'input_guard'
-      && evidenceV441.includes(';source=html_boundary;sample=')) {
-    const sampleV441 = /^family=([a-z0-9_-]{1,64});field=([a-z0-9_-]{1,64});source=html_boundary;sample=([\s\S]{1,768})$/.exec(evidenceV441);
-    if (!sampleV441 || sampleV441[1] === 'restricted_keyword') return rejectedV441;
-    // A browser label alone is not attack evidence. Re-evaluate the bounded
-    // sample with the same independent detector used for ordinary API inputs.
-    const detectedV441 = diracCentralContextualThreatGuardV221(
-      { url: '/api/health', query: {}, headers: {} },
-      { action: 'security_report', body: { report_sample: sampleV441[3] } }
-    );
-    if (!detectedV441 || detectedV441.detected !== true) return rejectedV441;
-    ctx.threatEvidenceV221 = Object.freeze({ kind: String(detectedV441.kind || ''), field_hash: diracCentralHashV146('body.evidence').slice(0, 32) });
-  }
+  if (!ctx.identity || !ctx.identity.key) return rejected;
   const rate = diracCentralRateLimitV146(ctx.identity.key + ':security-report', 60 * 1000, 3);
   if (!rate.ok) return { ok: false, reason: 'security_report_rate_limit' };
+  DIRAC_CENTRAL_HTML_REPORT_PROOFS_V504.set(req, Object.freeze({
+    ctx, requestId: String(ctx.requestId || ''), pathname: page.pathname, origin: page.origin,
+    userId: account ? String(account.id).toLowerCase() : '', email: account ? normalizeAuthEmail(account.email) : ''
+  }));
+  ctx.threatEvidenceV221 = Object.freeze({ kind: evidence.kind, field_hash: diracCentralHashV146('body.evidence').slice(0, 32) });
   return { ok: true };
 }
 
@@ -70360,7 +70383,11 @@ async function diracCentralMirrorBrowserBanToCustomerAccessV353(ctx, action, rea
 async function diracCentralWriteTransientFailureBanV284(ctx, action, method, reason) {
   const identityKey = String(ctx && ctx.identity && ctx.identity.key || '').trim();
   const persistentKeys = diracCentralTransientPersistentBanKeysV287(ctx && ctx.identity);
-  const verifiedAuthUserIdV358 = String(ctx && ctx.identity && ctx.identity.verifiedAuthUserId || '').trim().toLowerCase();
+  const reportPageV504 = diracCentralSecurityReportPageV504(ctx && ctx.req);
+  const reportProofV504 = reportPageV504 && diracCentralReadSecurityReportProofV504(ctx.req, ctx);
+  const verifiedAuthUserIdV358 = String(reportPageV504
+    ? (reportPageV504.pathname !== '/masuk.html' && reportProofV504 && reportProofV504.userId || '')
+    : ctx && ctx.identity && ctx.identity.verifiedAuthUserId || '').trim().toLowerCase();
   const accountBoundHtmlBanV358 = String(action || '') === 'security_report'
     && String(method || '').toUpperCase() === 'POST'
     && String(reason || '') === 'html_security_report'
@@ -70661,7 +70688,10 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
     const ttlSeconds = Math.max(60, Math.min(10 * 365 * 24 * 60 * 60, requestedTtl));
     if (!/^[a-z0-9_:-]{3,96}$/.test(reason)) return Object.freeze({ ok: false, reason: 'central_ban_reason_invalid' });
     const identity = diracCentralExternalBanIdentityV404(req);
-    const deviceNetworkOnly = reason === 'admin_failure:admin_factor_guard_mismatch';
+    const reportPageV504 = diracCentralSecurityReportPageV504(req);
+    const deviceNetworkOnly = reason === 'admin_failure:admin_factor_guard_mismatch'
+      || reason === 'admin_failure:admin_security_report_one_strike'
+      || Boolean(reportPageV504 && reportPageV504.pathname === '/masuk.html');
     const unique = deviceNetworkOnly
       ? identity.keys.filter((item) => ['ip', 'stable_ip', 'cookie', 'fingerprint', 'network'].includes(String(item && item.type || '')))
       : identity.keys;
@@ -70693,9 +70723,12 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
       blocked_until_ms: blockedUntilMs,
       created_at: new Date(now).toISOString()
     }, unique[0] && unique[0].key));
+    const scopedRecordV504 = deviceNetworkOnly ? Object.freeze({ ...record,
+      identity_email: null, identity_email_verified: false, identity_email_source: 'device_network_only'
+    }) : record;
     const rows = unique.map((item) => ({
       security_key: item.key,
-      record_json: { ...record, key_type: String(item.type || 'identity').slice(0, 40) },
+      record_json: { ...scopedRecordV504, key_type: String(item.type || 'identity').slice(0, 40) },
       blocked_until_ms: blockedUntilMs,
       updated_at: new Date(now).toISOString(),
       expires_at: expiresAt
@@ -75947,6 +75980,10 @@ Object.defineProperty(module.exports, '__diracCentralAdminEntryV405', { value: d
 Object.defineProperty(module.exports, '__diracCentralPtdinEntryV402', { value: diracCentralPtdinEntryV402, enumerable: false, writable: false, configurable: false });
 Object.defineProperty(module.exports, '__diracRecoveryRoleAwareV250', { value: true, enumerable: false });
 Object.defineProperty(module.exports, '__diracPasswordResetMailNotifyCommittedV338', { value: diracPasswordResetMailNotifyCommittedV338, enumerable: false, writable: false, configurable: false });
+Object.defineProperty(module.exports, '__diracCentralHtmlReportEvidenceV504', {
+  value: Object.freeze({ version: 'dirac-html-report-evidence-v504', verify: diracCentralVerifyHtmlReportEvidenceV504 }),
+  enumerable: false, writable: false, configurable: false
+});
 Object.defineProperty(module.exports, '__diracCentralBanAuthorityV354', {
   value: Object.freeze({
     version: DIRAC_CENTRAL_BAN_AUTHORITY_V354,

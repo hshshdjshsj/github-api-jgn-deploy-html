@@ -2211,11 +2211,13 @@ async function diracPasswordResetResolveOwnerV333(req, row, expectedEmailHash) {
 }
 
 async function diracPasswordResetRevokeReplayCredentialV333(row, owner) {
+  const expectedSignCount = Number(row && row.sign_count);
+  if (!Number.isSafeInteger(expectedSignCount) || expectedSignCount <= 0 || expectedSignCount > 0xffffffff) return false;
   const nowIso = new Date().toISOString();
   const path = '/rest/v1/domain_passkeys?id=eq.' + encodeURIComponent(row.id)
     + '&user_id=eq.' + encodeURIComponent(owner.customerId)
     + '&credential_id=eq.' + encodeURIComponent(row.credential_id)
-    + '&is_active=eq.true';
+    + '&is_active=eq.true&sign_count=eq.' + String(expectedSignCount);
   const result = await supabaseFetch(path, {
     method: 'PATCH', auth: 'service', prefer: 'return=representation',
     body: { is_active: false, revoked_at: nowIso, revoke_reason: 'password_reset_passkey_sign_count_replay', updated_at: nowIso }
@@ -4163,9 +4165,9 @@ async function diracSecurityPasskeyResetRecordAssertionV363({req,row,owner,paylo
   if(!response||!credentialId||!safeEqual(credentialId,String(row.credential_id||''))||credential.rawId&&!safeEqual(String(credential.rawId),credentialId))throw resetError('SECURITY_PASSKEY_RESET_ASSERTION_INVALID',403);
   const clientData=diracSecurityPasskeyResetClientDataV363(response.clientDataJSON,'webauthn.get',payload);
   const assertion=diracSecurityPasskeyResetValidateAssertionV363(row,response,payload,clientData);
-  if(!assertion.ok){if(assertion.reason==='passkey_sign_count_replay'&&row.is_active===true){await diracPasswordResetRevokeReplayCredentialV333(row,owner).catch(()=>false);}throw resetError('SECURITY_PASSKEY_RESET_ASSERTION_REJECTED',403);}
+  if(!assertion.ok){if(assertion.reason==='passkey_sign_count_replay'&&row.is_active===true){const replayDevice=diracSecurityPasskeyResetAuthenticationDeviceBindingV363(req,owner,row,body,payload);if(!replayDevice.ok)throw resetError('SECURITY_PASSKEY_RESET_DEVICE_BINDING_INVALID',403);await diracSecurityPasskeyResetConsumeTokenV363(setupToken,payload);await diracPasswordResetRevokeReplayCredentialV333(row,owner).catch(()=>false);}throw resetError('SECURITY_PASSKEY_RESET_ASSERTION_REJECTED',403);}
   const device=diracSecurityPasskeyResetAuthenticationDeviceBindingV363(req,owner,row,body,payload);if(!device.ok)throw resetError('SECURITY_PASSKEY_RESET_DEVICE_BINDING_INVALID',403);
-  const previous=Math.max(0,Number(row.sign_count||0)),next=Math.max(0,Number(assertion.signCount||diracPasskeyA2FSignCount(response)||0));if(!Number.isSafeInteger(previous)||!Number.isSafeInteger(next)||(previous>0&&next>0&&next<=previous))throw resetError('SECURITY_PASSKEY_RESET_COUNTER_INVALID',403);
+  const previous=Math.max(0,Number(row.sign_count||0)),next=Math.max(0,Number(assertion.signCount||diracPasskeyA2FSignCount(response)||0));if(!Number.isSafeInteger(previous)||!Number.isSafeInteger(next)||((previous>0||next>0)&&next<=previous))throw resetError('SECURITY_PASSKEY_RESET_COUNTER_INVALID',403);
   const nowIso=new Date().toISOString(),currentJson=row.credential_json&&typeof row.credential_json==='object'?row.credential_json:{};
   const updated={...currentJson,webauthn:{...(currentJson.webauthn&&typeof currentJson.webauthn==='object'?currentJson.webauthn:{}),sign_count:next,backup_state:assertion.backupState===true,last_verified_at:nowIso},last_authentication:diracSecurityPasskeyResetMinimalCredentialJsonV363({credential,response,clientData,payload,owner,mode:confirmPending?'confirm_pending':'authentication'})};
   await diracSecurityPasskeyResetConsumeTokenV363(setupToken,payload);
@@ -4516,7 +4518,11 @@ function securityResetCentralBanAuthorityV354() {
 }
 async function securityResetCheckCentralBanV354(req) {
   const decision = await securityResetCentralBanAuthorityV354().check(req);
-  if (!decision || decision.ok !== true) throw resetError('SECURITY_RESET_CENTRAL_BAN_CHECK_UNAVAILABLE', 503);
+  if (!decision || decision.ok !== true) {
+    const reason = decision && ['central_ban_identity_unavailable', 'central_ban_store_unavailable', 'central_ban_check_exception'].includes(decision.reason) ? decision.reason : 'central_ban_decision_invalid';
+    diracResetDiagnosticV335(req, 'central_ban.check', 'error', { reason });
+    throw resetError('SECURITY_RESET_CENTRAL_BAN_CHECK_UNAVAILABLE', 503);
+  }
   if (decision.blocked === true) {
     const error = resetError('SECURITY_RESET_CENTRAL_BAN_ACTIVE', 403, 'Akses diblokir oleh kebijakan keamanan pusat.');
     error.retryAfter = Math.max(1, Math.floor(Number(decision.retry_after_seconds || 300)));

@@ -219,10 +219,12 @@ function sourceOrigin(req) {
   const host = requestHost(req); if (!host) fail('ADMIN_ORIGIN_INVALID', 403);
   const requestName = new URL('https://' + host).hostname.toLowerCase();
   const sourceName = origin.hostname.toLowerCase();
-  if (loopbackHost(requestName) && loopbackHost(sourceName)) {
+  if (!isProduction() && loopbackHost(requestName) && loopbackHost(sourceName)) {
     if (!['http:', 'https:'].includes(origin.protocol)) fail('ADMIN_ORIGIN_INVALID', 403);
   } else {
-    if (origin.protocol !== 'https:' || origin.port || !requestName.startsWith('api.') || sourceName !== 'pt.' + requestName.slice(4)) fail('ADMIN_ORIGIN_INVALID', 403);
+    const base = String(process.env.DIRAC_BASE_DOMAIN || '').trim().toLowerCase().replace(/\.$/, '');
+    if (!base || base.length > 253 || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(base)) fail('ADMIN_ORIGIN_INVALID', 403);
+    if (origin.protocol !== 'https:' || origin.port || host !== 'api.' + base || sourceName !== 'pt.' + base) fail('ADMIN_ORIGIN_INVALID', 403);
   }
   return origin.origin;
 }
@@ -1078,14 +1080,20 @@ async function activeSecurityBlock(origin, device) {
   });
   return result.record;
 }
-function validateSecurityReport(body) {
-  if (!body || body.reason !== 'html_detected_attack' || body.page !== 'admin.html' || body.version !== 'dirac-html-shell-v1') fail('ADMIN_SECURITY_REPORT_INVALID', 400);
+const ADMIN_VERIFIED_SECURITY_REPORTS = new WeakMap();
+function validateSecurityReport(body, origin) {
+  let verifier;
+  try { verifier = require('./health.js').__diracCentralHtmlReportEvidenceV504; } catch (_) {}
+  if (!verifier || !Object.isFrozen(verifier) || verifier.version !== 'dirac-html-report-evidence-v504' || typeof verifier.verify !== 'function') fail('ADMIN_SECURITY_REPORT_VERIFIER_UNAVAILABLE', 503);
+  let verified;
+  try { verified = verifier.verify(body, origin, 'admin.html', 'admin_security_report'); } catch (_) {}
+  if (!verified || verified.ok !== true) fail('SECURITY_REPORT_EVIDENCE_REJECTED', 403);
   const type = String(body.type || ''), event = String(body.event || ''), evidence = String(body.evidence || '');
-  if (!['url_guard', 'input_guard'].includes(type) || !['forbidden_html_url_suffix', 'high_confidence_input_violation'].includes(event)) fail('ADMIN_SECURITY_REPORT_INVALID', 400);
-  const match = /^family=([a-z0-9_-]{1,64});field=([a-z0-9_-]{1,64});source=html_boundary(?:;sample=([\s\S]{1,768}))?$/.exec(evidence);
-  if (!match || (type === 'url_guard') !== (event === 'forbidden_html_url_suffix') || (type === 'url_guard') !== (match[1] === 'forbidden_html_suffix')) fail('ADMIN_SECURITY_REPORT_INVALID', 400);
-  if (type === 'input_guard' && match[1] === 'frontend_threat' && match[2] === 'admin_failure') fail('SECURITY_REPORT_EVIDENCE_REJECTED', 403);
-  return Object.freeze({ type, event, family: match[1], field: match[2], evidenceHash: digest512(evidence) });
+  const match = /^family=([a-z0-9_-]{1,64});field=([a-z0-9_-]{1,64});source=html_boundary;sample=([\s\S]{1,768})$/.exec(evidence);
+  if (!match) fail('SECURITY_REPORT_EVIDENCE_REJECTED', 403);
+  const report = Object.freeze({ type, event, family: match[1], field: match[2], evidenceHash: digest512(evidence) });
+  ADMIN_VERIFIED_SECURITY_REPORTS.set(report, Object.freeze({ body, origin }));
+  return report;
 }
 async function persistSecurityReport(origin, device, report) {
   const now = Date.now(), blockedUntil = now + SECURITY_BLOCK_SECONDS * 1000;
@@ -1803,7 +1811,7 @@ async function execute(ops) {
   }
   if (action === 'admin_security_report') {
     await throttle(ops, scope, 'security-report', 3, 60);
-    const report = validateSecurityReport(body), result = await ops.securityReport(report);
+    const report = validateSecurityReport(body, scope.origin), result = await ops.securityReport(report);
     if (!result || !Number.isSafeInteger(result.blockedUntil) || result.blockedUntil <= Date.now()) fail('ADMIN_SECURITY_STORE_UNAVAILABLE', 503);
     fail('ADMIN_SECURITY_BLOCKED', 403);
   }
@@ -2994,7 +3002,7 @@ function buildOps(req, res, state) {
     clearSession: async () => { assertFullGuard(); if (state.action !== 'admin_logout') fail('ADMIN_SESSION_CLEAR_INVALID', 503); if (await revokePasswordProof(state.passwordAuthority) !== true) fail('ADMIN_PROOF_REVOCATION_UNVERIFIED', 503); appendCookie(res, SESSION_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); appendCookie(res, PASSWORD_COOKIE + '=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'); },
     verifySecret: value => { assertFullGuard(); const current = adminSecretState(); return current.configured && typeof value === 'string' && safeEqual(digest(value), digest(current.secret)); },
     publishPassword: async () => { assertFullGuard(); const current = adminSecretState(); if (!current.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503); await publishPasswordProof(req, res, state.origin, state.device, current.secret); },
-    securityReport: async report => { assertFullGuard(); if (state.action !== 'admin_security_report' || !report || report.evidenceHash === undefined) fail('ADMIN_SECURITY_REPORT_INVALID', 400); const centralBan = await adminCentralBanFailure(req, Object.assign(new Error('ADMIN_SECURITY_REPORT_ONE_STRIKE'), { code: 'ADMIN_SECURITY_REPORT_ONE_STRIKE', status: 403, statusCode: 403 })); if (!centralBan || centralBan.ok !== true) fail('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', 503); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); res.setHeader('X-Dirac-Central-Ban', '1'); return { blockedUntil: centralBan.blocked_until_ms, central_ban: true }; },
+    securityReport: async report => { assertFullGuard(); const evidence = report && ADMIN_VERIFIED_SECURITY_REPORTS.get(report); if (state.action !== 'admin_security_report' || !evidence || evidence.body !== state.body || evidence.origin !== state.origin) fail('SECURITY_REPORT_EVIDENCE_REJECTED', 403); ADMIN_VERIFIED_SECURITY_REPORTS.delete(report); const centralBan = await adminCentralBanFailure(req, Object.assign(new Error('ADMIN_SECURITY_REPORT_ONE_STRIKE'), { code: 'ADMIN_SECURITY_REPORT_ONE_STRIKE', status: 403, statusCode: 403 })); if (!centralBan || centralBan.ok !== true) fail('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', 503); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); res.setHeader('X-Dirac-Central-Ban', '1'); return { blockedUntil: centralBan.blocked_until_ms, central_ban: true }; },
     business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'shipment_update', 'shipment_cancel', 'blocks', 'banned_data', 'unban', 'banned_pdf', 'account_create', 'partner_requests', 'partner_request_update', 'smtp_send', 'local_authorize', 'document_prepare', 'document_seal', 'document_verify', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
   });
   state.deactivate = () => { active = false; records.clear(); };
