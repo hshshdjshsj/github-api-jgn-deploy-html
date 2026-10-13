@@ -3486,7 +3486,12 @@ async function readPersistentLoginSecurityRecordStrictV320(identity) {
   }
   try {
     const path = `/rest/v1/${encodeURIComponent(LOGIN_SECURITY_PERSIST_TABLE)}?select=security_key,record_json,blocked_until_ms,expires_at&security_key=eq.${encodeURIComponent(identity.key)}&limit=2`;
-    const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+    const firstReadV503 = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+    const networkFailureV503 = firstReadV503 && (firstReadV503.status === 502 || firstReadV503.status === 504)
+      && firstReadV503.data && (firstReadV503.data.code === 'SUPABASE_FETCH_FAILED' || firstReadV503.data.code === 'SUPABASE_FETCH_TIMEOUT');
+    const result = networkFailureV503
+      ? await supabaseFetch(path, { method: 'GET', auth: 'service' })
+      : firstReadV503;
     if (!result || result.ok !== true || !Array.isArray(result.data) || result.data.length > 1) {
       return { ok: false, found: false, record: null, reason: 'login_security_store_unavailable_or_ambiguous' };
     }
