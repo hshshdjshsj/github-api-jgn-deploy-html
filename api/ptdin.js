@@ -213,11 +213,10 @@ function projectResponse(action, view, payload, profile) {
     out.summary = orderSummary(out.orders);
     out.analytics = orderAnalytics(out.orders);
     out.account_analytics = out.orders.length === allOrders.length ? { ...out.analytics } : orderAnalytics(allOrders);
-    const latestPhoneOrder = allOrders.find(order => cleanText(order.customer_phone, 80)) || null;
-    const latestAddressOrder = allOrders.find(order => diracCompactAddressForDisplayV634(cleanText(order.shipping_address || order.customer_address || order.address || order.alamat || order.delivery_address || order.recipient_address, 520))) || null;
+    const latestOrder = allOrders[0] || null;
     out.profile_supplement = {
-      phone: cleanText(latestPhoneOrder && latestPhoneOrder.customer_phone, 80),
-      address: diracCompactAddressForDisplayV634(cleanText(latestAddressOrder && (latestAddressOrder.shipping_address || latestAddressOrder.customer_address || latestAddressOrder.address || latestAddressOrder.alamat || latestAddressOrder.delivery_address || latestAddressOrder.recipient_address), 520)),
+      phone: cleanText(latestOrder && latestOrder.customer_phone, 80),
+      address: diracCompactAddressForDisplayV634(cleanText(latestOrder && (latestOrder.shipping_address || latestOrder.customer_address || latestOrder.address || latestOrder.alamat || latestOrder.delivery_address || latestOrder.recipient_address), 520)),
       registered_at: cleanText(payload.user && payload.user.created_at, 64) || null,
       customer_since: out.account_analytics.first_order_at
     };
