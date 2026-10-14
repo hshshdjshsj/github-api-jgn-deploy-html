@@ -6289,9 +6289,10 @@ async function domainDashboardMe(req, res) {
     || (laboratoryCheckoutSource && checkoutRequestOrigin === laboratoryCheckoutSource.origin && checkoutRequestSource.redirectUrl === laboratoryCheckoutSource.redirectUrl));
   let profileName = '';
   let laboratorySavedAddresses = [];
+  let addressHistoryProtection = null;
   if (checkoutProfileRequested) {
     const profileId = String(access.protectedLock && access.protectedLock.customerId || '').trim();
-    const savedAddressPath = '/rest/v1/orders?select=' + encodeURIComponent('customer_id,shipping_address,created_at')
+    const savedAddressPath = '/rest/v1/orders?select=' + encodeURIComponent('customer_id,shipping_address,customer_phone,created_at')
       + '&customer_id=eq.' + encodeURIComponent(profileId) + '&order=created_at.desc&limit=6';
     const [profile, savedAddressResults] = customerSecurityLooksLikeUuid(profileId)
       ? await Promise.all([
@@ -6308,6 +6309,8 @@ async function domainDashboardMe(req, res) {
       return res.status(503).json({ ok: false, code: 'REGISTERED_PROFILE_UNAVAILABLE', message: 'Profil akun belum dapat diverifikasi. Silakan coba lagi.' });
     }
     profileName = String(profile.customer.name || '').trim();
+    addressHistoryProtection = require('../lib/data-protection.js').cacheProtection(
+      String(user.id || '').trim().toLowerCase(), profileId.toLowerCase(), normalizeAuthEmail(user.email || ''), checkoutRequestOrigin);
     if (checkoutProfileRequested) {
       if (savedAddressResults.some(result => result && result.ok === true && Array.isArray(result.data))) {
         const savedRows = savedAddressResults.flatMap(result => result && result.ok === true && Array.isArray(result.data) ? result.data.slice(0, 6) : [])
@@ -6318,6 +6321,11 @@ async function domainDashboardMe(req, res) {
             .replace(/^Alamat:\s*/, '').split(/\s*\|\s*(?:Detail alamat|Catatan):\s*/)[0].trim();
           return value.length >= 20 && value.length <= 520 && /^Negara:\s*/.test(value) ? value : '';
         };
+        const savedEntry = (address) => {
+          const row = savedRows.find(item => safeAddress(item) === address);
+          const phone = normalizePhone(row && row.customer_phone || '');
+          return { address, phone: /^\+?[0-9]{9,20}$/.test(phone) ? phone : '' };
+        };
         const a0 = safeAddress(savedRows[0]);
         const a1 = safeAddress(savedRows[1]);
         const a2 = safeAddress(savedRows[2]);
@@ -6327,9 +6335,9 @@ async function domainDashboardMe(req, res) {
         const first = a0 || a1 || a2 || a3 || a4 || a5;
         const second = a1 && a1 !== first ? a1 : a2 && a2 !== first ? a2 : a3 && a3 !== first ? a3 : a4 && a4 !== first ? a4 : a5 && a5 !== first ? a5 : '';
         const third = a2 && a2 !== first && a2 !== second ? a2 : a3 && a3 !== first && a3 !== second ? a3 : a4 && a4 !== first && a4 !== second ? a4 : a5 && a5 !== first && a5 !== second ? a5 : '';
-        if (first) laboratorySavedAddresses.push(first);
-        if (second) laboratorySavedAddresses.push(second);
-        if (third) laboratorySavedAddresses.push(third);
+        if (first) laboratorySavedAddresses.push(savedEntry(first));
+        if (second) laboratorySavedAddresses.push(savedEntry(second));
+        if (third) laboratorySavedAddresses.push(savedEntry(third));
       }
     }
   }
@@ -6342,7 +6350,7 @@ async function domainDashboardMe(req, res) {
   return res.status(200).json({
     ok: true,
     dashboard: true,
-    user: { ...sanitizeUser(user), name: profileName && profileName.length <= 120 && !/[\u0000-\u001F\u007F]/.test(profileName) ? profileName : '', saved_addresses: laboratorySavedAddresses },
+    user: { ...sanitizeUser(user), name: profileName && profileName.length <= 120 && !/[\u0000-\u001F\u007F]/.test(profileName) ? profileName : '', saved_addresses: laboratorySavedAddresses, address_history_protection: addressHistoryProtection },
     session: {
       idleTimeoutMs: DOMAIN_PROTECTED_IDLE_TIMEOUT_MS,
       maxAgeMs: 8 * 60 * 60 * 1000,
@@ -9208,8 +9216,8 @@ async function supabaseFetch(path, options = {}) {
     data = text;
   }
 
-  if (response.ok && /^\/rest\/v1\/(?:payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)(?:\?|$)/.test(cleanPath)) {
-    data = require('../lib/data-protection.js').decode(cleanPath, data);
+  if (response.ok && /^\/rest\/v1\/(?:customers|orders|domain_orders|security_customer_auth_links|domain_passkeys|rpc\/dirac_passkey_create_pending_v237|payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)(?:\?|$)/.test(cleanPath)) {
+    data = require('../lib/data-protection.js').decode(cleanPath, data, { origin: targetOrigin });
   }
 
   const result = {
@@ -18733,7 +18741,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     return res.status(409).json({ ok: false, code: 'REGISTERED_NAME_REQUIRED', message: 'Nama akun terdaftar belum tersedia. Hubungi dukungan untuk memperbaiki profil sebelum checkout.' });
   }
   const finalCustomerEmail = normalizeAuthEmail(customer.email || userEmail);
-  const finalCustomerPhone = normalizePhone(customer.phone || customerPhone);
+  const finalCustomerPhone = customerPhone;
 
   if (!customerSecurityLooksLikeUuid(customerId)) {
     return res.status(409).json({ ok: false, message: 'Customer ownership tidak valid.' });
@@ -68971,22 +68979,26 @@ async function diracCentralPinnedHttpsFetchV230(
       && !diracCentralConsumeDatabaseEgressPermitV362(parsedUrl, method, diracCentralCurrentContextV149(), options)) {
     throw Object.assign(new Error('DIRAC_DATABASE_DISPATCH_PERMIT_REJECTED'), { code: 'DIRAC_DATABASE_DISPATCH_PERMIT_REJECTED' });
   }
-  if (!supportDispatch && body.length && ['POST', 'PATCH', 'PUT'].includes(method)
-      && headers['content-type'] === 'application/json'
-      && /^\/rest\/v1\/(?:payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)$/.test(parsedUrl.pathname)
+  let storagePath = parsedUrl.pathname + parsedUrl.search;
+  if (!supportDispatch && /^\/rest\/v1\/(?:customers|orders|domain_orders|security_customer_auth_links|domain_passkeys|rpc\/dirac_passkey_create_pending_v237|payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)$/.test(parsedUrl.pathname)
       && diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())) {
     // Storage encryption starts only after the unchanged one-use egress permit.
-    const storedBody = require('../lib/data-protection.js').encode(parsedUrl.pathname + parsedUrl.search, JSON.parse(body.toString('utf8')));
-    const encodedBody = Buffer.from(JSON.stringify(storedBody), 'utf8');
-    body.fill(0);
-    body = encodedBody;
-    headers['content-length'] = String(body.length);
+    const protection = require('../lib/data-protection.js');
+    const storageOptions = { method, origin: parsedUrl.origin };
+    storagePath = protection.path(storagePath, storageOptions);
+    if (body.length && ['POST', 'PATCH', 'PUT'].includes(method) && headers['content-type'] === 'application/json') {
+      const storedBody = protection.encode(parsedUrl.pathname + parsedUrl.search, JSON.parse(body.toString('utf8')), storageOptions);
+      const encodedBody = Buffer.from(JSON.stringify(storedBody), 'utf8');
+      body.fill(0);
+      body = encodedBody;
+      headers['content-length'] = String(body.length);
+    }
   }
   return await new Promise((resolve, reject) => {
     let settled = false;
     const request = DIRAC_CENTRAL_NATIVE_HTTPS_REQUEST_V230({
       protocol: 'https:', hostname: parsedUrl.hostname, port: pinnedPort,
-      servername: parsedUrl.hostname, method, path: parsedUrl.pathname + parsedUrl.search,
+      servername: parsedUrl.hostname, method, path: storagePath,
       headers, agent: pinnedAgent, rejectUnauthorized: true, minVersion: 'TLSv1.2',
       lookup(_hostname, lookupOptions, callback) {
         const pinnedFamily = net.isIP(pinnedIp);

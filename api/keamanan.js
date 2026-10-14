@@ -1620,21 +1620,23 @@ async function supabaseFetch(path, options = {}) {
   if (!['GET','HEAD','POST','PATCH','PUT','DELETE'].includes(method)) throw resetError('SECURITY_RESET_DB_METHOD_INVALID', 405);
   securityResetAssertDbOperationV361(cleanPath, method, options);
   const target = securitySupabaseTargetV334(cleanPath); const c = securitySupabaseCredentialsV334(target);
+  const protection = require('../lib/data-protection.js'), storageOptions = { method, origin: c.url };
+  const physicalPath = protection.path(cleanPath, storageOptions);
   const route = securityResetDiagnosticDbRouteV335(cleanPath); const callId = crypto.randomBytes(6).toString('hex');
   const headers = { Accept:'application/json', apikey: options.auth === 'service' ? c.service : c.anon };
   headers.Authorization = 'Bearer ' + (options.bearer ? String(options.bearer) : (options.auth === 'service' ? c.service : c.anon));
   if (options.prefer) headers.Prefer = String(options.prefer);
   let body;
-  if (options.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(require('../lib/data-protection.js').encode(cleanPath, options.body)); if (Buffer.byteLength(body) > 262144) throw resetError('SECURITY_RESET_DB_BODY_TOO_LARGE', 413); }
+  if (options.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(protection.encode(cleanPath, options.body, storageOptions)); if (Buffer.byteLength(body) > 262144) throw resetError('SECURITY_RESET_DB_BODY_TOO_LARGE', 413); }
   diracResetDiagnosticV335(null, 'external.call', 'begin', { call_id: callId, method, target, auth_mode: options.bearer ? 'bearer' : String(options.auth || 'anon'), pathname: route.pathname, query_keys: route.query_keys, body_present: body !== undefined, body_bytes: body === undefined ? 0 : Buffer.byteLength(body), timeout_ms: 6500 });
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 6500); if (timer.unref) timer.unref();
   let response, data;
   try {
     const outbound = { method, headers, body, redirect: 'error', signal: controller.signal };
-    const capability = securityResetEgressCapabilityV361(c.url + cleanPath, outbound, 'database');
-    response = await securityResetEgressFetchV361(c.url + cleanPath, outbound, capability);
+    const capability = securityResetEgressCapabilityV361(c.url + physicalPath, outbound, 'database');
+    response = await securityResetEgressFetchV361(c.url + physicalPath, outbound, capability);
     data = await securityResetReadUpstreamV361(response);
-    if (response.ok) data = require('../lib/data-protection.js').decode(cleanPath, data);
+    if (response.ok) data = protection.decode(cleanPath, data, storageOptions);
   }
   catch (cause) { const error = resetError('SECURITY_RESET_DB_NETWORK_FAILED', 503); diracResetDiagnosticV335(null, 'external.call', 'error', { call_id: callId, method, target, pathname: route.pathname, query_keys: route.query_keys, cause_name: securityResetDiagnosticNameV636(cause && cause.name), cause_code: securityResetDiagnosticCodeV636(cause && cause.code) }, error); throw error; }
   finally { clearTimeout(timer); }

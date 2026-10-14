@@ -335,15 +335,17 @@ async function dbFetch(path, options = {}, target = '') {
   let creds;
   if (target === 'security' || cleanPath.startsWith('/rest/v1/rpc/') || ['dirac_s2s_security', 'dirac_persistent_bans'].includes(tableFromPath(cleanPath))) creds = securityCredentials();
   else creds = businessTarget(tableFromPath(cleanPath));
+  const protection = require('../lib/data-protection.js'), storageOptions = { method, origin: new URL(creds.url).origin };
+  const physicalPath = protection.path(cleanPath, storageOptions);
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
   try {
     const headers = { apikey: creds.service, Authorization: 'Bearer ' + creds.service, Accept: 'application/json' };
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
     if (options.prefer) headers.Prefer = options.prefer;
-    const response = await ADMIN_STANDALONE_FETCH(creds.url + cleanPath, { method, headers, body: options.body === undefined ? undefined : JSON.stringify(require('../lib/data-protection.js').encode(cleanPath, options.body)), redirect: 'error', signal: controller.signal });
+    const response = await ADMIN_STANDALONE_FETCH(creds.url + physicalPath, { method, headers, body: options.body === undefined ? undefined : JSON.stringify(protection.encode(cleanPath, options.body, storageOptions)), redirect: 'error', signal: controller.signal });
     const raw = await readAdminUpstreamText(response, MAX_RESPONSE_BYTES, 'ADMIN_DATABASE_RESPONSE_INVALID');
     let data = null; if (raw) { try { data = JSON.parse(raw); } catch (_) { fail('ADMIN_DATABASE_RESPONSE_INVALID', 503); } }
-    if (response.ok) data = require('../lib/data-protection.js').decode(cleanPath, data);
+    if (response.ok) data = protection.decode(cleanPath, data, storageOptions);
     return { ok: response.ok, status: response.status, data };
   } catch (error) {
     if (error && /^ADMIN_/.test(String(error.code || ''))) throw error;
