@@ -191,6 +191,10 @@ function projectResponse(action, view, payload, profile) {
     out.view = view || 'invoice';
     const allOrders = ownRows(payload.orders, 120);
     if (out.view === 'assistant') {
+      if (payload.ownership_locked !== true || payload.dashboard_mfa_required !== true
+          || payload.direct_frontend_table_access !== false || payload.frontend_customer_id_ignored !== true) {
+        return { ok: false, code: 'ASSISTANT_OWNER_PROJECTION_REJECTED', message: 'Verifikasi kepemilikan data belum lengkap.' };
+      }
       const partial = Boolean(payload.diagnostics && (payload.diagnostics.generic_orders_ready === false || payload.diagnostics.domain_orders_ready === false))
         || allOrders.some(order => order.shipment_data_ready === false);
       const orders = allOrders.map(order => {
@@ -202,9 +206,20 @@ function projectResponse(action, view, payload, profile) {
           updated_at: cleanText(source.updated_at, 64), tracking_number: cleanText(source.tracking_number, 100), courier: cleanText(source.courier, 80),
           events: latestEvent ? [{ timestamp: cleanText(latestEvent.timestamp, 64), location: cleanText(latestEvent.location, 300), status: cleanText(latestEvent.status, 80) }] : []
         } : null;
+        const firstItem = Array.isArray(order.items) && order.items[0] && typeof order.items[0] === 'object'
+          && !Array.isArray(order.items[0]) ? order.items[0] : null;
+        const amount = typeof order.total === 'number' ? order.total : NaN;
         return { id: order.id, order_id: cleanText(order.order_id, 253), invoice_code: cleanText(order.invoice_code, 253),
           order_status: cleanText(order.order_status, 80), payment_status: cleanText(order.payment_status, 80),
           paid_at: cleanText(order.paid_at, 64), payment_confirmed_at: cleanText(order.payment_confirmed_at, 64),
+          service_label: cleanText(order.service_label || order.service_type, 90),
+          created_at: cleanText(order.created_at, 64), total: Number.isSafeInteger(amount) && amount >= 0 ? amount : null,
+          currency: /^(?:IDR|USD|EUR)$/.test(String(order.currency || '')) ? String(order.currency) : '',
+          item_count: Array.isArray(order.items) ? Math.min(order.items.length, 120) : 0,
+          item_title: cleanText(firstItem && firstItem.title, 180),
+          recipient_name: cleanText(order.customer_name, 120), recipient_phone: cleanText(order.customer_phone, 80),
+          recipient_email: cleanText(order.customer_email, 254),
+          shipping_address: cleanText(order.shipping_address, 520),
           shipment_data_ready: order.shipment_data_ready === true, shipment };
       });
       return { ok: true, service: 'dirac-ptdin', view: 'assistant', orders, partial };
@@ -213,10 +228,11 @@ function projectResponse(action, view, payload, profile) {
     out.summary = orderSummary(out.orders);
     out.analytics = orderAnalytics(out.orders);
     out.account_analytics = out.orders.length === allOrders.length ? { ...out.analytics } : orderAnalytics(allOrders);
-    const latestOrder = allOrders[0] || null;
+    const latestPhoneOrder = allOrders.find(row => row && cleanText(row.customer_phone, 80));
+    const latestAddressOrder = allOrders.find(row => row && cleanText(row.shipping_address || row.customer_address || row.address || row.alamat || row.delivery_address || row.recipient_address, 520));
     out.profile_supplement = {
-      phone: cleanText(latestOrder && latestOrder.customer_phone, 80),
-      address: diracCompactAddressForDisplayV634(cleanText(latestOrder && (latestOrder.shipping_address || latestOrder.customer_address || latestOrder.address || latestOrder.alamat || latestOrder.delivery_address || latestOrder.recipient_address), 520)),
+      phone: cleanText(latestPhoneOrder && latestPhoneOrder.customer_phone, 80),
+      address: diracCompactAddressForDisplayV634(cleanText(latestAddressOrder && (latestAddressOrder.shipping_address || latestAddressOrder.customer_address || latestAddressOrder.address || latestAddressOrder.alamat || latestAddressOrder.delivery_address || latestAddressOrder.recipient_address), 520)),
       registered_at: cleanText(payload.user && payload.user.created_at, 64) || null,
       customer_since: out.account_analytics.first_order_at
     };
@@ -449,7 +465,7 @@ async function invoiceBusinessV440(req, res, ops) {
 function diracCompactAddressForDisplayV634(value) {
   return String(value == null ? '' : value)
     .replace(/^Alamat:\s*/i, '')
-    .replace(/(^|\s*\|\s*)(?:Negara|Provinsi\/State\/Region|Kota\/Kabupaten\/City|Kecamatan\/District|Desa\/Kelurahan\/Village):\s*/gi, '$1')
+    .replace(/(^|\s*\|\s*)(?:Negara|Provinsi(?:\s*\/\s*(?:State|Province|Region)){0,3}|(?:Kota|Kabupaten)(?:\s*\/\s*(?:Kabupaten|Kota|City)){0,3}|Kecamatan(?:\s*\/\s*(?:District|Kota|Subdistrict)){0,3}|(?:Desa|Kelurahan)(?:\s*\/\s*(?:Kelurahan|Desa|Village)){0,3}|Kode Pos|Detail):\s*/gi, '$1')
     .replace(/\s*\|\s*/g, ', ')
     .trim();
 }
@@ -907,6 +923,11 @@ async function ptdinBusiness(req, res, operations) {
   if ((action === 'my_orders' && view && !ORDER_VIEWS.includes(view))
       || (action === 'customer_security_overview' && view && !['tickets', 'notifications'].includes(view))) {
     return res.status(400).json({ ok: false, code: 'PTDIN_VIEW_INVALID', message: 'Pilihan halaman tidak valid.' });
+  }
+  if (action === 'my_orders' && view === 'assistant') {
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
   }
   const profile = action === 'domain_dashboard_me' && req.method === 'GET'
     && new URL(String(req.headers && (req.headers.referer || req.headers.referrer) || '')).pathname === '/profil.html'

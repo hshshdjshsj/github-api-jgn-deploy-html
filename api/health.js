@@ -2271,6 +2271,28 @@ async function domainLogin(req, res, preloadedBody) {
     });
   }
 
+  // The requested portal is a routing choice, never an authorization claim.
+  // Enforce the role against the already-verified provider metadata before publishing a session.
+  const requestedLoginRoleV505 = req.headers && req.headers['x-dirac-login-role'] !== undefined
+    ? req.headers['x-dirac-login-role'] : 'customer';
+  const verifiedLoginProviderV505 = DIRAC_ACCOUNT_PROVIDER_USERS_V473.get(req);
+  const verifiedLoginContextV505 = diracCentralCurrentContextV149();
+  if (!verifiedLoginProviderV505 || verifiedLoginProviderV505.ctx !== verifiedLoginContextV505
+      || verifiedLoginProviderV505.id !== String(canonicalLoginUserV321.id)
+      || verifiedLoginProviderV505.email !== normalizeAuthEmail(canonicalLoginUserV321.email || '')) {
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
+    return res.status(503).json({ ok: false, code: 'LOGIN_ROLE_VERIFICATION_UNAVAILABLE',
+      message: 'Jenis akun belum dapat diverifikasi. Sesi tidak diterbitkan.' });
+  }
+  const verifiedLoginRoleV505 = diracAccountPolicyFromUserV472(canonicalLoginUserV321).role;
+  if (typeof requestedLoginRoleV505 !== 'string'
+      || !['customer', 'reseller', 'partner'].includes(requestedLoginRoleV505)
+      || requestedLoginRoleV505 !== verifiedLoginRoleV505) {
+    customerSecurityBootstrapClearAuthPublicationV332(req, res);
+    return res.status(403).json({ ok: false, code: 'LOGIN_ACCOUNT_ROLE_MISMATCH',
+      message: 'Jenis akun tidak sesuai dengan portal masuk. Pilih jenis akun yang dibuat admin.' });
+  }
+
   diracLoginFatalMarkV324(req, 'login.cookie_publication', 'begin', {}, res);
   const sessionCookiesPublished = setSessionCookies(res, canonicalLoginSessionV321);
   diracLoginFatalMarkV324(req, 'login.cookie_publication', 'done', {
@@ -9208,7 +9230,7 @@ async function supabaseFetch(path, options = {}) {
     data = text;
   }
 
-  if (response.ok && /^\/rest\/v1\/(?:payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)(?:\?|$)/.test(cleanPath)) {
+  if (response.ok && /^\/rest\/v1\/(?:customers|orders|order_items|domain_orders|payment_gateway_events|payment_transactions|security_customer_auth_links|security_customer_events|security_customer_login_logs|security_customer_sessions|security_logs|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)(?:\?|$)/.test(cleanPath)) {
     data = require('../lib/data-protection.js').decode(cleanPath, data);
   }
 
@@ -18733,7 +18755,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
     return res.status(409).json({ ok: false, code: 'REGISTERED_NAME_REQUIRED', message: 'Nama akun terdaftar belum tersedia. Hubungi dukungan untuk memperbaiki profil sebelum checkout.' });
   }
   const finalCustomerEmail = normalizeAuthEmail(customer.email || userEmail);
-  const finalCustomerPhone = normalizePhone(customer.phone || customerPhone);
+  const finalCustomerPhone = normalizePhone(customerPhone || customer.phone);
 
   if (!customerSecurityLooksLikeUuid(customerId)) {
     return res.status(409).json({ ok: false, message: 'Customer ownership tidak valid.' });
@@ -26730,13 +26752,13 @@ async function diracPasskeyA2FCompleteLostRecoveryRotation({ owner, newCredentia
   }
 
   const sessionPath = '/rest/v1/' + LOST_PASSKEY_RECOVERY_SESSION_TABLE
-    + '?select=' + encodeURIComponent('id,request_id,customer_id,auth_user_id,recovery_session_hash,status,used_at,revoked_at,old_passkey_ids,metadata')
+    + '?select=' + encodeURIComponent('id,request_id,customer_id,auth_user_id,recovery_session_hash,status,used_at,revoked_at,metadata')
     + '&id=eq.' + encodeURIComponent(recoverySession.id)
     + '&request_id=eq.' + encodeURIComponent(recoverySession.requestId)
     + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
     + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId)
     + '&limit=2';
-  const closed = await (async () => { const sessionResult = await supabaseFetch(sessionPath.replace('old_passkey_ids%2C', ''), { method: 'GET', auth: 'service' }); if (!sessionResult || sessionResult.ok !== true || !Array.isArray(sessionResult.data) || sessionResult.data.length !== 1) return sessionResult; const requestPath = '/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?select=' + encodeURIComponent('id,request_id,customer_id,auth_user_id,status,used_at,revoked_at,old_passkey_ids,metadata') + '&request_id=eq.' + encodeURIComponent(recoverySession.requestId) + '&customer_id=eq.' + encodeURIComponent(owner.customerId) + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId) + '&limit=2'; const requestResult = await supabaseFetch(requestPath, { method: 'GET', auth: 'service' }); const requestRows = requestResult && requestResult.ok === true && Array.isArray(requestResult.data) ? requestResult.data : []; const requestRow = requestRows.length === 1 ? requestRows[0] : null; const requestMetadata = requestRow && requestRow.metadata && typeof requestRow.metadata === 'object' ? requestRow.metadata : null; if (!requestRow || !diracPasskeyRecoveryRequestSessionMatchesV352(requestRow, sessionResult.data[0]) || !safeEqual(String(requestRow.request_id || ''), String(recoverySession.requestId || '')) || !safeEqual(String(requestRow.customer_id || ''), String(owner.customerId || '')) || !safeEqual(String(requestRow.auth_user_id || ''), String(owner.authUserId || '')) || String(requestRow.status || '') !== 'used' || !requestRow.used_at || requestRow.revoked_at || Number(requestMetadata && requestMetadata.security_epoch || 0) !== securityEpoch || !requestMetadata.completed_at || !Array.isArray(requestRow.old_passkey_ids) || requestRow.old_passkey_ids.length < 1) return { ...sessionResult, ok: false, data: [] }; sessionResult.data[0] = { ...sessionResult.data[0], old_passkey_ids: requestRow.old_passkey_ids }; return sessionResult; })();
+  const closed = await (async () => { const sessionResult = await supabaseFetch(sessionPath, { method: 'GET', auth: 'service' }); if (!sessionResult || sessionResult.ok !== true || !Array.isArray(sessionResult.data) || sessionResult.data.length !== 1) return sessionResult; const requestPath = '/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE + '?select=' + encodeURIComponent('id,request_id,customer_id,auth_user_id,status,used_at,revoked_at,old_passkey_ids,metadata') + '&request_id=eq.' + encodeURIComponent(recoverySession.requestId) + '&customer_id=eq.' + encodeURIComponent(owner.customerId) + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId) + '&limit=2'; const requestResult = await supabaseFetch(requestPath, { method: 'GET', auth: 'service' }); const requestRows = requestResult && requestResult.ok === true && Array.isArray(requestResult.data) ? requestResult.data : []; const requestRow = requestRows.length === 1 ? requestRows[0] : null; const requestMetadata = requestRow && requestRow.metadata && typeof requestRow.metadata === 'object' ? requestRow.metadata : null; if (!requestRow || !diracPasskeyRecoveryRequestSessionMatchesV352(requestRow, sessionResult.data[0]) || !safeEqual(String(requestRow.request_id || ''), String(recoverySession.requestId || '')) || !safeEqual(String(requestRow.customer_id || ''), String(owner.customerId || '')) || !safeEqual(String(requestRow.auth_user_id || ''), String(owner.authUserId || '')) || String(requestRow.status || '') !== 'used' || !requestRow.used_at || requestRow.revoked_at || Number(requestMetadata && requestMetadata.security_epoch || 0) !== securityEpoch || !requestMetadata.completed_at || !Array.isArray(requestRow.old_passkey_ids) || requestRow.old_passkey_ids.length < 1) return { ...sessionResult, ok: false, data: [] }; sessionResult.data[0] = { ...sessionResult.data[0], old_passkey_ids: requestRow.old_passkey_ids }; return sessionResult; })();
   const closedRows = closed.ok && Array.isArray(closed.data) ? closed.data : [];
   const closedRow = closedRows.length === 1 ? closedRows[0] : null;
   const closedMetadata = closedRow && closedRow.metadata && typeof closedRow.metadata === 'object'
@@ -68973,7 +68995,7 @@ async function diracCentralPinnedHttpsFetchV230(
   }
   if (!supportDispatch && body.length && ['POST', 'PATCH', 'PUT'].includes(method)
       && headers['content-type'] === 'application/json'
-      && /^\/rest\/v1\/(?:payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)$/.test(parsedUrl.pathname)
+      && /^\/rest\/v1\/(?:payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security|security_customer_events|security_customer_login_logs)$/.test(parsedUrl.pathname)
       && diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())) {
     // Storage encryption starts only after the unchanged one-use egress permit.
     const storedBody = require('../lib/data-protection.js').encode(parsedUrl.pathname + parsedUrl.search, JSON.parse(body.toString('utf8')));

@@ -2632,6 +2632,88 @@ function documentInvoiceHiddenValidV526(value) {
   return match(actual.identity, expected.identity) && match(actual.content, expected.content) && match(actual.owner, expected.owner)
     && match(actual.artifact, expected.artifact) && match(actual.issuance, expected.issuance);
 }
+// V527: additional issuer/order, visual geometry and issuance-lineage bindings.
+// Every new tag has its own derived HMAC-SHA-512 subkey; this remains one key hierarchy.
+const DOCUMENT_HIDDEN_VERSION_V527 = 'dirac-invoice-hidden-v527';
+function documentInvoiceHiddenV527(value) {
+  const identity = value.identity, legacy = documentInvoiceHiddenV526(value);
+  const tag = (label, context) => {
+    const key = deriveSecret('invoice-hidden-' + label + '-v527');
+    try { return crypto.createHmac('sha512', key).update(DOCUMENT_HIDDEN_VERSION_V527 + '\0' + label + '\0').update(stableJson(context)).digest('base64url'); }
+    finally { key.fill(0); }
+  };
+  return { ...legacy, version: DOCUMENT_HIDDEN_VERSION_V527,
+    commercial: tag('commercial', { id: identity.id, identity_mac: identity.mac, issuer: identity.issuer, kind: identity.kind, reference: identity.reference, owner_scope: identity.owner_scope, content_sha256: identity.content_sha256 }),
+    geometry: tag('geometry', { id: identity.id, visual_patterns: identity.visual_patterns, page_count: identity.page_count, format: value.format, page: value.page, raw_bytes: value.raw_bytes }),
+    lineage: tag('lineage', { id: identity.id, identity_created_at: identity.created_at, identity_mac: identity.mac, artifact_id: value.artifact_id, created_at: value.created_at, raw_sha256: value.raw_sha256, raw_bytes: value.raw_bytes }) };
+}
+function documentInvoiceHiddenValidV527(value) {
+  const actual = value && value.hidden_patterns;
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual) || !value.identity || value.identity.kind !== 'invoice'
+      || actual.version !== DOCUMENT_HIDDEN_VERSION_V527
+      || Object.keys(actual).sort().join(',') !== 'artifact,commercial,content,geometry,identity,issuance,lineage,owner,version') return false;
+  const old = { ...value, hidden_patterns: { version: DOCUMENT_HIDDEN_VERSION_V526, identity: actual.identity, content: actual.content, owner: actual.owner, artifact: actual.artifact, issuance: actual.issuance } };
+  if (!documentInvoiceHiddenValidV526(old)) return false;
+  const expected = documentInvoiceHiddenV527(value);
+  const equal = (left, right) => typeof left === 'string' && /^[A-Za-z0-9_-]{86}$/.test(left) && safeEqual(left, right);
+  return equal(actual.commercial, expected.commercial) && equal(actual.geometry, expected.geometry) && equal(actual.lineage, expected.lineage);
+}
+// V528: three domain-separated, hidden invoice bindings; compatible with the five/eight-tag formats.
+// These protect the registered digital artifact, not a photograph or a QR copied to another file.
+const DOCUMENT_HIDDEN_VERSION_V528 = 'dirac-invoice-hidden-v528';
+function documentInvoiceHiddenV528(value) {
+  const identity = value.identity, legacy = documentInvoiceHiddenV527(value);
+  const tag = (label, context) => {
+    const key = deriveSecret('invoice-hidden-' + label + '-v528');
+    try { return crypto.createHmac('sha512', key).update(DOCUMENT_HIDDEN_VERSION_V528 + '\0' + label + '\0').update(stableJson(context)).digest('base64url'); }
+    finally { key.fill(0); }
+  };
+  return { ...legacy, version: DOCUMENT_HIDDEN_VERSION_V528,
+    raw: tag('raw', { id: identity.id, identity_mac: identity.mac, artifact_id: value.artifact_id, raw_sha256: value.raw_sha256, raw_bytes: value.raw_bytes, format: value.format, page: value.page }),
+    claims: tag('claims', { id: identity.id, issuer: identity.issuer, owner_scope: identity.owner_scope, kind: identity.kind, reference: identity.reference, content_sha256: identity.content_sha256, visual_patterns: identity.visual_patterns, page_count: identity.page_count }),
+    chain: tag('chain', { id: identity.id, identity_mac: identity.mac, artifact_id: value.artifact_id, identity_created_at: identity.created_at, created_at: value.created_at, raw_sha256: value.raw_sha256, prior_tags: legacy }) };
+}
+function documentInvoiceHiddenValidV528(value) {
+  const actual = value && value.hidden_patterns;
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual) || !value.identity || value.identity.kind !== 'invoice'
+      || actual.version !== DOCUMENT_HIDDEN_VERSION_V528
+      || Object.keys(actual).sort().join(',') !== 'artifact,chain,claims,commercial,content,geometry,identity,issuance,lineage,owner,raw,version') return false;
+  const old = { ...value, hidden_patterns: { version: DOCUMENT_HIDDEN_VERSION_V527, identity: actual.identity, content: actual.content, owner: actual.owner, artifact: actual.artifact, issuance: actual.issuance, commercial: actual.commercial, geometry: actual.geometry, lineage: actual.lineage } };
+  if (!documentInvoiceHiddenValidV527(old)) return false;
+  const expected = documentInvoiceHiddenV528(value);
+  const equal = (left, right) => typeof left === 'string' && /^[A-Za-z0-9_-]{86}$/.test(left) && safeEqual(left, right);
+  return equal(actual.raw, expected.raw) && equal(actual.claims, expected.claims) && equal(actual.chain, expected.chain);
+}
+// V530: three additional domain-separated HMAC-SHA-512 commitments over the immutable
+// identity, issuance provenance and the entire preceding proof stack. All tags retain
+// a shared server key hierarchy; they are not independent trust anchors.
+const DOCUMENT_HIDDEN_VERSION_V530 = 'dirac-invoice-hidden-v530';
+function documentInvoiceHiddenV530(value) {
+  const identity = value.identity, preceding = documentInvoiceHiddenV528(value);
+  const tag = (label, context) => {
+    const key = deriveSecret('invoice-hidden-' + label + '-v530');
+    try { return crypto.createHmac('sha512', key).update(DOCUMENT_HIDDEN_VERSION_V530 + '\0' + label + '\0').update(stableJson(context)).digest('base64url'); }
+    finally { key.fill(0); }
+  };
+  const manifest = tag('manifest', { identity, artifact_id: value.artifact_id, format: value.format, page: value.page, raw_sha256: value.raw_sha256, raw_bytes: value.raw_bytes, created_at: value.created_at });
+  const custody = tag('custody', { document_id: identity.id, identity_mac: identity.mac, issuer: identity.issuer, owner_scope: identity.owner_scope, reference: identity.reference, identity_created_at: identity.created_at, artifact_id: value.artifact_id, created_at: value.created_at, raw_sha256: value.raw_sha256, manifest, preceding });
+  const aggregate = tag('aggregate', { document_id: identity.id, identity_mac: identity.mac, artifact_id: value.artifact_id, content_sha256: identity.content_sha256, raw_sha256: value.raw_sha256, raw_bytes: value.raw_bytes, preceding, manifest, custody });
+  return { ...preceding, version: DOCUMENT_HIDDEN_VERSION_V530, manifest, custody, aggregate };
+}
+function documentInvoiceHiddenValidV530(value) {
+  const actual = value && value.hidden_patterns;
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual) || !value.identity || value.identity.kind !== 'invoice'
+      || actual.version !== DOCUMENT_HIDDEN_VERSION_V530
+      || Object.keys(actual).sort().join(',') !== 'aggregate,artifact,chain,claims,commercial,content,custody,geometry,identity,issuance,lineage,manifest,owner,raw,version') return false;
+  // Each expected tag is derived once. Legacy validators continue handling old files unchanged.
+  const expected = documentInvoiceHiddenV530(value);
+  const equal = (left, right) => typeof left === 'string' && /^[A-Za-z0-9_-]{86}$/.test(left) && safeEqual(left, right);
+  return equal(actual.identity, expected.identity) && equal(actual.content, expected.content) && equal(actual.owner, expected.owner)
+    && equal(actual.artifact, expected.artifact) && equal(actual.issuance, expected.issuance)
+    && equal(actual.commercial, expected.commercial) && equal(actual.geometry, expected.geometry) && equal(actual.lineage, expected.lineage)
+    && equal(actual.raw, expected.raw) && equal(actual.claims, expected.claims) && equal(actual.chain, expected.chain)
+    && equal(actual.manifest, expected.manifest) && equal(actual.custody, expected.custody) && equal(actual.aggregate, expected.aggregate);
+}
 function documentIdentityValidV464(value) {
   return !!(value && (Object.keys(value).sort().join(',') === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version'
       || (Object.keys(value).sort().join(',') === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version,visual_patterns'
@@ -2716,7 +2798,7 @@ async function documentSealV464(bytes, identity, format, page, ownerScope, read,
   else if (!/^%PDF-1\.[47]\n/.test(bytes.subarray(0,9).toString('ascii')) || !/%%EOF\n$/.test(bytes.subarray(-40).toString('ascii')) || bytes.includes(Buffer.from('%DIRAC-DOCUMENT-V464:'))) documentErrorV464('PDF_INVALID', 400);
   const unsigned = { version: DOCUMENT_VERSION_V464, identity, artifact_id: crypto.randomBytes(24).toString('hex'), format, page,
     raw_sha256: crypto.createHash('sha256').update(bytes).digest('hex'), raw_bytes: bytes.length, created_at: Date.now() };
-  if (identity.kind === 'invoice') unsigned.hidden_patterns = documentInvoiceHiddenV526(unsigned);
+  if (identity.kind === 'invoice') unsigned.hidden_patterns = documentInvoiceHiddenV530(unsigned);
   const seal = { ...unsigned, mac: documentMacV464(unsigned) };
   const token = Buffer.from(stableJson(seal), 'utf8').toString('base64url');
   let file;
@@ -2768,7 +2850,7 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
         || !/^[a-f0-9]{64}$/.test(seal.raw_sha256) || !Number.isSafeInteger(seal.raw_bytes) || seal.raw_bytes < 10 || seal.raw_bytes >= record.file_bytes
         || !Number.isSafeInteger(seal.created_at) || seal.created_at > Date.now() + 1000 || !['png','pdf'].includes(seal.format)
         || !documentIdentityValidV464(seal.identity) || !Number.isInteger(seal.page)
-        || (Object.prototype.hasOwnProperty.call(seal, 'hidden_patterns') && !documentInvoiceHiddenValidV526(seal))
+        || (Object.prototype.hasOwnProperty.call(seal, 'hidden_patterns') && !documentInvoiceHiddenValidV526(seal) && !documentInvoiceHiddenValidV527(seal) && !documentInvoiceHiddenValidV528(seal) && !documentInvoiceHiddenValidV530(seal))
         || (seal.format === 'png' ? seal.page < 1 || seal.page > seal.identity.page_count : seal.page !== 0)) documentErrorV464('RECORD_INVALID');
     if ((id && seal.identity.id !== id) || (ownerScope && seal.identity.owner_scope !== ownerScope) || (qrProof && !documentQrProofMatchesV470(seal.identity, qrProof))) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, qr_authentic: false, message: 'ID, QR, atau pemilik dokumen tidak cocok.' };
     return { ok: true, verified: true, status: 'authentic_file', integrity_verified: true, qr_authentic: qrProof ? true : undefined, issuer: seal.identity.issuer,
@@ -2776,8 +2858,15 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
       page_count: seal.identity.page_count, issued_at: new Date(seal.created_at).toISOString(), file_sha256: fileSha, content_sha256: seal.identity.content_sha256,
       ...(seal.identity.visual_patterns ? { pattern_verification: { version: seal.identity.visual_patterns.version, verified: true, count: 7,
         checks: ['din_tracking','din_font','din_size','logo_size','social_pitch','social_size','footer_rule'], method: 'registered_file_sha256_hmac_sha512' } } : {}),
-      ...(seal.hidden_patterns ? { hidden_pattern_verification: { version: DOCUMENT_HIDDEN_VERSION_V526, verified: true, count: 5,
-        checks: ['identity','content','owner','artifact','issuance'], method: 'registered_file_sha256_domain_hmac_sha512' } } : {}),
+       ...(seal.hidden_patterns ? { hidden_pattern_verification: { version: seal.hidden_patterns.version, verified: true,
+         count: seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V530 ? 14 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V528 ? 11 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V527 ? 8 : 5,
+         checks: seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V530
+           ? ['identity','content','owner','artifact','issuance','commercial','geometry','lineage','raw','claims','chain','manifest','custody','aggregate']
+           : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V528
+           ? ['identity','content','owner','artifact','issuance','commercial','geometry','lineage','raw','claims','chain']
+           : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V527
+           ? ['identity','content','owner','artifact','issuance','commercial','geometry','lineage']
+           : ['identity','content','owner','artifact','issuance'], method: 'registered_file_sha256_domain_hmac_sha512' } } : {}),
       identical_copies_possible: true, message: 'Berkas ini sesuai dengan dokumen asli yang diterbitkan. Kode QR yang disalin ke berkas lain tidak membuktikan keaslian berkas tersebut.' };
   }
   if (!documentIdentityValidV464(record)) documentErrorV464('RECORD_INVALID');
