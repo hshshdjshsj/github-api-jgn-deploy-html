@@ -68995,10 +68995,12 @@ async function diracCentralPinnedHttpsFetchV230(
   }
   if (!supportDispatch && body.length && ['POST', 'PATCH', 'PUT'].includes(method)
       && headers['content-type'] === 'application/json'
-      && /^\/rest\/v1\/(?:payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security|security_customer_events|security_customer_login_logs)$/.test(parsedUrl.pathname)
+      && /^\/rest\/v1\/(?:customers|orders|domain_orders|payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security|security_customer_events|security_customer_login_logs)$/.test(parsedUrl.pathname)
       && diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())) {
     // Storage encryption starts only after the unchanged one-use egress permit.
-    const storedBody = require('../lib/data-protection.js').encode(parsedUrl.pathname + parsedUrl.search, JSON.parse(body.toString('utf8')));
+    const businessText = Boolean(process.env.DOMAIN_SUPABASE_URL)
+      && diracSupabaseValidatedOriginV404(process.env.DOMAIN_SUPABASE_URL) === parsedUrl.origin;
+    const storedBody = require('../lib/data-protection.js').encode(parsedUrl.pathname + parsedUrl.search, JSON.parse(body.toString('utf8')), businessText);
     const encodedBody = Buffer.from(JSON.stringify(storedBody), 'utf8');
     body.fill(0);
     body = encodedBody;
