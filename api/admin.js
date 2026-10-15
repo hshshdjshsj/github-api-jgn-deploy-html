@@ -52,7 +52,7 @@ const CONTRACTS = Object.freeze({
   admin_passkey_recovery_verify: post(['ticket', ...PASSKEY_FIELDS], ['ticket', 'credential'], 98304),
   admin_totp_verify: post(['ticket', 'code'], ['ticket', 'code']),
   admin_logout: post([]),
-  admin_orders: get(['kind', 'offset', 'view', 'from', 'until']),
+  admin_orders: get(['kind', 'offset', 'view', 'from', 'until', 'search']),
   admin_shipment_update: post(['kind', 'order_id', 'expected_revision', 'tracking_number', 'courier', 'status', 'location', 'origin', 'destination', 'estimated_delivery', 'description', 'tracking_options', 'review_ack', 'review_reason', 'approval'], ['kind', 'order_id', 'expected_revision', 'tracking_number', 'courier', 'status', 'approval']),
   admin_shipment_cancel: post(['kind', 'order_id', 'expected_revision', 'description', 'review_ack', 'review_reason', 'approval'], ['kind', 'order_id', 'expected_revision', 'approval']),
   admin_blocks: get(['offset']),
@@ -80,7 +80,7 @@ const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_shipment_update: 'shipmen
 const ORDER_SELECT = Object.freeze({
   regular: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
   laboratorium: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at',
-  domain: 'id,customer_id,customer_name,customer_email,customer_whatsapp,domain_name,total_price,currency,payment_status,order_status,created_at'
+  domain: 'id,order_code,customer_id,customer_name,customer_email,customer_whatsapp,domain_name,total_price,currency,payment_status,order_status,created_at'
 });
 const DOMAIN_ORDER_COMPAT_SELECT = 'id,customer_id,domain_name,total_price,payment_status,order_status,created_at';
 const SHIPMENT_PREFIX = 's2s-admin-shipment-v406:';
@@ -340,7 +340,7 @@ async function dbFetch(path, options = {}, target = '') {
     const headers = { apikey: creds.service, Authorization: 'Bearer ' + creds.service, Accept: 'application/json' };
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
     if (options.prefer) headers.Prefer = options.prefer;
-    const response = await ADMIN_STANDALONE_FETCH(creds.url + cleanPath, { method, headers, body: options.body === undefined ? undefined : JSON.stringify(require('../lib/data-protection.js').encode(cleanPath, options.body)), redirect: 'error', signal: controller.signal });
+    const response = await ADMIN_STANDALONE_FETCH(creds.url + require('../lib/data-protection.js').storagePathV1(cleanPath), { method, headers, body: options.body === undefined ? undefined : JSON.stringify(require('../lib/data-protection.js').encode(cleanPath, options.body, Boolean(process.env.DOMAIN_SUPABASE_URL) && new URL(process.env.DOMAIN_SUPABASE_URL).origin === new URL(creds.url).origin, method)), redirect: 'error', signal: controller.signal });
     const raw = await readAdminUpstreamText(response, MAX_RESPONSE_BYTES, 'ADMIN_DATABASE_RESPONSE_INVALID');
     let data = null; if (raw) { try { data = JSON.parse(raw); } catch (_) { fail('ADMIN_DATABASE_RESPONSE_INVALID', 503); } }
     if (response.ok) data = require('../lib/data-protection.js').decode(cleanPath, data);
@@ -2087,7 +2087,7 @@ function shipmentPublic(value) { return value ? { kind: value.order_kind, receip
 function orderPublic(row, kind) {
   if (!row || !isUuid(row.id) || !isUuid(row.customer_id)) fail('ADMIN_ORDER_RECORD_INVALID', 503);
   const total = Number(row.total === undefined ? row.total_price : row.total); if (!Number.isFinite(total)) fail('ADMIN_ORDER_RECORD_INVALID', 503);
-  return { id: row.id, kind, order_id: String(row.order_id || (kind === 'domain' ? 'DOM-' + row.id.slice(0, 8).toUpperCase() : row.id)), customer_id: row.customer_id, customer_name: String(row.customer_name || '').slice(0, 160), customer_email: String(row.customer_email || '').slice(0, 254), customer_phone: String(row.customer_phone || row.customer_whatsapp || '').slice(0, 40), shipping_address: String(row.shipping_address || '').slice(0, 600), service_type: kind === 'domain' ? 'domain' : String(row.service_type || '').slice(0, 60), domain_name: String(row.domain_name || '').slice(0, 254), total, currency: String(row.currency || 'IDR').slice(0, 8), payment_method: String(row.payment_method || '').slice(0, 80), payment_status: String(row.payment_status || '').slice(0, 40), order_status: String(row.order_status || '').slice(0, 40), created_at: row.created_at };
+  return { id: row.id, kind, order_id: String(row.order_id || row.order_code || (kind === 'domain' ? 'DOM-' + row.id.slice(0, 8).toUpperCase() : row.id)), customer_id: row.customer_id, customer_name: String(row.customer_name || '').slice(0, 160), customer_email: String(row.customer_email || '').slice(0, 254), customer_phone: String(row.customer_phone || row.customer_whatsapp || '').slice(0, 40), shipping_address: String(row.shipping_address || '').slice(0, 600), service_type: kind === 'domain' ? 'domain' : String(row.service_type || '').slice(0, 60), domain_name: String(row.domain_name || '').slice(0, 254), total, currency: String(row.currency || 'IDR').slice(0, 8), payment_method: String(row.payment_method || '').slice(0, 80), payment_status: String(row.payment_status || '').slice(0, 40), order_status: String(row.order_status || '').slice(0, 40), created_at: row.created_at };
 }
 function domainOrderUndefinedColumn(result) { return !!(result && result.ok === false && result.status === 400 && result.data && String(result.data.code || '') === '42703'); }
 // V482: bounded read-only summary/finance pages. Shipment/customer payload is never fetched for these views.
@@ -2134,10 +2134,18 @@ async function businessSummaryV456(body) {
   return view === 'finance' ? { ...common, orders: financeRows } : { ...common, totals };
 }
 
+function orderSearchV1(value, kind) {
+  if (typeof value !== 'string' || value !== value.trim()
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,119}$/.test(value)) fail('ADMIN_ORDER_SEARCH_REQUIRED', 400);
+  return Object.freeze({ field: isUuid(value) ? 'id' : kind === 'domain' ? 'order_code' : 'order_id',
+    value: isUuid(value) ? value.toLowerCase() : value });
+}
 async function businessOrdersSingleV480(body) {
   const kind = String(body.kind || 'regular'), offsetRaw = String(body.offset || '0'); if (!Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 50000) fail('ADMIN_PAGE_INVALID', 400);
-  const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&order=created_at.desc,id.desc&limit=41&offset=' + Number(offsetRaw), path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await dbFetch(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
-  if (kind === 'domain' && domainOrderUndefinedColumn(result)) result = await dbFetch('/rest/v1/domain_orders?select=' + encodeURIComponent(DOMAIN_ORDER_COMPAT_SELECT) + suffix, { method: 'GET' });
+  const search = orderSearchV1(body.search, kind);
+  const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&' + search.field + '=eq.' + encodeURIComponent(search.value) + '&order=created_at.desc,id.desc&limit=41&offset=' + Number(offsetRaw), path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await dbFetch(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
+  if (kind === 'domain' && domainOrderUndefinedColumn(result)) result = await dbFetch('/rest/v1/domain_orders?select=' + encodeURIComponent((search.field === 'order_code' ? 'order_code,' : '') + DOMAIN_ORDER_COMPAT_SELECT) + suffix, { method: 'GET' });
+  if (result.ok && Array.isArray(result.data) && result.data.some(row => !row || row[search.field] !== search.value)) fail('ADMIN_ORDER_SEARCH_MISMATCH', 503);
   if (!result.ok || !Array.isArray(result.data) || result.data.length > 41) fail('ADMIN_DATA_UNAVAILABLE', 503); const rows = result.data, orders = rows.slice(0, 40).map(row => orderPublic(row, kind)), keys = orders.map(row => shipmentKey(kind, row.id));
   let shipments = []; if (keys.length) { const shipped = await dbFetch('/rest/v1/dirac_s2s_security?select=' + encodeURIComponent(SHIPMENT_SELECT) + '&security_key=in.(' + keys.map(encodeURIComponent).join(',') + ')&limit=' + keys.length, { method: 'GET' }, 'security'); if (!shipped.ok || !Array.isArray(shipped.data) || shipped.data.length > keys.length) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); shipments = shipped.data; }
   const map = new Map(); shipments.forEach(row => { if (!keys.includes(row && row.security_key) || map.has(row.security_key)) fail('ADMIN_SHIPMENT_RECORD_INVALID', 503); const value = validateShipmentRow(row, row.security_key), order = orders.find(item => item.id === (value && value.order_id)); if (!value || !order || (order.customer_id !== value.customer_id && value.updated_by !== ADMIN_USER_ID)) fail('ADMIN_SHIPMENT_OWNER_MISMATCH', 503); map.set(row.security_key, value); });
@@ -2153,6 +2161,7 @@ function businessFinancePairV484(first, second, kind) {
 async function businessOrders(body) {
   const kind = String(body.kind || 'regular');
   if (body.view !== undefined || body.from !== undefined || body.until !== undefined) {
+    if (body.search !== undefined) fail('ADMIN_ORDER_SEARCH_VIEW_INVALID', 400);
     if (kind !== 'all') return businessSummaryV456(body);
     const view = String(body.view || '');
     if (view === 'finance') {
@@ -2183,10 +2192,11 @@ async function businessOrders(body) {
   if (kind !== 'all') return businessOrdersSingleV480(body);
   const offsetRaw = String(body.offset || '0');
   if (!/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 50000) fail('ADMIN_PAGE_INVALID', 400);
+  orderSearchV1(body.search, 'regular');
   const bundled = await Promise.all([
-    businessOrdersSingleV480({ kind: 'regular', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; }),
-    businessOrdersSingleV480({ kind: 'laboratorium', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; }),
-    businessOrdersSingleV480({ kind: 'domain', offset: offsetRaw }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; })
+    businessOrdersSingleV480({ kind: 'regular', offset: offsetRaw, search: body.search }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; }),
+    businessOrdersSingleV480({ kind: 'laboratorium', offset: offsetRaw, search: body.search }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; }),
+    businessOrdersSingleV480({ kind: 'domain', offset: offsetRaw, search: body.search }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; })
   ]);
   const sources = [businessOrdersBundleSourceV480(bundled[0], 'regular'), businessOrdersBundleSourceV480(bundled[1], 'laboratorium'), businessOrdersBundleSourceV480(bundled[2], 'domain')];
   if (!sources[0].ok && !sources[1].ok && !sources[2].ok) fail('ADMIN_DATA_UNAVAILABLE', 503);

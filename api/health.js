@@ -68993,14 +68993,18 @@ async function diracCentralPinnedHttpsFetchV230(
       && !diracCentralConsumeDatabaseEgressPermitV362(parsedUrl, method, diracCentralCurrentContextV149(), options)) {
     throw Object.assign(new Error('DIRAC_DATABASE_DISPATCH_PERMIT_REJECTED'), { code: 'DIRAC_DATABASE_DISPATCH_PERMIT_REJECTED' });
   }
+  const storagePathV1 = !supportDispatch
+      && diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())
+    ? require('../lib/data-protection.js').storagePathV1(parsedUrl.pathname + parsedUrl.search)
+    : parsedUrl.pathname + parsedUrl.search;
   if (!supportDispatch && body.length && ['POST', 'PATCH', 'PUT'].includes(method)
       && headers['content-type'] === 'application/json'
-      && /^\/rest\/v1\/(?:customers|orders|domain_orders|payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security|security_customer_events|security_customer_login_logs)$/.test(parsedUrl.pathname)
+      && /^\/rest\/v1\/(?:customers|orders|order_items|domain_orders|payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security|security_customer_events|security_customer_login_logs)$/.test(parsedUrl.pathname)
       && diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())) {
     // Storage encryption starts only after the unchanged one-use egress permit.
     const businessText = Boolean(process.env.DOMAIN_SUPABASE_URL)
       && diracSupabaseValidatedOriginV404(process.env.DOMAIN_SUPABASE_URL) === parsedUrl.origin;
-    const storedBody = require('../lib/data-protection.js').encode(parsedUrl.pathname + parsedUrl.search, JSON.parse(body.toString('utf8')), businessText);
+    const storedBody = require('../lib/data-protection.js').encode(parsedUrl.pathname + parsedUrl.search, JSON.parse(body.toString('utf8')), businessText, method);
     const encodedBody = Buffer.from(JSON.stringify(storedBody), 'utf8');
     body.fill(0);
     body = encodedBody;
@@ -69010,7 +69014,7 @@ async function diracCentralPinnedHttpsFetchV230(
     let settled = false;
     const request = DIRAC_CENTRAL_NATIVE_HTTPS_REQUEST_V230({
       protocol: 'https:', hostname: parsedUrl.hostname, port: pinnedPort,
-      servername: parsedUrl.hostname, method, path: parsedUrl.pathname + parsedUrl.search,
+      servername: parsedUrl.hostname, method, path: storagePathV1,
       headers, agent: pinnedAgent, rejectUnauthorized: true, minVersion: 'TLSv1.2',
       lookup(_hostname, lookupOptions, callback) {
         const pinnedFamily = net.isIP(pinnedIp);
