@@ -6318,9 +6318,10 @@ async function domainDashboardMe(req, res) {
     || (laboratoryCheckoutSource && checkoutRequestOrigin === laboratoryCheckoutSource.origin && checkoutRequestSource.redirectUrl === laboratoryCheckoutSource.redirectUrl));
   let profileName = '';
   let laboratorySavedAddresses = [];
+  let laboratorySavedAddressPhones = [];
   if (checkoutProfileRequested) {
     const profileId = String(access.protectedLock && access.protectedLock.customerId || '').trim();
-    const savedAddressPath = '/rest/v1/orders?select=' + encodeURIComponent('customer_id,shipping_address,created_at')
+    const savedAddressPath = '/rest/v1/orders?select=' + encodeURIComponent('customer_id,customer_phone,shipping_address,created_at')
       + '&customer_id=eq.' + encodeURIComponent(profileId) + '&order=created_at.desc&limit=6';
     const [profile, savedAddressResults] = customerSecurityLooksLikeUuid(profileId)
       ? await Promise.all([
@@ -6359,6 +6360,12 @@ async function domainDashboardMe(req, res) {
         if (first) laboratorySavedAddresses.push(first);
         if (second) laboratorySavedAddresses.push(second);
         if (third) laboratorySavedAddresses.push(third);
+        const safePhone = (address) => {
+          const row = address && savedRows.find(item => safeAddress(item) === address);
+          const phone = String(row && row.customer_phone || '').trim();
+          return /^\+?[0-9]{9,20}$/.test(phone) ? phone : '';
+        };
+        laboratorySavedAddressPhones = [safePhone(first), safePhone(second), safePhone(third)].slice(0, laboratorySavedAddresses.length);
       }
     }
   }
@@ -6371,7 +6378,7 @@ async function domainDashboardMe(req, res) {
   return res.status(200).json({
     ok: true,
     dashboard: true,
-    user: { ...sanitizeUser(user), name: profileName && profileName.length <= 120 && !/[\u0000-\u001F\u007F]/.test(profileName) ? profileName : '', saved_addresses: laboratorySavedAddresses },
+    user: { ...sanitizeUser(user), name: profileName && profileName.length <= 120 && !/[\u0000-\u001F\u007F]/.test(profileName) ? profileName : '', saved_addresses: laboratorySavedAddresses, saved_address_phones: laboratorySavedAddressPhones },
     session: {
       idleTimeoutMs: DOMAIN_PROTECTED_IDLE_TIMEOUT_MS,
       maxAgeMs: 8 * 60 * 60 * 1000,
@@ -9237,7 +9244,8 @@ async function supabaseFetch(path, options = {}) {
     data = text;
   }
 
-  if (response.ok && /^\/rest\/v1\/(?:customers|orders|order_items|domain_orders|payment_gateway_events|payment_transactions|security_customer_auth_links|security_customer_events|security_customer_login_logs|security_customer_sessions|security_logs|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)(?:\?|$)/.test(cleanPath)) {
+  if (response.ok && (/^\/rest\/v1\/(?:customers|orders|order_items|domain_orders|domain_passkeys|payment_gateway_events|payment_transactions|security_customer_auth_links|security_customer_events|security_customer_login_logs|security_customer_sessions|security_logs|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)(?:\?|$)/.test(cleanPath)
+      || /^\/auth\/v1\/(?:signup|user|token|admin\/users)(?:[/?]|$)/.test(cleanPath))) {
     data = require('../lib/data-protection.js').decode(cleanPath, data);
   }
 
@@ -69024,7 +69032,8 @@ async function diracCentralPinnedHttpsFetchV230(
     : parsedUrl.pathname + parsedUrl.search;
   if (!supportDispatch && body.length && ['POST', 'PATCH', 'PUT'].includes(method)
       && headers['content-type'] === 'application/json'
-      && /^\/rest\/v1\/(?:customers|orders|order_items|domain_orders|payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security|security_customer_events|security_customer_login_logs)$/.test(parsedUrl.pathname)
+      && (/^\/rest\/v1\/(?:customers|security_customer_auth_links|domain_passkeys|orders|order_items|domain_orders|payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security|security_customer_events|security_customer_login_logs)$/.test(parsedUrl.pathname)
+        || /^\/auth\/v1\/(?:signup|user|admin\/users)(?:\/[0-9a-f-]{36})?$/.test(parsedUrl.pathname))
       && diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())) {
     // Storage encryption starts only after the unchanged one-use egress permit.
     const businessText = Boolean(process.env.DOMAIN_SUPABASE_URL)

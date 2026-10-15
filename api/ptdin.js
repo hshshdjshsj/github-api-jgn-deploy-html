@@ -231,7 +231,8 @@ function projectResponse(action, view, payload, profile) {
           shipping_address: cleanText(order.shipping_address, 520),
           shipment_data_ready: order.shipment_data_ready === true, shipment };
       });
-      return { ok: true, service: 'dirac-ptdin', view: 'assistant', orders, partial };
+      return { ok: true, service: 'dirac-ptdin', view: 'assistant', orders, partial,
+        company: { legal_name: 'PT Dirac Inovasi Nusantara', nib: invoiceLegalIdentifier(process.env.DIRAC_INVOICE_NIB, 13, 13).replace(/[ .-]/g, '') } };
     }
     out.orders = ['invoice','assistant'].includes(out.view) ? allOrders : allOrders.filter((order) => orderMatchesView(order, out.view));
     out.summary = orderSummary(out.orders);
