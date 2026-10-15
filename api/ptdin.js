@@ -197,6 +197,7 @@ function projectResponse(action, view, payload, profile) {
       }
       const partial = Boolean(payload.diagnostics && (payload.diagnostics.generic_orders_ready === false || payload.diagnostics.domain_orders_ready === false))
         || allOrders.some(order => order.shipment_data_ready === false);
+      let remainingAssistantItems = 600;
       const orders = allOrders.map(order => {
         const source = order.shipment && typeof order.shipment === 'object' && !Array.isArray(order.shipment) ? order.shipment : null;
         const latestEvent = source && Array.isArray(source.events) ? source.events.filter(event => event && Number.isFinite(Date.parse(event.timestamp))).slice(0, 300)
@@ -204,8 +205,14 @@ function projectResponse(action, view, payload, profile) {
         const shipment = source ? {
           state: cleanText(source.state, 40), status: cleanText(source.status, 80), location: cleanText(source.location, 300),
           updated_at: cleanText(source.updated_at, 64), tracking_number: cleanText(source.tracking_number, 100), courier: cleanText(source.courier, 80),
+          estimated_delivery: /^\d{4}-\d{2}-\d{2}$/.test(String(source.estimated_delivery || '')) && Number.isFinite(Date.parse(source.estimated_delivery))
+            && new Date(source.estimated_delivery).toISOString().slice(0, 10) === source.estimated_delivery ? source.estimated_delivery : '',
           events: latestEvent ? [{ timestamp: cleanText(latestEvent.timestamp, 64), location: cleanText(latestEvent.location, 300), status: cleanText(latestEvent.status, 80) }] : []
         } : null;
+        const items = ownRows(order.items, Math.min(120, remainingAssistantItems)).map(item => ({
+          title: cleanText(item.title, 180), quantity: Number.isSafeInteger(item.quantity) && item.quantity > 0 && item.quantity <= 9999 ? item.quantity : null
+        }));
+        remainingAssistantItems -= items.length;
         const firstItem = Array.isArray(order.items) && order.items[0] && typeof order.items[0] === 'object'
           && !Array.isArray(order.items[0]) ? order.items[0] : null;
         const amount = typeof order.total === 'number' ? order.total : NaN;
@@ -215,7 +222,9 @@ function projectResponse(action, view, payload, profile) {
           service_label: cleanText(order.service_label || order.service_type, 90),
           created_at: cleanText(order.created_at, 64), total: Number.isSafeInteger(amount) && amount >= 0 ? amount : null,
           currency: /^(?:IDR|USD|EUR)$/.test(String(order.currency || '')) ? String(order.currency) : '',
-          item_count: Array.isArray(order.items) ? Math.min(order.items.length, 120) : 0,
+          shipping_cost: Number.isSafeInteger(order.shipping_cost) && order.shipping_cost >= 0 ? order.shipping_cost : null,
+          item_count: Array.isArray(order.items) ? order.items.length : 0, items,
+          items_partial: Array.isArray(order.items) && order.items.length > items.length,
           item_title: cleanText(firstItem && firstItem.title, 180),
           recipient_name: cleanText(order.customer_name, 120), recipient_phone: cleanText(order.customer_phone, 80),
           recipient_email: cleanText(order.customer_email, 254),

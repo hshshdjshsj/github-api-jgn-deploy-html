@@ -1151,6 +1151,9 @@ function setCors(req, res, options = {}) {
   if (options.isDomainAction && String(req && req.query && req.query.action || '').trim() === 'domain_health') {
     domainAllowedHeaders.push('X-Dirac-CSRF-Probe', 'x-dirac-csrf-probe');
   }
+  if (options.isDomainAction && String(req && req.query && req.query.action || '').trim() === 'domain_login') {
+    domainAllowedHeaders.push('X-Dirac-Login-Role', 'x-dirac-login-role');
+  }
 
   // PATCH 3A: backend-only customer auth.
   // Frontend/customer HTML tidak lagi dipercaya membawa Authorization, refresh token,
@@ -1824,7 +1827,8 @@ async function diracBannedExportRowsV473(scope, collection, parentIds, database)
     let result;
     try { result = await supabaseFetch(path, options); } finally { scope.pending.delete(key); }
     if (!result || result.ok !== true || !Array.isArray(result.data) || !Number.isSafeInteger(result.count)
-        || result.count < 0 || result.count > 4000 || result.data.length !== Math.min(500, Math.max(0, result.count - offset))) throw new Error('EXPORT_INCOMPLETE');
+        || result.count < 0 || result.count > 4000 || require('../lib/data-protection.js').physicalRowCountV1(result.data) !== Math.min(500, Math.max(0, result.count - offset))
+        || result.data.length > 4000) throw new Error('EXPORT_INCOMPLETE');
     const rows = result.data;
     if (rows.some(row => !row || typeof row !== 'object' || Array.isArray(row)
         || Object.keys(row).some(field => !fields.split(',').includes(field))
@@ -1837,12 +1841,15 @@ async function diracBannedExportRowsV473(scope, collection, parentIds, database)
   // A fixed, finite page plan, no retry or recursive request. Never publish a truncated archive.
   if (child && collection !== 'order_items' && first.count > 500) throw new Error('EXPORT_ITEM_LIMIT');
   const offsets = [500,1000,1500,2000,2500,3000,3500].filter(offset => offset < first.count);
+  let physicalRows = require('../lib/data-protection.js').physicalRowCountV1(first.data);
   const rows = await offsets.reduce((pending, offset) => pending.then(async accumulated => {
     const page = await read(offset);
     if (page.count !== first.count) throw new Error('EXPORT_CHANGED');
+    physicalRows += require('../lib/data-protection.js').physicalRowCountV1(page.data);
+    if (accumulated.length + page.data.length > 4000) throw new Error('EXPORT_ITEM_LIMIT');
     return accumulated.concat(page.data);
   }), Promise.resolve(first.data));
-  if (rows.length !== first.count || ((!child || collection === 'order_items')
+  if (physicalRows !== first.count || ((!child || collection === 'order_items')
       && (rows.some(row => !customerSecurityLooksLikeUuid(String(row.id || ''))) || new Set(rows.map(row => row.id)).size !== rows.length))) throw new Error('EXPORT_INCOMPLETE');
   scope.bytes += Buffer.byteLength(JSON.stringify(rows), 'utf8');
   if (scope.bytes > 1900000) throw new Error('EXPORT_SIZE_LIMIT');
@@ -20258,19 +20265,31 @@ async function myOrdersFetchOrderItems(orderIds, customerIds, database = 'commer
   const select = securityOrderItems
     ? 'order_id,product_title,quantity,unit_price'
     : 'id,order_id,customer_id,product_title,quantity,unit_price,created_at';
-  const path = '/rest/v1/order_items?select=' + encodeURIComponent(select)
-    + '&order_id=in.(' + ids.map(encodeURIComponent).join(',') + ')'
+  const rows = [];
+  // Six explicit reads maximum; each fits 1,000 legacy checkout lines and
+  // the existing bundle/crypto byte budget. No retries or batch loop.
+  const pathFor = offset => '/rest/v1/order_items?select=' + encodeURIComponent(select)
+    + '&order_id=in.(' + ids.slice(offset, offset + 20).map(encodeURIComponent).join(',') + ')'
     + (securityOrderItems
       ? ''
       : '&customer_id=in.(' + owners.map(encodeURIComponent).join(',') + ')&order=created_at.asc');
-  const result = await supabaseFetch(path, { method: 'GET', auth: 'service', db: orderDatabase }).catch(() => null);
-  if (result && result.status === 503 && result.data && result.data.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE') {
-    const error = new Error('ORDER_PARENT_OWNERSHIP_UNAVAILABLE');
-    error.code = 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE';
-    throw error;
-  }
-  if (!result || !result.ok || !Array.isArray(result.data)) return map;
-  result.data.forEach((item) => {
+  const accept = result => {
+    if (result && result.status === 503 && result.data && result.data.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE') {
+      const error = new Error('ORDER_PARENT_OWNERSHIP_UNAVAILABLE');
+      error.code = 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE';
+      throw error;
+    }
+    if (!result || !result.ok || !Array.isArray(result.data) || rows.length + result.data.length > 4000) return false;
+    rows.push(...result.data);
+    return true;
+  };
+  if (!accept(await supabaseFetch(pathFor(0), { method: 'GET', auth: 'service', db: orderDatabase }).catch(() => null))) return map;
+  if (ids.length > 20 && !accept(await supabaseFetch(pathFor(20), { method: 'GET', auth: 'service', db: orderDatabase }).catch(() => null))) return map;
+  if (ids.length > 40 && !accept(await supabaseFetch(pathFor(40), { method: 'GET', auth: 'service', db: orderDatabase }).catch(() => null))) return map;
+  if (ids.length > 60 && !accept(await supabaseFetch(pathFor(60), { method: 'GET', auth: 'service', db: orderDatabase }).catch(() => null))) return map;
+  if (ids.length > 80 && !accept(await supabaseFetch(pathFor(80), { method: 'GET', auth: 'service', db: orderDatabase }).catch(() => null))) return map;
+  if (ids.length > 100 && !accept(await supabaseFetch(pathFor(100), { method: 'GET', auth: 'service', db: orderDatabase }).catch(() => null))) return map;
+  rows.forEach((item) => {
     const orderId = String(item && item.order_id || '');
     if (!orderId) return;
     if (!map[orderId]) map[orderId] = [];
@@ -38815,7 +38834,7 @@ async function diracProductsJsonSnapshotV601() {
   })();
   diracProductsJsonFlightV601.set(ctx, task);
   try { return await task; }
-  finally { if (diracProductsJsonFlightV601.get(ctx) === task) diracProductsJsonFlightV601.delete(ctx); }
+  catch (error) { if (diracProductsJsonFlightV601.get(ctx) === task) diracProductsJsonFlightV601.delete(ctx); throw error; }
 }
 async function diracProductsJsonReadV601(kind, value) {
   if (!['catalog','checkout','invoice'].includes(kind)) return { ok: false, status: 400, data: null };
@@ -58432,7 +58451,9 @@ function diracCentralValidatePreflightV221(ctx) {
     ? new Set([...DIRAC_CENTRAL_PREFLIGHT_ALLOWED_HEADERS_V221, 'x-dirac-html-signature-version', 'x-dirac-html-signature-timestamp', 'x-dirac-html-signature-nonce', 'x-dirac-html-signature'])
     : ctx.action === 'domain_health'
       ? new Set([...DIRAC_CENTRAL_PREFLIGHT_ALLOWED_HEADERS_V221, 'x-dirac-csrf-probe'])
-      : DIRAC_CENTRAL_PREFLIGHT_ALLOWED_HEADERS_V221;
+      : ctx.action === 'domain_login'
+        ? new Set([...DIRAC_CENTRAL_PREFLIGHT_ALLOWED_HEADERS_V221, 'x-dirac-login-role'])
+        : DIRAC_CENTRAL_PREFLIGHT_ALLOWED_HEADERS_V221;
   if (requestedHeaders.length > 24 || requestedHeaders.some((name) => !/^[a-z0-9-]{1,64}$/.test(name) || !recoveryLinkPreflightHeadersV251.has(name))) {
     return { ok: false, reason: 'preflight_requested_header_invalid' };
   }
