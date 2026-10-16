@@ -24477,6 +24477,14 @@ function diracPasskeyA2FValidateAuthenticationResponse({ row, response, payload,
   return { ok: true, ...parsed };
 }
 
+const DIRAC_OPERATION_CLEANUP_V507 = require('../lib/operation-cleanup.js').createOperationCleanupV1({
+  request: (path, options) => supabaseFetch(path, options),
+  context: () => diracCentralCurrentContextV149(),
+  fullyPassed: (ctx, req) => diracCentralHandlerContextFullyPassedV211(ctx, req),
+  syncEvidence: (req) => typeof diracOneServerD2DVerifiedEvidenceV1 === 'function'
+    ? diracOneServerD2DVerifiedEvidenceV1(req, 'passkey_sync_push') : null
+});
+
 async function diracPasskeyA2FStoreChallenge(setupToken, payload) {
   const jti = String(payload && payload.jti || '');
   if (!jti) return false;
@@ -24511,6 +24519,7 @@ async function diracPasskeyA2FStoreChallenge(setupToken, payload) {
     error.code = 'PASSKEY_CHALLENGE_CAPACITY_EXCEEDED';
     throw error;
   }
+  if (stored) await DIRAC_OPERATION_CLEANUP_V507.sweepExpiredChallenges().catch(() => false);
   return true;
 }
 
