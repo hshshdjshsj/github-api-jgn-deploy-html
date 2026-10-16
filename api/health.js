@@ -55765,8 +55765,7 @@ try {
 
 const originalSecurityAlertShouldSendV327 = diracSecurityAlertShouldSendV320;
 diracSecurityAlertShouldSendV320 = function diracSecurityAlertShouldSendCorporateV327(event) {
-  return String(event || '').toLowerCase() === 'persistent_ban_written'
-    || originalSecurityAlertShouldSendV327(event);
+  return String(event || '').toLowerCase() === 'persistent_ban_written';
 };
 
 const originalSecurityAlertPriorityV327 = diracSecurityAlertPriorityV321;
