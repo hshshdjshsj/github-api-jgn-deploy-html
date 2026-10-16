@@ -58595,7 +58595,7 @@ function diracCentralClassifyFailureV221(reason, stage, directCode) {
     failureClass = 'request_contract_violation';
     severity = 'high';
   }
-  if (/^(?:sql_injection|xss|ssrf_private_or_metadata_target|ssrf_protocol|command_injection_rce|path_traversal_lfi_rfi|prototype_pollution|http_request_smuggling|nosql_injection|xxe|ssti_template_injection|log4shell|crlf_header_injection|webshell)$/.test(value)) {
+  if (/^(?:cryptographic_request_tamper|sql_injection|xss|ssrf_private_or_metadata_target|ssrf_protocol|command_injection_rce|path_traversal_lfi_rfi|prototype_pollution|http_request_smuggling|nosql_injection|xxe|ssti_template_injection|log4shell|crlf_header_injection|webshell)$/.test(value)) {
     failureClass = 'confirmed_attack';
     severity = 'critical';
   }
@@ -58626,7 +58626,8 @@ const DIRAC_CENTRAL_CONFIRMED_ATTACK_KINDS_V281 = Object.freeze(new Set([
   'webshell',
   'upload_webshell',
   'policy_keyword',
-  'forbidden_html_suffix'
+  'forbidden_html_suffix',
+  'cryptographic_request_tamper'
 ]));
 
 function diracCentralPermanentBanDecisionV281(ctx, reason) {
@@ -65564,6 +65565,36 @@ async function diracCentralA2FRequestSignatureGuardV148(req, ctx) {
   const actualBodyHash = diracCentralA2FBodyHashV148(ctx);
   if (!/^[a-f0-9]{64}$/.test(String(ticketPayload.bh || ''))
       || !(typeof safeEqual === 'function' ? safeEqual(String(ticketPayload.bh), actualBodyHash) : String(ticketPayload.bh) === actualBodyHash)) {
+    // Only a valid server-signed ticket, tied to the already-verified page nonce,
+    // identical request session/origin/agent/action/method and raw-body evidence,
+    // can prove that the request body differs from the issued binding.
+    const binding = diracCentralA2FSignaturePayloadV148(req, ctx, ticketPayload);
+    const page = pageProof;
+    const signedBody = String(ticketPayload.bh || '');
+    const rawBody = String(req && req.__diracRawBodySha256V230 || '');
+    const confirmed = Boolean(page && page.act === binding.act && page.mth === binding.method
+      && page.sid === binding.sid && page.oh === binding.oh
+      && ticketPayload.typ === binding.typ && ticketPayload.act === binding.act
+      && ticketPayload.method === binding.method && ticketPayload.path === binding.path
+      && Number.isSafeInteger(Number(ticketPayload.iat)) && Number(ticketPayload.iat) > 0
+      && Number(ticketPayload.iat) <= Math.floor(Date.now() / 1000) + 30
+      && Number.isSafeInteger(Number(ticketPayload.exp)) && Number(ticketPayload.exp) > Math.floor(Date.now() / 1000)
+      && Number(ticketPayload.exp) <= Number(ticketPayload.iat) + 120
+      && /^[A-Za-z0-9_-]{32}$/.test(String(ticketPayload.jti || ''))
+      && /^[a-f0-9]{64}$/.test(String(ticketPayload.sid || ''))
+      && /^[a-f0-9]{64}$/.test(String(ticketPayload.oh || ''))
+      && /^[a-f0-9]{64}$/.test(String(ticketPayload.uah || ''))
+      && /^[a-f0-9]{64}$/.test(signedBody) && /^[a-f0-9]{64}$/.test(rawBody)
+      && rawBody === actualBodyHash
+      && safeEqual(ticketPayload.sid, binding.sid)
+      && safeEqual(ticketPayload.oh, binding.oh)
+      && safeEqual(ticketPayload.uah, binding.uah)
+      && safeEqual(signature, ticket.split('.')[1] || ''));
+    if (confirmed) {
+      ctx.threatEvidenceV221 = Object.freeze({ kind: 'cryptographic_request_tamper',
+        source: 'a2f_signed_body_binding', risk: 'critical' });
+      return { ok: false, reason: 'cryptographic_request_tamper' };
+    }
     return { ok: false, reason: 'a2f_ticket_body_hash_mismatch' };
   }
 
@@ -66114,7 +66145,17 @@ function diracCentralVerifyHtmlReportEvidenceV504(body, origin, pageName, action
         || !reported.href.startsWith(clean) || reported.href.length <= clean.length) return rejected;
     return Object.freeze({ ok: true, kind: 'forbidden_html_suffix' });
   }
-  if (body.type !== 'input_guard' || body.event !== 'high_confidence_input_violation'
+  if (body.type !== 'input_guard') return rejected;
+  if (body.event === 'explicit_policy_input_violation') {
+    if (sample[1] !== 'restricted_keyword' || sample[3].length > 128) return rejected;
+    const policy = diracCentralContextualThreatGuardV221(
+      { url: '/api/health', query: {}, headers: {} },
+      { action: 'security_report', body: { report_sample: sample[3] } }
+    );
+    return policy && policy.detected === true && policy.kind === 'policy_keyword'
+      ? Object.freeze({ ok: true, kind: 'policy_keyword' }) : rejected;
+  }
+  if (body.event !== 'high_confidence_input_violation'
       || /^(?:restricted_keyword|policy_keyword|oversized_input|control_injection|prompt_injection)$/.test(sample[1])) return rejected;
   // Only a structurally detected payload is evidence. A neutral field prevents
   // ordinary singleton words from the general input policy becoming ban proof.
