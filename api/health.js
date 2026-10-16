@@ -46490,7 +46490,13 @@ async function diracV143ResolveOwnerRowsForIds(ids) {
   const paymentIds = diracV143ValuesForKeys(ids, /^(payment_id|payment_transaction_id|transaction_id|gateway_reference|invoice_id)$/i);
 
   rows.push(...await diracV143FetchOwnerRows('orders', orderIds, ['id', 'order_id']));
-  rows.push(...await diracV143FetchOwnerRows('domain_orders', orderIds.concat(domainOrderIds), ['id']));
+  const paymentContext = diracCentralCurrentContextV149();
+  const paymentLookup = paymentContext && paymentContext.action === 'create_payment' && paymentContext.method === 'POST';
+  const regularPaymentBound = paymentLookup && rows.length > 0
+    && rows.every((row) => row.id === rows[0].id && row.order_id === rows[0].order_id && row.customer_id === rows[0].customer_id)
+    && orderIds.every((value) => value === String(rows[0].id || '') || value === String(rows[0].order_id || ''));
+  if (paymentLookup && rows.length && !regularPaymentBound) throw new Error('CENTRAL_PAYMENT_ORDER_BINDING_INVALID');
+  rows.push(...await diracV143FetchOwnerRows('domain_orders', (regularPaymentBound ? [] : orderIds).concat(domainOrderIds), ['id']));
   rows.push(...await diracV143FetchOwnerRows('payment_transactions', paymentIds, ['id', 'gateway_reference']));
   return rows.slice(0, 120);
 }
@@ -66781,7 +66787,12 @@ async function diracCentralLookupOwnerRowsV146(objects) {
   } else {
     rows.push(...await diracCentralFetchOwnerRowsV194('orders', orderValuesV445, ['id', 'order_id']));
   }
-  rows.push(...await diracCentralFetchOwnerRowsV194('domain_orders', values(/^(domain_order_id|order_id)$/i), ['id']));
+  const paymentLookupV445 = ownerLookupCtxV445 && ownerLookupCtxV445.action === 'create_payment' && ownerLookupCtxV445.method === 'POST';
+  const regularPaymentBoundV445 = paymentLookupV445 && rows.length > 0
+    && rows.every((row) => row.id === rows[0].id && row.order_id === rows[0].order_id && row.customer_id === rows[0].customer_id)
+    && orderValuesV445.every((value) => value === String(rows[0].id || '') || value === String(rows[0].order_id || ''));
+  if (paymentLookupV445 && rows.length && !regularPaymentBoundV445) throw new Error('CENTRAL_PAYMENT_ORDER_BINDING_INVALID');
+  rows.push(...await diracCentralFetchOwnerRowsV194('domain_orders', values(regularPaymentBoundV445 ? /^domain_order_id$/i : /^(domain_order_id|order_id)$/i), ['id']));
   rows.push(...await diracCentralFetchOwnerRowsV194('payment_transactions', values(/^(payment_id|transaction_id|gateway_reference|invoice_id)$/i), ['id', 'gateway_reference']));
   rows.push(...await diracCentralFetchOwnerRowsV194('security_customer_sessions', values(/^session_id$/i), ['id']));
   rows.push(...await diracCentralFetchOwnerRowsV194('security_customer_recovery_codes', values(/^recovery_code_id$/i), ['id']));
