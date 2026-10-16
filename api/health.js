@@ -38488,6 +38488,7 @@ async function diracV110WriteAuthAudit(req, payload, action, httpStatus) {
     metadata: {
       patch: DIRAC_AUTH_HARDENING_SAFE_PATCH_V110,
       action: String(action || '').slice(0, 80),
+      auth_event_type: eventType,
       http_status: Number(httpStatus || 200),
       auth_user_hash: diracV110Hmac('auth_user|' + authUserId),
       email_hash: diracPasswordArgon2V4Hmac('email|' + email),
@@ -38501,7 +38502,7 @@ async function diracV110WriteAuthAudit(req, payload, action, httpStatus) {
       auth: 'service',
       body: [{
         ...base,
-        event_type: eventType,
+        event_type: action === 'domain_register' ? 'login_success' : action === 'dirac_mfa_passkey_verify' ? 'mfa_success' : eventType,
         status: 'success',
         risk_level: 'low'
       }]
@@ -39183,6 +39184,7 @@ function diracUltraXssV2CleanSecurityTelemetryRow(row, eventTable = false) {
   const xssSignals = diracUltraXssV2CollectSignals(row);
   const baseMetadata = clean.metadata && typeof clean.metadata === 'object' ? { ...clean.metadata } : {};
   if (eventTable) {
+    if (clean.event_title === undefined && clean.event_type) clean.event_title = diracUltraXssV2CleanText(clean.description || clean.event_type, 240);
     if (clean.browser_name !== undefined) baseMetadata.browser_name = clean.browser_name;
     if (clean.operating_system !== undefined) baseMetadata.operating_system = clean.operating_system;
     if (clean.country !== undefined) baseMetadata.country = clean.country;
@@ -58744,7 +58746,7 @@ function diracCentralUrlLikeFieldV221(field) {
     || field && field.source === 'url';
 }
 
-const DIRAC_CENTRAL_INPUT_POLICY_V498 = /(?:^|[^a-z0-9_])(?:union|javascript|vbscript|alert|confirm|prompt|xss|sqli|csrf|ssrf|xxe|ssti|rce|lfi|rfi|jndi|log4shell|shellshock|sqlmap|sqlninja|havij|nuclei|nikto|nmap|gobuster|ffuf|dalfox|acunetix|burpsuite|metasploit|msfvenom|msfconsole|netcat|ncat|powershell|cmd\.exe|whoami|onerror|onload|onclick|onfocus|onblur|onmouseover|onanimationstart|onpointerenter|srcdoc|xlink|__proto__|__schema|__type|introspectionquery|xp_cmdshell|load_file|pg_read_file|pg_sleep|benchmark|information_schema|pg_catalog|sqlite_master|sysobjects|syscolumns|mysql\.user|eval|atob|btoa|shell_exec|passthru|proc_open|popen|base64_decode|unserialize|innerhtml|outerhtml|insertadjacenthtml|document\.cookie|document\.write|document\.writeln|oninput|onsubmit|ontoggle|onkeydown|onkeyup|onpointerdown|onpointerup|onmouseenter|onmouseleave|onabort|onanimationend|ontransitionend|formaction|execscript|settimeout|setinterval|fromcharcode|unescape|mshta|rundll32|certutil|regsvr32|wmic|cscript|wscript|bitsadmin|mimikatz|cobaltstrike|bloodhound|ysoserial|phpinfo|php_uname|getenv|readfile|file_get_contents|file_put_contents|create_function|call_user_func|document\.domain|location\.assign|location\.replace)(?=$|[^a-z0-9_])|^\s*(?:j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t|one\s+error)\s*$/i;
+const DIRAC_CENTRAL_INPUT_POLICY_V498 = /(?:^|[^a-z0-9_])(?:union|javascript|vbscript|alert|confirm|prompt|xss|sqli|csrf|ssrf|xxe|ssti|rce|lfi|rfi|jndi|log4shell|shellshock|sqlmap|sqlninja|havij|nuclei|nikto|nmap|gobuster|ffuf|dalfox|acunetix|burpsuite|metasploit|msfvenom|msfconsole|netcat|ncat|powershell|cmd\.exe|whoami|onerror|onload|onclick|onfocus|onblur|onmouseover|onanimationstart|onpointerenter|srcdoc|xlink|__proto__|__schema|__type|introspectionquery|xp_cmdshell|load_file|pg_read_file|pg_sleep|benchmark|information_schema|pg_catalog|sqlite_master|sysobjects|syscolumns|mysql\.user|eval|atob|btoa|shell_exec|passthru|proc_open|popen|base64_decode|unserialize|innerhtml|outerhtml|insertadjacenthtml|document\.cookie|document\.write|document\.writeln|oninput|onsubmit|ontoggle|onkeydown|onkeyup|onpointerdown|onpointerup|onmouseenter|onmouseleave|onabort|onanimationend|ontransitionend|formaction|execscript|settimeout|setinterval|fromcharcode|unescape|mshta|rundll32|certutil|regsvr32|wmic|cscript|wscript|bitsadmin|mimikatz|cobaltstrike|bloodhound|ysoserial|phpinfo|php_uname|getenv|readfile|file_get_contents|file_put_contents|create_function|call_user_func|document\.domain|location\.assign|location\.replace)(?=$|[^a-z0-9_])|\badmin\b|^\s*(?:img|src|srcset|href|iframe|svg|xlink|script|object|embed|template|formaction|o\s*n\s*(?:error|load|click|focus|blur|mouseover|animationstart)|j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t|one\s+error)\s*$/i;
 
 function diracCentralContextualThreatGuardV221(req, ctx) {
   const fields = diracCentralThreatFieldsV221(req, ctx);
@@ -58774,6 +58776,7 @@ function diracCentralContextualThreatGuardV221(req, ctx) {
         pattern.lastIndex = 0;
         if (pattern.test(candidate)) return { detected: true, kind, field: path };
       }
+      if (policyInputV498 && /<\s*\/?\s*img\b/i.test(candidate)) return { detected: true, kind: 'policy_keyword', field: path };
       if (policyKeywordV499) return { detected: true, kind: 'policy_keyword', field: path };
       if (diracCentralUrlLikeFieldV221(field)) {
         let parsed = null;
@@ -67391,14 +67394,14 @@ async function diracCentralInspectServiceRoleAccessV146(path, options = {}) {
 
 function diracCentralIsAuthAuditWriteV331(ctx, table, path, options = {}, method) {
   const action = String(ctx && ctx.action || '').toLowerCase();
+  const cleanTable = String(table || '').toLowerCase();
   const expectedEvent = action === 'domain_login'
     ? 'login_success'
     : action === 'domain_register'
-      ? 'register_success'
+      ? cleanTable === 'security_customer_login_logs' ? 'login_success' : 'register_success'
       : action === 'dirac_mfa_passkey_verify'
-        ? 'mfa_passkey_verify_success'
+        ? cleanTable === 'security_customer_login_logs' ? 'mfa_success' : 'mfa_passkey_verify_success'
         : '';
-  const cleanTable = String(table || '').toLowerCase();
   const cleanMethod = String(method || options.method || '').toUpperCase();
   if (!expectedEvent
       || !['security_customer_login_logs', 'security_customer_events'].includes(cleanTable)
@@ -67419,7 +67422,7 @@ function diracCentralIsAuthAuditWriteV331(ctx, table, path, options = {}, method
     'status',
     'risk_level',
     'metadata',
-    ...(cleanTable === 'security_customer_events' ? ['description'] : [])
+    ...(cleanTable === 'security_customer_events' ? ['description', 'event_title'] : [])
   ];
   return diracCentralBodyRowsSafeV146(options.body, allowedFields, (row) => {
     const metadata = row && row.metadata;
@@ -67435,7 +67438,8 @@ function diracCentralIsAuthAuditWriteV331(ctx, table, path, options = {}, method
         || !/^[a-f0-9]{64}$/.test(String(metadata.auth_user_hash || ''))
         || !/^[a-f0-9]{64}$/.test(String(metadata.email_hash || ''))) return false;
     if (cleanTable === 'security_customer_events') {
-      return String(row.description || '') === diracV110AuditDescription(action);
+      return String(row.description || '') === diracV110AuditDescription(action)
+        && row.event_title === diracV110AuditDescription(action);
     }
     return row.description === undefined;
   });
