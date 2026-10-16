@@ -46304,6 +46304,26 @@ async function diracV143InspectParsedBody(req, body) {
     diracV143ThrowBlocked(threat);
   }
 
+  // A payment's ownership is re-validated with the canonical order records by
+  // the mandatory Central Guard IDOR/BOLA checkpoint (stage 26). The legacy
+  // pre-check cannot establish ownership before that checkpoint and must not
+  // promote an unresolved early lookup into a permanent security ban.
+  const paymentGuardCtx = typeof diracCentralCurrentContextV149 === 'function'
+    ? diracCentralCurrentContextV149() : null;
+  const paymentStage26Required = action === 'create_payment' && method === 'POST'
+    && paymentGuardCtx && paymentGuardCtx.req === req
+    && paymentGuardCtx.action === 'create_payment'
+    && paymentGuardCtx.classification === 'browser'
+    && paymentGuardCtx.executionPhaseV211 === 'guard'
+    && paymentGuardCtx.currentStageV211 === 'body validation'
+    && Number(paymentGuardCtx.currentStageIndexV211) === 18
+    && paymentGuardCtx.centralGuardFullyPassedV211 !== true
+    && !paymentGuardCtx.failedStageV211 && !paymentGuardCtx.failureReasonV211
+    && !paymentGuardCtx.terminalResponse && !paymentGuardCtx.terminalBlockReason
+    && diracCentralVerifiedOwnerActionV217('create_payment') === true
+    && BigInt(paymentGuardCtx.passport || 0n) === 0x3ffffn;
+  if (paymentStage26Required) return { ok: true, ownership: 'mandatory_central_stage26' };
+
   const ownership = await diracV143InspectOwnership(req, body).catch(() => ({ ok: true }));
   if (ownership && ownership.block) {
     await diracV143WriteGlobalBanOnce(req, null, action, method, {
