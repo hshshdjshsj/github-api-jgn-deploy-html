@@ -24791,13 +24791,14 @@ async function diracPasskeyA2FListActivePasskeys(owner, freshAfterMutation = fal
         ? '&rotation_state=eq.active&order=updated_at.desc,created_at.desc&limit=20'
         : '&order=created_at.desc&limit=20');
     const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
-    if (!result.ok || !Array.isArray(result.data)) {
+    const passkeyRows = result.ok ? result.data : null;
+    if (!result.ok || !Array.isArray(passkeyRows)) {
       const error = new Error('PASSKEY_ACTIVE_STATE_READ_FAILED');
       error.code = 'PASSKEY_ACTIVE_STATE_READ_FAILED';
       error.statusCode = 503;
       throw error;
     }
-    for (const row of result.data) {
+    for (const row of passkeyRows) {
       const key = String(row && (row.id || row.credential_id) || '');
       if (!key || seen.has(key) || !diracPasskeyA2FOwnerMatches(row, owner)) continue;
       seen.add(key);
@@ -24849,14 +24850,15 @@ async function diracPasskeyA2FReadSecurityEpoch(owner) {
     + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
     + '&order=created_at.desc&limit=2';
   const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
-  if (!result.ok || !Array.isArray(result.data) || result.data.length > 1) {
+  const epochRows = result.ok ? result.data : null;
+  if (!result.ok || !Array.isArray(epochRows) || epochRows.length > 1) {
     const error = new Error('PASSKEY_SECURITY_EPOCH_READ_FAILED');
     error.code = 'PASSKEY_SECURITY_EPOCH_READ_FAILED';
     error.statusCode = 503;
     throw error;
   }
-  if (result.data.length === 0) return 0;
-  const epoch = Number(result.data[0] && result.data[0].security_epoch || 0);
+  if (epochRows.length === 0) return 0;
+  const epoch = Number(epochRows[0] && epochRows[0].security_epoch || 0);
   if (!Number.isSafeInteger(epoch) || epoch < 1) {
     const error = new Error('PASSKEY_SECURITY_EPOCH_INVALID');
     error.code = 'PASSKEY_SECURITY_EPOCH_INVALID';
@@ -39133,7 +39135,7 @@ function diracUltraXssV2SanitizeSupabaseSecurityWrite(path, options = {}) {
 
     return {
       ...options,
-      body: diracUltraXssV2CleanSecurityTelemetryBody(options.body)
+      body: diracUltraXssV2CleanSecurityTelemetryBody(options.body, /^\/rest\/v1\/security_customer_events(?:\?|$)/.test(pathText))
     };
   } catch (_) {
     return options;
@@ -39148,13 +39150,13 @@ function diracUltraXssV2IsSecurityTelemetryPath(path) {
     || value.includes('/rest/v1/security_customer_account_requests');
 }
 
-function diracUltraXssV2CleanSecurityTelemetryBody(body) {
-  if (Array.isArray(body)) return body.map((row) => diracUltraXssV2CleanSecurityTelemetryRow(row));
-  if (body && typeof body === 'object') return diracUltraXssV2CleanSecurityTelemetryRow(body);
+function diracUltraXssV2CleanSecurityTelemetryBody(body, eventTable = false) {
+  if (Array.isArray(body)) return body.map((row) => diracUltraXssV2CleanSecurityTelemetryRow(row, eventTable));
+  if (body && typeof body === 'object') return diracUltraXssV2CleanSecurityTelemetryRow(body, eventTable);
   return body;
 }
 
-function diracUltraXssV2CleanSecurityTelemetryRow(row) {
+function diracUltraXssV2CleanSecurityTelemetryRow(row, eventTable = false) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
 
   const clean = { ...row };
@@ -39179,7 +39181,17 @@ function diracUltraXssV2CleanSecurityTelemetryRow(row) {
   }
 
   const xssSignals = diracUltraXssV2CollectSignals(row);
-  const baseMetadata = clean.metadata && typeof clean.metadata === 'object' ? clean.metadata : {};
+  const baseMetadata = clean.metadata && typeof clean.metadata === 'object' ? { ...clean.metadata } : {};
+  if (eventTable) {
+    if (clean.browser_name !== undefined) baseMetadata.browser_name = clean.browser_name;
+    if (clean.operating_system !== undefined) baseMetadata.operating_system = clean.operating_system;
+    if (clean.country !== undefined) baseMetadata.country = clean.country;
+    if (clean.city !== undefined) baseMetadata.city = clean.city;
+    delete clean.browser_name;
+    delete clean.operating_system;
+    delete clean.country;
+    delete clean.city;
+  }
   clean.metadata = diracUltraXssV2CleanMetadata({
     ...baseMetadata,
     ...(xssSignals.detected ? {
@@ -39193,7 +39205,7 @@ function diracUltraXssV2CleanSecurityTelemetryRow(row) {
   if (clean.ip_address && !clean.ip_hash) {
     try {
       const ipValue = String(clean.ip_address || '').trim();
-      if (ipValue && String(clean.metadata && clean.metadata.ip_hash || '') !== crypto.createHash('sha256').update('dirac-ip-log-v2:' + ipValue).digest('hex')) clean.ip_hash = crypto.createHash('sha256').update('dirac-ip-log-v2:' + ipValue).digest('hex');
+      if (ipValue && String(clean.metadata && clean.metadata.ip_hash || '') !== crypto.createHash('sha256').update('dirac-ip-log-v2:' + ipValue).digest('hex')) clean.metadata.ip_hash = crypto.createHash('sha256').update('dirac-ip-log-v2:' + ipValue).digest('hex');
     } catch (_) {}
   }
 
@@ -57448,6 +57460,7 @@ if (diracCentralIsProductionV146() && !DIRAC_CENTRAL_ASYNC_CONTEXT_V149) {
    - every security decision fails closed when context/storage/guard is unavailable;
    - debug remains redacted and never exposes secrets to normal production users.
    ============================================================ */
+const DIRAC_CENTRAL_SELF_TEST_ERRORS_V504 = new WeakSet();
 function diracCentralRecordSuppressedExceptionV221(error) {
   try {
     const store = globalThis.__DIRAC_CENTRAL_SUPPRESSED_EXCEPTIONS_V221__
@@ -57460,7 +57473,7 @@ function diracCentralRecordSuppressedExceptionV221(error) {
     previous.lastSeenMs = Date.now();
     store.set(key, previous);
     const powerOfTwo = previous.count > 0 && (previous.count & (previous.count - 1)) === 0;
-    if (previous.count === 1 || powerOfTwo) {
+    if ((previous.count === 1 || powerOfTwo) && !DIRAC_CENTRAL_SELF_TEST_ERRORS_V504.has(error)) {
       try {
         console.error('[dirac-central-security-telemetry]', JSON.stringify({
           event: 'suppressed_exception',
@@ -61024,7 +61037,10 @@ function diracCentralSelfTestRunV221() {
   let crlfRejected = false;
   try { mockRes.setHeader('X-Test', 'safe\r\nInjected: yes'); } catch (_) { crlfRejected = true; }
   expect(crlfRejected, 'response_header_crlf_rejection');
-  expect(diracCentralRecordSuppressedExceptionV221(Object.assign(new Error('redacted'), { code: 'SELFTEST' })) === true, 'suppressed_exception_telemetry');
+  const telemetryTestErrorV504 = Object.assign(new Error('redacted'), { code: 'SELFTEST' });
+  DIRAC_CENTRAL_SELF_TEST_ERRORS_V504.add(telemetryTestErrorV504);
+  expect(diracCentralRecordSuppressedExceptionV221(telemetryTestErrorV504) === true, 'suppressed_exception_telemetry');
+  DIRAC_CENTRAL_SELF_TEST_ERRORS_V504.delete(telemetryTestErrorV504);
 
   return Object.freeze({
     ok: failures.length === 0,
@@ -62617,7 +62633,7 @@ function diracCentralApplyHeadersV146(res) {
     const origin=String(ctx && ctx.req && ctx.req.headers && ctx.req.headers.origin || '');
     // Guard terminals run before the business handler that normally applies CORS.
     // Publish only to the existing origin allowlist; every checkpoint still runs.
-    if (ctx && ctx.action==='security_report' && DIRAC_CENTRAL_ALLOWED_ORIGINS_V146.has(origin)
+    if (ctx && /^(?:security_report|domain_health|dirac_mfa_passkey_start|dirac_mfa_passkey_verify)$/.test(ctx.action) && DIRAC_CENTRAL_ALLOWED_ORIGINS_V146.has(origin)
         && (typeof res.getHeader!=='function' || res.getHeader('Access-Control-Allow-Origin')!==origin)) {
       setCors(ctx.req,res,{isDomainAction:true});
     }
