@@ -365,10 +365,11 @@ async function authAdminUserRequest(path, method, body) {
     const response = await ADMIN_STANDALONE_FETCH(creds.url + cleanPath, {
       method: verb,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: controller.signal
+      body: body === undefined ? undefined : JSON.stringify(require('../lib/data-protection.js').encode(cleanPath, body)), redirect: 'error', signal: controller.signal
     });
     const raw = await readAdminUpstreamText(response, 262144, 'ADMIN_AUTH_RESPONSE_INVALID');
     let data = null; if (raw) { try { data = JSON.parse(raw); } catch (_) { fail('ADMIN_AUTH_RESPONSE_INVALID', 503); } }
+    if (response.ok) data = require('../lib/data-protection.js').decode(cleanPath, data);
     return { ok: response.ok, status: response.status, data };
   } catch (error) {
     if (error && /^ADMIN_/.test(String(error.code || ''))) throw error;
