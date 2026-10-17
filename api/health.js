@@ -1756,6 +1756,7 @@ async function domainHealth(req, res) {
     return diracPasskeyConfirmDashboardCookieRoundtripV241(req, res);
   }
 
+  await DIRAC_OPERATION_CLEANUP_V507.sweepExpiredChallenges().catch(() => false);
   const companyNameV385 = diracCanonicalCompanyNameV381();
   const acceptV385 = String(req.headers && req.headers.accept || '')
     .split(',')
@@ -24739,6 +24740,7 @@ async function diracPasskeyA2FConsumeChallenge(setupToken, payload) {
   }
   DIRAC_PASSKEY_A2F_CONSUME_LOCKS.add(jti);
   let record = DIRAC_PASSKEY_A2F_CHALLENGE_STORE.get(jti) || null;
+  let durableClaimV508 = false;
   try {
     if (typeof readPersistentSecurityJsonStrictV194 === 'function' && LOGIN_SECURITY_PERSIST_TABLE) {
       const lookup = await readPersistentSecurityJsonStrictV194('passkey-a2f-jti:' + jti);
@@ -24759,6 +24761,7 @@ async function diracPasskeyA2FConsumeChallenge(setupToken, payload) {
         usedAtMs: now
       }, Math.max(120, Math.ceil((expiresAtMs - now) / 1000) + 60));
       if (!claimed) return { ok: false, reason: 'passkey_challenge_replay_or_storage_failure' };
+      durableClaimV508 = true;
     } else if (process.env.NODE_ENV === 'production') {
       return { ok: false, reason: 'passkey_challenge_storage_unavailable' };
     }
@@ -24770,7 +24773,8 @@ async function diracPasskeyA2FConsumeChallenge(setupToken, payload) {
       now,
       (value) => Number(value && value.expiresAtMs || 0)
     );
-    await writePersistentSecurityJsonRequiredV194('passkey-a2f-jti:' + jti, { ...record, used: true, usedAtMs: now }, 0, 60).catch(() => false);
+    const usedWrittenV508 = await writePersistentSecurityJsonRequiredV194('passkey-a2f-jti:' + jti, { ...record, used: true, usedAtMs: now }, 0, 60).catch(() => false);
+    if (durableClaimV508 && usedWrittenV508 === true) await DIRAC_OPERATION_CLEANUP_V507.retireConsumedChallenge({ jti, tokenHash: expectedHash, claimed: true }).catch(() => false);
     return { ok: true };
   } finally {
     setTimeout(() => {
