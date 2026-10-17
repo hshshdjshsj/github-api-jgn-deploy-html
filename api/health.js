@@ -647,17 +647,23 @@ function diracRegisterDiagnosticEnvFactorV365(name) {
   try {
     if (/^(?:0x)?[a-f0-9]{64}$/i.test(encoded)) {
       bytes = Buffer.from(/^0x/i.test(encoded) ? encoded.slice(2) : encoded, 'hex');
-    } else if (/^[A-Za-z0-9_-]{43}=?$/.test(encoded)) {
+    } else if (/^[A-Za-z0-9_-]{43}=?$/.test(encoded)
+        && Buffer.from(encoded.endsWith('=') ? encoded.slice(0, -1) : encoded, 'base64url')
+          .toString('base64url') === (encoded.endsWith('=') ? encoded.slice(0, -1) : encoded)) {
       const unpadded = encoded.endsWith('=') ? encoded.slice(0, -1) : encoded;
       bytes = Buffer.from(unpadded, 'base64url');
       if (bytes.toString('base64url') !== unpadded) return null;
-    } else if (/^[A-Za-z0-9+/]{43}=?$/.test(encoded)) {
+    } else if (/^[A-Za-z0-9+/]{43}=?$/.test(encoded)
+        && Buffer.from(encoded.endsWith('=') ? encoded : encoded + '=', 'base64')
+          .toString('base64') === (encoded.endsWith('=') ? encoded : encoded + '=')) {
       const padded = encoded.endsWith('=') ? encoded : encoded + '=';
       bytes = Buffer.from(padded, 'base64');
       if (bytes.toString('base64') !== padded) return null;
-    } else if (Buffer.byteLength(encoded, 'utf8') >= 3000
-        && Buffer.byteLength(encoded, 'utf8') <= 8192) {
-      longSecret = Buffer.from(encoded, 'utf8');
+    } else if (supplied.length > 0) {
+      const longStyle = Buffer.byteLength(encoded, 'utf8') >= 3000
+        && Buffer.byteLength(encoded, 'utf8') <= 8192;
+      longSecret = Buffer.from(longStyle ? encoded : supplied, 'utf8');
+      if (!longSecret.length) return null;
       bytes = Buffer.from(crypto.hkdfSync('sha512', longSecret,
         Buffer.from('dirac-five-key-raw-env-salt-v1', 'utf8'),
         Buffer.from('dirac-five-key-raw-env-factor-v1', 'utf8'), 32));
