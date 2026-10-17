@@ -424,7 +424,7 @@ function diracRequestPerformanceFinishV340(req, res, record, event) {
       })),
       durations_overlap: true
     };
-    console.info('[dirac-request-performance-v340] ' + JSON.stringify(payload));
+    if (record.action !== 'domain_register') console.info('[dirac-request-performance-v340] ' + JSON.stringify(payload));
   } catch (_) {}
 }
 
@@ -566,6 +566,166 @@ function diracLoginFatalWriteV324(payload, fatal) {
   }
 }
 
+// One bounded, copyable diagnostic line per observed domain_register request.
+// Instrumentation is read-only: it never changes auth, guards, database calls,
+// encryption, outbound traffic, or the response body/status. Secret values,
+// payloads, headers, emails, domains, URLs and query strings are never logged.
+const DIRAC_REGISTER_DIAGNOSTIC_DB_CODES_V365 = new Set([
+  'DATA_PROTECTION_FAILED', 'DIRAC_DATABASE_DISPATCH_PERMIT_REJECTED',
+  'DIRAC_DATABASE_EGRESS_PERMIT_REJECTED', 'DIRAC_DATABASE_GATEWAY_CONTEXT_NOT_AUTHORIZED',
+  'DIRAC_DATABASE_GATEWAY_POLICY_MISSING', 'DIRAC_DATABASE_GATEWAY_OPERATION_INVALID',
+  'CENTRAL_SECURITY_SERVICE_ROLE_BLOCKED', 'SUPABASE_FETCH_FAILED',
+  'SUPABASE_FETCH_TIMEOUT', 'SUPABASE_CONFIGURATION_INVALID', 'SUPABASE_KEY_INVALID',
+  'SUPABASE_PATH_INVALID', 'SUPABASE_METHOD_NOT_ALLOWED', 'AUTHENTICATED_BAN_DATABASE_TARGET_UNAVAILABLE',
+  'UPSTREAM_RESPONSE_TOO_LARGE', 'DIRAC_EGRESS_RESPONSE_TOO_LARGE',
+  'DIRAC_EGRESS_STREAM_TIMEOUT', 'DIRAC_PINNED_DNS_IP_REQUIRED',
+  'ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT',
+  'ERR_INVALID_URL', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT', 'AbortError', 'PGRST116', 'PGRST125', 'PGRST202',
+  'PGRST204', 'PGRST205', '42P01', '42703', '42501', '23505', '23503',
+  '23502', '57014', '53300', '40P01'
+]);
+
+function diracRegisterDiagnosticCodeV365(value) {
+  if (typeof value !== 'string') return '';
+  return DIRAC_REGISTER_DIAGNOSTIC_DB_CODES_V365.has(value) ? value : '';
+}
+
+function diracRegisterDiagnosticTargetV365(path, options) {
+  try {
+    const key = resolveDiracSupabaseTargetKey(path, options);
+    return Object.prototype.hasOwnProperty.call(DIRAC_SUPABASE_TARGET_ENVS, key) ? key : 'unavailable';
+  } catch (_) { return 'unavailable'; }
+}
+
+function diracRegisterDiagnosticObserveDbV365(marker, result, error) {
+  if (!marker || !marker.traceId) return;
+  const trace = DIRAC_LOGIN_FATAL_STATE_V324.traces.get(marker.traceId);
+  const state = trace && trace.registerDiagnosticV365;
+  if (!state || state.emitted) return;
+  const status = Number(result && result.status || 0);
+  const ok = !error && Boolean(result && result.ok === true);
+  const code = diracRegisterDiagnosticCodeV365(error && error.code)
+    || diracRegisterDiagnosticCodeV365(result && result.error)
+    || diracRegisterDiagnosticCodeV365(result && result.data && result.data.code)
+    || diracRegisterDiagnosticCodeV365(result && result.code)
+    || 'UNCLASSIFIED';
+  const operation = {
+    ordinal: marker.ordinal, method: marker.method, route: marker.route,
+    target: marker.target || 'unavailable', status, ok,
+    code: ok ? 'NONE' : code,
+    transport: result && result.data && result.data.code === 'SUPABASE_FETCH_FAILED'
+      ? 'no_response_headers' : result && result.data && result.data.code === 'SUPABASE_FETCH_TIMEOUT'
+        ? 'timeout' : 'not_identified'
+  };
+  state.lastDbCall = operation;
+  if (!ok) {
+    state.failedDbCalls += 1;
+    if (!state.firstDbFailure) state.firstDbFailure = operation;
+    state.lastDbFailure = operation;
+    if (marker.method === 'POST') state.lastPostFailure = operation;
+  }
+}
+
+function diracRegisterDiagnosticCaptureResponseV365(req, payload, status) {
+  const trace = diracLoginFatalTraceV324(req);
+  const state = trace && trace.registerDiagnosticV365;
+  if (!state || state.emitted) return;
+  state.responseStatus = Number(status || 0);
+  const code = payload && typeof payload === 'object' && typeof payload.code === 'string'
+    ? payload.code : '';
+  if (/^[A-Z][A-Z0-9_]{2,95}$/.test(code)) state.responseCode = code;
+}
+
+function diracRegisterDiagnosticEnvFactorV365(name) {
+  const encoded = process.env[name];
+  if (typeof encoded !== 'string' || !encoded) return 'missing';
+  if (!/^[A-Za-z0-9_-]{43}$/.test(encoded)) return 'invalid_format';
+  const bytes = Buffer.from(encoded, 'base64url');
+  try { return bytes.length === 32 && bytes.toString('base64url') === encoded ? 'format_valid' : 'invalid_format'; }
+  finally { bytes.fill(0); }
+}
+
+function diracRegisterDiagnosticEnvStatusV365() {
+  const root = String(process.env.DIRAC_SECURITY_ROOT_SECRET || '').trim();
+  const minimum = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production' ? 3000 : 32;
+  const k2 = process.env.DIRAC_DATA_ENCRYPTION_KEY_2;
+  const k3 = process.env.DIRAC_DATA_ENCRYPTION_KEY_3;
+  const k4 = process.env.DIRAC_DATA_ENCRYPTION_KEY_4;
+  const k5 = process.env.DIRAC_DATA_ENCRYPTION_KEY_5;
+  return {
+    DIRAC_SECURITY_ROOT_SECRET: !root ? 'missing' : Buffer.byteLength(root, 'utf8') < minimum ? 'invalid_length' : 'length_valid',
+    DIRAC_DATA_ENCRYPTION_KEY_2: diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_2'),
+    DIRAC_DATA_ENCRYPTION_KEY_3: diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_3'),
+    DIRAC_DATA_ENCRYPTION_KEY_4: diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_4'),
+    DIRAC_DATA_ENCRYPTION_KEY_5: diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_5'),
+    four_factors_distinct: typeof k2 === 'string' && typeof k3 === 'string'
+      && typeof k4 === 'string' && typeof k5 === 'string'
+      && k2 !== k3 && k2 !== k4 && k2 !== k5
+      && k3 !== k4 && k3 !== k5 && k4 !== k5
+  };
+}
+
+function diracRegisterDiagnosticDbEnvV365(target) {
+  const envs = DIRAC_SUPABASE_TARGET_ENVS[target];
+  if (!envs) return { target: 'unavailable' };
+  return {
+    target,
+    url_present: Boolean(String(process.env[envs.url] || '').trim()),
+    anon_key_present: Boolean(String(process.env[envs.anonKey] || '').trim()),
+    service_key_present: Boolean(String(process.env[envs.serviceKey] || '').trim())
+  };
+}
+
+function diracRegisterDiagnosticEmitV365(req, res, trace, endEvent) {
+  const state = trace && trace.registerDiagnosticV365;
+  if (!state || state.emitted) return;
+  state.emitted = true;
+  try {
+    const status = Number(res && res.statusCode || state.responseStatus || 0);
+    const failed = state.lastPostFailure || state.lastDbFailure;
+    const code = failed && failed.code || '';
+    const env = status >= 500 ? diracRegisterDiagnosticEnvStatusV365() : null;
+    const allFactorsValid = env && env.DIRAC_SECURITY_ROOT_SECRET === 'length_valid'
+      && env.DIRAC_DATA_ENCRYPTION_KEY_2 === 'format_valid'
+      && env.DIRAC_DATA_ENCRYPTION_KEY_3 === 'format_valid'
+      && env.DIRAC_DATA_ENCRYPTION_KEY_4 === 'format_valid'
+      && env.DIRAC_DATA_ENCRYPTION_KEY_5 === 'format_valid'
+      && env.four_factors_distinct === true;
+    const reason = status >= 200 && status < 300 ? 'success'
+      : code === 'DATA_PROTECTION_FAILED'
+        ? allFactorsValid ? 'encryption_or_payload_unclassified' : 'encryption_env_invalid_or_missing'
+        : code === 'DIRAC_DATABASE_DISPATCH_PERMIT_REJECTED'
+          || code === 'DIRAC_DATABASE_EGRESS_PERMIT_REJECTED'
+          ? 'database_permit_rejected_no_bypass'
+          : code === 'SUPABASE_FETCH_FAILED' || code === 'SUPABASE_FETCH_TIMEOUT'
+            ? 'database_transport_failed'
+            : failed ? 'database_or_gateway_failed'
+              : status >= 500 ? 'application_failure_no_failed_db_observed'
+                : 'application_or_policy_rejected';
+    const perf = DIRAC_REQUEST_PERFORMANCE_STATE_V340.requests.get(req);
+    const payload = {
+      v: 'dirac-register-single-diagnostic-v365', action: 'domain_register',
+      trace_id: trace.traceId, request_id: trace.vercelRequestId,
+      build_sha256: trace.buildSha256, result: reason, http_status: status,
+      response_code: state.responseCode || 'not_captured',
+      finish: endEvent, elapsed_ms: Math.max(0, Date.now() - trace.startedAt),
+      central_guard_stages_seen: perf && perf.stages ? perf.stages.size : 0,
+      central_guard_blocked: state.guardBlocked,
+      db_calls_observed: trace.dbOrdinal,
+      failed_db_calls: state.failedDbCalls,
+      first_db_failure: state.firstDbFailure,
+      last_post_failure: state.lastPostFailure,
+      last_db_failure: state.lastDbFailure,
+      last_db_call: state.lastDbCall,
+      failed_phase: state.failurePhase || 'none',
+      env_five_key: env,
+      db_target_env: failed ? diracRegisterDiagnosticDbEnvV365(failed.target) : null
+    };
+    require('fs').writeSync(2, '[dirac-register-single-diagnostic-v365] ' + JSON.stringify(payload) + '\n');
+  } catch (_) { /* Diagnosis may never change request outcome. */ }
+}
+
 function diracLoginFatalTrimV324(now) {
   for (const [traceId, trace] of DIRAC_LOGIN_FATAL_STATE_V324.traces) {
     if (now - Number(trace && trace.lastAt || 0) > 120000) DIRAC_LOGIN_FATAL_STATE_V324.traces.delete(traceId);
@@ -603,6 +763,11 @@ function diracLoginFatalBeginV324(req, res) {
     vercelRequestId: diracLoginFatalSafeTokenV324(req && req.headers && req.headers['x-vercel-id'], 'unavailable', 120),
     buildSha256: diracLoginFatalBuildShaV324()
   };
+  if (trace.action === 'domain_register') trace.registerDiagnosticV365 = {
+    emitted: false, responseStatus: 0, responseCode: '', guardBlocked: false,
+    failedDbCalls: 0, firstDbFailure: null, lastDbFailure: null,
+    lastPostFailure: null, lastDbCall: null, failurePhase: ''
+  };
   DIRAC_LOGIN_FATAL_STATE_V324.requestIds.set(req, traceId);
   DIRAC_LOGIN_FATAL_STATE_V324.traces.set(traceId, trace);
   try { if (res && typeof res.setHeader === 'function') res.setHeader('X-Dirac-Login-Diagnostic', DIRAC_LOGIN_FATAL_DIAGNOSTIC_V324 + ':' + traceId); } catch (_) {}
@@ -612,11 +777,13 @@ function diracLoginFatalBeginV324(req, res) {
       diracLoginFatalMarkIdV324(traceId, 'response.finish', 'done', {
         status: Number(res.statusCode || 0), finished: true
       }, res);
+      if (trace.action === 'domain_register') diracRegisterDiagnosticEmitV365(req, res, trace, 'finish');
     });
     res.once('close', () => {
       diracLoginFatalMarkIdV324(traceId, 'response.close', trace.finished ? 'after_finish' : 'before_finish', {
         status: Number(res.statusCode || 0), finished: trace.finished
       }, res);
+      if (trace.action === 'domain_register') diracRegisterDiagnosticEmitV365(req, res, trace, 'close');
     });
   }
   diracLoginFatalMarkIdV324(traceId, 'request.enter', 'begin', {}, res);
@@ -651,6 +818,14 @@ function diracLoginFatalMarkIdV324(traceId, phase, state, meta, res) {
     response: diracLoginFatalResponseV324(res),
     meta: diracLoginFatalSafeMetaV324(meta)
   };
+  if (trace.action === 'domain_register') {
+    const diagnostic = trace.registerDiagnosticV365;
+    if (diagnostic && !diagnostic.emitted) {
+      if (phase === 'central_guard.stage' && state === 'blocked') diagnostic.guardBlocked = true;
+      if (state === 'throw' || state === 'rejected' || state === 'blocked') diagnostic.failurePhase = trace.phase;
+    }
+    return true;
+  }
   return diracLoginFatalWriteV324(payload, false);
 }
 
@@ -683,8 +858,10 @@ function diracLoginFatalDatabaseStartV324(ctx, path, options) {
     traceId: trace.traceId,
     ordinal: trace.dbOrdinal,
     startedAt: Date.now(),
-    route: diracLoginFatalDatabaseRouteV324(path),
-    method: String(options && options.method || 'GET').toUpperCase()
+    route: trace.action === 'domain_register' && String(path || '').split('?')[0] === '/auth/v1/admin/users'
+      ? 'auth:admin_users' : diracLoginFatalDatabaseRouteV324(path),
+    method: String(options && options.method || 'GET').toUpperCase(),
+    target: trace.action === 'domain_register' ? diracRegisterDiagnosticTargetV365(path, options) : ''
   };
   diracLoginFatalMarkIdV324(marker.traceId, 'database.call', 'begin', {
     route: marker.route,
@@ -701,6 +878,7 @@ function diracLoginFatalDatabaseEndV324(marker, result, error, res) {
   if (!marker || !marker.traceId) return false;
   const rows = result && Array.isArray(result.data) ? result.data.length : -1;
   const safeError = error ? diracLoginFatalSafeErrorV324(error, 'database') : null;
+  diracRegisterDiagnosticObserveDbV365(marker, result, error);
   return diracLoginFatalMarkIdV324(marker.traceId, 'database.call', error ? 'throw' : 'done', {
     route: marker.route,
     method: marker.method,
@@ -37854,6 +38032,7 @@ __diracV202RegisterMiddleware(async function diracPasswordArgon2VerifiedShadowWr
 
   res.json = async function diracPasswordArgon2V4Json(payload) {
     const httpStatus = Number(capturedStatus || res.statusCode || 200);
+    if (action === 'domain_register') diracRegisterDiagnosticCaptureResponseV365(req, payload, httpStatus);
     diracLoginFatalMarkV324(req, 'response.argon_forward', 'begin', { status: httpStatus }, res);
     const forwardedResponseV324 = await originalJson(payload);
     const finalStatusV348 = Number(res.statusCode || httpStatus);
