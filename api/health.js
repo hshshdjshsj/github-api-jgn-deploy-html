@@ -638,31 +638,53 @@ function diracRegisterDiagnosticCaptureResponseV365(req, payload, status) {
 }
 
 function diracRegisterDiagnosticEnvFactorV365(name) {
-  const encoded = process.env[name];
-  if (typeof encoded !== 'string' || !encoded) return 'missing';
-  if (!/^[A-Za-z0-9_-]{43}$/.test(encoded)) return 'invalid_format';
-  const bytes = Buffer.from(encoded, 'base64url');
-  try { return bytes.length === 32 && bytes.toString('base64url') === encoded ? 'format_valid' : 'invalid_format'; }
-  finally { bytes.fill(0); }
+  const supplied = process.env[name];
+  if (typeof supplied !== 'string' || !supplied) return null;
+  let encoded = supplied.trim();
+  if ((encoded.startsWith('"') && encoded.endsWith('"'))
+      || (encoded.startsWith("'") && encoded.endsWith("'"))) encoded = encoded.slice(1, -1);
+  let bytes, longSecret;
+  try {
+    if (/^(?:0x)?[a-f0-9]{64}$/i.test(encoded)) {
+      bytes = Buffer.from(/^0x/i.test(encoded) ? encoded.slice(2) : encoded, 'hex');
+    } else if (/^[A-Za-z0-9_-]{43}=?$/.test(encoded)) {
+      const unpadded = encoded.endsWith('=') ? encoded.slice(0, -1) : encoded;
+      bytes = Buffer.from(unpadded, 'base64url');
+      if (bytes.toString('base64url') !== unpadded) return null;
+    } else if (/^[A-Za-z0-9+/]{43}=?$/.test(encoded)) {
+      const padded = encoded.endsWith('=') ? encoded : encoded + '=';
+      bytes = Buffer.from(padded, 'base64');
+      if (bytes.toString('base64') !== padded) return null;
+    } else if (Buffer.byteLength(encoded, 'utf8') >= 3000
+        && Buffer.byteLength(encoded, 'utf8') <= 8192) {
+      longSecret = Buffer.from(encoded, 'utf8');
+      bytes = Buffer.from(crypto.hkdfSync('sha512', longSecret,
+        Buffer.from('dirac-five-key-raw-env-salt-v1', 'utf8'),
+        Buffer.from('dirac-five-key-raw-env-factor-v1', 'utf8'), 32));
+    } else return null;
+    return bytes.length === 32 ? bytes.toString('base64url') : null;
+  } catch (_) { return null; }
+  finally {
+    if (bytes) bytes.fill(0);
+    if (longSecret) longSecret.fill(0);
+  }
 }
 
 function diracRegisterDiagnosticEnvStatusV365() {
   const root = String(process.env.DIRAC_SECURITY_ROOT_SECRET || '').trim();
   const minimum = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production' ? 3000 : 32;
-  const k2 = process.env.DIRAC_DATA_ENCRYPTION_KEY_2;
-  const k3 = process.env.DIRAC_DATA_ENCRYPTION_KEY_3;
-  const k4 = process.env.DIRAC_DATA_ENCRYPTION_KEY_4;
-  const k5 = process.env.DIRAC_DATA_ENCRYPTION_KEY_5;
+  const k2 = diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_2');
+  const k3 = diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_3');
+  const k4 = diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_4');
+  const k5 = diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_5');
   return {
     DIRAC_SECURITY_ROOT_SECRET: !root ? 'missing' : Buffer.byteLength(root, 'utf8') < minimum ? 'invalid_length' : 'length_valid',
-    DIRAC_DATA_ENCRYPTION_KEY_2: diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_2'),
-    DIRAC_DATA_ENCRYPTION_KEY_3: diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_3'),
-    DIRAC_DATA_ENCRYPTION_KEY_4: diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_4'),
-    DIRAC_DATA_ENCRYPTION_KEY_5: diracRegisterDiagnosticEnvFactorV365('DIRAC_DATA_ENCRYPTION_KEY_5'),
-    four_factors_distinct: typeof k2 === 'string' && typeof k3 === 'string'
-      && typeof k4 === 'string' && typeof k5 === 'string'
-      && k2 !== k3 && k2 !== k4 && k2 !== k5
-      && k3 !== k4 && k3 !== k5 && k4 !== k5
+    DIRAC_DATA_ENCRYPTION_KEY_2: k2 ? 'format_valid' : process.env.DIRAC_DATA_ENCRYPTION_KEY_2 ? 'invalid_format' : 'missing',
+    DIRAC_DATA_ENCRYPTION_KEY_3: k3 ? 'format_valid' : process.env.DIRAC_DATA_ENCRYPTION_KEY_3 ? 'invalid_format' : 'missing',
+    DIRAC_DATA_ENCRYPTION_KEY_4: k4 ? 'format_valid' : process.env.DIRAC_DATA_ENCRYPTION_KEY_4 ? 'invalid_format' : 'missing',
+    DIRAC_DATA_ENCRYPTION_KEY_5: k5 ? 'format_valid' : process.env.DIRAC_DATA_ENCRYPTION_KEY_5 ? 'invalid_format' : 'missing',
+    four_factors_distinct: Boolean(k2 && k3 && k4 && k5 && k2 !== k3 && k2 !== k4 && k2 !== k5
+      && k3 !== k4 && k3 !== k5 && k4 !== k5)
   };
 }
 
