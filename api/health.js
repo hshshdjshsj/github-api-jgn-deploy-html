@@ -58566,7 +58566,7 @@ const DIRAC_CENTRAL_PATCH_TARGETS_V221 = Object.freeze([
 ]);
 const DIRAC_CENTRAL_LEGACY_DUPLICATE_FUNCTIONS_V221 = Object.freeze({});
 const DIRAC_CENTRAL_BAN_FUNCTION_HASHES_V221 = Object.freeze({
-  diracCentralBanAndBlockV146: 'a5315d36c86c39e30a863ea43a2ba8de19a92bd9dce23eba375024645dff10ba',
+  diracCentralBanAndBlockV146: 'f2f33cfa49df303355dd758dfde9a94cc51a227d3fd3af41c3b5b8eef14187cb',
   diracCentralWritePersistentBanV146: '39aff298cdaa263aeb6d6e4592ea7554d32f2e56006efdef7cffc88a4b8ee89a',
   diracCentralCheckPersistentBanV146: 'c2e2e9a7ab28fe0fc54202459184643ac9df57f0a5445ad5b418ca77fb4b7629',
   diracCentralBlockMsV146: '15ba6d2ca1c5370c7d650b5f82b0e93169f7e9085426877664d962412f7dfce2',
@@ -70934,6 +70934,23 @@ async function diracCentralBanAndBlockV146(req, res, ctx, action, method, reason
   if (ctx) ctx.__diracCentralPersistentBanWrittenV194 = Boolean(identityBanWritten && hardBanResult && hardBanResult.ok === true);
   if (!(identityBanWritten && hardBanResult && hardBanResult.ok === true)) {
     return diracCentralPersistenceUnavailableResponseV210(res);
+  }
+  let persistentBanAlertDrainV331 = null;
+  try {
+    if (typeof diracCentralEmitDebugV211 === 'function') {
+      diracCentralEmitDebugV211(ctx, 'persistent_ban_written', {
+        reason: threat.kind,
+        persistent_ban_written: true,
+        ban_type: 'central_guard_global_ban_v146',
+        ban_permanent: true,
+        blocked_until_ms: DIRAC_PERMANENT_SECURITY_RECORD_UNTIL_MS_V335
+      });
+      persistentBanAlertDrainV331 = DIRAC_SECURITY_ALERT_STATE_V320 && DIRAC_SECURITY_ALERT_STATE_V320.drainPromise;
+    }
+  } catch (persistentBanAlertErrorV331) { diracCentralRecordSuppressedExceptionV221(persistentBanAlertErrorV331); }
+  if (persistentBanAlertDrainV331 && typeof persistentBanAlertDrainV331.then === 'function') {
+    try { await persistentBanAlertDrainV331; }
+    catch (persistentBanAlertWaitErrorV331) { diracSecurityAlertLocalLogV321('persistent_ban_delivery_wait_failed', persistentBanAlertWaitErrorV331); }
   }
   return diracCentralBlockedResponseV146(res, reason);
 }
