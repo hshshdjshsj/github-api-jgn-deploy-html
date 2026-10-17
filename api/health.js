@@ -9450,7 +9450,7 @@ async function supabaseFetch(path, options = {}) {
     data = text;
   }
 
-  if (response.ok && (/^\/rest\/v1\/(?:customers|orders|order_items|domain_orders|domain_passkeys|payment_gateway_events|payment_transactions|security_customer_auth_links|security_customer_events|security_customer_login_logs|security_customer_sessions|security_logs|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)(?:\?|$)/.test(cleanPath)
+  if (response.ok && (/^\/rest\/v1\/(?:customers|orders|order_items|domain_orders|domain_passkeys|payment_gateway_events|payment_transactions|security_customer_auth_links|security_customer_events|security_customer_login_logs|security_customer_sessions|security_logs|security_lost_passkey_recovery_sessions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security)(?:\?|$)/.test(cleanPath)
       || /^\/auth\/v1\/(?:signup|user|token|admin\/users)(?:[/?]|$)/.test(cleanPath))) {
     data = require('../lib/data-protection.js').decode(cleanPath, data);
   }
@@ -69339,7 +69339,8 @@ async function diracCentralPinnedHttpsFetchV230(
     : parsedUrl.pathname + parsedUrl.search;
   if (!supportDispatch && body.length && ['POST', 'PATCH', 'PUT'].includes(method)
       && headers['content-type'] === 'application/json'
-      && (/^\/rest\/v1\/(?:customers|security_customer_auth_links|domain_passkeys|orders|order_items|domain_orders|payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security|security_customer_events|security_customer_login_logs)$/.test(parsedUrl.pathname)
+      && (/^\/rest\/v1\/(?:customers|security_customer_auth_links|domain_passkeys|orders|order_items|domain_orders|payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security|security_customer_events|security_customer_login_logs|security_customer_sessions|security_lost_passkey_recovery_sessions)$/.test(parsedUrl.pathname)
+        || parsedUrl.pathname === '/rest/v1/rpc/dirac_central_atomic_claim_record_v230'
         || /^\/auth\/v1\/(?:signup|user|admin\/users)(?:\/[0-9a-f-]{36})?$/.test(parsedUrl.pathname))
       && diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())) {
     // Storage encryption starts only after the unchanged one-use egress permit.
@@ -70112,6 +70113,7 @@ function diracSecurityAlertDrainV320() {
         }
         continue;
       }
+      if (item.dispatchClaimV505 && await item.dispatchClaimV505 !== true) continue;
       let delivered = false;
       for (let attempt = 0; attempt <= config.maxRetries && !delivered; attempt += 1) {
         try {
@@ -70193,7 +70195,19 @@ function diracSecurityAlertScheduleV320(ctx, event, extra) {
     128,
     (value) => Number(value || 0)
   );
-  const dedupeKey = diracSecurityAlertHmacV320('dedupe', [
+  const banStorageV505 = ctx && ctx.req && DIRAC_BAN_STORAGE_REQUESTS_V501.get(ctx.req);
+  const committedBanV505 = banStorageV505 && banStorageV505.committed;
+  const confirmedCompactBanV505 = snapshot.event === 'persistent_ban_written'
+    && committedBanV505 && committedBanV505.storage_version === 501
+    && committedBanV505.type === 'central_guard_global_ban_v146'
+    && /^[a-f0-9]{64}$/.test(String(committedBanV505.ban_id || ''))
+    && typeof committedBanV505.created_at === 'string' && Number.isFinite(Date.parse(committedBanV505.created_at));
+  const dedupeKey = diracSecurityAlertHmacV320('dedupe', (confirmedCompactBanV505 ? [
+    snapshot.event,
+    committedBanV505.type,
+    committedBanV505.ban_id,
+    committedBanV505.created_at
+  ] : [
     snapshot.event,
     snapshot.action,
     snapshot.reason,
@@ -70201,7 +70215,7 @@ function diracSecurityAlertScheduleV320(ctx, event, extra) {
     snapshot.account_fingerprint,
     snapshot.device_fingerprint,
     snapshot.event === 'persistent_ban_written' ? snapshot.request_id : ''
-  ].join('|'));
+  ]).join('|'));
   if (Number(DIRAC_SECURITY_ALERT_STATE_V320.dedupe.get(dedupeKey) || 0) > now) return false;
   if (!DIRAC_SECURITY_ALERT_STATE_V320.dedupe.has(dedupeKey)
       && DIRAC_SECURITY_ALERT_STATE_V320.dedupe.size >= 5000) return false;
@@ -70249,6 +70263,11 @@ function diracSecurityAlertScheduleV320(ctx, event, extra) {
   if (!dedupeStoredV321) return false;
   DIRAC_SECURITY_ALERT_STATE_V320.queue.push(Object.freeze({
     snapshot,
+    dispatchClaimV505: confirmedCompactBanV505
+      ? claimPersistentSecurityKeyOnceV194('security-alert-dispatch-v505:' + dedupeKey, {
+        type: 'security_alert_dispatch_v505', claimed_at_ms: now
+      }, 100 * 365 * 24 * 60 * 60).catch(() => false)
+      : null,
     dedupeKey,
     dedupeUntil: dedupeUntilV321,
     priority: priorityV321,

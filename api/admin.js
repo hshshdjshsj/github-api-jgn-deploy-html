@@ -2971,7 +2971,7 @@ async function businessPartnerRequestUpdateV478(body, assertContext) {
   if (!type || !isUuid(current && current.customer_id) || !['pending','processing'].includes(currentStatus) || (type === 'partner_reseller_invite' && input.status === 'completed')) fail('ADMIN_PARTNER_REQUEST_STATE_INVALID', 409);
   const nowIso = new Date().toISOString(), priorMeta = current.metadata && typeof current.metadata === 'object' && !Array.isArray(current.metadata) ? current.metadata : {};
   const patchPath = '/rest/v1/security_customer_account_requests?id=eq.' + encodeURIComponent(input.request_id) + '&status=eq.' + encodeURIComponent(currentStatus) + '&select=' + encodeURIComponent('id,customer_id,request_type,status,reason,metadata,created_at,updated_at,completed_at,expires_at');
-  const patched = await dbFetch(patchPath, { method: 'PATCH', prefer: 'return=representation', body: { status: input.status, updated_at: nowIso, completed_at: input.status === 'processing' ? null : nowIso, metadata: { ...priorMeta, admin_note: input.note, admin_updated_at: nowIso, admin_updated_by: 'owner' } } });
+  const patched = await dbFetch(patchPath, { method: 'PATCH', prefer: 'return=representation', body: { reason: current.reason, status: input.status, updated_at: nowIso, completed_at: input.status === 'processing' ? null : nowIso, metadata: { ...priorMeta, admin_note: input.note, admin_updated_at: nowIso, admin_updated_by: 'owner' } } });
   assertContext();
   if (!patched || !patched.ok || !Array.isArray(patched.data) || patched.data.length !== 1 || String(patched.data[0] && patched.data[0].id || '').toLowerCase() !== input.request_id || String(patched.data[0] && patched.data[0].status || '').toLowerCase() !== input.status || adminPartnerRequestTypeV478(patched.data[0] && patched.data[0].request_type) !== type) fail('ADMIN_PARTNER_REQUEST_UPDATE_UNCONFIRMED', 503);
   return { ok: true, request: patched.data[0] };
@@ -2985,14 +2985,14 @@ async function adminPartnerInviteForAccountCreateV478(account, assertContext) {
   if (!result || !result.ok || !Array.isArray(result.data) || result.data.length !== 1) fail('ADMIN_ACCOUNT_PARTNER_REQUEST_INVALID', 409);
   const row = result.data[0], meta = adminPartnerRequestMetaV478(row && row.metadata);
   if (!isUuid(row && row.id) || !isUuid(row && row.customer_id) || meta.source !== 'partner_portal_v478' || !isUuid(meta.partner_auth_user_id) || !isEmail(meta.partner_email) || meta.email !== account.email || meta.name !== account.name || String(meta.phone || '') !== String(account.phone || '')) fail('ADMIN_ACCOUNT_PARTNER_REQUEST_MISMATCH', 409);
-  return { id: String(row.id).toLowerCase(), customer_id: String(row.customer_id).toLowerCase(), status: String(row.status || '').toLowerCase(), metadata: row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {} };
+  return { id: String(row.id).toLowerCase(), customer_id: String(row.customer_id).toLowerCase(), status: String(row.status || '').toLowerCase(), reason: row.reason, metadata: row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {} };
 }
 async function adminPartnerInviteCompleteV478(invite, user, assertContext) {
   const nowIso = new Date().toISOString(), currentStatus = String(invite && invite.status || '').toLowerCase(), priorMeta = invite && invite.metadata && typeof invite.metadata === 'object' && !Array.isArray(invite.metadata) ? invite.metadata : {};
   if (!invite || !isUuid(invite.id) || !isUuid(invite.customer_id) || !['pending','processing'].includes(currentStatus) || !user || !isUuid(user.id)) fail('ADMIN_ACCOUNT_PARTNER_REQUEST_INVALID', 409);
   assertContext();
   const path = '/rest/v1/security_customer_account_requests?id=eq.' + encodeURIComponent(invite.id) + '&status=eq.' + encodeURIComponent(currentStatus) + '&select=' + encodeURIComponent('id,status,request_type,metadata,completed_at');
-  const result = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { status: 'completed', updated_at: nowIso, completed_at: nowIso, metadata: { ...priorMeta, reseller_auth_user_id: String(user.id).toLowerCase(), completed_by_admin: true, admin_updated_at: nowIso } } });
+  const result = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { reason: invite.reason, status: 'completed', updated_at: nowIso, completed_at: nowIso, metadata: { ...priorMeta, reseller_auth_user_id: String(user.id).toLowerCase(), completed_by_admin: true, admin_updated_at: nowIso } } });
   assertContext();
   const row = result && Array.isArray(result.data) && result.data.length === 1 ? result.data[0] : null, meta = adminPartnerRequestMetaV478(row && row.metadata);
   if (!result || !result.ok || !row || String(row.id || '').toLowerCase() !== invite.id || String(row.status || '').toLowerCase() !== 'completed' || String(row.request_type || '') !== 'partner_reseller_invite' || meta.reseller_auth_user_id !== String(user.id).toLowerCase()) fail('ADMIN_ACCOUNT_PARTNER_REQUEST_COMPLETE_FAILED', 503);
