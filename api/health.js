@@ -68970,7 +68970,8 @@ async function diracCentralPinnedHttpsFetchV230(
       && !diracCentralConsumeDatabaseEgressPermitV362(parsedUrl, method, diracCentralCurrentContextV149(), options)) {
     throw Object.assign(new Error('DIRAC_DATABASE_DISPATCH_PERMIT_REJECTED'), { code: 'DIRAC_DATABASE_DISPATCH_PERMIT_REJECTED' });
   }
-  const storagePathV1 = !supportDispatch
+  let storageMethodV539 = method, securityStorageOwnerV539 = '';
+  let storagePathV1 = !supportDispatch
       && diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())
     ? require('../lib/data-protection.js').storagePathV1(parsedUrl.pathname + parsedUrl.search)
     : parsedUrl.pathname + parsedUrl.search;
@@ -68978,22 +68979,39 @@ async function diracCentralPinnedHttpsFetchV230(
       && headers['content-type'] === 'application/json'
       && (/^\/rest\/v1\/(?:customers|security_customer_auth_links|domain_passkeys|orders|order_items|domain_orders|payment_gateway_events|payment_transactions|security_customer_account_requests|dirac_persistent_bans|dirac_s2s_security|security_customer_events|security_customer_login_logs|security_customer_sessions|security_lost_passkey_recovery_sessions)$/.test(parsedUrl.pathname)
         || parsedUrl.pathname === '/rest/v1/rpc/dirac_central_atomic_claim_record_v230'
+        || parsedUrl.pathname === '/rest/v1/rpc/dirac_central_atomic_consume_v230'
         || /^\/auth\/v1\/(?:signup|user|admin\/users)(?:\/[0-9a-f-]{36})?$/.test(parsedUrl.pathname))
       && diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())) {
     // Storage encryption starts only after the unchanged one-use egress permit.
     const businessText = Boolean(process.env.DOMAIN_SUPABASE_URL)
       && diracSupabaseValidatedOriginV404(process.env.DOMAIN_SUPABASE_URL) === parsedUrl.origin;
-    const storedBody = require('../lib/data-protection.js').encode(parsedUrl.pathname + parsedUrl.search, JSON.parse(body.toString('utf8')), businessText, method);
+    const plainBodyV539 = JSON.parse(body.toString('utf8'));
+    if (parsedUrl.pathname === '/rest/v1/dirac_s2s_security' || /^\/rest\/v1\/rpc\/dirac_central_atomic_(?:claim_record|consume)_v230$/.test(parsedUrl.pathname)) {
+      const storageContextV539 = diracCentralCurrentContextV149();
+      const paidStorageV539 = storageContextV539 && storageContextV539.action === 'midtrans_webhook' ? diracInvoiceContinuationStateV441(storageContextV539.req) : null;
+      securityStorageOwnerV539 = require('../lib/security-state.js').owner(plainBodyV539, storageContextV539 && storageContextV539.__diracCentralVerifiedOwnerCustomerIdV217 || paidStorageV539 && paidStorageV539.cap.customerId);
+    }
+    const storedBody = require('../lib/data-protection.js').encode(parsedUrl.pathname + parsedUrl.search, plainBodyV539, businessText, method);
     const encodedBody = Buffer.from(JSON.stringify(storedBody), 'utf8');
     body.fill(0);
     body = encodedBody;
     headers['content-length'] = String(body.length);
   }
+  if (!supportDispatch && diracCentralConfiguredSupabaseHostsV194().has(String(parsedUrl.hostname || '').toLowerCase())
+      && /^\/rest\/v1\/(?:dirac_s2s_security|rpc\/dirac_central_atomic_(?:claim_record|consume)_v230)$/.test(parsedUrl.pathname)) {
+    const compactStorageV539 = require('../lib/security-state.js').request(parsedUrl.pathname + parsedUrl.search, method, body.length ? JSON.parse(body.toString('utf8')) : undefined, headers.prefer || '', securityStorageOwnerV539);
+    if (compactStorageV539) {
+      storagePathV1 = compactStorageV539.path; storageMethodV539 = compactStorageV539.method;
+      const compactBodyV539 = Buffer.from(JSON.stringify(compactStorageV539.body), 'utf8');
+      body.fill(0); body = compactBodyV539;
+      headers['content-type'] = 'application/json'; headers['content-length'] = String(body.length);
+    }
+  }
   return await new Promise((resolve, reject) => {
     let settled = false;
     const request = DIRAC_CENTRAL_NATIVE_HTTPS_REQUEST_V230({
       protocol: 'https:', hostname: parsedUrl.hostname, port: pinnedPort,
-      servername: parsedUrl.hostname, method, path: storagePathV1,
+      servername: parsedUrl.hostname, method: storageMethodV539, path: storagePathV1,
       headers, agent: pinnedAgent, rejectUnauthorized: true, minVersion: 'TLSv1.2',
       lookup(_hostname, lookupOptions, callback) {
         const pinnedFamily = net.isIP(pinnedIp);

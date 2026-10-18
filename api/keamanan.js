@@ -1619,7 +1619,8 @@ async function supabaseFetch(path, options = {}) {
   const method = String(options.method || 'GET').toUpperCase();
   if (!['GET','HEAD','POST','PATCH','PUT','DELETE'].includes(method)) throw resetError('SECURITY_RESET_DB_METHOD_INVALID', 405);
   securityResetAssertDbOperationV361(cleanPath, method, options);
-  const storagePath = require('../lib/data-protection.js').storagePathV1(cleanPath);
+  let storageMethodV539 = method;
+  let storagePath = require('../lib/data-protection.js').storagePathV1(cleanPath);
   const target = securitySupabaseTargetV334(cleanPath); const c = securitySupabaseCredentialsV334(target);
   const route = securityResetDiagnosticDbRouteV335(cleanPath); const callId = crypto.randomBytes(6).toString('hex');
   const headers = { Accept:'application/json', apikey: options.auth === 'service' ? c.service : c.anon };
@@ -1627,11 +1628,17 @@ async function supabaseFetch(path, options = {}) {
   if (options.prefer) headers.Prefer = String(options.prefer);
   let body;
   if (options.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(require('../lib/data-protection.js').encode(cleanPath, options.body)); if (Buffer.byteLength(body) > 262144) throw resetError('SECURITY_RESET_DB_BODY_TOO_LARGE', 413); }
+  const compactStorageV539 = require('../lib/security-state.js').request(cleanPath, method, body === undefined ? undefined : JSON.parse(body), options.prefer || '', require('../lib/security-state.js').owner(options.body, (diracCentralCurrentContextV149() && diracCentralCurrentContextV149().__diracPasswordResetVerifiedOwnerV333 || {}).customerId));
+  if (compactStorageV539) {
+    storagePath = compactStorageV539.path; storageMethodV539 = compactStorageV539.method;
+    body = JSON.stringify(compactStorageV539.body); headers['Content-Type'] = 'application/json';
+    if (Buffer.byteLength(body) > 262144) throw resetError('SECURITY_RESET_DB_BODY_TOO_LARGE', 413);
+  }
   diracResetDiagnosticV335(null, 'external.call', 'begin', { call_id: callId, method, target, auth_mode: options.bearer ? 'bearer' : String(options.auth || 'anon'), pathname: route.pathname, query_keys: route.query_keys, body_present: body !== undefined, body_bytes: body === undefined ? 0 : Buffer.byteLength(body), timeout_ms: 6500 });
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 6500); if (timer.unref) timer.unref();
   let response, data;
   try {
-    const outbound = { method, headers, body, redirect: 'error', signal: controller.signal };
+    const outbound = { method: storageMethodV539, headers, body, redirect: 'error', signal: controller.signal };
     const capability = securityResetEgressCapabilityV361(c.url + storagePath, outbound, 'database');
     response = await securityResetEgressFetchV361(c.url + storagePath, outbound, capability);
     data = await securityResetReadUpstreamV361(response);

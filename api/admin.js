@@ -343,7 +343,11 @@ async function dbFetch(path, options = {}, target = '') {
     const headers = { apikey: creds.service, Authorization: 'Bearer ' + creds.service, Accept: 'application/json' };
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
     if (options.prefer) headers.Prefer = options.prefer;
-    const response = await ADMIN_STANDALONE_FETCH(creds.url + require('../lib/data-protection.js').storagePathV1(cleanPath), { method, headers, body: options.body === undefined ? undefined : JSON.stringify(require('../lib/data-protection.js').encode(cleanPath, options.body, Boolean(process.env.DOMAIN_SUPABASE_URL) && new URL(process.env.DOMAIN_SUPABASE_URL).origin === new URL(creds.url).origin, method)), redirect: 'error', signal: controller.signal });
+    const storedBodyV539 = options.body === undefined ? undefined : require('../lib/data-protection.js').encode(cleanPath, options.body, Boolean(process.env.DOMAIN_SUPABASE_URL) && new URL(process.env.DOMAIN_SUPABASE_URL).origin === new URL(creds.url).origin, method);
+    const compactStorageV539 = require('../lib/security-state.js').request(cleanPath, method, storedBodyV539, options.prefer || '', require('../lib/security-state.js').owner(options.body));
+    const wireBodyV539 = compactStorageV539 ? compactStorageV539.body : storedBodyV539;
+    if (wireBodyV539 !== undefined) headers['Content-Type'] = 'application/json';
+    const response = await ADMIN_STANDALONE_FETCH(creds.url + (compactStorageV539 ? compactStorageV539.path : require('../lib/data-protection.js').storagePathV1(cleanPath)), { method: compactStorageV539 ? compactStorageV539.method : method, headers, body: wireBodyV539 === undefined ? undefined : JSON.stringify(wireBodyV539), redirect: 'error', signal: controller.signal });
     const raw = await readAdminUpstreamText(response, MAX_RESPONSE_BYTES, 'ADMIN_DATABASE_RESPONSE_INVALID');
     let data = null; if (raw) { try { data = JSON.parse(raw); } catch (_) { fail('ADMIN_DATABASE_RESPONSE_INVALID', 503); } }
     if (response.ok) data = require('../lib/data-protection.js').decode(cleanPath, data);
