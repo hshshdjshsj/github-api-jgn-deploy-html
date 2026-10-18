@@ -46702,7 +46702,7 @@ async function diracV143InspectOwnership(req, body) {
     return { ok: false, block: true, reason: 'frontend_customer_id_not_bound_to_session', source: 'customer_id' };
   }
 
-  const ownerRows = await diracV143ResolveOwnerRowsForIds(ids).catch(() => null);
+  const ownerRows = await diracV143ResolveOwnerRowsForIds(ids, req, body).catch(() => null);
   if (!Array.isArray(ownerRows)) return { ok: false, block: true, reason: 'ownership_store_unavailable', source: 'owner_lookup' };
   const foreign = ownerRows.filter((row) => row && row.customer_id && !allowed.has(String(row.customer_id)));
   if (foreign.length) {
@@ -46737,7 +46737,37 @@ async function diracV143ResolveOwner(req) {
   return { ok: true, authUserId, customerIds, source: 'security_customer_auth_links.v143' };
 }
 
-async function diracV143ResolveOwnerRowsForIds(ids) {
+async function diracV143ResolveOwnerRowsForIds(ids, req, body) {
+  const invoiceContext = diracCentralCurrentContextV149();
+  if (invoiceContext && ['invoice_document_export', 'invoice_email_send'].includes(invoiceContext.action)) {
+    // Keep the early ownership check, but resolve the exact invoice in its authoritative databases.
+    if (invoiceContext.req !== req || invoiceContext.method !== 'POST' || String(req && req.method || '').toUpperCase() !== 'POST'
+        || invoiceContext.action !== diracV143NormalizeAction(req && req.query && req.query.action)
+        || invoiceContext.classification !== 'browser' || invoiceContext.executionPhaseV211 !== 'guard'
+        || invoiceContext.currentStageV211 !== 'body validation' || invoiceContext.currentStageIndexV211 !== 18
+        || invoiceContext.centralGuardFullyPassedV211 === true || invoiceContext.failedStageV211 || invoiceContext.failureReasonV211
+        || invoiceContext.terminalResponse || invoiceContext.terminalBlockReason || BigInt(invoiceContext.passport || 0n) !== 0x3ffffn
+        || !diracInvoiceSourceV440(req, invoiceContext.action) || !diracInvoiceInputV440(invoiceContext, body).ok
+        || !Array.isArray(ids) || ids.length !== 1 || ids[0].key !== 'order_id' || ids[0].value !== body.order_id) {
+      throw new Error('INVOICE_EARLY_OWNER_SCOPE_INVALID');
+    }
+    let invoiceRows;
+    if (body.kind === 'domain') {
+      invoiceRows = await diracCentralFetchOwnerRowsV194('domain_orders', [body.order_id], ['id']);
+    } else {
+      const reads = await Promise.allSettled([
+        diracCentralFetchOwnerRowsV194('orders', [body.order_id], ['id'], 'commerce'),
+        diracCentralFetchOwnerRowsV194('orders', [body.order_id], ['id'], 'security')
+      ]);
+      if (reads[0].status !== 'fulfilled' || reads[1].status !== 'fulfilled'
+          || !Array.isArray(reads[0].value) || !Array.isArray(reads[1].value)) throw new Error('INVOICE_EARLY_OWNER_STORE_UNAVAILABLE');
+      invoiceRows = reads[0].value.concat(reads[1].value);
+    }
+    if (!Array.isArray(invoiceRows) || invoiceRows.length !== 1 || String(invoiceRows[0].id) !== body.order_id) {
+      throw new Error('INVOICE_EARLY_OWNER_BINDING_INVALID');
+    }
+    return invoiceRows;
+  }
   const rows = [];
   const orderIds = diracV143ValuesForKeys(ids, /^(order_id|order_code|id)$/i);
   const domainOrderIds = diracV143ValuesForKeys(ids, /^(domain_order_id|domain_order_code)$/i);
