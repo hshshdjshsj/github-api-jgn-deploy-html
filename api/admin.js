@@ -124,6 +124,8 @@ function syntheticAdminUuid() {
 }
 const ADMIN_USER_ID = syntheticAdminUuid();
 const ADMIN_OWNER_V466 = digest('dirac-admin-fixed-owner-v466');
+// Transitional fingerprint of the existing public enrollment; contains no secret or domain.
+const ADMIN_LEGACY_PASSKEY_IDENTITY_V507 = '602950b0d65ad661c4bd2e645d3920625021fe45aa2574391253fd7fb546bfcd';
 function legacyAdminOwnerV466() { return digest(ADMIN_EMAIL + ':' + ADMIN_USER_ID); }
 
 function isProduction() { return String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production'; }
@@ -613,6 +615,7 @@ async function adminAccountRevokePasskeysV480(link, reason, assertContext, trace
 }
 async function businessAccountManage(body, origin, assertContext) {
   const account = adminAccountMutationPayload(body);
+  if (account.email === ADMIN_EMAIL) fail('ADMIN_FACTORS_IMMUTABLE', 403);
   adminAccountEmailForOrigin(account.email, origin);
   assertContext();
   if (account.mode === 'create') {
@@ -804,6 +807,7 @@ function validateDurableEnrollment(key, value) {
       || !Number.isSafeInteger(passkey.signCount) || passkey.signCount < 0 || passkey.signCount > 4294967295
       || typeof value.totp !== 'string' || !/^[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{22}$/.test(value.totp)
       || (value.factorGuardV466 !== undefined && (typeof value.factorGuardV466 !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(value.factorGuardV466)))
+      || (value.factorIdentityV507 !== undefined && (typeof value.factorIdentityV507 !== 'string' || !/^[a-f0-9]{64}$/.test(value.factorIdentityV507)))
       || (value.totpKeyV466 !== undefined && value.totpKeyV466 !== true)
       || (value.legacyConfigKeyV466 !== undefined && (typeof value.legacyConfigKeyV466 !== 'string' || !/^s2s-admin-v405:enrollment:[a-f0-9]{64}$/.test(value.legacyConfigKeyV466)))
       || Buffer.byteLength(JSON.stringify(value), 'utf8') > 16384) fail('ADMIN_ENROLLMENT_INVALID', 503);
@@ -1744,17 +1748,25 @@ async function config(ops, scope) {
 }
 // v466: bind the fixed admin destination, both admin-only environment secrets, and the encrypted TOTP state.
 // The binding contains no raw secret and may only be created/refreshed after a successful passkey ceremony.
+function adminFactorIdentityV507(enrolled) {
+  const passkey = enrolled && enrolled.passkey || {};
+  return digest(stableJson({ version: enrolled.version, owner: enrolled.owner, origin: enrolled.origin, userHandle: enrolled.userHandle, createdAt: enrolled.createdAt, credentialId: passkey.credentialId, publicKeyJwk: passkey.publicKeyJwk, backupEligible: !!passkey.backupEligible }));
+}
 function adminFactorGuardV466(enrolled) {
   const primary = adminSecretState(), recovery = adminPasskeyRecoverySecretState();
   if (!primary.configured || !recovery.configured || !enrolled || typeof enrolled.totp !== 'string') fail('ADMIN_FACTOR_GUARD_UNAVAILABLE', 503);
   const key = deriveSecret('admin-factor-immutability-v466');
   try {
-    return crypto.createHmac('sha512', key).update(stableJson({ version: 466, owner: ADMIN_OWNER_V466, email: ADMIN_EMAIL, admin_secret: secretBinding(primary.secret), recovery_secret: secretBinding(recovery.secret), totp: digest(enrolled.totp), totp_key: enrolled.totpKeyV466 === true ? 466 : 405 })).digest('base64url');
+    const binding = { version: 466, owner: ADMIN_OWNER_V466, email: ADMIN_EMAIL, admin_secret: secretBinding(primary.secret), recovery_secret: secretBinding(recovery.secret), totp: digest(enrolled.totp), totp_key: enrolled.totpKeyV466 === true ? 466 : 405 };
+    if (enrolled.factorIdentityV507 !== undefined) binding.factor_identity = enrolled.factorIdentityV507;
+    return crypto.createHmac('sha512', key).update(stableJson(binding)).digest('base64url');
   } finally { key.fill(0); }
 }
-function sealAdminFactorGuardV466(enrolled) { return { ...enrolled, factorGuardV466: adminFactorGuardV466(enrolled) }; }
+function sealAdminFactorGuardV466(enrolled) { const bound = { ...enrolled, factorIdentityV507: adminFactorIdentityV507(enrolled) }; return { ...bound, factorGuardV466: adminFactorGuardV466(bound) }; }
 function assertAdminFactorGuardV466(enrolled) {
+  if (enrolled && enrolled.factorIdentityV507 !== undefined && !safeEqual(enrolled.factorIdentityV507, adminFactorIdentityV507(enrolled))) fail('ADMIN_FACTOR_GUARD_MISMATCH', 403);
   if (!enrolled || typeof enrolled.factorGuardV466 !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(enrolled.factorGuardV466) || !safeEqual(enrolled.factorGuardV466, adminFactorGuardV466(enrolled))) fail('ADMIN_FACTOR_GUARD_MISMATCH', 403);
+  if (enrolled.factorIdentityV507 === undefined && !safeEqual(ADMIN_LEGACY_PASSKEY_IDENTITY_V507, digest(stableJson({ credentialId: enrolled.passkey.credentialId, publicKeyJwk: enrolled.passkey.publicKeyJwk, userHandle: enrolled.userHandle })))) fail('ADMIN_FACTOR_GUARD_MISMATCH', 403);
   return true;
 }
 function totpKeyPurposeV466(enrolled) { return enrolled && enrolled.totpKeyV466 === true ? 'totp-storage' : 'totp-storage-legacy'; }
@@ -1808,7 +1820,7 @@ async function execute(ops) {
   if (ops.method === 'HEAD') return { ok: true };
   if (action === 'admin_entry') {
     const configured = adminSecretState().configured;
-    return { ok: true, email: ADMIN_EMAIL_MASKED, credentials_required: true, credentials_configured: configured, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30 };
+    return { ok: true, email: ADMIN_EMAIL_MASKED, credentials_required: true, credentials_configured: configured, passkey_recovery_configured: false, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30 };
   }
   if (action === 'admin_security_report') {
     await throttle(ops, scope, 'security-report', 3, 60);
@@ -1826,7 +1838,7 @@ async function execute(ops) {
     const nonceTarget = body._dirac_page_nonce_for;
     if (typeof nonceTarget === 'string' && Object.prototype.hasOwnProperty.call(CONTRACTS, nonceTarget) && CONTRACTS[nonceTarget].methods.includes('POST')) return { ok: true };
     const [enrolled, active] = await Promise.all([config(ops, scope), session(ops, scope, false)]);
-    return { ok: true, email: ADMIN_EMAIL_MASKED, enrolled: !!enrolled, enrollment_state: enrolled ? enrolled.enrollmentState : 'none', passkey_storage: ADMIN_PASSKEY_TABLE, authenticated: !!active, passkey_recovery_configured: adminPasskeyRecoverySecretState().configured, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: null, persistent_session: !!active, action_email_required: false, action_passkey_required: true };
+    return { ok: true, email: ADMIN_EMAIL_MASKED, enrolled: !!enrolled, enrollment_state: enrolled ? enrolled.enrollmentState : 'none', passkey_storage: ADMIN_PASSKEY_TABLE, authenticated: !!active, passkey_recovery_configured: false, factor_count: 3, email_code_min: EMAIL_CODE_MIN, email_code_max: EMAIL_CODE_MAX, email_code_seconds: EMAIL_CODE_SECONDS, totp_period: 30, expires_at: null, persistent_session: !!active, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_email_start') {
     await adminEmailRateTakeV491(ops, scope);
@@ -1882,38 +1894,18 @@ async function execute(ops) {
         if (await ops.claim(configKey(scope), pending, PENDING_ENROLLMENT_SECONDS) !== true) fail('ADMIN_ALREADY_ENROLLED', 409); enrolled = pending;
       } finally { secret.fill(0); }
     } else {
-      if (!enrolled || proof.revision !== enrolled.revision || credential.id !== enrolled.passkey.credentialId) fail('ADMIN_PASSKEY_STATE_CHANGED', 409); const handle = credential.response.userHandle;
+      if (!enrolled || proof.revision !== enrolled.revision || credential.id !== enrolled.passkey.credentialId) fail('ADMIN_PASSKEY_STATE_CHANGED', 409);
+      assertAdminFactorGuardV466(enrolled);
+      const handle = credential.response.userHandle;
       if (handle !== null && handle !== undefined && handle !== '' && handle !== enrolled.userHandle) fail('ADMIN_PASSKEY_USER_MISMATCH', 403); const verified = await ops.verifyAssertion({ credential, clientData, rpId: scope.rpId, passkey: enrolled.passkey });
       if (!verified || verified.ok !== true) fail('ADMIN_PASSKEY_INVALID', 403); passkey = { ...enrolled.passkey, signCount: verified.signCount }; const next = sealAdminFactorGuardV466({ ...migrateTotpKeyAfterPasskeyV466(ops, scope, enrolled), passkey, revision: randomToken() });
       if (await ops.replace(configKey(scope), enrolled.revision, next, next.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS) !== true) fail('ADMIN_PASSKEY_STATE_CHANGED', 409); enrolled = next;
-      if (enrolled.enrollmentState === 'pending_totp') { const secret = open(ops, enrolled.totp, configKey(scope), totpKeyPurposeV466(enrolled)); try { provisioning = { secret: base32(secret) }; } finally { secret.fill(0); } }
+      // Setup material is returned only by the successful first registration response.
     }
     await consume(ops, entry); const pending = enrolled.enrollmentState === 'pending_totp';
     const token = await issue(ops, scope, 'totp', { enroll: pending, totpBinding: digest(enrolled.totp), revision: enrolled.revision }); return { ok: true, ticket: token, stage: 'totp', enrollment: pending ? provisioning : null, period: 30 };
   }
-  if (action === 'admin_passkey_recovery_start') {
-    const recoveryState = adminPasskeyRecoverySecretState(); if (!recoveryState.configured) fail('ADMIN_PASSKEY_RECOVERY_NOT_CONFIGURED', 503);
-    const entry = await adminPasskeyRecoveryTicket(ops, scope, body.ticket), enrolled = await config(ops, scope);
-    await throttle(ops, scope, 'passkey-recovery-hour', 2, 3600);
-    if (!verifyAdminPasskeyRecoverySecret(body.recovery_secret)) fail('ADMIN_PASSKEY_RECOVERY_INVALID', 403);
-    if (!enrolled || enrolled.enrollmentState !== 'active') fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409);
-    assertAdminFactorGuardV466(enrolled);
-    await adminVerifyRecoveryTotp(ops, scope, enrolled, body.totp_code);
-    await consume(ops, entry);
-    const reference = crypto.randomBytes(12).toString('hex'), delivered = await ops.recoveryAlert({ to: ADMIN_EMAIL, kind: 'recovery', event: 'started', reference, origin: scope.origin });
-    if (!delivered || delivered.ok !== true) fail('ADMIN_EMAIL_DELIVERY_UNCONFIRMED', 503);
-    const challenge = randomToken(), token = await issue(ops, scope, 'passkey-recovery', { challenge, mode: 'registration', userHandle: enrolled.userHandle, revision: enrolled.revision, reference }, FACTOR_SECONDS);
-    return { ok: true, ticket: token, stage: 'passkey-recovery', mode: 'registration', publicKey: { challenge, rp: { id: scope.rpId, name: 'PT DIRAC INOVASI NUSANTARA' }, user: { id: enrolled.userHandle, name: ADMIN_EMAIL_MASKED, displayName: 'Administrator DIRAC' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, attestation: 'none' }, alert_reference: reference };
-  }
-  if (action === 'admin_passkey_recovery_verify') {
-    const entry = await ticket(ops, scope, body.ticket, 'passkey-recovery'); await throttle(ops, scope, 'passkey-recovery-verify:' + digest(body.ticket), 5, FACTOR_SECONDS);
-    const proof = entry.value, enrolled = await config(ops, scope); if (!enrolled || enrolled.enrollmentState !== 'active' || enrolled.revision !== proof.revision || enrolled.userHandle !== proof.userHandle) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409);
-    const credential = body.credential, clientData = validateClientData(credential, proof, scope), verified = await ops.verifyRegistration({ credential, clientData, rpId: scope.rpId });
-    if (!verified || verified.ok !== true || verified.credentialId !== credential.id || !verified.publicKeyJwk) fail('ADMIN_PASSKEY_INVALID', 403);
-    const next = { ...enrolled, passkey: { credentialId: verified.credentialId, publicKeyJwk: verified.publicKeyJwk, signCount: verified.signCount, backupEligible: verified.backupEligible }, revision: randomToken(), recoveredAt: Date.now() };
-    if (await ops.replace(configKey(scope), enrolled.revision, next, ENROLLMENT_SECONDS) !== true) fail('ADMIN_PASSKEY_STATE_CHANGED', 409);
-    await consume(ops, entry); return { ok: true, stage: 'recovered', recovered: true, relogin_required: true, alert_reference: proof.reference || '' };
-  }
+  if (action === 'admin_passkey_recovery_start' || action === 'admin_passkey_recovery_verify') fail('ADMIN_FACTORS_IMMUTABLE', 403);
   if (action === 'admin_totp_verify') {
     const entry = await ticket(ops, scope, body.ticket, 'totp'); await throttle(ops, scope, 'totp-verify', 5, FACTOR_SECONDS);
     if (typeof body.code !== 'string' || !/^[0-9]{6}$/.test(body.code)) fail('ADMIN_TOTP_INVALID', 401); const proof = entry.value, enrolled = await config(ops, scope);
@@ -2091,6 +2083,7 @@ function orderPublic(row, kind) {
   return { id: row.id, kind, order_id: String(row.order_id || row.order_code || (kind === 'domain' ? 'DOM-' + row.id.slice(0, 8).toUpperCase() : row.id)), customer_id: row.customer_id, customer_name: String(row.customer_name || '').slice(0, 160), customer_email: String(row.customer_email || '').slice(0, 254), customer_phone: String(row.customer_phone || row.customer_whatsapp || '').slice(0, 40), shipping_address: String(row.shipping_address || '').slice(0, 600), service_type: kind === 'domain' ? 'domain' : String(row.service_type || '').slice(0, 60), domain_name: String(row.domain_name || '').slice(0, 254), total, currency: String(row.currency || 'IDR').slice(0, 8), payment_method: String(row.payment_method || '').slice(0, 80), payment_status: String(row.payment_status || '').slice(0, 40), order_status: String(row.order_status || '').slice(0, 40), created_at: row.created_at };
 }
 function domainOrderUndefinedColumn(result) { return !!(result && result.ok === false && result.status === 400 && result.data && String(result.data.code || '') === '42703'); }
+function domainOrderTableUnavailable(result) { return !!(result && result.ok === false && result.status === 404 && result.data && ['PGRST205', '42P01'].includes(String(result.data.code || ''))); }
 // V482: bounded read-only summary/finance pages. Shipment/customer payload is never fetched for these views.
 async function businessSummaryV456(body) {
   const kind = String(body.kind || 'regular'), rawOffset = String(body.offset || '0'), view = String(body.view || '');
@@ -2108,6 +2101,7 @@ async function businessSummaryV456(body) {
     result = await dbFetch('/rest/v1/domain_orders?select=' + encodeURIComponent('id,total_price,payment_status,created_at') + suffix, { method: 'GET' });
     implicitCurrency = true;
   }
+  if (kind === 'domain' && domainOrderTableUnavailable(result)) fail('ADMIN_DOMAIN_ORDERS_UNAVAILABLE', 503);
   if (!result.ok || !Array.isArray(result.data) || result.data.length > 201) fail('ADMIN_DATA_UNAVAILABLE', 503);
   const seen = new Set(), financeRows = []; let lastTime = Infinity;
   const totals = result.data.slice(0, 200).reduce((out, row) => {
@@ -2134,6 +2128,17 @@ async function businessSummaryV456(body) {
   const common = { ok: true, view, kind, offset: Number(rawOffset), page_size: 200, from, until, has_more: result.data.length === 201, time: new Date().toISOString() };
   return view === 'finance' ? { ...common, orders: financeRows } : { ...common, totals };
 }
+async function businessSummarySourceV1(body) {
+  try { return await businessSummaryV456(body); }
+  catch (error) {
+    if (body.kind !== 'domain' || !error || error.code !== 'ADMIN_DOMAIN_ORDERS_UNAVAILABLE') throw error;
+    return { ok: false, available: false, code: 'ADMIN_DOMAIN_ORDERS_UNAVAILABLE', view: String(body.view), kind: 'domain', offset: Number(body.offset || 0), page_size: 200, from: String(body.from), until: String(body.until), has_more: false };
+  }
+}
+function businessSummaryAvailabilityV1(pages) {
+  const unavailable = pages.filter(page => page.available === false).map(page => page.kind);
+  return unavailable.length ? { partial: true, unavailable_sources: unavailable } : {};
+}
 
 function orderSearchV1(value, kind) {
   if (typeof value !== 'string' || value !== value.trim()
@@ -2156,6 +2161,7 @@ function businessOrdersBundleSourceV480(result, kind) {
   return result && result.ok === true && result.data && result.data.kind === kind ? { ok: true, kind, data: result.data } : { ok: false, kind };
 }
 function businessFinancePairV484(first, second, kind) {
+  if (kind === 'domain' && first && second && first.ok === false && second.ok === false && first.available === false && second.available === false && first.code === 'ADMIN_DOMAIN_ORDERS_UNAVAILABLE' && second.code === first.code && first.view === 'finance' && second.view === 'finance' && first.kind === kind && second.kind === kind && first.page_size === 200 && second.page_size === 200 && second.offset === first.offset + 200 && first.from === second.from && first.until === second.until && first.has_more === false && second.has_more === false && !Object.prototype.hasOwnProperty.call(first, 'orders') && !Object.prototype.hasOwnProperty.call(second, 'orders')) return { ...first, page_size: 400 };
   if (!first || !second || first.ok !== true || second.ok !== true || first.view !== 'finance' || second.view !== 'finance' || first.kind !== kind || second.kind !== kind || first.page_size !== 200 || second.page_size !== 200 || second.offset !== first.offset + 200 || first.from !== second.from || first.until !== second.until || !Array.isArray(first.orders) || !Array.isArray(second.orders) || first.orders.length > 200 || second.orders.length > 200 || (first.has_more === true && first.orders.length !== 200) || (second.has_more === true && second.orders.length !== 200) || (first.has_more === false && (second.orders.length !== 0 || second.has_more !== false))) fail('ADMIN_FINANCE_DATA_INVALID', 503);
   return { ...first, page_size: 400, has_more: second.has_more, orders: [...first.orders, ...second.orders], time: new Date().toISOString() };
 }
@@ -2169,26 +2175,26 @@ async function businessOrders(body) {
       const offsetRaw = String(body.offset || '0');
       if (!/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 49600 || Number(offsetRaw) % 400 !== 0) fail('ADMIN_FINANCE_RANGE_INVALID', 400);
       const offsetNext = String(Number(offsetRaw) + 200), financePages = await Promise.all([
-        businessSummaryV456({ ...body, kind: 'regular', offset: offsetRaw }),
-        businessSummaryV456({ ...body, kind: 'laboratorium', offset: offsetRaw }),
-        businessSummaryV456({ ...body, kind: 'domain', offset: offsetRaw }),
-        businessSummaryV456({ ...body, kind: 'regular', offset: offsetNext }),
-        businessSummaryV456({ ...body, kind: 'laboratorium', offset: offsetNext }),
-        businessSummaryV456({ ...body, kind: 'domain', offset: offsetNext })
+        businessSummarySourceV1({ ...body, kind: 'regular', offset: offsetRaw }),
+        businessSummarySourceV1({ ...body, kind: 'laboratorium', offset: offsetRaw }),
+        businessSummarySourceV1({ ...body, kind: 'domain', offset: offsetRaw }),
+        businessSummarySourceV1({ ...body, kind: 'regular', offset: offsetNext }),
+        businessSummarySourceV1({ ...body, kind: 'laboratorium', offset: offsetNext }),
+        businessSummarySourceV1({ ...body, kind: 'domain', offset: offsetNext })
       ]);
       const pages = [
         businessFinancePairV484(financePages[0], financePages[3], 'regular'),
         businessFinancePairV484(financePages[1], financePages[4], 'laboratorium'),
         businessFinancePairV484(financePages[2], financePages[5], 'domain')
       ];
-      return { ok: true, view, kind: 'all', offset: Number(offsetRaw), page_size: 400, from: pages[0].from, until: pages[0].until, pages, time: new Date().toISOString() };
+      return { ok: true, view, kind: 'all', offset: Number(offsetRaw), page_size: 400, from: pages[0].from, until: pages[0].until, pages, ...businessSummaryAvailabilityV1(pages), time: new Date().toISOString() };
     }
     const pages = await Promise.all([
-      businessSummaryV456({ ...body, kind: 'regular' }),
-      businessSummaryV456({ ...body, kind: 'laboratorium' }),
-      businessSummaryV456({ ...body, kind: 'domain' })
+      businessSummarySourceV1({ ...body, kind: 'regular' }),
+      businessSummarySourceV1({ ...body, kind: 'laboratorium' }),
+      businessSummarySourceV1({ ...body, kind: 'domain' })
     ]);
-    return { ok: true, view, kind: 'all', offset: pages[0].offset, page_size: 200, from: pages[0].from, until: pages[0].until, pages, time: new Date().toISOString() };
+    return { ok: true, view, kind: 'all', offset: pages[0].offset, page_size: 200, from: pages[0].from, until: pages[0].until, pages, ...businessSummaryAvailabilityV1(pages), time: new Date().toISOString() };
   }
   if (kind !== 'all') return businessOrdersSingleV480(body);
   const offsetRaw = String(body.offset || '0');
@@ -2566,7 +2572,7 @@ async function businessUnban(body) {
 const ADMIN_CENTRAL_BAN_FAILURE_CODES = Object.freeze([
   'ADMIN_BODY_FIELD_INVALID', 'ADMIN_BODY_REQUIRED_FIELD', 'ADMIN_QUERY_FIELD_INVALID', 'ADMIN_FIELD_TOO_LARGE',
   'ADMIN_ACTION_APPROVAL_MISMATCH', 'ADMIN_ACTION_MISMATCH', 'ADMIN_BODY_FRAMING_INVALID', 'ADMIN_BODY_INVALID', 'ADMIN_BODY_KEY_INVALID',
-  'ADMIN_BODY_TOO_COMPLEX', 'ADMIN_BODY_TOO_LARGE', 'ADMIN_CLIENT_HEADERS_INVALID', 'ADMIN_CONTENT_TYPE_INVALID', 'ADMIN_CREDENTIALS_INVALID', 'ADMIN_FACTOR_GUARD_MISMATCH',
+  'ADMIN_BODY_TOO_COMPLEX', 'ADMIN_BODY_TOO_LARGE', 'ADMIN_CLIENT_HEADERS_INVALID', 'ADMIN_CONTENT_TYPE_INVALID', 'ADMIN_CREDENTIALS_INVALID', 'ADMIN_FACTOR_GUARD_MISMATCH', 'ADMIN_FACTORS_IMMUTABLE',
   'ADMIN_EMAIL_CODE_INVALID', 'ADMIN_ENCODING_INVALID', 'ADMIN_FIXED_OWNER_REQUIRED', 'ADMIN_METHOD_NOT_ALLOWED', 'ADMIN_ORIGIN_INVALID',
   'ADMIN_PASSKEY_ALGORITHM_INVALID', 'ADMIN_PASSKEY_ATTESTATION_INVALID', 'ADMIN_PASSKEY_ATTESTED_DATA_REQUIRED', 'ADMIN_PASSKEY_AUTHDATA_INVALID',
   'ADMIN_PASSKEY_BACKUP_STATE_INVALID', 'ADMIN_PASSKEY_CBOR_INVALID', 'ADMIN_PASSKEY_CLIENT_INVALID', 'ADMIN_PASSKEY_CLIENT_MISMATCH',
@@ -2725,6 +2731,39 @@ function documentInvoiceHiddenValidV530(value) {
     && equal(actual.raw, expected.raw) && equal(actual.claims, expected.claims) && equal(actual.chain, expected.chain)
     && equal(actual.manifest, expected.manifest) && equal(actual.custody, expected.custody) && equal(actual.aggregate, expected.aggregate);
 }
+// V531: five additional purpose-separated commitments bind protocol, owner partition,
+// rendering, chronology and the complete proof stack. They share the existing key
+// hierarchy; exact copies remain valid and historical proofs keep their own totals.
+const DOCUMENT_HIDDEN_VERSION_V531 = 'dirac-invoice-hidden-v531';
+function documentInvoiceHiddenV531(value) {
+  const identity = value.identity, preceding = documentInvoiceHiddenV530(value);
+  const tag = (label, context) => {
+    const key = deriveSecret('invoice-hidden-' + label + '-v531');
+    try { return crypto.createHmac('sha512', key).update(DOCUMENT_HIDDEN_VERSION_V531 + '\0' + label + '\0').update(stableJson(context)).digest('base64url'); }
+    finally { key.fill(0); }
+  };
+  const protocol = tag('protocol', { document_version: value.version, identity_version: identity.version, hidden_version: DOCUMENT_HIDDEN_VERSION_V531, document_id: identity.id, artifact_id: value.artifact_id, identity_mac: identity.mac });
+  const partition = tag('partition', { issuer: identity.issuer, owner_scope: identity.owner_scope, document_id: identity.id, artifact_id: value.artifact_id, content_sha256: identity.content_sha256, raw_sha256: value.raw_sha256, protocol });
+  const rendering = tag('rendering', { document_id: identity.id, artifact_id: value.artifact_id, format: value.format, page: value.page, page_count: identity.page_count, visual_patterns: identity.visual_patterns, raw_sha256: value.raw_sha256, raw_bytes: value.raw_bytes, partition });
+  const chronology = tag('chronology', { document_id: identity.id, artifact_id: value.artifact_id, reference: identity.reference, identity_created_at: identity.created_at, created_at: value.created_at, identity_mac: identity.mac, raw_sha256: value.raw_sha256, rendering });
+  const finality = tag('finality', { identity, artifact_id: value.artifact_id, format: value.format, page: value.page, raw_sha256: value.raw_sha256, raw_bytes: value.raw_bytes, created_at: value.created_at, preceding, protocol, partition, rendering, chronology });
+  return { ...preceding, version: DOCUMENT_HIDDEN_VERSION_V531, protocol, partition, rendering, chronology, finality };
+}
+function documentInvoiceHiddenValidV531(value) {
+  const actual = value && value.hidden_patterns;
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual) || !value.identity || value.identity.kind !== 'invoice'
+      || actual.version !== DOCUMENT_HIDDEN_VERSION_V531
+      || Object.keys(actual).sort().join(',') !== 'aggregate,artifact,chain,chronology,claims,commercial,content,custody,finality,geometry,identity,issuance,lineage,manifest,owner,partition,protocol,raw,rendering,version') return false;
+  const expected = documentInvoiceHiddenV531(value);
+  const equal = (left, right) => typeof left === 'string' && /^[A-Za-z0-9_-]{86}$/.test(left) && safeEqual(left, right);
+  return equal(actual.identity, expected.identity) && equal(actual.content, expected.content) && equal(actual.owner, expected.owner)
+    && equal(actual.artifact, expected.artifact) && equal(actual.issuance, expected.issuance)
+    && equal(actual.commercial, expected.commercial) && equal(actual.geometry, expected.geometry) && equal(actual.lineage, expected.lineage)
+    && equal(actual.raw, expected.raw) && equal(actual.claims, expected.claims) && equal(actual.chain, expected.chain)
+    && equal(actual.manifest, expected.manifest) && equal(actual.custody, expected.custody) && equal(actual.aggregate, expected.aggregate)
+    && equal(actual.protocol, expected.protocol) && equal(actual.partition, expected.partition) && equal(actual.rendering, expected.rendering)
+    && equal(actual.chronology, expected.chronology) && equal(actual.finality, expected.finality);
+}
 function documentIdentityValidV464(value) {
   return !!(value && (Object.keys(value).sort().join(',') === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version'
       || (Object.keys(value).sort().join(',') === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version,visual_patterns'
@@ -2809,7 +2848,7 @@ async function documentSealV464(bytes, identity, format, page, ownerScope, read,
   else if (!/^%PDF-1\.[47]\n/.test(bytes.subarray(0,9).toString('ascii')) || !/%%EOF\n$/.test(bytes.subarray(-40).toString('ascii')) || bytes.includes(Buffer.from('%DIRAC-DOCUMENT-V464:'))) documentErrorV464('PDF_INVALID', 400);
   const unsigned = { version: DOCUMENT_VERSION_V464, identity, artifact_id: crypto.randomBytes(24).toString('hex'), format, page,
     raw_sha256: crypto.createHash('sha256').update(bytes).digest('hex'), raw_bytes: bytes.length, created_at: Date.now() };
-  if (identity.kind === 'invoice') unsigned.hidden_patterns = documentInvoiceHiddenV530(unsigned);
+  if (identity.kind === 'invoice') unsigned.hidden_patterns = documentInvoiceHiddenV531(unsigned);
   const seal = { ...unsigned, mac: documentMacV464(unsigned) };
   const token = Buffer.from(stableJson(seal), 'utf8').toString('base64url');
   let file;
@@ -2861,7 +2900,7 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
         || !/^[a-f0-9]{64}$/.test(seal.raw_sha256) || !Number.isSafeInteger(seal.raw_bytes) || seal.raw_bytes < 10 || seal.raw_bytes >= record.file_bytes
         || !Number.isSafeInteger(seal.created_at) || seal.created_at > Date.now() + 1000 || !['png','pdf'].includes(seal.format)
         || !documentIdentityValidV464(seal.identity) || !Number.isInteger(seal.page)
-        || (Object.prototype.hasOwnProperty.call(seal, 'hidden_patterns') && !documentInvoiceHiddenValidV526(seal) && !documentInvoiceHiddenValidV527(seal) && !documentInvoiceHiddenValidV528(seal) && !documentInvoiceHiddenValidV530(seal))
+        || (Object.prototype.hasOwnProperty.call(seal, 'hidden_patterns') && !documentInvoiceHiddenValidV526(seal) && !documentInvoiceHiddenValidV527(seal) && !documentInvoiceHiddenValidV528(seal) && !documentInvoiceHiddenValidV530(seal) && !documentInvoiceHiddenValidV531(seal))
         || (seal.format === 'png' ? seal.page < 1 || seal.page > seal.identity.page_count : seal.page !== 0)) documentErrorV464('RECORD_INVALID');
     if ((id && seal.identity.id !== id) || (ownerScope && seal.identity.owner_scope !== ownerScope) || (qrProof && !documentQrProofMatchesV470(seal.identity, qrProof))) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, qr_authentic: false, message: 'ID, QR, atau pemilik dokumen tidak cocok.' };
     return { ok: true, verified: true, status: 'authentic_file', integrity_verified: true, qr_authentic: qrProof ? true : undefined, issuer: seal.identity.issuer,
@@ -2870,8 +2909,10 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
       ...(seal.identity.visual_patterns ? { pattern_verification: { version: seal.identity.visual_patterns.version, verified: true, count: 7,
         checks: ['din_tracking','din_font','din_size','logo_size','social_pitch','social_size','footer_rule'], method: 'registered_file_sha256_hmac_sha512' } } : {}),
        ...(seal.hidden_patterns ? { hidden_pattern_verification: { version: seal.hidden_patterns.version, verified: true,
-         count: seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V530 ? 14 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V528 ? 11 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V527 ? 8 : 5,
-         checks: seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V530
+         count: seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V531 ? 19 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V530 ? 14 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V528 ? 11 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V527 ? 8 : 5,
+         checks: seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V531
+           ? ['identity','content','owner','artifact','issuance','commercial','geometry','lineage','raw','claims','chain','manifest','custody','aggregate','protocol','partition','rendering','chronology','finality']
+           : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V530
            ? ['identity','content','owner','artifact','issuance','commercial','geometry','lineage','raw','claims','chain','manifest','custody','aggregate']
            : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V528
            ? ['identity','content','owner','artifact','issuance','commercial','geometry','lineage','raw','claims','chain']
@@ -3103,14 +3144,19 @@ function allowedAdminKey(key) { return typeof key === 'string' && /^s2s-admin-v4
 async function replaceEnrollment(records, key, expectedRevision, record, ttl) {
   const previous = records.get(key), expectedTtl = record && record.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS;
   if (!enrollmentKey(key) || !previous || previous.revision !== expectedRevision || !record || record.revision === expectedRevision || ttl !== expectedTtl) fail('ADMIN_STORAGE_COMPARE_INVALID', 503);
-  const next = validateDurableEnrollment(key, record);
+  const next = validateDurableEnrollment(key, record), prior = previous.record;
+  if (!prior || !safeEqual(adminFactorIdentityV507(prior), adminFactorIdentityV507(next))
+      || (prior.enrollmentState === 'active' && next.enrollmentState !== 'active')
+      || next.passkey.signCount < prior.passkey.signCount
+      || (prior.totpKeyV466 === true && (next.totpKeyV466 !== true || next.totp !== prior.totp))
+      || (prior.totpKeyV466 !== true && next.totpKeyV466 !== true && (next.totp !== prior.totp || next.legacyConfigKeyV466 !== prior.legacyConfigKeyV466))) fail('ADMIN_FACTORS_IMMUTABLE', 403);
   // Compare-and-swap on a revision, not a timestamp; enrollment has no TTL.
   const path = '/rest/v1/' + ADMIN_PASSKEY_TABLE + '?security_key=eq.' + encodeURIComponent(key) + '&revision=eq.' + encodeURIComponent(expectedRevision) + '&select=security_key,revision';
   const result = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { revision: next.revision, record_json: next, updated_at: new Date().toISOString() } }, 'security');
   assertPasskeyStoreResultV454(result, 'replace');
   if (!result.data.length) return false;
   if (result.data[0].security_key !== key || result.data[0].revision !== next.revision) fail('ADMIN_PASSKEY_WRITE_UNVERIFIED', 503);
-  records.set(key, { revision: next.revision });
+  records.set(key, { revision: next.revision, record: JSON.parse(JSON.stringify(next)) });
   return true;
 }
 function buildOps(req, res, state) {
@@ -3119,8 +3165,8 @@ function buildOps(req, res, state) {
   const ops = Object.freeze({
     version: VERSION, action: state.action, method: state.method, identity, body: state.body, assertFullGuard,
     deriveKey: purpose => { assertFullGuard(); if (!['totp-storage', 'totp-storage-legacy'].includes(purpose)) fail('ADMIN_KEY_PURPOSE_INVALID', 503); const key = deriveSecret('admin-v405-totp-storage'); try { return crypto.createHmac('sha256', key).update(purpose === 'totp-storage' ? ADMIN_OWNER_V466 : ADMIN_USER_ID).digest(); } finally { key.fill(0); } },
-    read: async key => { assertFullGuard(); if (!allowedAdminKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503); const result = enrollmentKey(key) ? await durableEnrollmentRead(key) : await securityRead(key); assertFullGuard(); if (result.ok && result.found) records.set(key, { revision: result.record.revision, expiresAt: result.expiresAt }); return result; },
-    claim: async (key, record, ttl) => { assertFullGuard(); if (!allowedAdminKey(key) || !record || record.version !== VERSION) fail('ADMIN_STORAGE_CLAIM_INVALID', 503); const result = enrollmentKey(key) ? await durableEnrollmentClaim(key, record) : await securityClaim(key, record, ttl); assertFullGuard(); if (result && enrollmentKey(key)) records.set(key, { revision: record.revision }); return result; },
+    read: async key => { assertFullGuard(); if (!allowedAdminKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503); const result = enrollmentKey(key) ? await durableEnrollmentRead(key) : await securityRead(key); assertFullGuard(); if (result.ok && result.found) records.set(key, { revision: result.record.revision, expiresAt: result.expiresAt, record: enrollmentKey(key) ? JSON.parse(JSON.stringify(result.record)) : undefined }); return result; },
+    claim: async (key, record, ttl) => { assertFullGuard(); if (!allowedAdminKey(key) || !record || record.version !== VERSION) fail('ADMIN_STORAGE_CLAIM_INVALID', 503); const result = enrollmentKey(key) ? await durableEnrollmentClaim(key, record) : await securityClaim(key, record, ttl); assertFullGuard(); if (result && enrollmentKey(key)) records.set(key, { revision: record.revision, record: JSON.parse(JSON.stringify(record)) }); return result; },
     replace: async (key, expectedRevision, record, ttl) => { assertFullGuard(); const result = await replaceEnrollment(records, key, expectedRevision, record, ttl); assertFullGuard(); return result; },
     takeRate: async (key, limit, seconds) => { assertFullGuard(); const actionPasskeyHourly = state.action === 'admin_action_passkey_start' && limit === 30 && seconds === 3600; const partnerUpdateRate = state.action === 'admin_partner_request_update' && ((limit === 6 && seconds === 60 && key === PREFIX + 'rate:' + digest(ADMIN_OWNER_V466 + ':' + state.origin + ':partner-request-update-minute')) || (limit === 30 && seconds === 3600 && key === PREFIX + 'rate:' + digest(ADMIN_OWNER_V466 + ':' + state.origin + ':partner-request-update-hour'))); if (!allowedAdminKey(key) || !key.startsWith(PREFIX + 'rate:') || !Number.isInteger(limit) || limit < 1 || (limit > 5 && !actionPasskeyHourly && !partnerUpdateRate) || ![60, 600, 3600].includes(seconds)) fail('ADMIN_RATE_CONTRACT_INVALID', 503); const result = await atomicRate(key, limit, seconds); assertFullGuard(); return result; },
     mail: async message => { assertFullGuard(); const loginMail = state.action === 'admin_email_start' && message && message.kind === 'login' && message.operation === ''; if (!loginMail || message.to !== ADMIN_EMAIL || !validAdminEmailCode(message.code) || !/^[a-f0-9]{24}$/.test(message.reference) || !Number.isSafeInteger(message.expiresAt) || message.expiresAt <= Date.now() || message.expiresAt > Date.now() + EMAIL_CODE_SECONDS * 1000 + 5000) fail('ADMIN_MAIL_CONTRACT_INVALID', 503); const result = await sendAdminMail({ ...message, origin: state.origin }); assertFullGuard(); return result; },

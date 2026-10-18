@@ -58939,6 +58939,21 @@ function diracCentralDecodeEscapesV228(input) {
     });
 }
 
+function diracGuardStripBlockCommentsV533(value, separator) {
+  var text = String(value), opening = text.indexOf('/*');
+  if (opening < 0 || text.indexOf('*/', opening + 2) < 0) return text;
+  var start = -1, cursor = 0, parts = [];
+  text.replace(/(?=\/\*|\*\/)/g, function(_, at) {
+    if (at < cursor) return '';
+    var token = text.slice(at, at + 2);
+    if (token === '/*' && start < 0) start = at;
+    else if (token === '*/' && start >= 0 && at >= start + 2) { parts.push(text.slice(cursor, start), separator); cursor = at + 2; start = -1; }
+    return token;
+  });
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
 function diracCentralCanonicalVariantsV221(value) {
   // Ordinary ASCII has no alternate decoding: preserve the exact old variant set.
   const plainV509 = String(value === undefined || value === null ? '' : value).slice(0, 12 * 1024);
@@ -58963,8 +58978,8 @@ function diracCentralCanonicalVariantsV221(value) {
     add(text.replace(/\+/g, ' '));
     add(text.replace(/[\u0000\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, ''));
     add(text.replace(/\\/g, '/'));
-    add(text.replace(/\/\*[\s\S]*?\*\//g, ' '));
-    add(text.replace(/\/\*[\s\S]*?\*\//g, ''));
+    add(diracGuardStripBlockCommentsV533(text, ' '));
+    add(diracGuardStripBlockCommentsV533(text, ''));
     add(text.replace(/[\t\r\n\f ]+/g, ' '));
     add(diracCentralDecodeEscapesV228(text));
     add(text.replace(/\$\{(?:(?:lower|upper):|::-) ?([A-Za-z0-9])\}/gi, (_, char) => char));
@@ -66250,15 +66265,21 @@ async function diracCentralSupportRateLimitV365(input) {
 
 async function diracCentralAtomicRateScopeV404(scope, subject, action, windowSeconds, max) {
   const profile = diracCentralRateProfileV221(action);
-  const sustained = await diracCentralAtomicRateLimitV230({
-    key: 's2s-central-rate-v230:' + diracCentralHashV146([scope + '-v404', subject, action].join('|')),
-    limit: Math.min(max, profile.sustained), windowSeconds, blockSeconds: windowSeconds
-  });
-  if (!sustained.ok) return sustained;
-  return diracCentralAtomicRateLimitV230({
-    key: 's2s-central-rate-v230:' + diracCentralHashV146([scope + '-burst-v404', subject, action].join('|')),
-    limit: Math.min(max, profile.burst), windowSeconds: 10, blockSeconds: 10
-  });
+  // Independent atomic counters retain both limits and failure precedence.
+  const results = await Promise.allSettled([
+    diracCentralAtomicRateLimitV230({
+      key: 's2s-central-rate-v230:' + diracCentralHashV146([scope + '-v404', subject, action].join('|')),
+      limit: Math.min(max, profile.sustained), windowSeconds, blockSeconds: windowSeconds
+    }),
+    diracCentralAtomicRateLimitV230({
+      key: 's2s-central-rate-v230:' + diracCentralHashV146([scope + '-burst-v404', subject, action].join('|')),
+      limit: Math.min(max, profile.burst), windowSeconds: 10, blockSeconds: 10
+    })
+  ]);
+  if (results[0].status !== 'fulfilled') throw results[0].reason;
+  if (!results[0].value.ok) return results[0].value;
+  if (results[1].status !== 'fulfilled') throw results[1].reason;
+  return results[1].value;
 }
 
 async function diracCentralAtomicRateSlotV228(ctx, action, windowMs, max) {
@@ -71626,11 +71647,11 @@ function diracCentralNormalizeKeyV146(key) {
 
 function diracCentralHtmlEntityDecodeV146(value) {
   return String(value || '')
-    .replace(/&#x([0-9a-f]{1,6});?/gi, (_, hex) => {
+    .replace(/&#x([0-9a-f]+);?/gi, (_, hex) => {
       const code = parseInt(hex, 16);
       return Number.isInteger(code) && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : '';
     })
-    .replace(/&#([0-9]{1,7});?/g, (_, decimal) => {
+    .replace(/&#([0-9]+);?/g, (_, decimal) => {
       const code = parseInt(decimal, 10);
       return Number.isInteger(code) && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : '';
     })
