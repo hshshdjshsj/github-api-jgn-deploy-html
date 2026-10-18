@@ -2224,7 +2224,7 @@ const DIRAC_SUPPORT_CENTRAL_PREFLIGHT_HEADERS_V146 = new Set([
 ]);
 const DIRAC_SUPPORT_CENTRAL_SCANNER_UA_REGEX_V146 = /\b(?:curl|wget|httpie|fetch-cli|python|python-requests|aiohttp|urllib|requests|mechanize|scrapy|node-fetch|axios|got|undici|go-http-client|java|okhttp|apache-httpclient|libwww-perl|lwp|ruby|php|powershell|httpclient|postman|postmanruntime|insomnia|paw|hoppscotch|burp|burp\s*suite|owasp\s*zap|zap|mitmproxy|fiddler|charles|caido|sqlmap|nuclei|nikto|acunetix|netsparker|invicti|nessus|openvas|qualys|appscan|webinspect|w3af|arachni|skipfish|jaeles|xray|x-ray|whatweb|wpscan|joomscan|droopescan|ffuf|gobuster|dirb|dirbuster|feroxbuster|wfuzz|dirsearch|hydra|medusa|patator|nmap|masscan|zgrab|zmap|shodan|censys|binaryedge|commix|havij|xsser|dalfox|tplmap|ysoserial|metasploit|msfconsole|headlesschrome|phantomjs|selenium|playwright|puppeteer|chromedriver|geckodriver)\b/i;
 const DIRAC_SUPPORT_CENTRAL_STRUCTURAL_THREATS_V146 = Object.freeze([
-  Object.freeze(['sql_injection', /\bunion\s+(?:all\s+)?select\b|(?:^|[\s'"`])(?:or|and)\s+1\s*=\s*1(?:$|[\s'"`])|true\s*=\s*true|' or '1'='1|" or "1"="1|--\s|#\s|(?<!\*)\/\*|\*\/(?!\*)|;\s*(?:select|insert|update|delete|drop|alter|truncate|create|grant|revoke)\b|\binformation_schema\b|\bpg_catalog\b|\bsqlite_master\b|\bmysql\.user\b|\bsysobjects\b|\bsyscolumns\b|\bsleep\s*\(|\bpg_sleep\s*\(|\bbenchmark\s*\(|\bwaitfor\s+delay\b|\bload_file\s*\(|\binto\s+outfile\b|\bxp_cmdshell\b|\bextractvalue\s*\(|\bupdatexml\s*\(|\bcopy\s+.*\bto\s+program\b/i]),
+  Object.freeze(['sql_injection', /\bunion\s+(?:all\s+)?select\b|(?:^|[\s'"`])(?:or|and)\s+\d{1,12}\s*=\s*\d{1,12}(?=$|[\s'"`,)}\]]|--|#)|true\s*=\s*true|' or '1'='1|" or "1"="1|--\s|#\s|(?<!\*)\/\*|\*\/(?!\*)|;\s*(?:select|insert|update|delete|drop|alter|truncate|create|grant|revoke)\b|\binformation_schema\b|\bpg_catalog\b|\bsqlite_master\b|\bmysql\.user\b|\bsysobjects\b|\bsyscolumns\b|\bsleep\s*\(|\bpg_sleep\s*\(|\bbenchmark\s*\(|\bwaitfor\s+delay\b|\bload_file\s*\(|\binto\s+outfile\b|\bxp_cmdshell\b|\bextractvalue\s*\(|\bupdatexml\s*\(|\bcopy\s+.*\bto\s+program\b/i]),
   Object.freeze(['xss', /<\s*script\b|<\s*\/\s*script\b|\bjavascript\s*:|\bon(?:error|load|click|mouseover|focus|blur|submit|toggle|pointerenter)\s*=|<\s*(?:img|svg|iframe|object|embed|body|meta|link|math|video|audio)\b|\bsrcdoc\s*=|\bdata:text\/html\b|\bdocument\.cookie\b|\blocalstorage\b|\bsessionstorage\b|\b(?:alert|confirm|prompt|eval|function|settimeout|setinterval)\s*\(|\binnerhtml\b/i]),
   Object.freeze(['ssrf', /\blocalhost\b|\b127\.0\.0\.1\b|\b0\.0\.0\.0\b|(?:^|[^a-f0-9])::1(?:[^a-f0-9]|$)|\[::1\]|\b10\.\d+\.\d+\.\d+\b|\b172\.(?:1[6-9]|2\d|3[0-1])\.\d+\.\d+\b|\b192\.168\.\d+\.\d+\b|\b169\.254\.169\.254\b|\b169\.254\.\d+\.\d+\b|\bmetadata\.google\.internal\b|\binstance-data\b|\b(?:file|gopher|dict|ftp|ldap|sftp|tftp):\/\//i]),
   Object.freeze(['path_traversal', /\.\.\/|\.\.\\|%2e%2e%2f|%252e%252e%252f|\/etc\/passwd|\/etc\/shadow|\/proc\/self\/environ|\bboot\.ini\b|\bwin\.ini\b|\bWEB-INF\b|php:\/\/|zip:\/\/|expect:\/\//i]),
@@ -2767,7 +2767,7 @@ async function supportCentralGuardThreatV202(ctx) {
     if (pattern.test(ctx.sample || '')) {
       const authority = await supportCentralBanAuthorityV354();
       const persisted = await authority.ban(ctx.req, 'support_' + name, 15 * 60);
-      if (!persisted || persisted.ok !== true) throw new PublicError(503, 'CENTRAL_BAN_PERSISTENCE_FAILED', 'Blokir keamanan pusat tidak dapat dipastikan tersimpan.');
+      if (!persisted || persisted.ok !== true || persisted.blocked !== true || !Number.isSafeInteger(persisted.blocked_until_ms) || persisted.blocked_until_ms <= Date.now()) throw new PublicError(503, 'CENTRAL_BAN_PERSISTENCE_FAILED', 'Blokir keamanan pusat tidak dapat dipastikan tersimpan.');
       const error = new PublicError(403, 'CENTRAL_THREAT_REJECTED', 'Request diblokir oleh pemeriksaan keamanan.');
       error.retryAfter = Math.max(1, Math.floor(Number(persisted.ttl_seconds || 15 * 60)));
       throw error;
@@ -2922,11 +2922,11 @@ async function handler(req, res) {
       caught = error;
       ctx.phase = 'audit';
       let safe = error instanceof PublicError ? error : new PublicError(500, 'SUPPORT_INTERNAL_ERROR', 'Sistem support sedang mengalami gangguan.');
-      if (error instanceof PublicError && ['support_json_key_rejected', 'support_json_duplicate_key'].includes(error.centralBanReason)) {
+      if (error instanceof PublicError && (['support_json_key_rejected', 'support_json_duplicate_key'].includes(error.centralBanReason) || ['AUTOMATION_REJECTED', 'CENTRAL_HEADER_INVALID', 'CENTRAL_HEADERS_TOO_LARGE', 'CENTRAL_BODY_KEY_REJECTED', 'CENTRAL_BODY_COMPLEXITY_REJECTED', 'CENTRAL_BODY_SHAPE_REJECTED', 'CENTRAL_REQUEST_ENCODING_REJECTED', 'BODY_TOO_LARGE', 'CONTENT_LENGTH_INVALID', 'CONTENT_LENGTH_MISMATCH', 'CONTENT_ENCODING_REJECTED', 'RATE_LIMITED'].includes(error.code))) {
         try {
           const authority = await supportCentralBanAuthorityV354();
-          const persisted = await authority.ban(req, error.centralBanReason, 15 * 60);
-          if (!persisted || persisted.ok !== true) throw new Error('CENTRAL_BAN_PERSISTENCE_FAILED');
+          const persisted = await authority.ban(req, error.centralBanReason || 'support_' + error.code.toLowerCase(), 15 * 60);
+          if (!persisted || persisted.ok !== true || persisted.blocked !== true || !Number.isSafeInteger(persisted.blocked_until_ms) || persisted.blocked_until_ms <= Date.now()) throw new Error('CENTRAL_BAN_PERSISTENCE_FAILED');
           safe.retryAfter = Math.max(1, Math.floor(Number(persisted.ttl_seconds || 15 * 60)));
         } catch (_) { safe = new PublicError(503, 'CENTRAL_BAN_PERSISTENCE_FAILED', 'Blokir keamanan pusat tidak dapat dipastikan tersimpan.'); }
       }

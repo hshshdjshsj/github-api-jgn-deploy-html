@@ -1619,6 +1619,7 @@ async function supabaseFetch(path, options = {}) {
   const method = String(options.method || 'GET').toUpperCase();
   if (!['GET','HEAD','POST','PATCH','PUT','DELETE'].includes(method)) throw resetError('SECURITY_RESET_DB_METHOD_INVALID', 405);
   securityResetAssertDbOperationV361(cleanPath, method, options);
+  const storagePath = require('../lib/data-protection.js').storagePathV1(cleanPath);
   const target = securitySupabaseTargetV334(cleanPath); const c = securitySupabaseCredentialsV334(target);
   const route = securityResetDiagnosticDbRouteV335(cleanPath); const callId = crypto.randomBytes(6).toString('hex');
   const headers = { Accept:'application/json', apikey: options.auth === 'service' ? c.service : c.anon };
@@ -1631,8 +1632,8 @@ async function supabaseFetch(path, options = {}) {
   let response, data;
   try {
     const outbound = { method, headers, body, redirect: 'error', signal: controller.signal };
-    const capability = securityResetEgressCapabilityV361(c.url + cleanPath, outbound, 'database');
-    response = await securityResetEgressFetchV361(c.url + cleanPath, outbound, capability);
+    const capability = securityResetEgressCapabilityV361(c.url + storagePath, outbound, 'database');
+    response = await securityResetEgressFetchV361(c.url + storagePath, outbound, capability);
     data = await securityResetReadUpstreamV361(response);
     if (response.ok) data = require('../lib/data-protection.js').decode(cleanPath, data);
   }

@@ -58679,7 +58679,16 @@ const DIRAC_CENTRAL_PREFLIGHT_GUARD_STAGES_V221 = Object.freeze([
 ]);
 
 const DIRAC_CENTRAL_HIGH_CONFIDENCE_THREATS_V221 = Object.freeze([
-  Object.freeze(['sql_injection', /\bunion\s+(?:all\s+|distinct\s+)?select\b|(?:^|[\s'"`])(?:or|and)\s+(?:1|true)\s*=\s*(?:1|true)(?:$|[\s'"`])|['"`]\s*(?:or|and)\s+['"`]?\w+['"`]?\s*=\s*['"`]?\w+|;\s*(?:select|insert|update|delete|drop|alter|truncate|create|grant|revoke)\b|\b(?:information_schema|pg_catalog|sqlite_master|mysql\.user|sysobjects|syscolumns)\b|\b(?:sleep|pg_sleep|benchmark)\s*\(|\bwaitfor\s+delay\b|\bload_file\s*\(|\binto\s+outfile\b|\bxp_cmdshell\b|\b(?:extractvalue|updatexml)\s*\(|\bcopy\s+[\s\S]{0,160}\bto\s+program\b/i]),
+  Object.freeze(['sql_injection', /["'`]\s*(?:--|#)|\b(?:select(?:\s+(?=\S)[\s\S]{1,160}\s+from|\s{3,}from)|insert\s+into|update\s+[a-z0-9_.`"\[\]-]+\s+set|delete\s+from|drop\s+(?:table|database|schema)|alter\s+table|create\s+(?:table|database)|truncate\s+table)\b/i]),
+  Object.freeze(['command_injection_rce', /(?:\/bin\/(?:ba|z|da)?sh\b|cmd\.exe\s+\/c\b|powershell(?:\.exe)?\s+-(?:enc|encodedcommand)\b)/i]),
+  Object.freeze(['xss', /\bexpression\s*\(|@import\s+(?:url\s*\(\s*)?["']?https?:\/\/[^\s"'<>)]{1,500}/i]),
+  Object.freeze(['spreadsheet_formula_injection', /^\s*[=+@-]\s*(?:cmd(?:\.exe)?\s*\||powershell\s*\||hyperlink\s*\(|importxml\s*\(|importdata\s*\(|webservice\s*\(|dde\b|msexcel\b)/i]),
+  Object.freeze(['xss', /<\s*[a-z][a-z0-9:-]{0,63}\b[^<>]{0,4096}\bon[a-z]{3,32}\s*=\s*(?:["']|[^\s>])/i]),
+  Object.freeze(['ssti_template_injection', /(?:\{\{|\$\{|#\{)\s*\d{1,16}\s*[+*\/%-]\s*\d{1,16}\s*(?:\}\}|\})|(?:\{\{|\$\{|#\{)[^\r\n]{0,240}(?:getruntime\s*\(|java\.lang\.runtime|__globals__|__builtins__|__subclasses__)[^\r\n]{0,240}(?:\}\}|\})/i]),
+  Object.freeze(['command_injection_rce', /(?:;|&&|\|\||\|)\s*(?:\/(?:usr\/(?:local\/)?)?(?:s?bin)\/)?(?:sh|bash|zsh|dash|cmd(?:\.exe)?|powershell|pwsh|curl|wget|nc|ncat|netcat|python\d*|perl|ruby|php|node|chmod|chown|rm|cat|id|ls|pwd|env|printenv|whoami|uname)\b|\(\)\s*\{\s*:;\s*\};/i]),
+  Object.freeze(['xxe', /<!\s*entity\s+[^<>]{1,240}\bpublic\s+["'][^"']{0,240}["']\s+["'](?:file|https?|ftp):/i]),
+  Object.freeze(['ssrf_protocol', /\b(?:file|gopher|dict|phar|expect|php):\/\//i]),
+  Object.freeze(['sql_injection', /\bunion\s+(?:all\s+|distinct\s+)?select\b|(?:^|[\s'"`])(?:or|and)\s+(?:1|true)\s*=\s*(?:1|true)(?=$|[\s'"`);#]|--|\/\*)|['"`]\s*(?:or|and)\s+['"`]?\w+['"`]?\s*=\s*['"`]?\w+|;\s*(?:select|insert|update|delete|drop|alter|truncate|create|grant|revoke)\b|\b(?:information_schema|pg_catalog|sqlite_master|mysql\.user|sysobjects|syscolumns)\b|\b(?:sleep|pg_sleep|benchmark)\s*\(|\bwaitfor\s+delay\b|\bload_file\s*\(|\binto\s+outfile\b|\bxp_cmdshell\b|\b(?:extractvalue|updatexml)\s*\(|\bcopy\s+[\s\S]{0,160}\bto\s+program\b/i]),
   Object.freeze(['xss', /<\s*\/?\s*script\b|\b(?:j\s*a\s*v\s*a|v\s*b)\s*s\s*c\s*r\s*i\s*p\s*t\s*:|\bon(?:error|load|click|mouseover|focus|blur|submit|toggle|pointerenter|animationstart)\s*=|\bo\s*n\s*(?:e\s*r\s*r\s*o\s*r|l\s*o\s*a\s*d|c\s*l\s*i\s*c\s*k|f\s*o\s*c\s*u\s*s|m\s*o\s*u\s*s\s*e\s*o\s*v\s*e\s*r)\s*=\s*(?:["\x27]|[^\s>])|<\s*(?:svg|iframe|object|embed|meta|link|math)\b|\bsrcdoc\s*=|\bdata\s*:\s*text\/html\b|\bdocument\s*\.\s*cookie\b|\b(?:eval|settimeout|setinterval|function)\s*\(\s*(?:['"`]|unescape|atob)/i]),
   Object.freeze(['path_traversal_lfi_rfi', /(?:^|[\/\\])\.\.(?:[\/\\]|$)|%2e%2e(?:%2f|%5c)|%252e%252e(?:%252f|%255c)|\/etc\/(?:passwd|shadow)|\/proc\/self\/environ|\bboot\.ini\b|\bwin\.ini\b|\bWEB-INF\b|(?:php|zip|expect):\/\//i]),
   Object.freeze(['command_injection_rce', /(?:;|\|\||&&|`|\$\()\s*(?:whoami|id|uname|cat|ls|pwd|env|printenv|curl|wget|nc|ncat|netcat|bash|sh|cmd(?:\.exe)?|powershell|pwsh)\b|\b(?:shell_exec|passthru|proc_open|popen|system)\s*\(/i]),
@@ -58839,6 +58848,10 @@ function diracCentralClassifyFailureV221(reason, stage, directCode) {
 }
 
 const DIRAC_CENTRAL_CONFIRMED_ATTACK_KINDS_V281 = Object.freeze(new Set([
+  'secret_file_probing',
+  'graphql_introspection',
+  'spreadsheet_formula_injection',
+  'open_redirect',
   'sql_injection',
   'xss',
   'ssrf_private_or_metadata_target',
@@ -58883,6 +58896,7 @@ function diracCentralPermanentBanDecisionV281(ctx, reason) {
 
 function diracCentralDecodeEscapesV228(input) {
   return String(input || '')
+    .replace(/%u([0-9a-f]{4})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/\\u\{([0-9a-f]{1,6})\}/gi, (_, hex) => {
       const code = parseInt(hex, 16);
       return Number.isInteger(code) && code <= 0x10ffff ? String.fromCodePoint(code) : '';
@@ -58896,6 +58910,12 @@ function diracCentralDecodeEscapesV228(input) {
 }
 
 function diracCentralCanonicalVariantsV221(value) {
+  // Ordinary ASCII has no alternate decoding: preserve the exact old variant set.
+  const plainV509 = String(value === undefined || value === null ? '' : value).slice(0, 12 * 1024);
+  if (/^[a-z0-9 _.,:@\/-]+$/i.test(plainV509) && !/ {2}/.test(plainV509)) {
+    const lowerV509 = plainV509.toLowerCase();
+    return lowerV509 === plainV509 ? [plainV509] : [plainV509, lowerV509];
+  }
   const variants = new Set();
   const queue = [];
   const add = (input) => {
@@ -58935,6 +58955,11 @@ function diracCentralCanonicalVariantsV221(value) {
         encoded = decoded;
       } catch (decodeErrorV228) {
         void decodeErrorV228;
+        // A malformed escape must not hide valid ASCII escapes elsewhere.
+        add(encoded.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+          try { return decodeURIComponent(run); }
+          catch (_) { return run.replace(/%([0-7][0-9a-f])/gi, (match, hex) => String.fromCharCode(parseInt(hex, 16))); }
+        }));
         break;
       }
     }
@@ -58962,14 +58987,16 @@ function diracCentralThreatFieldsV221(req, ctx) {
     if (Array.isArray(value)) value.slice(0, 20).forEach((item, index) => push('query.' + key + '.' + index, item, 'query'));
     else push('query.' + key, value, 'query');
   });
-  diracCentralFlattenObjectV146(ctx && ctx.body || {}, 0, '', 600).forEach((item) => push('body.' + item.key, item.value, 'body'));
+  const bodyFieldsV509 = diracCentralFlattenObjectV146(ctx && ctx.body || {}, 0, '', 4096, true);
+  if (bodyFieldsV509.truncated) fields.truncated = true;
+  bodyFieldsV509.forEach((item) => push('body.' + item.key, item.value, 'body'));
   const headers = req && req.headers || {};
   [
     'origin', 'referer', 'referrer', 'host', 'content-type', 'accept',
     'access-control-request-method', 'access-control-request-headers',
     'x-forwarded-host', 'x-forwarded-proto', 'transfer-encoding', 'content-length'
   ].forEach((name) => push('header.' + name, headers[name], 'header'));
-  return fields.slice(0, 800);
+  return fields;
 }
 
 function diracCentralUrlLikeFieldV221(field) {
@@ -58977,10 +59004,11 @@ function diracCentralUrlLikeFieldV221(field) {
     || field && field.source === 'url';
 }
 
-const DIRAC_CENTRAL_INPUT_POLICY_V498 = /(?:^|[^a-z0-9_])(?:union|javascript|vbscript|alert|confirm|prompt|xss|sqli|csrf|ssrf|xxe|ssti|rce|lfi|rfi|jndi|log4shell|shellshock|sqlmap|sqlninja|havij|nuclei|nikto|nmap|gobuster|ffuf|dalfox|acunetix|burpsuite|metasploit|msfvenom|msfconsole|netcat|ncat|powershell|cmd\.exe|whoami|onerror|onload|onclick|onfocus|onblur|onmouseover|onanimationstart|onpointerenter|srcdoc|xlink|__proto__|__schema|__type|introspectionquery|xp_cmdshell|load_file|pg_read_file|pg_sleep|benchmark|information_schema|pg_catalog|sqlite_master|sysobjects|syscolumns|mysql\.user|eval|atob|btoa|shell_exec|passthru|proc_open|popen|base64_decode|unserialize|innerhtml|outerhtml|insertadjacenthtml|document\.cookie|document\.write|document\.writeln|oninput|onsubmit|ontoggle|onkeydown|onkeyup|onpointerdown|onpointerup|onmouseenter|onmouseleave|onabort|onanimationend|ontransitionend|formaction|execscript|settimeout|setinterval|fromcharcode|unescape|mshta|rundll32|certutil|regsvr32|wmic|cscript|wscript|bitsadmin|mimikatz|cobaltstrike|bloodhound|ysoserial|phpinfo|php_uname|getenv|readfile|file_get_contents|file_put_contents|create_function|call_user_func|document\.domain|location\.assign|location\.replace)(?=$|[^a-z0-9_])|\badmin\b|^\s*(?:img|src|srcset|href|iframe|svg|xlink|script|object|embed|template|formaction|o\s*n\s*(?:error|load|click|focus|blur|mouseover|animationstart)|j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t|one\s+error)\s*$/i;
+const DIRAC_CENTRAL_INPUT_POLICY_V498 = /(?:^|[^a-z0-9_])(?:idor|bfla|crlf|sstimap|tplmap|commix|ghauri|nosqlmap|sqlsus|sqliv|xsstrike|xsser|jexboss|jaeles|kiterunner|masscan|zmap|rustscan|dirsearch|dirbuster|feroxbuster|wfuzz|hashcat|hashpump|johntheripper|credentialstuffing|passwordspraying|bruteforce|sessionfixation|sessionhijacking|clickjacking|tabnabbing|requestsmuggling|responsesplitting|httpdesync|cachepoisoning|cachedeception|dnsrebinding|dnspoisoning|arpspoofing|mitm|phishing|spearphishing|ransomware|malware|spyware|keylogger|rootkit|bootkit|cryptojacking|botnet|ddos|webshell|reverseshell|reverse_shell|bindshell|meterpreter|beefxss|koadic|poshc2|mythicc2|crackmapexec|netexec|psexec|smbexec|wmiexec|atexec|dcomexec|evilwinrm|evil-winrm|impacket|ntlmrelayx|secretsdump|getuserspns|getnpusers|kerbrute|kerberoasting|asreproast|asreproasting|dcsync|dcshadow|pass-the-hash|pass-the-ticket|goldenticket|silverticket|sharphound|certipy|mimikittenz|nanodump|lsassy|winpeas|linpeas|pspy|linenum|linux-exploit-suggester|privilegeescalation|heartbleed|dirtycow|dirtypipe|eternalblue|zerologon|printnightmare|proxyshell|proxylogon|bluekeep|sigred|petitpotam|deserialization|prototypepollution|massassignment|graphqlintrospection|zip-slip|zipbomb|forkbomb|exfiltration|dataexfiltration|supplychainattack|dependencyconfusion|typosquatting|union|javascript|vbscript|alert|confirm|prompt|xss|sqli|csrf|ssrf|xxe|ssti|rce|lfi|rfi|jndi|log4shell|shellshock|sqlmap|sqlninja|havij|nuclei|nikto|nmap|gobuster|ffuf|dalfox|acunetix|burpsuite|metasploit|msfvenom|msfconsole|netcat|ncat|powershell|cmd\.exe|whoami|onerror|onload|onclick|onfocus|onblur|onmouseover|onanimationstart|onpointerenter|srcdoc|xlink|__proto__|__schema|__type|introspectionquery|xp_cmdshell|load_file|pg_read_file|pg_sleep|benchmark|information_schema|pg_catalog|sqlite_master|sysobjects|syscolumns|mysql\.user|eval|atob|btoa|shell_exec|passthru|proc_open|popen|base64_decode|unserialize|innerhtml|outerhtml|insertadjacenthtml|document\.cookie|document\.write|document\.writeln|oninput|onsubmit|ontoggle|onkeydown|onkeyup|onpointerdown|onpointerup|onmouseenter|onmouseleave|onabort|onanimationend|ontransitionend|formaction|execscript|settimeout|setinterval|fromcharcode|unescape|mshta|rundll32|certutil|regsvr32|wmic|cscript|wscript|bitsadmin|mimikatz|cobaltstrike|bloodhound|ysoserial|phpinfo|php_uname|getenv|readfile|file_get_contents|file_put_contents|create_function|call_user_func|document\.domain|location\.assign|location\.replace)(?=$|[^a-z0-9_])|\badmin\b|^\s*(?:img|src|srcset|href|iframe|svg|xlink|script|object|embed|template|formaction|o\s*n\s*(?:error|load|click|focus|blur|mouseover|animationstart)|j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t|one\s+error)\s*$/i;
 
 function diracCentralContextualThreatGuardV221(req, ctx) {
   const fields = diracCentralThreatFieldsV221(req, ctx);
+  if (fields.truncated) return { detected: true, kind: 'input_inspection_limit', field: 'body' };
   const canonicalMemoV499 = new Map();
   for (const field of fields) {
     const path = String(field.path || '');
@@ -66305,7 +66333,8 @@ function diracCentralContractGuardV146(req, ctx) {
     }
   }
   const source = ctx.method === 'GET' || ctx.method === 'HEAD' ? (req && req.query || {}) : (ctx.body || {});
-  const clean = diracCentralFlattenObjectV146(source, 0, '', 400);
+  const clean = diracCentralFlattenObjectV146(source, 0, '', 4096, true);
+  if (clean.truncated) return { ok: false, reason: 'schema_inspection_limit' };
   const allowed = new Set(['action'].concat(contract.allowed || []));
   for (const key of Object.keys(source || {})) {
     if (!allowed.has(key) && !contract.allowExtra) return { ok: false, reason: 'field_not_allowed_' + key };
@@ -66389,7 +66418,12 @@ function diracCentralVerifyHtmlReportEvidenceV504(body, origin, pageName, action
       || /^(?:restricted_keyword|policy_keyword|oversized_input|control_injection|prompt_injection)$/.test(sample[1])) return rejected;
   // Only a structurally detected payload is evidence. A neutral field prevents
   // ordinary singleton words from the general input policy becoming ban proof.
-  const sampleField = /^(?:ssrf|cloud_metadata)$/.test(sample[1]) ? 'url' : 'report_evidence';
+  const redirectEvidence = sample[1] === 'open_redirect'
+    ? /^(?:redirect(?:_uri)?|return(?:_to|url)?|next|continue|callback|url)\s*=\s*((?:https?:)?\/\/[^\s"'<>]{1,700})$/i.exec(sample[3])
+    : null;
+  if (sample[1] === 'open_redirect' && !redirectEvidence) return rejected;
+  const sampleField = redirectEvidence ? 'redirect' : /^(?:ssrf|cloud_metadata)$/.test(sample[1]) ? 'url' : 'report_evidence';
+  const sampleValue = redirectEvidence ? redirectEvidence[1] : sample[3];
   if (sampleField === 'url') {
     try {
       const target = new URL(sample[3]);
@@ -66401,7 +66435,7 @@ function diracCentralVerifyHtmlReportEvidenceV504(body, origin, pageName, action
   }
   const detected = diracCentralContextualThreatGuardV221(
     { url: '/api/health', query: {}, headers: {} },
-    { action: 'security_report', body: { [sampleField]: sample[3] } }
+    { action: 'security_report', body: { [sampleField]: sampleValue } }
   );
   if (!detected || detected.detected !== true || detected.kind === 'policy_keyword'
       || !DIRAC_CENTRAL_CONFIRMED_ATTACK_KINDS_V281.has(detected.kind)) return rejected;
@@ -66610,7 +66644,8 @@ function diracCentralCheckoutOrderFieldWidthV191(ctx, flat) {
 }
 
 function diracCentralZeroDayShieldV146(req, ctx, normalized) {
-  const flat = diracCentralFlattenObjectV146(ctx.body || {}, 0, '', 1000);
+  const flat = diracCentralFlattenObjectV146(ctx.body || {}, 0, '', 4096, true);
+  if (flat.truncated) return { ok: false, reason: 'zeroday_inspection_limit' };
   const checkoutWidth = diracCentralCheckoutOrderFieldWidthV191(ctx, flat);
   if (!checkoutWidth.ok) return checkoutWidth;
   if (checkoutWidth.width > 80) return { ok: false, reason: 'zeroday_field_too_many' };
@@ -71469,23 +71504,29 @@ function diracCentralCollectIdsV146(req, body) {
     diracCentralExtractValuesV146(value).forEach((item) => out.push({ key: cleanKey, value: item }));
   };
   Object.entries(req && req.query || {}).forEach(([key, value]) => { if (key !== 'action') push(key, value); });
-  diracCentralFlattenObjectV146(body || {}, 0, '', 300).forEach((item) => push(item.key.split('.').pop(), item.value));
+  diracCentralFlattenObjectV146(body || {}, 0, '', 4096, true).forEach((item) => push(item.key.split('.').pop(), item.value));
   return out.slice(0, 100);
 }
 
-function diracCentralFlattenObjectV146(value, depth, prefix, max) {
+function diracCentralFlattenObjectV146(value, depth, prefix, max, complete = false) {
   const out = [];
   const walk = (v, d, p) => {
-    if (out.length >= max || d > 6 || v === null || v === undefined) return;
+    if (v === null || v === undefined) return;
+    if (out.length >= max || d > (complete ? 8 : 6)) {
+      if (complete) out.truncated = true;
+      return;
+    }
     if (typeof v !== 'object') {
       out.push({ key: p, value: v, depth: d });
       return;
     }
     if (Array.isArray(v)) {
-      v.slice(0, 50).forEach((item, index) => walk(item, d + 1, p ? p + '.' + index : String(index)));
+      if (complete && v.length > 100) out.truncated = true;
+      v.slice(0, complete ? 100 : 50).forEach((item, index) => walk(item, d + 1, p ? p + '.' + index : String(index)));
       return;
     }
-    Object.entries(v).slice(0, 120).forEach(([key, child]) => walk(child, d + 1, p ? p + '.' + key : key));
+    if (complete && Object.keys(v).length > 160) out.truncated = true;
+    Object.entries(v).slice(0, complete ? 160 : 120).forEach(([key, child]) => walk(child, d + 1, p ? p + '.' + key : key));
   };
   walk(value, depth || 0, prefix || '');
   return out;
