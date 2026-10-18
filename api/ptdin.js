@@ -334,6 +334,59 @@ function invoiceUnpackSecretV440(record, storageKey, aad) {
   } catch (_) { throw invoiceErrorV440('INVOICE_KEY_UNAVAILABLE'); }
   finally { if (plaintext) plaintext.fill(0); if (tail) tail.fill(0); if (plain) plain.fill(0); }
 }
+// V537: only an authenticated owner can recover a key for an issued, encrypted device artifact.
+function invoiceCacheReceiptV537(input) {
+  const names = ['cache_ref','cache_digest','cache_pages','cache_content','cache_box','cache_proof'];
+  if (!names.some(name => Object.prototype.hasOwnProperty.call(input, name))) return null;
+  if (!names.every(name => Object.prototype.hasOwnProperty.call(input, name))
+      || typeof input.cache_ref !== 'string' || !/^DV-[a-f0-9]{48}$/.test(input.cache_ref)
+      || typeof input.cache_digest !== 'string' || !/^[a-f0-9]{64}$/.test(input.cache_digest)
+      || !Number.isInteger(input.cache_pages) || input.cache_pages < 1 || input.cache_pages > 64
+      || typeof input.cache_content !== 'string' || !/^[a-f0-9]{64}$/.test(input.cache_content)
+      || typeof input.cache_box !== 'string' || (input.format === 'pdf' ? !/^[A-Za-z0-9_-]{48}$/.test(input.cache_box) : input.cache_box !== '')
+      || typeof input.cache_proof !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(input.cache_proof)) throw invoiceErrorV440('INVOICE_CACHE_INVALID',409);
+  return Object.fromEntries(names.map(name => [name,input[name]]));
+}
+function invoiceCacheContextV537(identity, scope, input, receipt) {
+  return JSON.stringify(['dirac-invoice-cache-v537',scope,identity.origin,identity.orderDatabase,input.kind,input.order_id,input.format,input.page,
+    receipt.cache_ref,receipt.cache_digest,receipt.cache_pages,receipt.cache_content]);
+}
+function invoiceCacheMacV537(storageKey, context, box) {
+  return invoiceCryptoV440.createHmac('sha512',storageKey).update('DIRAC_INVOICE_CACHE_V537:receipt\0').update(context).update('\0').update(box).digest('base64url');
+}
+function invoiceCacheArtifactKeyV537(storageKey, context, box) {
+  return invoiceCryptoV440.createHmac('sha256',storageKey).update('DIRAC_INVOICE_CACHE_V537:artifact\0').update(context).update('\0').update(box).digest('base64url');
+}
+function invoiceCacheBoxV537(storageKey, context, value, decrypt) {
+  const key = invoiceCryptoV440.createHmac('sha256',storageKey).update('DIRAC_INVOICE_CACHE_V537:pdf-box\0').update(context).digest();
+  let plain = null, first = null, tail = null;
+  try {
+    if (decrypt) {
+      const packed = Buffer.from(value,'base64url');
+      if (packed.length !== 36 || packed.toString('base64url') !== value) throw new Error('invalid');
+      const cipher = invoiceCryptoV440.createDecipheriv('aes-256-gcm',key,packed.subarray(0,12));
+      cipher.setAAD(Buffer.from(context,'utf8'));cipher.setAuthTag(packed.subarray(-16));
+      first = cipher.update(packed.subarray(12,-16));tail = cipher.final();plain = Buffer.concat([first,tail]);
+      if (plain.length !== 8 || !/^\d{8}$/.test(plain.toString('ascii'))) throw new Error('invalid');
+      return plain.toString('ascii');
+    }
+    if (!/^\d{8}$/.test(value)) throw new Error('invalid');
+    const iv = invoiceCryptoV440.randomBytes(12), cipher = invoiceCryptoV440.createCipheriv('aes-256-gcm',key,iv);
+    cipher.setAAD(Buffer.from(context,'utf8'));plain = Buffer.from(value,'ascii');
+    return Buffer.concat([iv,cipher.update(plain),cipher.final(),cipher.getAuthTag()]).toString('base64url');
+  } catch (_) { throw invoiceErrorV440('INVOICE_CACHE_INVALID',409); }
+  finally { key.fill(0);if (plain) plain.fill(0);if (first) first.fill(0);if (tail) tail.fill(0); }
+}
+function invoiceCacheHeadersV537(res, receipt, key, code, format, page) {
+  res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');
+  res.setHeader('Content-Type',format === 'png' ? 'image/png' : 'application/pdf');
+  res.setHeader('Content-Disposition','attachment; filename="invoice-' + receipt.cache_ref + (page ? '-' + page : '') + '.' + format + '"');
+  res.setHeader('Access-Control-Expose-Headers','X-Dirac-Document-ID, X-Dirac-Document-SHA256, X-Dirac-Document-Pages, X-Dirac-Document-Key, X-Dirac-Document-Cache, X-Dirac-Document-Cache-Key');
+  res.setHeader('X-Dirac-Document-ID',receipt.cache_ref);res.setHeader('X-Dirac-Document-SHA256',receipt.cache_digest);
+  res.setHeader('X-Dirac-Document-Pages',String(receipt.cache_pages));if (code) res.setHeader('X-Dirac-Document-Key',code);
+  res.setHeader('X-Dirac-Document-Cache',Buffer.from(JSON.stringify(receipt),'utf8').toString('base64url'));
+  res.setHeader('X-Dirac-Document-Cache-Key',key);
+}
 async function invoiceBusinessV440(req, res, ops) {
   if (!ops || !Object.isFrozen(ops) || ops.version !== INVOICE_VERSION_V440 || typeof ops.assertFullGuard !== 'function' || !INVOICE_ACTIONS_V440.includes(ops.action)) throw invoiceErrorV440('INVOICE_FULL_GUARD_REQUIRED', 403);
   const identity = ops.identity, input = ops.body || {};
@@ -389,19 +442,37 @@ async function invoiceBusinessV440(req, res, ops) {
     if (ops.action === 'invoice_document_export') {
       const doc = await ops.document();
       if (!doc || doc.eligible !== true || doc.id !== order) throw invoiceErrorV440('INVOICE_PAID_REQUIRED',409);
-      const verification = await ops.prepareDocument(doc), printable = { ...doc, verification };
       const format = input.format, page = input.page;
-      if (!['png','pdf'].includes(format) || !Number.isInteger(page) || (format === 'png' ? page < 1 || page > verification.identity.page_count : page !== 0)) throw invoiceErrorV440('INVOICE_EXPORT_PAGE_INVALID',400);
+      if (!['png','pdf'].includes(format) || !Number.isInteger(page) || (format === 'png' ? page < 1 || page > 64 : page !== 0)) throw invoiceErrorV440('INVOICE_EXPORT_PAGE_INVALID',400);
+      const content = invoiceHashV440(JSON.stringify(doc)), cached = invoiceCacheReceiptV537(input);
+      if (!storageKey) storageKey = ops.storageKey();
+      if (!Buffer.isBuffer(storageKey) || storageKey.length !== 32) throw invoiceErrorV440('INVOICE_KEY_UNAVAILABLE');
+      if (cached) {
+        const context = invoiceCacheContextV537(identity,scope,input,cached), expected = invoiceCacheMacV537(storageKey,context,cached.cache_box);
+        if (!invoiceCryptoV440.timingSafeEqual(Buffer.from(expected,'ascii'),Buffer.from(cached.cache_proof,'ascii'))) throw invoiceErrorV440('INVOICE_CACHE_INVALID',409);
+        if (cached.cache_content === content) {
+          const verified = await ops.verifyCachedDocument(cached);
+          if (!verified || verified.verified !== true || verified.integrity_verified !== true || verified.kind !== 'invoice'
+              || verified.document_id !== cached.cache_ref || verified.file_sha256 !== cached.cache_digest || verified.content_sha256 !== content
+              || verified.format !== format || verified.page !== page || verified.page_count !== cached.cache_pages || verified.reference !== doc.reference
+              || !verified.hidden_pattern_verification || verified.hidden_pattern_verification.verified !== true || verified.hidden_pattern_verification.count !== 20) throw invoiceErrorV440('INVOICE_CACHE_INVALID',409);
+          const code = format === 'pdf' ? invoiceCacheBoxV537(storageKey,context,cached.cache_box,true) : '';
+          ops.assertFullGuard();await ops.verifyOwner();ops.assertFullGuard();
+          invoiceCacheHeadersV537(res,cached,invoiceCacheArtifactKeyV537(storageKey,context,cached.cache_box),code,format,page);
+          return res.status(204).end();
+        }
+      }
+      const verification = await ops.prepareDocument(doc), printable = { ...doc, verification };
+      if (format === 'png' && page > verification.identity.page_count) throw invoiceErrorV440('INVOICE_EXPORT_PAGE_INVALID',400);
       const code = format === 'pdf' ? invoiceRandomCodeV440() : '';
       const bytes = format === 'png' ? invoicePdfObjectsV440.png(printable,page) : invoicePdfEncryptV440(invoicePdfObjectsV440(printable),code);
       const sealed = await ops.sealDocument(bytes,verification,format,page);
-      ops.assertFullGuard(); await ops.verifyOwner(); ops.assertFullGuard();
-      res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');
-      res.setHeader('Content-Type',format === 'png' ? 'image/png' : 'application/pdf');
-      res.setHeader('Content-Disposition','attachment; filename="invoice-' + verification.identity.id + (page ? '-' + page : '') + '.' + format + '"');
-      res.setHeader('Access-Control-Expose-Headers','X-Dirac-Document-ID, X-Dirac-Document-SHA256, X-Dirac-Document-Pages, X-Dirac-Document-Key');
-      res.setHeader('X-Dirac-Document-ID',sealed.document_id);res.setHeader('X-Dirac-Document-SHA256',sealed.file_sha256);
-      res.setHeader('X-Dirac-Document-Pages',String(verification.identity.page_count));if(code)res.setHeader('X-Dirac-Document-Key',code);
+      const receipt = { cache_ref:sealed.document_id,cache_digest:sealed.file_sha256,cache_pages:verification.identity.page_count,cache_content:content,cache_box:'',cache_proof:'' };
+      const context = invoiceCacheContextV537(identity,scope,input,receipt);
+      if (code) receipt.cache_box = invoiceCacheBoxV537(storageKey,context,code,false);
+      receipt.cache_proof = invoiceCacheMacV537(storageKey,context,receipt.cache_box);
+      ops.assertFullGuard();await ops.verifyOwner();ops.assertFullGuard();
+      invoiceCacheHeadersV537(res,receipt,invoiceCacheArtifactKeyV537(storageKey,context,receipt.cache_box),code,format,page);
       return res.status(200).end(sealed.file);
     }
     if (ops.action === 'invoice_email_unlock') return res.status(410).json({ ok: false, code: 'INVOICE_FORMAT_RETIRED' });
@@ -467,7 +538,7 @@ async function invoiceBusinessV440(req, res, ops) {
     } finally { if (attachment) attachment.fill(0); }
   } catch (error) {
     ops.assertFullGuard();
-    const allowed = ['INVOICE_PDF_INVALID', 'INVOICE_CONTENT_TOO_LONG', 'INVOICE_PAID_REQUIRED', 'INVOICE_DOCUMENT_INVALID', 'INVOICE_ATTACHMENT_LIMIT', 'INVOICE_STORAGE_UNAVAILABLE', 'INVOICE_KEY_UNAVAILABLE', 'INVOICE_RECORD_INVALID', 'INVOICE_RANDOM_UNAVAILABLE', 'INVOICE_OWNER_UNAVAILABLE', 'INVOICE_PAID_EVIDENCE_UNAVAILABLE'];
+    const allowed = ['INVOICE_CACHE_INVALID', 'INVOICE_PDF_INVALID', 'INVOICE_CONTENT_TOO_LONG', 'INVOICE_PAID_REQUIRED', 'INVOICE_DOCUMENT_INVALID', 'INVOICE_ATTACHMENT_LIMIT', 'INVOICE_STORAGE_UNAVAILABLE', 'INVOICE_KEY_UNAVAILABLE', 'INVOICE_RECORD_INVALID', 'INVOICE_RANDOM_UNAVAILABLE', 'INVOICE_OWNER_UNAVAILABLE', 'INVOICE_PAID_EVIDENCE_UNAVAILABLE'];
     return res.status(allowed.includes(error && error.code) && [400,409].includes(error.status) ? error.status : 503).json({ ok: false, code: allowed.includes(error && error.code) ? error.code : 'INVOICE_TEMPORARILY_UNAVAILABLE' });
   } finally { if (storageKey) storageKey.fill(0); }
 }

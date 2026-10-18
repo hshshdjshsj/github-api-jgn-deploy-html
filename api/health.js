@@ -2101,18 +2101,15 @@ async function diracBuildBannedDataExportV472(req, user, password, passwordAlrea
     if (profileRows.length !== 1 || normalizeAuthEmail(profileRows[0].email || '') !== email) return null;
     const first = await Promise.allSettled([
       diracBannedExportRowsV473(scope, 'orders', null, 'commerce'),
-      diracBannedExportRowsV473(scope, 'orders', null, 'security'),
-      diracBannedExportRowsV473(scope, 'domain_orders')
+      diracBannedExportRowsV473(scope, 'orders', null, 'security')
     ]);
     if (first.some(result => result.status !== 'fulfilled')) return null;
-    const [orders, laboratoryOrders, domainOrders] = first.map(result => result.value);
+    const [orders, laboratoryOrders] = first.map(result => result.value);
     orders.forEach(row => scope.parents.add('commerce:orders:' + row.id));
     laboratoryOrders.forEach(row => scope.parents.add('security:orders:' + row.id));
-    domainOrders.forEach(row => scope.parents.add(':domain_orders:' + row.id));
     const second = await Promise.allSettled([
       diracBannedExportItemsV473(scope, 'order_items', orders, 'commerce'),
-      diracBannedExportItemsV473(scope, 'laboratory_items', laboratoryOrders, 'security'),
-      diracBannedExportItemsV473(scope, 'domain_order_items', domainOrders)
+      diracBannedExportItemsV473(scope, 'laboratory_items', laboratoryOrders, 'security')
     ]);
     if (second.some(result => result.status !== 'fulfilled')) return null;
     const third = await Promise.allSettled([
@@ -2125,10 +2122,10 @@ async function diracBuildBannedDataExportV472(req, user, password, passwordAlrea
     const bundleV473 = await diracEncryptBannedExportV472({
       schema: 'dirac.customer.data-export.v1', exported_at: diracNowIso(), complete: true,
       account: { auth_user_id: authUserId, email, account_role: policy.role, account_label: policy.label },
-      profile: profileRows[0], orders, laboratory_orders: laboratoryOrders, domain_orders: domainOrders,
-      order_items: second[0].value, laboratory_items: second[1].value, domain_order_items: second[2].value,
+      profile: profileRows[0], orders, laboratory_orders: laboratoryOrders, retired_collections: ['domain_orders','domain_order_items'],
+      order_items: second[0].value, laboratory_items: second[1].value,
       account_requests: third[0].value, payments: third[1].value,
-      security_notice: 'Arsip berisi profil, seluruh pesanan/item, pembayaran, dan permintaan akun yang berhasil dibaca. Password hash, token, kunci MFA, dan catatan internal keamanan tidak diekspor.'
+      security_notice: 'Arsip berisi profil, seluruh pesanan/item dari sumber aktif, pembayaran, dan permintaan akun yang berhasil dibaca. Sumber pesanan domain telah dinonaktifkan dan tidak disertakan. Password hash, token, kunci MFA, dan catatan internal keamanan tidak diekspor.'
     }, password, authUserId);
     if (!bundleV473 || !diracBannedExportScopeValidV473(ctx, scope)) return null;
     const finalNetworkBlockV473 = await customerSecurityCheckAccessBlock(req, 'domain_login');
@@ -6682,315 +6679,9 @@ async function domainCheck(req, res) {
 
 async function domainCheckout(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, message: 'Gunakan POST.' });
-
-  // Anti-bypass: checkout domain berada sejajar dengan dashboard, jadi tidak cukup hanya login.
-  // Backend wajib memastikan sesi user + A2F/MFA dashboard masih valid sebelum membuat order.
   const access = await requireDomainDashboardAccess(req, res);
   if (!access) return;
-  const { user } = access;
-
-  const body = await readBody(req);
-
-  const customerName = String(body.customer_name || '').trim();
-  const customerWhatsapp = String(body.customer_whatsapp || '').trim();
-  const customerEmail = String(body.customer_email || user.email || '').trim() || null;
-  const ownerEmail = String(body.owner_email || customerEmail || '').trim() || null;
-  const authUserId = String(user.id || '').trim();
-  const authEmail = normalizeAuthEmail(user.email || '');
-
-  if (!authUserId || !customerSecurityLooksLikeUuid(authUserId) || !authEmail || !isValidAuthEmail(authEmail)) {
-    return res.status(401).json({ ok: false, message: 'Sesi login tidak valid untuk membuat pesanan domain.' });
-  }
-  const requestedCustomerEmail = normalizeAuthEmail(customerEmail || '');
-  const requestedOwnerEmail = normalizeAuthEmail(ownerEmail || '');
-  if (!requestedCustomerEmail || !requestedOwnerEmail
-      || requestedCustomerEmail !== authEmail
-      || requestedOwnerEmail !== authEmail) {
-    return res.status(403).json({
-      ok: false,
-      code: 'DOMAIN_CHECKOUT_OWNER_EMAIL_MISMATCH',
-      message: 'Email pesanan wajib sama dengan owner sesi yang terverifikasi.',
-      ownership_locked: true
-    });
-  }
-
-  const dnsMethod = body.dns_method || 'managed_by_dirac';
-  const nameserver1 = body.nameserver_1 || null;
-  const nameserver2 = body.nameserver_2 || null;
-  const targetPlatform = body.target_platform || null;
-  const customerNote = body.customer_note || null;
-
-  const items = Array.isArray(body.items) ? body.items : [];
-
-  if (!customerName || !customerWhatsapp) {
-    return res.status(400).json({ ok: false, message: 'Nama dan nomor HP wajib diisi.' });
-  }
-
-  if (!items.length) {
-    return res.status(400).json({ ok: false, message: 'Ringkasan domain masih kosong.' });
-  }
-
-  const owner = await sessionOwnershipCheckoutResolveCustomerOwner({
-    authUserId,
-    email: authEmail,
-    fullName: customerName || authEmail,
-    phone: customerWhatsapp
-  });
-
-  if (!owner || !owner.ok || !owner.customer || !customerSecurityLooksLikeUuid(owner.customer.id)) {
-    return res.status(owner && owner.status ? owner.status : 403).json({
-      ok: false,
-      message: owner && owner.message
-        ? owner.message
-        : 'Akun login belum terhubung ke customer profile aktif. Checkout domain dihentikan agar tidak salah owner.',
-      ownership_locked: true,
-      frontend_customer_id_ignored: true
-    });
-  }
-
-  const ownerCustomer = owner.customer;
-  const ownerCustomerId = String(ownerCustomer.id || '').trim();
-
-  if (items.length > 10) {
-    return res.status(400).json({ ok: false, message: 'Maksimal 10 domain per checkout.' });
-  }
-
-  const pricesResult = await supabaseFetch('/rest/v1/domain_tld_prices?select=extension,register_price,renewal_price,currency,is_active&is_active=eq.true', {
-    method: 'GET',
-    auth: 'service'
-  });
-
-  if (!pricesResult.ok) {
-    console.error('[domain-checkout-price-fetch]', customerSecuritySafeLogError(pricesResult.data));
-    return res.status(pricesResult.status).json({
-      ok: false,
-      code: 'DOMAIN_PRICE_FETCH_FAILED',
-      message: 'Gagal mengambil data harga domain.'
-    });
-  }
-
-  const prices = Array.isArray(pricesResult.data) ? pricesResult.data : [];
-
-  if (!prices.length) {
-    return res.status(400).json({ ok: false, message: 'Data harga domain masih kosong.' });
-  }
-
-  const extensions = prices.map((item) => item.extension);
-  const orderItems = [];
-  const availabilityInputs = [];
-  const requireAvailabilityCheck = String(process.env.DOMAIN_CHECKOUT_REQUIRE_AVAILABILITY || 'true').toLowerCase() !== 'false';
-
-  for (const item of items) {
-    const domainName = normalizeDomain(item.domain_name);
-
-    if (!domainName) {
-      return res.status(400).json({ ok: false, message: 'Ada nama domain yang tidak valid.' });
-    }
-
-    const extension = getExtension(domainName, extensions);
-
-    if (!extension) {
-      return res.status(400).json({
-        ok: false,
-        message: `Harga untuk ekstensi ${domainName} belum tersedia.`
-      });
-    }
-
-    const priceRow = prices.find((price) => price.extension === extension);
-
-    if (!priceRow) {
-      return res.status(400).json({
-        ok: false,
-        message: `Data harga ${extension} tidak ditemukan.`
-      });
-    }
-
-    const years = Math.trunc(Number(item.years || 1));
-
-    if (!Number.isFinite(years) || years < 1 || years > 10) {
-      return res.status(400).json({ ok: false, message: 'Durasi pembelian domain harus 1 sampai 10 tahun.' });
-    }
-
-    const partsForCheckout = splitDomainForHostinger(domainName);
-    if (!partsForCheckout) {
-      return res.status(400).json({ ok: false, message: `Format domain ${domainName} tidak valid.` });
-    }
-
-    const registerPrice = Number(priceRow.register_price);
-    const renewalPrice = Number(priceRow.renewal_price);
-    const subtotal = registerPrice * years;
-
-    if (requireAvailabilityCheck) {
-      const canonicalSnapshotRow = prices.find((row) =>
-        normalizeExtension(row && row.extension) === normalizeExtension(partsForCheckout.tld)
-      );
-      const checkoutPriceSnapshot = canonicalSnapshotRow === priceRow
-        && Number.isFinite(registerPrice)
-        && registerPrice > 0
-        ? Object.freeze({
-            price: registerPrice,
-            currency: String(priceRow.currency || process.env.DOMAIN_DEFAULT_CURRENCY || 'IDR').toUpperCase(),
-            source: 'supabase',
-            final: true
-          })
-        : null;
-      availabilityInputs.push(Object.freeze({
-        domainName,
-        parts: partsForCheckout,
-        checkoutPriceSnapshot
-      }));
-    }
-
-    orderItems.push({
-      domain_name: domainName,
-      extension,
-      years,
-      register_price: registerPrice,
-      renewal_price: renewalPrice,
-      subtotal,
-      availability_snapshot: item.availability_snapshot ?? true
-    });
-  }
-
-  if (requireAvailabilityCheck) {
-    for (let start = 0; start < availabilityInputs.length; start += 2) {
-      const waveInputs = availabilityInputs.slice(start, start + 2);
-      const wave = await Promise.allSettled(waveInputs.map((input) =>
-        checkDomainWithProviders(input.parts, {
-          checkoutPriceSnapshot: input.checkoutPriceSnapshot
-        })
-      ));
-      for (let offset = 0; offset < wave.length; offset += 1) {
-        const outcome = wave[offset];
-        const input = waveInputs[offset];
-        if (outcome.status === 'rejected') throw outcome.reason;
-        const availabilityCheck = outcome.value;
-        if (!availabilityCheck || availabilityCheck.ok !== true) {
-          return res.status(409).json({
-            ok: false,
-            message: `Backend belum bisa memverifikasi ketersediaan ${input.domainName}. Checkout dihentikan agar tidak bisa dibypass.`,
-            provider: availabilityCheck && availabilityCheck.provider ? availabilityCheck.provider : null
-          });
-        }
-        if (availabilityCheck.available === false) {
-          return res.status(409).json({
-            ok: false,
-            message: `${input.domainName} tidak tersedia saat diverifikasi backend.`,
-            provider: availabilityCheck.provider || null
-          });
-        }
-      }
-    }
-  }
-
-  const totalAmount = orderItems.reduce((total, item) => total + item.subtotal, 0);
-
-  const primaryDomainName = orderItems.length === 1
-    ? orderItems[0].domain_name
-    : orderItems.map((item) => item.domain_name).join(', ').slice(0, 240);
-
-  const orderResult = await supabaseFetch('/rest/v1/domain_orders', {
-    method: 'POST',
-    auth: 'service',
-    prefer: 'return=representation',
-    body: [{
-      customer_id: ownerCustomerId,
-      customer_name: customerName || ownerCustomer.name || authEmail,
-      customer_whatsapp: customerWhatsapp,
-      customer_email: authEmail,
-      owner_email: authEmail,
-      domain_name: primaryDomainName,
-      dns_method: dnsMethod,
-      nameserver_1: nameserver1,
-      nameserver_2: nameserver2,
-      target_platform: targetPlatform,
-      customer_note: customerNote,
-      total_price: totalAmount,
-      currency: 'IDR',
-      order_status: 'pending',
-      status: 'pending',
-      payment_status: 'unpaid'
-    }]
-  });
-
-  if (!orderResult.ok) {
-    console.error('[domain-order-create-failed]', customerSecuritySafeLogError(orderResult.data));
-    return res.status(orderResult.status).json({
-      ok: false,
-      code: 'DOMAIN_ORDER_CREATE_FAILED',
-      message: 'Gagal membuat pesanan.'
-    });
-  }
-
-  const order = Array.isArray(orderResult.data) ? orderResult.data[0] : orderResult.data;
-
-  if (!order || !order.id) {
-    return res.status(500).json({
-      ok: false,
-      message: 'Pesanan dibuat, tetapi ID pesanan tidak ditemukan.'
-    });
-  }
-
-  const itemResult = await supabaseFetch('/rest/v1/domain_order_items', {
-    method: 'POST',
-    auth: 'service',
-    body: orderItems.map((item) => ({
-      ...item,
-      order_id: order.id
-    }))
-  });
-
-  if (!itemResult.ok) {
-    console.error('[domain-order-items-save-failed]', customerSecuritySafeLogError(itemResult.data));
-    return res.status(itemResult.status).json({
-      ok: false,
-      code: 'DOMAIN_ORDER_ITEM_SAVE_FAILED',
-      message: 'Pesanan dibuat, tetapi item domain gagal disimpan.'
-    });
-  }
-
-  let payment = { configured: false, payment_url: null };
-  try {
-    payment = await maybeCreateDomainPaymentInvoice(order, orderItems, {
-      customerName,
-      customerWhatsapp,
-      customerEmail,
-      ownerEmail,
-      totalAmount
-    });
-  } catch (paymentError) {
-    console.error('[domain-payment-invoice-error]', lockedPaymentSafeError(paymentError));
-    payment = {
-      configured: true,
-      payment_url: null,
-      provider: 'midtrans',
-      error: 'PAYMENT_GATEWAY_URL_UNAVAILABLE'
-    };
-  }
-
-  const orderMailNotification = orderMailPendingPaymentSkipSummary('domain_checkout');
-
-  return res.status(200).json({
-    ok: true,
-    message: payment && payment.payment_url
-      ? 'Pesanan domain berhasil dibuat. Lanjutkan pembayaran otomatis.'
-      : 'Pesanan domain berhasil dibuat. Payment gateway belum mengembalikan URL pembayaran.',
-    order_id: order.id,
-    customer_id: ownerCustomerId,
-    owner_source: owner.source || 'security_customer_auth_links',
-    total_amount: totalAmount,
-    total_price: totalAmount,
-    currency: 'IDR',
-    payment_status: 'unpaid',
-    order_status: 'pending_payment',
-    payment_url: payment && payment.payment_url ? payment.payment_url : null,
-    invoice_id: payment && payment.invoice_id ? payment.invoice_id : null,
-    payment_provider: payment && payment.provider ? payment.provider : null,
-    payment_gateway_configured: Boolean(payment && payment.configured),
-    payment_error: payment && payment.error ? 'PAYMENT_GATEWAY_URL_UNAVAILABLE' : null,
-    order_mail_notification: orderMailNotification,
-    items: orderItems
-  });
+  return res.status(410).json({ ok: false, code: 'DOMAIN_ORDERS_RETIRED', retired: true, message: 'Layanan pesanan domain telah dinonaktifkan.' });
 }
 
 
@@ -7013,69 +6704,9 @@ async function maybeCreateDomainPaymentInvoice(order, orderItems, customer) {
 
 async function domainOrders(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ ok: false, message: 'Gunakan GET.' });
-
   const access = await requireDomainDashboardAccess(req, res);
   if (!access) return;
-
-  const { user } = access;
-  const authUserId = String(user.id || '').trim();
-  const linkResult = await customerSecurityFetchAuthLink(authUserId);
-  const linkRows = linkResult.ok && Array.isArray(linkResult.data) ? linkResult.data : [];
-  const activeCustomerIds = linkRows
-    .filter((row) => row && row.link_status === 'active' && customerSecurityLooksLikeUuid(row.customer_id))
-    .map((row) => String(row.customer_id));
-
-  if (!activeCustomerIds.length) {
-    return res.status(403).json({
-      ok: false,
-      message: 'Akun login belum terhubung ke customer profile aktif. Pesanan domain dikunci aman agar tidak salah owner.',
-      ownership_locked: true,
-      frontend_customer_id_ignored: true
-    });
-  }
-
-  const select = [
-    'id',
-    'customer_id',
-    'created_at',
-    'customer_name',
-    'customer_whatsapp',
-    'customer_email',
-    'owner_email',
-    'dns_method',
-    'nameserver_1',
-    'nameserver_2',
-    'target_platform',
-    'customer_note',
-    'domain_name',
-    'total_price',
-    'currency',
-    'order_status',
-    'payment_status',
-    'domain_order_items(id,domain_name,extension,years,register_price,renewal_price,subtotal)'
-  ].join(',');
-
-  const ids = activeCustomerIds.map(encodeURIComponent).join(',');
-  const path = `/rest/v1/domain_orders?select=${encodeURIComponent(select)}&customer_id=in.(${ids})&order=created_at.desc`;
-
-  const result = await supabaseFetch(path, {
-    method: 'GET',
-    auth: 'service'
-  });
-
-  if (!result.ok) {
-    console.error('[domain-orders-fetch-failed]', customerSecuritySafeLogError(result.data));
-    return res.status(result.status).json({
-      ok: false,
-      code: 'DOMAIN_ORDERS_FETCH_FAILED',
-      message: 'Gagal memuat pesanan.'
-    });
-  }
-
-  return res.status(200).json({
-    ok: true,
-    data: Array.isArray(result.data) ? result.data : []
-  });
+  return res.status(410).json({ ok: false, code: 'DOMAIN_ORDERS_RETIRED', retired: true, message: 'Layanan pesanan domain telah dinonaktifkan.' });
 }
 
 function diracStageAuthPublicationV321(req, publication) {
@@ -20356,6 +19987,7 @@ async function myOrdersReadForCurrentCustomer(req, res) {
     diagnostics: {
       generic_orders_ready: genericOrders.ok,
       domain_orders_ready: domainOrders.ok,
+      domain_orders_retired: true,
       generic_orders_error: genericOrders.error || null,
       domain_orders_error: domainOrders.error || null
     },
@@ -20582,71 +20214,11 @@ function myOrdersNormalizeGenericOrder(row, items) {
 }
 
 async function myOrdersFetchDomainOrders(owner, userEmail) {
-  const errors = [];
-  const select = 'id,customer_id,created_at,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,payment_status';
-  const rowsMap = new Map();
-
-  async function add(path) {
-    const result = await supabaseFetch(path, { method: 'GET', auth: 'service' }).catch(() => null);
-    if (!result || !result.ok) {
-      errors.push(result ? (myOrdersSafeUpstreamError(result.data) || `HTTP ${result.status}`) : 'request_failed');
-      return;
-    }
-    (Array.isArray(result.data) ? result.data : []).forEach((row) => {
-      if (row && row.id) rowsMap.set(String(row.id), row);
-    });
-  }
-
-  // Strict ownership mode: domain_orders are queried only through backend-resolved customer_id links.
-  // Never use frontend customer_id, customer_email, or removed legacy user_id as ownership source.
-  if (owner && Array.isArray(owner.customerIds) && owner.customerIds.length) {
-    const ids = owner.customerIds.filter(customerSecurityLooksLikeUuid).map(encodeURIComponent).join(',');
-    if (ids) {
-      await add('/rest/v1/domain_orders?select=' + encodeURIComponent(select) + '&customer_id=in.(' + ids + ')&limit=80');
-    }
-  }
-
-  const rows = Array.from(rowsMap.values());
-  diracCustomerShipmentRegisterParentsV406('domain', rows);
-  const itemMap = await myOrdersFetchDomainOrderItems(
-    rows.map((row) => row.id),
-    owner && Array.isArray(owner.customerIds) ? owner.customerIds : []
-  );
-  return {
-    ok: errors.length === 0 || rows.length > 0,
-    error: errors[0] || '',
-    orders: rows.map((row) => myOrdersNormalizeDomainOrder(row, itemMap[String(row.id)] || []))
-  };
+  return { ok: true, retired: true, error: '', orders: [] };
 }
 
 async function myOrdersFetchDomainOrderItems(orderIds, customerIds) {
-  const ids = Array.from(new Set((orderIds || []).filter(customerSecurityLooksLikeUuid))).slice(0, 120);
-  const owners = Array.from(new Set((customerIds || []).filter(customerSecurityLooksLikeUuid))).slice(0, 20);
-  const map = {};
-  if (!ids.length || !owners.length) return map;
-  const select = 'order_id,domain_name,extension,years,register_price,renewal_price,subtotal';
-  const path = '/rest/v1/domain_order_items?select=' + encodeURIComponent(select)
-    + '&order_id=in.(' + ids.map(encodeURIComponent).join(',') + ')';
-  const result = await supabaseFetch(path, { method: 'GET', auth: 'service' }).catch(() => null);
-  if (result && result.status === 503 && result.data && result.data.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE') {
-    const error = new Error('ORDER_PARENT_OWNERSHIP_UNAVAILABLE');
-    error.code = 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE';
-    throw error;
-  }
-  if (!result || !result.ok || !Array.isArray(result.data)) return map;
-  result.data.forEach((item) => {
-    const orderId = String(item && item.order_id || '');
-    if (!orderId) return;
-    if (!map[orderId]) map[orderId] = [];
-    map[orderId].push({
-      id: String(item.id || ''),
-      title: myOrdersCleanText(item.domain_name || 'Domain', 180),
-      quantity: myOrdersPositiveInteger(item.years || 1, 1, 10),
-      subtotal: myOrdersMoney(item.subtotal || item.register_price || 0),
-      extension: myOrdersCleanText(item.extension || '', 40)
-    });
-  });
-  return map;
+  return {};
 }
 
 function myOrdersNormalizeDomainOrder(row, items) {
@@ -32673,6 +32245,7 @@ async function diracUniversalPesananReadOrders(req, res) {
     diagnostics: {
       generic_orders_ready: genericOrders.ok,
       domain_orders_ready: domainOrders.ok,
+      domain_orders_retired: true,
       generic_orders_error: genericOrders.error || null,
       domain_orders_error: domainOrders.error || null,
       payment_gateway_ready: gatewayConfigured
@@ -33129,19 +32702,8 @@ function diracUniversalPesananNormalizeRequestedType(value) {
 }
 
 async function diracUniversalPesananFindOwnedOrder(inputOrderId, requestedType, customerId) {
-  if (requestedType === 'domain') {
-    const domainFirst = await diracUniversalPesananFetchOwnedDomainOrder(inputOrderId, customerId);
-    if (domainFirst.ok) return domainFirst;
-    const regularFallback = await diracUniversalPesananFindOwnedRegularAcrossDatabases(inputOrderId, customerId);
-    if (regularFallback.ok || regularFallback.status === 409 || regularFallback.status >= 500) return regularFallback;
-    return domainFirst.status >= 500 ? domainFirst : regularFallback;
-  }
-
-  const regularFirst = await diracUniversalPesananFindOwnedRegularAcrossDatabases(inputOrderId, customerId);
-  if (regularFirst.ok || regularFirst.status === 409 || regularFirst.status >= 500) return regularFirst;
-  const domainFallback = await diracUniversalPesananFetchOwnedDomainOrder(inputOrderId, customerId);
-  if (domainFallback.ok) return domainFallback;
-  return domainFallback.status >= 500 ? domainFallback : regularFirst;
+  if (requestedType === 'domain') return diracUniversalPesananFetchOwnedDomainOrder(inputOrderId, customerId);
+  return diracUniversalPesananFindOwnedRegularAcrossDatabases(inputOrderId, customerId);
 }
 
 async function diracUniversalPesananFindOwnedRegularAcrossDatabases(inputOrderId, customerId) {
@@ -33186,39 +32748,7 @@ async function diracUniversalPesananFetchOwnedRegularOrder(inputOrderId, custome
 }
 
 async function diracUniversalPesananFetchOwnedDomainOrder(inputOrderId, customerId) {
-  const clean = lockedPaymentCleanText(inputOrderId, 140);
-  const candidate = clean.replace(/^DOM-/i, '');
-  const filters = [];
-
-  if (customerSecurityLooksLikeUuid(clean)) filters.push(`id.eq.${clean}`);
-  if (customerSecurityLooksLikeUuid(candidate)) filters.push(`id.eq.${candidate}`);
-
-  if (!filters.length && /^DOM-[A-F0-9]{8}$/i.test(clean)) {
-    const prefix = clean.slice(4).toLowerCase();
-    const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at';
-    const listPath = '/rest/v1/domain_orders?select=' + encodeURIComponent(select)
-      + '&customer_id=eq.' + encodeURIComponent(customerId)
-      + '&order=created_at.desc&limit=100';
-    const listResult = await supabaseFetch(listPath, { method: 'GET', auth: 'service' });
-    if (!listResult.ok) return { ok: false, status: listResult.status || 500, message: 'Gagal membaca domain order.' };
-    const row = (Array.isArray(listResult.data) ? listResult.data : []).find((item) => String(item && item.id || '').toLowerCase().startsWith(prefix));
-    if (!row || !row.id) return { ok: false, status: 404, message: 'Domain order tidak ditemukan atau bukan milik akun ini.' };
-    return { ok: true, kind: 'domain', order: row };
-  }
-
-  if (!filters.length) return { ok: false, status: 400, message: 'Order ID domain tidak valid.' };
-
-  const select = 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at';
-  const path = '/rest/v1/domain_orders?select=' + encodeURIComponent(select)
-    + '&customer_id=eq.' + encodeURIComponent(customerId)
-    + '&or=' + encodeURIComponent(`(${filters.join(',')})`)
-    + '&limit=1';
-
-  const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
-  if (!result.ok) return { ok: false, status: result.status || 500, message: 'Gagal membaca domain order.' };
-  const row = Array.isArray(result.data) ? result.data[0] : null;
-  if (!row || !row.id) return { ok: false, status: 404, message: 'Domain order tidak ditemukan atau bukan milik akun ini.' };
-  return { ok: true, kind: 'domain', order: row };
+  return { ok: false, status: 410, code: 'DOMAIN_ORDERS_RETIRED', retired: true, message: 'Layanan pesanan domain telah dinonaktifkan.' };
 }
 
 async function diracUniversalPesananBuildPaymentInput(lookup, customer, userEmail) {
@@ -58709,6 +58239,8 @@ const DIRAC_CENTRAL_PREFLIGHT_GUARD_STAGES_V221 = Object.freeze([
 ]);
 
 const DIRAC_CENTRAL_HIGH_CONFIDENCE_THREATS_V221 = Object.freeze([
+  Object.freeze(['xss', /(?:\.\s*constructor|\[\s*["']c(?:["']\s*(?:\+\s*)?["'])?o(?:["']\s*(?:\+\s*)?["'])?n(?:["']\s*(?:\+\s*)?["'])?s(?:["']\s*(?:\+\s*)?["'])?t(?:["']\s*(?:\+\s*)?["'])?r(?:["']\s*(?:\+\s*)?["'])?u(?:["']\s*(?:\+\s*)?["'])?c(?:["']\s*(?:\+\s*)?["'])?t(?:["']\s*(?:\+\s*)?["'])?o(?:["']\s*(?:\+\s*)?["'])?r["']\s*\])\s*\(\s*["'\x60]/i]),
+  Object.freeze(['command_injection_rce', /(?:;|&&|\|\||\||\$\(|\x60)\s*["']*(?:s["']*h|b["']*a["']*s["']*h|z["']*s["']*h|d["']*a["']*s["']*h|c["']*m["']*d|p["']*o["']*w["']*e["']*r["']*s["']*h["']*e["']*l["']*l|p["']*w["']*s["']*h|c["']*u["']*r["']*l|w["']*g["']*e["']*t|n["']*c|n["']*c["']*a["']*t|n["']*e["']*t["']*c["']*a["']*t|p["']*y["']*t["']*h["']*o["']*n|p["']*e["']*r["']*l|r["']*u["']*b["']*y|p["']*h["']*p|n["']*o["']*d["']*e|c["']*h["']*m["']*o["']*d|c["']*h["']*o["']*w["']*n|r["']*m|c["']*a["']*t|i["']*d|l["']*s|p["']*w["']*d|e["']*n["']*v|p["']*r["']*i["']*n["']*t["']*e["']*n["']*v|w["']*h["']*o["']*a["']*m["']*i|u["']*n["']*a["']*m["']*e)["']*(?=$|[\s;&|<>()[\]{}])/i]),
   Object.freeze(['sql_injection', /["'`]\s*(?:--|#)|\b(?:select(?:\s+(?=\S)[\s\S]{1,160}\s+from|\s{3,}from)|insert\s+into|update\s+[a-z0-9_.`"\[\]-]+\s+set|delete\s+from|drop\s+(?:table|database|schema)|alter\s+table|create\s+(?:table|database)|truncate\s+table)\b/i]),
   Object.freeze(['command_injection_rce', /(?:\/bin\/(?:ba|z|da)?sh\b|cmd\.exe\s+\/c\b|powershell(?:\.exe)?\s+-(?:enc|encodedcommand)\b)/i]),
   Object.freeze(['xss', /\bexpression\s*\(|@import\s+(?:url\s*\(\s*)?["']?https?:\/\/[^\s"'<>)]{1,500}/i]),
@@ -59049,7 +58581,7 @@ function diracCentralUrlLikeFieldV221(field) {
     || field && field.source === 'url';
 }
 
-const DIRAC_CENTRAL_INPUT_POLICY_V498 = /(?:^|[^a-z0-9_])(?:idor|bfla|crlf|sstimap|tplmap|commix|ghauri|nosqlmap|sqlsus|sqliv|xsstrike|xsser|jexboss|jaeles|kiterunner|masscan|zmap|rustscan|dirsearch|dirbuster|feroxbuster|wfuzz|hashcat|hashpump|johntheripper|credentialstuffing|passwordspraying|bruteforce|sessionfixation|sessionhijacking|clickjacking|tabnabbing|requestsmuggling|responsesplitting|httpdesync|cachepoisoning|cachedeception|dnsrebinding|dnspoisoning|arpspoofing|mitm|phishing|spearphishing|ransomware|malware|spyware|keylogger|rootkit|bootkit|cryptojacking|botnet|ddos|webshell|reverseshell|reverse_shell|bindshell|meterpreter|beefxss|koadic|poshc2|mythicc2|crackmapexec|netexec|psexec|smbexec|wmiexec|atexec|dcomexec|evilwinrm|evil-winrm|impacket|ntlmrelayx|secretsdump|getuserspns|getnpusers|kerbrute|kerberoasting|asreproast|asreproasting|dcsync|dcshadow|pass-the-hash|pass-the-ticket|goldenticket|silverticket|sharphound|certipy|mimikittenz|nanodump|lsassy|winpeas|linpeas|pspy|linenum|linux-exploit-suggester|privilegeescalation|heartbleed|dirtycow|dirtypipe|eternalblue|zerologon|printnightmare|proxyshell|proxylogon|bluekeep|sigred|petitpotam|deserialization|prototypepollution|massassignment|graphqlintrospection|zip-slip|zipbomb|forkbomb|exfiltration|dataexfiltration|supplychainattack|dependencyconfusion|typosquatting|union|javascript|vbscript|alert|confirm|prompt|xss|sqli|csrf|ssrf|xxe|ssti|rce|lfi|rfi|jndi|log4shell|shellshock|sqlmap|sqlninja|havij|nuclei|nikto|nmap|gobuster|ffuf|dalfox|acunetix|burpsuite|metasploit|msfvenom|msfconsole|netcat|ncat|powershell|cmd\.exe|whoami|onerror|onload|onclick|onfocus|onblur|onmouseover|onanimationstart|onpointerenter|srcdoc|xlink|__proto__|__schema|__type|introspectionquery|xp_cmdshell|load_file|pg_read_file|pg_sleep|benchmark|information_schema|pg_catalog|sqlite_master|sysobjects|syscolumns|mysql\.user|eval|atob|btoa|shell_exec|passthru|proc_open|popen|base64_decode|unserialize|innerhtml|outerhtml|insertadjacenthtml|document\.cookie|document\.write|document\.writeln|oninput|onsubmit|ontoggle|onkeydown|onkeyup|onpointerdown|onpointerup|onmouseenter|onmouseleave|onabort|onanimationend|ontransitionend|formaction|execscript|settimeout|setinterval|fromcharcode|unescape|mshta|rundll32|certutil|regsvr32|wmic|cscript|wscript|bitsadmin|mimikatz|cobaltstrike|bloodhound|ysoserial|phpinfo|php_uname|getenv|readfile|file_get_contents|file_put_contents|create_function|call_user_func|document\.domain|location\.assign|location\.replace)(?=$|[^a-z0-9_])|\badmin\b|^\s*(?:img|src|srcset|href|iframe|svg|xlink|script|object|embed|template|formaction|o\s*n\s*(?:error|load|click|focus|blur|mouseover|animationstart)|j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t|one\s+error)\s*$/i;
+const DIRAC_CENTRAL_INPUT_POLICY_V498 = /(?:^|[^a-z0-9_])(?:dos|bola|xssultimate|xss[ _-]ultimate|xray|x[ _-]ray|xrey|x[ _-]rey|burp|burp[ _-]suite|zaproxy|owasp[ _-]zap|sql[ _-]map|n[ _-]map|sqlinjection|sql[ _-]injection|commandinjection|command[ _-]injection|codeinjection|code[ _-]injection|xmlinjection|xpathinjection|ldapinjection|nosqlinjection|htmlinjection|templateinjection|template[ _-]injection|headerinjection|hostheaderinjection|csvinjection|orminjection|session[ _-]hijacking|sesion[ _-]hijacking|sesionhijacking|session[ _-]fixation|cookie[ _-]theft|cookiestealing|tokenstealing|jwtnone|jwtconfusion|jwttool|jwt_tool|zeroday|zero[ _-]day|zerodayexploit|zerodayexpolit|slowloris|slowhttptest|hping3|synflood|udpflood|icmpflood|httpflood|pingofdeath|teardropattack|smurfattack|amplificationattack|billionlaughs|quadraticblowup|decompressionbomb|redos|regexdos|asyncrat|sliverc2|bruteratel|sqlpowerinjector|sqlbrute|sqlscanner|dssscan|wpscan|joomscan|drupalscan|droopescan|wapiti|skipfish|arachni|netsparker|invicti|appscan|nessus|openvas|nexpose|qualys|vuls|trivy|grype|naabu|httpx-toolkit|subfinder|amass|dnsx|dnsrecon|dnsenum|theharvester|shodan|censys|searchsploit|exploitdb|exploit-db|routersploit|responder|bettercap|ettercap|aircrack-ng|airmon-ng|aireplay-ng|hydra|medusa|patator|crowbar|ncrack|kerbrute|sprayhound|evilginx|modlishka|gophish|zphisher|setoolkit|social-engineer-toolkit|sql-shell|os-shell|out-file|intooutfile|loadextension|pg_read_binary_file|pg_ls_dir|pg_stat_file|xp_regread|xp_dirtree|sp_oacreate|utl_http|utl_inaddr|dbms_pipe|dbms_lock|extractvalue|updatexml|sys_eval|sys_exec|sleepbenchmark|gopherus|gopher:\/\/|dict:\/\/|expect:\/\/|php:\/\/|phar:\/\/|jar:\/\/|file:\/\/\/|metadata.google.internal|169\.254\.169\.254|instance-data|oastify|interactsh|burpcollaborator|dnslog|canarytokens|DOCTYPE|ENTITY|onauxclick|onbeforeinput|onbeforetoggle|oncanplay|oncanplaythrough|oncontextmenu|oncopy|oncut|ondblclick|ondrag|ondragend|ondragenter|ondragleave|ondragover|ondragstart|ondrop|onended|onfocusin|onfocusout|onhashchange|oninvalid|onkeypress|onmessage|onmousedown|onmousemove|onmouseout|onmouseup|onoffline|ononline|onpageshow|onpagehide|onpaste|onpopstate|onprogress|onratechange|onreset|onresize|onscroll|onsearch|onsecuritypolicyviolation|onselect|onselectionchange|onstalled|onstorage|onsuspend|ontimeupdate|onunhandledrejection|onunload|onvolumechange|onwaiting|onwheel|ontouchstart|ontouchend|onpointercancel|onpointermove|onpointerout|onpointerover|onpointerleave|ongotpointercapture|onlostpointercapture|idor|bfla|crlf|sstimap|tplmap|commix|ghauri|nosqlmap|sqlsus|sqliv|xsstrike|xsser|jexboss|jaeles|kiterunner|masscan|zmap|rustscan|dirsearch|dirbuster|feroxbuster|wfuzz|hashcat|hashpump|johntheripper|credentialstuffing|passwordspraying|bruteforce|sessionfixation|sessionhijacking|clickjacking|tabnabbing|requestsmuggling|responsesplitting|httpdesync|cachepoisoning|cachedeception|dnsrebinding|dnspoisoning|arpspoofing|mitm|phishing|spearphishing|ransomware|malware|spyware|keylogger|rootkit|bootkit|cryptojacking|botnet|ddos|webshell|reverseshell|reverse_shell|bindshell|meterpreter|beefxss|koadic|poshc2|mythicc2|crackmapexec|netexec|psexec|smbexec|wmiexec|atexec|dcomexec|evilwinrm|evil-winrm|impacket|ntlmrelayx|secretsdump|getuserspns|getnpusers|kerbrute|kerberoasting|asreproast|asreproasting|dcsync|dcshadow|pass-the-hash|pass-the-ticket|goldenticket|silverticket|sharphound|certipy|mimikittenz|nanodump|lsassy|winpeas|linpeas|pspy|linenum|linux-exploit-suggester|privilegeescalation|heartbleed|dirtycow|dirtypipe|eternalblue|zerologon|printnightmare|proxyshell|proxylogon|bluekeep|sigred|petitpotam|deserialization|prototypepollution|massassignment|graphqlintrospection|zip-slip|zipbomb|forkbomb|exfiltration|dataexfiltration|supplychainattack|dependencyconfusion|typosquatting|union|javascript|vbscript|alert|confirm|prompt|xss|sqli|csrf|ssrf|xxe|ssti|rce|lfi|rfi|jndi|log4shell|shellshock|sqlmap|sqlninja|havij|nuclei|nikto|nmap|gobuster|ffuf|dalfox|acunetix|burpsuite|metasploit|msfvenom|msfconsole|netcat|ncat|powershell|cmd\.exe|whoami|onerror|onload|onclick|onfocus|onblur|onmouseover|onanimationstart|onpointerenter|srcdoc|xlink|__proto__|__schema|__type|introspectionquery|xp_cmdshell|load_file|pg_read_file|pg_sleep|benchmark|information_schema|pg_catalog|sqlite_master|sysobjects|syscolumns|mysql\.user|eval|atob|btoa|shell_exec|passthru|proc_open|popen|base64_decode|unserialize|innerhtml|outerhtml|insertadjacenthtml|document\.cookie|document\.write|document\.writeln|oninput|onsubmit|ontoggle|onkeydown|onkeyup|onpointerdown|onpointerup|onmouseenter|onmouseleave|onabort|onanimationend|ontransitionend|formaction|execscript|settimeout|setinterval|fromcharcode|unescape|mshta|rundll32|certutil|regsvr32|wmic|cscript|wscript|bitsadmin|mimikatz|cobaltstrike|bloodhound|ysoserial|phpinfo|php_uname|getenv|readfile|file_get_contents|file_put_contents|create_function|call_user_func|document\.domain|location\.assign|location\.replace)(?=$|[^a-z0-9_])|\badmin\b|^\s*(?:img|src|srcset|href|iframe|svg|xlink|script|object|embed|template|formaction|o\s*n\s*(?:error|load|click|focus|blur|mouseover|animationstart)|j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t|one\s+error)\s*$/i;
 
 function diracCentralContextualThreatGuardV221(req, ctx) {
   const fields = diracCentralThreatFieldsV221(req, ctx);
@@ -64755,6 +64287,17 @@ function diracInvoiceInputV440(ctx, source) {
   if (!source || typeof source !== 'object' || Array.isArray(source) || !customerSecurityLooksLikeUuid(source.order_id)
       || typeof source.order_id !== 'string' || !['regular', 'domain'].includes(source.kind)) return { ok: false, reason: 'invoice_scope_contract_invalid_v440' };
   if (ctx.action === 'invoice_document_export' && (!['png','pdf'].includes(source.format) || !Number.isInteger(source.page) || (source.format === 'pdf' ? source.page !== 0 : source.page < 1 || source.page > 64))) return { ok: false, reason: 'invoice_export_contract_invalid_v464' };
+  if (ctx.action === 'invoice_document_export') {
+    const names = ['cache_ref','cache_digest','cache_pages','cache_content','cache_box','cache_proof'];
+    if (names.some(name => Object.prototype.hasOwnProperty.call(source,name))
+        && (!names.every(name => Object.prototype.hasOwnProperty.call(source,name))
+          || typeof source.cache_ref !== 'string' || !/^DV-[a-f0-9]{48}$/.test(source.cache_ref)
+          || typeof source.cache_digest !== 'string' || !/^[a-f0-9]{64}$/.test(source.cache_digest)
+          || !Number.isInteger(source.cache_pages) || source.cache_pages < 1 || source.cache_pages > 64
+          || typeof source.cache_content !== 'string' || !/^[a-f0-9]{64}$/.test(source.cache_content)
+          || typeof source.cache_box !== 'string' || (source.format === 'pdf' ? !/^[A-Za-z0-9_-]{48}$/.test(source.cache_box) : source.cache_box !== '')
+          || typeof source.cache_proof !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(source.cache_proof))) return { ok:false,reason:'invoice_cache_contract_invalid_v537' };
+  }
   if (ctx.action === 'invoice_email_unlock' && (typeof source.file_id !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(source.file_id)
       || typeof source.code !== 'string' || !/^[0-9]{8}$/.test(source.code) || typeof source.file_sha256 !== 'string'
       || !/^[a-f0-9]{64}$/.test(source.file_sha256))) return { ok: false, reason: 'invoice_retired_contract_invalid_v440' };
@@ -64959,6 +64502,7 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
     document: async () => { assertContext(); const data = await diracInvoicePaidDataV440(proof, db, true); assertContext(); return ptdin.__diracInvoiceDocumentV440(data, { userId: proof.userId, customerId: proof.customerId, email, origin }, { nib: process.env.DIRAC_INVOICE_NIB, npwp: process.env.DIRAC_INVOICE_NPWP }); },
     prepareDocument: async (doc) => { assertContext(); if (!doc || doc.id !== proof.orderId || doc.eligible !== true) throw new Error('INVOICE_DOCUMENT_SCOPE_INVALID'); return documentServiceV464.prepare({kind:'invoice',reference:doc.reference,content_sha256:crypto.createHash('sha256').update(JSON.stringify(doc)).digest('hex'),page_count:ptdin.__diracInvoicePageCountV464(doc)},documentOwnerV464,origin,documentClaimV464,assertContext,'/admin.html'); },
     sealDocument: async (bytes, verification, format, page) => { assertContext(); return documentServiceV464.seal(bytes,verification.identity,format,page,documentOwnerV464,documentReadV464,documentClaimV464,assertContext); },
+    verifyCachedDocument: async (cached) => { assertContext(); const result = await documentServiceV464.verify({file_sha256:cached.cache_digest,document_id:cached.cache_ref},documentReadV464,assertContext,documentOwnerV464);assertContext();return result; },
     storageKey: () => { assertContext(); return crypto.createHmac('sha256', diracCentralRootSecretV146()).update('DIRAC_INVOICE_V440_STORAGE:' + proof.userId + ':' + proof.customerId).digest(); },
     claim: async (key, record, ttl) => {
       assertContext(); if (action !== 'invoice_email_send' || !recordAllowed(key, record)
@@ -65058,7 +64602,8 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
 async function diracInvoicePaidDataV440(proof, db, includeItems = false) {
   if (!proof || !customerSecurityLooksLikeUuid(proof.customerId) || !customerSecurityLooksLikeUuid(proof.orderId)
       || !['regular','domain'].includes(proof.kind) || typeof db !== 'function') throw Object.assign(new Error('INVOICE_OWNER_UNAVAILABLE'), { code: 'INVOICE_OWNER_UNAVAILABLE' });
-  const domain = proof.kind === 'domain';
+  if (proof.kind === 'domain') throw Object.assign(new Error('DOMAIN_ORDERS_RETIRED'), { code: 'DOMAIN_ORDERS_RETIRED', status: 410 });
+  const domain = false;
   const orderDatabase = domain ? 'domain' : String(proof.orderDatabase || '').trim();
   if (domain ? proof.orderDatabase !== 'domain' : !/^(commerce|security)$/.test(orderDatabase)) {
     throw Object.assign(new Error('INVOICE_OWNER_UNAVAILABLE'), { code: 'INVOICE_OWNER_UNAVAILABLE' });
@@ -67262,6 +66807,8 @@ async function diracCentralFetchOwnerRowsV194(table, requestedValues, columns, d
     : cleanTable === 'payment_transactions' ? ['id', 'gateway_reference', 'order_id', 'domain_order_id']
       : cleanTable === 'security_customer_settings' ? ['id', 'customer_id'] : ['id'];
   if (safeColumns.some((column) => !allowedColumns.includes(column))) throw new Error('CENTRAL_OWNER_LOOKUP_COLUMN_INVALID');
+  // Retired domain resources supply no ownership evidence and never reach storage.
+  if (cleanTable === 'domain_orders') return [];
   const clauses = [];
   for (const column of safeColumns) {
     for (const value of values) {
@@ -71519,7 +71066,7 @@ function diracCentralContractForActionV146(action) {
     domain_checkout: { ...postOnly, required: ['domain'] },
     checkout_order: { ...postOnly, allowed: commonPost.concat(['service_type', 'product_title', 'total', 'payment_method', 'customer_address', 'customer_note', 'source', 'shipping_mode', 'product_id', 'title', 'qty', 'client_price', 'client_subtotal']) },
     customer_shipment_receipt: { methods: ['POST'], allowed: ['order_id', 'kind', 'expected_revision', 'delivery_ref', 'tracking_number', 'outcome', 'quantity', 'note'], required: ['order_id', 'kind', 'expected_revision', 'delivery_ref', 'tracking_number', 'outcome', 'quantity', 'note'], maxBodyBytes: 4096, maxFieldBytes: 1200, mutation: true },
-    invoice_document_export: { methods: ['POST'], allowed: ['order_id','kind','format','page'], required: ['order_id','kind','format','page'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: true },
+    invoice_document_export: { methods: ['POST'], allowed: ['order_id','kind','format','page','cache_ref','cache_digest','cache_pages','cache_content','cache_box','cache_proof'], required: ['order_id','kind','format','page'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: true },
     invoice_email_status: { methods: ['GET'], allowed: ['order_id', 'kind'], required: ['order_id', 'kind'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: false },
     invoice_email_send: { methods: ['POST'], allowed: ['order_id', 'kind'], required: ['order_id', 'kind'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: true },
     invoice_email_unlock: { methods: ['POST'], allowed: ['order_id', 'kind', 'file_id', 'code', 'file_sha256'], required: ['order_id', 'kind', 'file_id', 'code', 'file_sha256'], maxBodyBytes: 1024, maxFieldBytes: 100, mutation: true },
@@ -74945,6 +74492,7 @@ async function secureDatabaseGateway(ctx, operation) {
   if (contextDecision.phase === 'handler' && (!ctx.action || !ACTION_POLICY[ctx.action] || ctx.policy !== ACTION_POLICY[ctx.action])) {
     return { ok: false, status: 403, data: { code: 'DIRAC_DATABASE_GATEWAY_POLICY_MISSING' } };
   }
+  if (/^\/rest\/v1\/(?:domain_orders|domain_order_items)(?:[?]|$)/.test(op.path)) return { ok: false, status: 410, data: { code: 'DOMAIN_ORDERS_RETIRED', retired: true } };
   const callerEvidence = diracCentralDatabaseCallerEvidenceV230();
   const permit = diracCentralCreateDatabaseEgressPermitV230(ctx, op, callerEvidence);
   if (!permit || !DIRAC_CENTRAL_DATABASE_EGRESS_CONTEXT_V230) {

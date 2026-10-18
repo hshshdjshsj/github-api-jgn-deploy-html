@@ -335,6 +335,7 @@ async function dbFetch(path, options = {}, target = '') {
   const method = String(options.method || 'GET').toUpperCase();
   if (!cleanPath.startsWith('/rest/v1/') || cleanPath.startsWith('//') || cleanPath.includes('\\') || /[\r\n\0]/.test(cleanPath) || !['GET', 'POST', 'PATCH'].includes(method)) fail('ADMIN_DATABASE_REQUEST_INVALID', 503);
   let creds;
+  if (/^\/rest\/v1\/(?:domain_orders|domain_order_items)(?:[?]|$)/.test(cleanPath)) fail('DOMAIN_ORDERS_RETIRED', 410);
   if (target === 'security' || cleanPath.startsWith('/rest/v1/rpc/') || ['dirac_s2s_security', 'dirac_persistent_bans'].includes(tableFromPath(cleanPath))) creds = securityCredentials();
   else creds = businessTarget(tableFromPath(cleanPath));
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
@@ -2092,7 +2093,8 @@ async function businessSummaryV456(body) {
   const start = Date.parse(from), end = Date.parse(until);
   if (!['summary','finance'].includes(view) || !Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(rawOffset) || Number(rawOffset) > 49800 || Number(rawOffset) % 200 !== 0) fail(view === 'finance' ? 'ADMIN_FINANCE_RANGE_INVALID' : 'ADMIN_SUMMARY_RANGE_INVALID', 400);
   if (!iso.test(from) || !iso.test(until) || !Number.isFinite(start) || !Number.isFinite(end) || new Date(start).toISOString() !== from || new Date(end).toISOString() !== until || start < Date.UTC(1999, 11, 31, 10) || start >= end || end > Date.now() + 60000) fail(view === 'finance' ? 'ADMIN_FINANCE_RANGE_INVALID' : 'ADMIN_SUMMARY_RANGE_INVALID', 400);
-  const table = kind === 'domain' ? 'domain_orders' : 'orders';
+  if (kind === 'domain') fail('DOMAIN_ORDERS_RETIRED', 410);
+  const table = 'orders';
   const select = kind === 'domain' ? 'id,total_price,currency,payment_status,created_at' : 'id,total,payment_status,created_at';
   const suffix = '&created_at=gte.' + encodeURIComponent(from) + '&created_at=lt.' + encodeURIComponent(until) + '&order=created_at.desc,id.desc&limit=201&offset=' + Number(rawOffset);
   let result = await dbFetch('/rest/v1/' + table + '?select=' + encodeURIComponent(select) + suffix, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
@@ -2148,6 +2150,7 @@ function orderSearchV1(value, kind) {
 }
 async function businessOrdersSingleV480(body) {
   const kind = String(body.kind || 'regular'), offsetRaw = String(body.offset || '0'); if (!Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 50000) fail('ADMIN_PAGE_INVALID', 400);
+  if (kind === 'domain') fail('DOMAIN_ORDERS_RETIRED', 410);
   const search = orderSearchV1(body.search, kind);
   const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&' + search.field + '=eq.' + encodeURIComponent(search.value) + '&order=created_at.desc,id.desc&limit=41&offset=' + Number(offsetRaw), path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await dbFetch(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
   if (kind === 'domain' && domainOrderUndefinedColumn(result)) result = await dbFetch('/rest/v1/domain_orders?select=' + encodeURIComponent((search.field === 'order_code' ? 'order_code,' : '') + DOMAIN_ORDER_COMPAT_SELECT) + suffix, { method: 'GET' });
@@ -2177,24 +2180,20 @@ async function businessOrders(body) {
       const offsetNext = String(Number(offsetRaw) + 200), financePages = await Promise.all([
         businessSummarySourceV1({ ...body, kind: 'regular', offset: offsetRaw }),
         businessSummarySourceV1({ ...body, kind: 'laboratorium', offset: offsetRaw }),
-        businessSummarySourceV1({ ...body, kind: 'domain', offset: offsetRaw }),
         businessSummarySourceV1({ ...body, kind: 'regular', offset: offsetNext }),
-        businessSummarySourceV1({ ...body, kind: 'laboratorium', offset: offsetNext }),
-        businessSummarySourceV1({ ...body, kind: 'domain', offset: offsetNext })
+        businessSummarySourceV1({ ...body, kind: 'laboratorium', offset: offsetNext })
       ]);
       const pages = [
-        businessFinancePairV484(financePages[0], financePages[3], 'regular'),
-        businessFinancePairV484(financePages[1], financePages[4], 'laboratorium'),
-        businessFinancePairV484(financePages[2], financePages[5], 'domain')
+        businessFinancePairV484(financePages[0], financePages[2], 'regular'),
+        businessFinancePairV484(financePages[1], financePages[3], 'laboratorium')
       ];
-      return { ok: true, view, kind: 'all', offset: Number(offsetRaw), page_size: 400, from: pages[0].from, until: pages[0].until, pages, ...businessSummaryAvailabilityV1(pages), time: new Date().toISOString() };
+      return { ok: true, view, kind: 'all', offset: Number(offsetRaw), page_size: 400, from: pages[0].from, until: pages[0].until, pages, retired_sources: ['domain'], ...businessSummaryAvailabilityV1(pages), time: new Date().toISOString() };
     }
     const pages = await Promise.all([
       businessSummarySourceV1({ ...body, kind: 'regular' }),
-      businessSummarySourceV1({ ...body, kind: 'laboratorium' }),
-      businessSummarySourceV1({ ...body, kind: 'domain' })
+      businessSummarySourceV1({ ...body, kind: 'laboratorium' })
     ]);
-    return { ok: true, view, kind: 'all', offset: pages[0].offset, page_size: 200, from: pages[0].from, until: pages[0].until, pages, ...businessSummaryAvailabilityV1(pages), time: new Date().toISOString() };
+    return { ok: true, view, kind: 'all', offset: pages[0].offset, page_size: 200, from: pages[0].from, until: pages[0].until, pages, retired_sources: ['domain'], ...businessSummaryAvailabilityV1(pages), time: new Date().toISOString() };
   }
   if (kind !== 'all') return businessOrdersSingleV480(body);
   const offsetRaw = String(body.offset || '0');
@@ -2202,14 +2201,14 @@ async function businessOrders(body) {
   orderSearchV1(body.search, 'regular');
   const bundled = await Promise.all([
     businessOrdersSingleV480({ kind: 'regular', offset: offsetRaw, search: body.search }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; }),
-    businessOrdersSingleV480({ kind: 'laboratorium', offset: offsetRaw, search: body.search }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; }),
-    businessOrdersSingleV480({ kind: 'domain', offset: offsetRaw, search: body.search }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; })
+    businessOrdersSingleV480({ kind: 'laboratorium', offset: offsetRaw, search: body.search }).then(data => ({ ok: true, data })).catch(error => { if (error && error.code === 'ADMIN_DATA_UNAVAILABLE') return { ok: false, data: null }; throw error; })
   ]);
-  const sources = [businessOrdersBundleSourceV480(bundled[0], 'regular'), businessOrdersBundleSourceV480(bundled[1], 'laboratorium'), businessOrdersBundleSourceV480(bundled[2], 'domain')];
-  if (!sources[0].ok && !sources[1].ok && !sources[2].ok) fail('ADMIN_DATA_UNAVAILABLE', 503);
-  return { ok: true, kind: 'all', offset: Number(offsetRaw), sources, time: new Date().toISOString() };
+  const sources = [businessOrdersBundleSourceV480(bundled[0], 'regular'), businessOrdersBundleSourceV480(bundled[1], 'laboratorium')];
+  if (!sources[0].ok && !sources[1].ok) fail('ADMIN_DATA_UNAVAILABLE', 503);
+  return { ok: true, kind: 'all', offset: Number(offsetRaw), sources, retired_sources: ['domain'], time: new Date().toISOString() };
 }
 async function loadOrder(kind, id, database = dbFetch) {
+  if (kind === 'domain') fail('DOMAIN_ORDERS_RETIRED', 410);
   const table = kind === 'domain' ? 'domain_orders' : 'orders', suffix = '&id=eq.' + encodeURIComponent(id) + '&limit=2', path = '/rest/v1/' + table + '?select=' + encodeURIComponent(ORDER_SELECT[kind]) + suffix; let result = await database(path, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
   if (kind === 'domain' && domainOrderUndefinedColumn(result)) result = await database('/rest/v1/domain_orders?select=' + encodeURIComponent(DOMAIN_ORDER_COMPAT_SELECT) + suffix, { method: 'GET' });
   if (!result.ok || !Array.isArray(result.data)) fail('ADMIN_DATA_UNAVAILABLE', 503); if (result.data.length !== 1 || result.data[0].id !== id) fail('ADMIN_ORDER_NOT_FOUND', 404); return orderPublic(result.data[0], kind);
@@ -2455,28 +2454,26 @@ async function businessBannedDataV476(body) {
   const first = await Promise.allSettled([
     adminBannedRowsV476('orders', customerId, ''),
     adminBannedRowsV476('orders', customerId, 'security'),
-    adminBannedRowsV476('domain_orders', customerId, ''),
     adminBannedRowsV476('security_customer_account_requests', customerId, ''),
     adminBannedRowsV476('payment_transactions', customerId, ''),
     adminBannedRowsV476('order_items', customerId, '')
   ]);
   if (first.some(item => item.status !== 'fulfilled')) { const failed = first.find(item => item.status !== 'fulfilled'); throw failed.reason; }
-  const orders = first[0].value, laboratoryOrders = first[1].value, domainOrders = first[2].value;
+  const orders = first[0].value, laboratoryOrders = first[1].value;
   const second = await Promise.allSettled([
-    adminBannedRowsV476('laboratory_items', customerId, 'security', laboratoryOrders.map(row => row.id)),
-    adminBannedRowsV476('domain_order_items', customerId, '', domainOrders.map(row => row.id))
+    adminBannedRowsV476('laboratory_items', customerId, 'security', laboratoryOrders.map(row => row.id))
   ]);
   if (second.some(item => item.status !== 'fulfilled')) { const failed = second.find(item => item.status !== 'fulfilled'); throw failed.reason; }
   const payload = {
     schema: 'dirac.admin.banned-data-export.v1', exported_at: new Date().toISOString(), complete: true,
     block: { family: identity.family, reason: identity.reason, created_at: identity.createdAt },
     account: { customer_id: customerId, email: identity.email }, profile: identity.profile,
-    orders, laboratory_orders: laboratoryOrders, domain_orders: domainOrders, order_items: first[5].value,
-    laboratory_items: second[0].value, domain_order_items: second[1].value,
-    account_requests: first[3].value, payments: first[4].value,
-    security_notice: 'Arsip tidak memuat password, hash password, token, cookie, kunci MFA, passkey privat, atau catatan internal keamanan.'
+    orders, laboratory_orders: laboratoryOrders, order_items: first[4].value,
+    laboratory_items: second[0].value, retired_collections: ['domain_orders','domain_order_items'],
+    account_requests: first[2].value, payments: first[3].value,
+    security_notice: 'Arsip tidak memuat password, hash password, token, cookie, kunci MFA, passkey privat, atau catatan internal keamanan. Sumber pesanan domain telah dinonaktifkan dan tidak disertakan.'
   };
-  const collections = [orders,laboratoryOrders,domainOrders,first[5].value,second[0].value,second[1].value,first[3].value,first[4].value];
+  const collections = [orders,laboratoryOrders,first[4].value,second[0].value,first[2].value,first[3].value];
   const totalRows = collections.reduce((sum, rows) => sum + rows.length, 0);
   const serialized = JSON.stringify(payload);
   if (totalRows > ADMIN_BANNED_EXPORT_MAX_ROWS_V476 || Buffer.byteLength(serialized,'utf8') > ADMIN_BANNED_EXPORT_MAX_BYTES_V476) fail('ADMIN_BANNED_EXPORT_TOO_LARGE', 413);
@@ -2627,8 +2624,8 @@ function documentInvoicePatternsV495(value) {
 // V526: five nonvisual, domain-separated invoice bindings. Exact copies remain valid.
 // These authenticate file metadata; they are not five independent security factors.
 const DOCUMENT_HIDDEN_VERSION_V526 = 'dirac-invoice-hidden-v526';
-function documentInvoiceHiddenV526(value) {
-  const key = deriveSecret('invoice-hidden-pattern-v526'), identity = value.identity;
+function documentInvoiceHiddenV526(value, derive = deriveSecret) {
+  const key = derive('invoice-hidden-pattern-v526'), identity = value.identity;
   const tag = (label, context) => crypto.createHmac('sha512', key).update(DOCUMENT_HIDDEN_VERSION_V526 + '\0' + label + '\0').update(stableJson(context)).digest('base64url');
   try {
     return { version: DOCUMENT_HIDDEN_VERSION_V526,
@@ -2652,10 +2649,10 @@ function documentInvoiceHiddenValidV526(value) {
 // V527: additional issuer/order, visual geometry and issuance-lineage bindings.
 // Every new tag has its own derived HMAC-SHA-512 subkey; this remains one key hierarchy.
 const DOCUMENT_HIDDEN_VERSION_V527 = 'dirac-invoice-hidden-v527';
-function documentInvoiceHiddenV527(value) {
-  const identity = value.identity, legacy = documentInvoiceHiddenV526(value);
+function documentInvoiceHiddenV527(value, derive = deriveSecret) {
+  const identity = value.identity, legacy = documentInvoiceHiddenV526(value, derive);
   const tag = (label, context) => {
-    const key = deriveSecret('invoice-hidden-' + label + '-v527');
+    const key = derive('invoice-hidden-' + label + '-v527');
     try { return crypto.createHmac('sha512', key).update(DOCUMENT_HIDDEN_VERSION_V527 + '\0' + label + '\0').update(stableJson(context)).digest('base64url'); }
     finally { key.fill(0); }
   };
@@ -2678,10 +2675,10 @@ function documentInvoiceHiddenValidV527(value) {
 // V528: three domain-separated, hidden invoice bindings; compatible with the five/eight-tag formats.
 // These protect the registered digital artifact, not a photograph or a QR copied to another file.
 const DOCUMENT_HIDDEN_VERSION_V528 = 'dirac-invoice-hidden-v528';
-function documentInvoiceHiddenV528(value) {
-  const identity = value.identity, legacy = documentInvoiceHiddenV527(value);
+function documentInvoiceHiddenV528(value, derive = deriveSecret) {
+  const identity = value.identity, legacy = documentInvoiceHiddenV527(value, derive);
   const tag = (label, context) => {
-    const key = deriveSecret('invoice-hidden-' + label + '-v528');
+    const key = derive('invoice-hidden-' + label + '-v528');
     try { return crypto.createHmac('sha512', key).update(DOCUMENT_HIDDEN_VERSION_V528 + '\0' + label + '\0').update(stableJson(context)).digest('base64url'); }
     finally { key.fill(0); }
   };
@@ -2705,10 +2702,10 @@ function documentInvoiceHiddenValidV528(value) {
 // identity, issuance provenance and the entire preceding proof stack. All tags retain
 // a shared server key hierarchy; they are not independent trust anchors.
 const DOCUMENT_HIDDEN_VERSION_V530 = 'dirac-invoice-hidden-v530';
-function documentInvoiceHiddenV530(value) {
-  const identity = value.identity, preceding = documentInvoiceHiddenV528(value);
+function documentInvoiceHiddenV530(value, derive = deriveSecret) {
+  const identity = value.identity, preceding = documentInvoiceHiddenV528(value, derive);
   const tag = (label, context) => {
-    const key = deriveSecret('invoice-hidden-' + label + '-v530');
+    const key = derive('invoice-hidden-' + label + '-v530');
     try { return crypto.createHmac('sha512', key).update(DOCUMENT_HIDDEN_VERSION_V530 + '\0' + label + '\0').update(stableJson(context)).digest('base64url'); }
     finally { key.fill(0); }
   };
@@ -2735,10 +2732,10 @@ function documentInvoiceHiddenValidV530(value) {
 // rendering, chronology and the complete proof stack. They share the existing key
 // hierarchy; exact copies remain valid and historical proofs keep their own totals.
 const DOCUMENT_HIDDEN_VERSION_V531 = 'dirac-invoice-hidden-v531';
-function documentInvoiceHiddenV531(value) {
-  const identity = value.identity, preceding = documentInvoiceHiddenV530(value);
+function documentInvoiceHiddenV531(value, derive = deriveSecret) {
+  const identity = value.identity, preceding = documentInvoiceHiddenV530(value, derive);
   const tag = (label, context) => {
-    const key = deriveSecret('invoice-hidden-' + label + '-v531');
+    const key = derive('invoice-hidden-' + label + '-v531');
     try { return crypto.createHmac('sha512', key).update(DOCUMENT_HIDDEN_VERSION_V531 + '\0' + label + '\0').update(stableJson(context)).digest('base64url'); }
     finally { key.fill(0); }
   };
@@ -2763,6 +2760,36 @@ function documentInvoiceHiddenValidV531(value) {
     && equal(actual.manifest, expected.manifest) && equal(actual.custody, expected.custody) && equal(actual.aggregate, expected.aggregate)
     && equal(actual.protocol, expected.protocol) && equal(actual.partition, expected.partition) && equal(actual.rendering, expected.rendering)
     && equal(actual.chronology, expected.chronology) && equal(actual.finality, expected.finality);
+}
+// V534: an explicit verifier-suite commitment authenticates the exact twenty-tag
+// manifest and its preceding proof. The root buffer exists only during this call.
+const DOCUMENT_HIDDEN_VERSION_V534 = 'dirac-invoice-hidden-v534';
+const DOCUMENT_HIDDEN_CHECKS_V534 = Object.freeze(['identity','content','owner','artifact','issuance','commercial','geometry','lineage','raw','claims','chain','manifest','custody','aggregate','protocol','partition','rendering','chronology','finality','verifier']);
+function documentInvoiceHiddenV534(value) {
+  const rootBytes = Buffer.from(rootSecret(), 'utf8');
+  let rootKey = rootBytes;
+  try {
+    // HMAC-SHA-512 normalizes keys longer than its 128-byte block. Do it once;
+    // every historical derived-key byte remains identical to native HMAC.
+    if (rootKey.length > 128) { rootKey = crypto.createHash('sha512').update(rootBytes).digest(); rootBytes.fill(0); }
+    const derive = scope => crypto.createHmac('sha512', rootKey).update('dirac-derived-secret-v146:' + String(scope || 'default').slice(0, 120)).digest();
+    const preceding = documentInvoiceHiddenV531(value, derive), key = derive('invoice-hidden-verifier-v534');
+    try {
+      const verifier = crypto.createHmac('sha512', key).update(DOCUMENT_HIDDEN_VERSION_V534 + '\0verifier\0')
+        .update(stableJson({ document_version: value.version, identity: value.identity, artifact_id: value.artifact_id,
+          format: value.format, page: value.page, raw_sha256: value.raw_sha256, raw_bytes: value.raw_bytes,
+          created_at: value.created_at, checks: DOCUMENT_HIDDEN_CHECKS_V534, preceding })).digest('base64url');
+      return { ...preceding, version: DOCUMENT_HIDDEN_VERSION_V534, verifier };
+    } finally { key.fill(0); }
+  } finally { rootKey.fill(0); }
+}
+function documentInvoiceHiddenValidV534(value) {
+  const actual = value && value.hidden_patterns;
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual) || !value.identity || value.identity.kind !== 'invoice'
+      || actual.version !== DOCUMENT_HIDDEN_VERSION_V534
+      || Object.keys(actual).sort().join(',') !== 'aggregate,artifact,chain,chronology,claims,commercial,content,custody,finality,geometry,identity,issuance,lineage,manifest,owner,partition,protocol,raw,rendering,verifier,version') return false;
+  const expected = documentInvoiceHiddenV534(value);
+  return DOCUMENT_HIDDEN_CHECKS_V534.every(name => typeof actual[name] === 'string' && /^[A-Za-z0-9_-]{86}$/.test(actual[name]) && safeEqual(actual[name], expected[name]));
 }
 function documentIdentityValidV464(value) {
   return !!(value && (Object.keys(value).sort().join(',') === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version'
@@ -2848,7 +2875,7 @@ async function documentSealV464(bytes, identity, format, page, ownerScope, read,
   else if (!/^%PDF-1\.[47]\n/.test(bytes.subarray(0,9).toString('ascii')) || !/%%EOF\n$/.test(bytes.subarray(-40).toString('ascii')) || bytes.includes(Buffer.from('%DIRAC-DOCUMENT-V464:'))) documentErrorV464('PDF_INVALID', 400);
   const unsigned = { version: DOCUMENT_VERSION_V464, identity, artifact_id: crypto.randomBytes(24).toString('hex'), format, page,
     raw_sha256: crypto.createHash('sha256').update(bytes).digest('hex'), raw_bytes: bytes.length, created_at: Date.now() };
-  if (identity.kind === 'invoice') unsigned.hidden_patterns = documentInvoiceHiddenV531(unsigned);
+  if (identity.kind === 'invoice') unsigned.hidden_patterns = documentInvoiceHiddenV534(unsigned);
   const seal = { ...unsigned, mac: documentMacV464(unsigned) };
   const token = Buffer.from(stableJson(seal), 'utf8').toString('base64url');
   let file;
@@ -2900,7 +2927,7 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
         || !/^[a-f0-9]{64}$/.test(seal.raw_sha256) || !Number.isSafeInteger(seal.raw_bytes) || seal.raw_bytes < 10 || seal.raw_bytes >= record.file_bytes
         || !Number.isSafeInteger(seal.created_at) || seal.created_at > Date.now() + 1000 || !['png','pdf'].includes(seal.format)
         || !documentIdentityValidV464(seal.identity) || !Number.isInteger(seal.page)
-        || (Object.prototype.hasOwnProperty.call(seal, 'hidden_patterns') && !documentInvoiceHiddenValidV526(seal) && !documentInvoiceHiddenValidV527(seal) && !documentInvoiceHiddenValidV528(seal) && !documentInvoiceHiddenValidV530(seal) && !documentInvoiceHiddenValidV531(seal))
+        || (Object.prototype.hasOwnProperty.call(seal, 'hidden_patterns') && !documentInvoiceHiddenValidV526(seal) && !documentInvoiceHiddenValidV527(seal) && !documentInvoiceHiddenValidV528(seal) && !documentInvoiceHiddenValidV530(seal) && !documentInvoiceHiddenValidV531(seal) && !documentInvoiceHiddenValidV534(seal))
         || (seal.format === 'png' ? seal.page < 1 || seal.page > seal.identity.page_count : seal.page !== 0)) documentErrorV464('RECORD_INVALID');
     if ((id && seal.identity.id !== id) || (ownerScope && seal.identity.owner_scope !== ownerScope) || (qrProof && !documentQrProofMatchesV470(seal.identity, qrProof))) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, qr_authentic: false, message: 'ID, QR, atau pemilik dokumen tidak cocok.' };
     return { ok: true, verified: true, status: 'authentic_file', integrity_verified: true, qr_authentic: qrProof ? true : undefined, issuer: seal.identity.issuer,
@@ -2909,8 +2936,10 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
       ...(seal.identity.visual_patterns ? { pattern_verification: { version: seal.identity.visual_patterns.version, verified: true, count: 7,
         checks: ['din_tracking','din_font','din_size','logo_size','social_pitch','social_size','footer_rule'], method: 'registered_file_sha256_hmac_sha512' } } : {}),
        ...(seal.hidden_patterns ? { hidden_pattern_verification: { version: seal.hidden_patterns.version, verified: true,
-         count: seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V531 ? 19 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V530 ? 14 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V528 ? 11 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V527 ? 8 : 5,
-         checks: seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V531
+         count: seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V534 ? 20 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V531 ? 19 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V530 ? 14 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V528 ? 11 : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V527 ? 8 : 5,
+         checks: seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V534
+           ? DOCUMENT_HIDDEN_CHECKS_V534
+           : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V531
            ? ['identity','content','owner','artifact','issuance','commercial','geometry','lineage','raw','claims','chain','manifest','custody','aggregate','protocol','partition','rendering','chronology','finality']
            : seal.hidden_patterns.version === DOCUMENT_HIDDEN_VERSION_V530
            ? ['identity','content','owner','artifact','issuance','commercial','geometry','lineage','raw','claims','chain','manifest','custody','aggregate']
