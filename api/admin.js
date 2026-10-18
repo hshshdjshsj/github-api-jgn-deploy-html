@@ -2090,7 +2090,7 @@ function orderPublic(row, kind) {
 function domainOrderUndefinedColumn(result) { return !!(result && result.ok === false && result.status === 400 && result.data && String(result.data.code || '') === '42703'); }
 function domainOrderTableUnavailable(result) { return !!(result && result.ok === false && result.status === 404 && result.data && ['PGRST205', '42P01'].includes(String(result.data.code || ''))); }
 // V482: bounded read-only summary/finance pages. Shipment/customer payload is never fetched for these views.
-async function businessSummaryV456(body) {
+async function businessSummaryV456(body, pageSize = 200) {
   const kind = String(body.kind || 'regular'), rawOffset = String(body.offset || '0'), view = String(body.view || '');
   const from = String(body.from || ''), until = String(body.until || '');
   const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -2098,9 +2098,10 @@ async function businessSummaryV456(body) {
   if (!['summary','finance'].includes(view) || !Object.prototype.hasOwnProperty.call(ORDER_SELECT, kind) || !/^(0|[1-9][0-9]{0,4})$/.test(rawOffset) || Number(rawOffset) > 49800 || Number(rawOffset) % 200 !== 0) fail(view === 'finance' ? 'ADMIN_FINANCE_RANGE_INVALID' : 'ADMIN_SUMMARY_RANGE_INVALID', 400);
   if (!iso.test(from) || !iso.test(until) || !Number.isFinite(start) || !Number.isFinite(end) || new Date(start).toISOString() !== from || new Date(end).toISOString() !== until || start < Date.UTC(1999, 11, 31, 10) || start >= end || end > Date.now() + 60000) fail(view === 'finance' ? 'ADMIN_FINANCE_RANGE_INVALID' : 'ADMIN_SUMMARY_RANGE_INVALID', 400);
   if (kind === 'domain') fail('DOMAIN_ORDERS_RETIRED', 410);
+  if (pageSize !== 200 && !(view === 'finance' && pageSize === 400 && Number(rawOffset) <= 49600 && Number(rawOffset) % 400 === 0)) fail('ADMIN_FINANCE_RANGE_INVALID', 400);
   const table = 'orders';
   const select = kind === 'domain' ? 'id,total_price,currency,payment_status,created_at' : 'id,total,payment_status,created_at';
-  const suffix = '&created_at=gte.' + encodeURIComponent(from) + '&created_at=lt.' + encodeURIComponent(until) + '&order=created_at.desc,id.desc&limit=201&offset=' + Number(rawOffset);
+  const suffix = '&created_at=gte.' + encodeURIComponent(from) + '&created_at=lt.' + encodeURIComponent(until) + '&order=created_at.desc,id.desc&limit=' + (pageSize + 1) + '&offset=' + Number(rawOffset);
   let result = await dbFetch('/rest/v1/' + table + '?select=' + encodeURIComponent(select) + suffix, { method: 'GET' }, kind === 'laboratorium' ? 'security' : '');
   let implicitCurrency = kind !== 'domain';
   if (kind === 'domain' && domainOrderUndefinedColumn(result)) {
@@ -2108,9 +2109,9 @@ async function businessSummaryV456(body) {
     implicitCurrency = true;
   }
   if (kind === 'domain' && domainOrderTableUnavailable(result)) fail('ADMIN_DOMAIN_ORDERS_UNAVAILABLE', 503);
-  if (!result.ok || !Array.isArray(result.data) || result.data.length > 201) fail('ADMIN_DATA_UNAVAILABLE', 503);
+  if (!result.ok || !Array.isArray(result.data) || result.data.length > pageSize + 1) fail('ADMIN_DATA_UNAVAILABLE', 503);
   const seen = new Set(), financeRows = []; let lastTime = Infinity;
-  const totals = result.data.slice(0, 200).reduce((out, row) => {
+  const totals = result.data.slice(0, pageSize).reduce((out, row) => {
     if (!row || typeof row !== 'object' || !isUuid(row.id) || seen.has(row.id)) fail(view === 'finance' ? 'ADMIN_FINANCE_DATA_INVALID' : 'ADMIN_SUMMARY_DATA_INVALID', 503);
     const time = Date.parse(row.created_at), raw = kind === 'domain' ? row.total_price : row.total;
     if ((typeof raw !== 'number' && typeof raw !== 'string') || !/^[0-9]+(?:\.[0-9]{1,2})?$/.test(String(raw))) fail(view === 'finance' ? 'ADMIN_FINANCE_DATA_INVALID' : 'ADMIN_SUMMARY_DATA_INVALID', 503);
@@ -2131,11 +2132,11 @@ async function businessSummaryV456(body) {
     }
     return out;
   }, { orders: 0, paid: 0, refunded: 0, open: 0, other: 0, non_idr: 0, implicit_idr: 0, paid_minor: 0, refunded_minor: 0, open_minor: 0 });
-  const common = { ok: true, view, kind, offset: Number(rawOffset), page_size: 200, from, until, has_more: result.data.length === 201, time: new Date().toISOString() };
+  const common = { ok: true, view, kind, offset: Number(rawOffset), page_size: pageSize, from, until, has_more: result.data.length === pageSize + 1, time: new Date().toISOString() };
   return view === 'finance' ? { ...common, orders: financeRows } : { ...common, totals };
 }
-async function businessSummarySourceV1(body) {
-  try { return await businessSummaryV456(body); }
+async function businessSummarySourceV1(body, pageSize = 200) {
+  try { return await businessSummaryV456(body, pageSize); }
   catch (error) {
     if (body.kind !== 'domain' || !error || error.code !== 'ADMIN_DOMAIN_ORDERS_UNAVAILABLE') throw error;
     return { ok: false, available: false, code: 'ADMIN_DOMAIN_ORDERS_UNAVAILABLE', view: String(body.view), kind: 'domain', offset: Number(body.offset || 0), page_size: 200, from: String(body.from), until: String(body.until), has_more: false };
@@ -2181,16 +2182,10 @@ async function businessOrders(body) {
     if (view === 'finance') {
       const offsetRaw = String(body.offset || '0');
       if (!/^(0|[1-9][0-9]{0,4})$/.test(offsetRaw) || Number(offsetRaw) > 49600 || Number(offsetRaw) % 400 !== 0) fail('ADMIN_FINANCE_RANGE_INVALID', 400);
-      const offsetNext = String(Number(offsetRaw) + 200), financePages = await Promise.all([
-        businessSummarySourceV1({ ...body, kind: 'regular', offset: offsetRaw }),
-        businessSummarySourceV1({ ...body, kind: 'laboratorium', offset: offsetRaw }),
-        businessSummarySourceV1({ ...body, kind: 'regular', offset: offsetNext }),
-        businessSummarySourceV1({ ...body, kind: 'laboratorium', offset: offsetNext })
+      const pages = await Promise.all([
+        businessSummarySourceV1({ ...body, kind: 'regular', offset: offsetRaw }, 400),
+        businessSummarySourceV1({ ...body, kind: 'laboratorium', offset: offsetRaw }, 400)
       ]);
-      const pages = [
-        businessFinancePairV484(financePages[0], financePages[2], 'regular'),
-        businessFinancePairV484(financePages[1], financePages[3], 'laboratorium')
-      ];
       return { ok: true, view, kind: 'all', offset: Number(offsetRaw), page_size: 400, from: pages[0].from, until: pages[0].until, pages, retired_sources: ['domain'], ...businessSummaryAvailabilityV1(pages), time: new Date().toISOString() };
     }
     const pages = await Promise.all([

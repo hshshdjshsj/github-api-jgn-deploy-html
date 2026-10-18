@@ -71262,8 +71262,10 @@ function diracCentralPathHasObjectScopeV146(path, body) {
 }
 
 function diracCentralIsUnsafeHostV146(host) {
-  const clean = String(host || '').toLowerCase();
-  return clean === 'localhost'
+  const clean = String(host || '').toLowerCase().replace(/\.$/, '');
+  const literal = clean.replace(/^\[|\]$/g, '');
+  if (require('node:net').isIP(literal) && diracCentralIsUnsafeIpV146(literal)) return true;
+  return clean === 'localhost' || clean.endsWith('.localhost')
     || clean === '0.0.0.0'
     || clean === '127.0.0.1'
     || clean === '::1'
