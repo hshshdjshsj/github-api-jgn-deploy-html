@@ -1747,6 +1747,7 @@ function diracCanonicalCompanyNameV381() {
 
 async function domainHealth(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ ok: false, message: 'Gunakan GET.' });
+  await DIRAC_OPERATION_CLEANUP_V507.sweepExpiredChallenges().catch(() => false);
 
   if (String(req.query && req.query._csrf_bootstrap || '').trim() === 'dashboard_stale_binding_reauth_v312') {
     return diracDashboardStaleBindingPreflightV312(req, res);
@@ -1756,7 +1757,6 @@ async function domainHealth(req, res) {
     return diracPasskeyConfirmDashboardCookieRoundtripV241(req, res);
   }
 
-  await DIRAC_OPERATION_CLEANUP_V507.sweepExpiredChallenges().catch(() => false);
   const companyNameV385 = diracCanonicalCompanyNameV381();
   const acceptV385 = String(req.headers && req.headers.accept || '')
     .split(',')
@@ -10718,6 +10718,7 @@ function customerSecurityEmptyOverview() {
 }
 
 async function customerSecurityFetchOverviewData(customerId) {
+  await DIRAC_OPERATION_CLEANUP_V507.sweepExpiredChallenges().catch(() => false);
   const empty = customerSecurityEmptyOverview();
   const warnings = [];
 
@@ -10832,8 +10833,9 @@ async function customerSecurityFetchOverviewData(customerId) {
 
   const settingsRows = rowsOrEmpty(settingsResult, 'settings');
   const sessions = rowsOrEmpty(sessionsResult, 'sessions');
-  const loginLogs = rowsOrEmpty(loginLogsResult, 'login_logs');
-  const events = rowsOrEmpty(eventsResult, 'events');
+  const recent = customerSecurityApplyEightLimitV3({login_logs:rowsOrEmpty(loginLogsResult, 'login_logs'),events:rowsOrEmpty(eventsResult, 'events')});
+  const loginLogs = recent.login_logs;
+  const events = recent.events;
   const accountRequests = rowsOrEmpty(requestsResult, 'account_requests');
 
   return {
@@ -20051,7 +20053,7 @@ function diracPaymentTransactionOrderDatabaseV443(transaction, kind) {
 async function myOrdersFetchGenericOrders(owner, userEmail) {
   const orderMap = new Map();
   const errors = [];
-  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at';
+  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,admin_order_state_v1,total,payment_method,payment_status,order_status,created_at';
 
   async function addRowsFromPath(path, database) {
     const orderDatabase = diracRegularOrderDatabaseV443(database);
@@ -20167,6 +20169,15 @@ function diracCompactAddressForDisplayV634(value) {
     .trim();
 }
 
+function customerOrderPricingV1(row) {
+  const p = row && row.admin_order_state_v1 && row.admin_order_state_v1.price;
+  if (!p || typeof p !== 'object' || Array.isArray(p) || !Number.isSafeInteger(p.revision) || p.revision < 1) return null;
+  if (p.source_order_id) return customerSecurityLooksLikeUuid(p.source_order_id) && Number.isSafeInteger(p.new_total) && Number.isSafeInteger(p.previous_total) && p.new_total > p.previous_total && p.delta === p.new_total-p.previous_total && p.delta === Number(row.total)
+    ? {source_order_id:p.source_order_id,previous_total:p.previous_total,new_total:p.new_total,delta:p.delta} : null;
+  return Number.isSafeInteger(p.effective_total) && p.effective_total >= Number(row.total) && customerSecurityLooksLikeUuid(p.latest_adjustment_id)
+    ? {effective_total:p.effective_total,latest_adjustment_id:p.latest_adjustment_id} : null;
+}
+
 function myOrdersNormalizeGenericOrder(row, items) {
   const total = myOrdersMoney(row.total ?? row.subtotal ?? 0);
   const orderCode = myOrdersCleanText(row.order_id || row.id, 80);
@@ -20176,8 +20187,9 @@ function myOrdersNormalizeGenericOrder(row, items) {
     order_database: diracRegularOrderDatabaseV443(row.order_database),
     order_id: orderCode,
     invoice_code: orderCode,
+    price_adjustment: customerOrderPricingV1(row),
     service_type: myOrdersCleanText(row.service_type || 'order', 80),
-    service_label: myOrdersServiceLabel(row.service_type),
+    service_label: row.admin_order_state_v1 && row.admin_order_state_v1.price && row.admin_order_state_v1.price.source_order_id ? 'Penyesuaian harga pesanan' : myOrdersServiceLabel(row.service_type),
     customer_name: myOrdersCleanText(row.customer_name || '', 120),
     customer_email: normalizeAuthEmail(row.customer_email || ''),
     customer_phone: myOrdersCleanText(row.customer_phone || '', 80),
@@ -35563,10 +35575,17 @@ async function customerSecurityFeaturePruneSessionsV3(customerId) {
 function customerSecurityApplyEightLimitV3(overview) {
   const data = overview && typeof overview === 'object' ? { ...overview } : customerSecurityEmptyOverview();
   data.sessions = Array.isArray(data.sessions) ? data.sessions.slice(0, 8) : [];
-  data.login_logs = Array.isArray(data.login_logs) ? data.login_logs.slice(0, 8) : [];
+  const recent = [
+    ...(Array.isArray(data.login_logs) ? data.login_logs : []).map(row => ({table:'login_logs',row})),
+    ...(Array.isArray(data.events) ? data.events : []).map(row => ({table:'events',row}))
+  ].sort((a,b) => (Date.parse(b.row.created_at) || 0) - (Date.parse(a.row.created_at) || 0)
+    || b.table.localeCompare(a.table) || String(b.row.id || '').localeCompare(String(a.row.id || ''))).slice(0,8);
+  data.login_logs = recent.filter(item => item.table === 'login_logs').map(item => item.row);
+  data.events = recent.filter(item => item.table === 'events').map(item => item.row);
   data.counts = data.counts && typeof data.counts === 'object' ? { ...data.counts } : {};
   data.counts.sessions = data.sessions.length;
   data.counts.login_logs = data.login_logs.length;
+  data.counts.events = data.events.length;
   return data;
 }
 
@@ -68466,7 +68485,8 @@ function diracCentralDatabasePathPolicyV230(ctx, path, options) {
   let url;
   try { url = new URL(cleanPath, 'https://dirac-database.invalid'); } catch (_) { return { ok: false, reason: 'database_route_url_invalid' }; }
   if (url.origin !== 'https://dirac-database.invalid' || /%(?:2f|5c|00|0d|0a)/i.test(url.pathname)) return { ok: false, reason: 'database_route_canonical_invalid' };
-  const allowed = diracCentralDatabaseRpcRouteAllowedV230(action, url, method, authMode)
+  const allowed = DIRAC_OPERATION_CLEANUP_V507.allowsRequest(cleanPath, source)
+    || diracCentralDatabaseRpcRouteAllowedV230(action, url, method, authMode)
     || diracCentralDatabaseAuthRouteAllowedV230(ctx, action, url, method, authMode)
     || diracInvoiceContinuationAuthRouteV441(ctx, cleanPath, method, authMode)
     || diracCentralDatabaseRestRouteAllowedV230(action, url, method, authMode);
