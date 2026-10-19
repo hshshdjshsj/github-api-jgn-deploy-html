@@ -69990,9 +69990,9 @@ function diracSecurityAlertScheduleV320(ctx, event, extra) {
   DIRAC_SECURITY_ALERT_STATE_V320.queue.push(Object.freeze({
     snapshot,
     dispatchClaimV505: confirmedCompactBanV505
-      ? claimPersistentSecurityKeyOnceV194('security-alert-dispatch-v505:' + dedupeKey, {
+      ? diracCentralRunInternalComplianceContextV230(() => claimPersistentSecurityKeyOnceV194('security-alert-dispatch-v505:' + dedupeKey, {
         type: 'security_alert_dispatch_v505', claimed_at_ms: now
-      }, 100 * 365 * 24 * 60 * 60).catch(() => false)
+      }, 100 * 365 * 24 * 60 * 60)).catch(() => false)
       : null,
     dedupeKey,
     dedupeUntil: dedupeUntilV321,
@@ -70918,7 +70918,11 @@ async function diracCentralBanAuthorityBanV354(req, reasonValue, ttlSecondsValue
       }
     }
     try { console.error('[dirac-central-ban-authority-diagnostic-v445] ' + JSON.stringify({ ...authorityDiagnosticV445, event: 'ban_write_committed', database_status: Number(write && write.status || 0), stored_row_count: Array.isArray(write && write.data) ? write.data.length : -1 })); } catch (diagnosticErrorV445) { diracCentralRecordSuppressedExceptionV221(diagnosticErrorV445); }
-    try { diracSecurityAlertScheduleV320(alertContext, 'persistent_ban_written', { reason, persistent_ban_written: true, ban_type: record.type, ban_permanent: true, blocked_until: expiresAt }); } catch (error) { diracCentralRecordSuppressedExceptionV221(error); }
+    try {
+      diracSecurityAlertScheduleV320(alertContext, 'persistent_ban_written', { reason, persistent_ban_written: true, ban_type: record.type, ban_permanent: true, blocked_until: expiresAt });
+      const alertDrain = DIRAC_SECURITY_ALERT_STATE_V320.drainPromise;
+      if (alertDrain && typeof alertDrain.then === 'function') await alertDrain;
+    } catch (error) { diracSecurityAlertLocalLogV321('persistent_ban_delivery_wait_failed', error); }
     return Object.freeze({ ok: true, blocked: true, blocked_until_ms: blockedUntilMs, ttl_seconds: ttlSeconds });
   } catch (_) {
     return Object.freeze({ ok: false, reason: 'central_ban_write_exception' });

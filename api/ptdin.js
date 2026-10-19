@@ -578,7 +578,7 @@ function invoiceDocumentV440(data, identity, issuer) {
   const legal = issuer || {}, missing = 'Belum dicantumkan';
   let website; try { website = new URL(identity.origin).hostname.replace(/^pt\./,''); } catch (_) { return invalid(); }
   const careEmail = 'care@' + website;
-  return {eligible:true,...(/^(cancelled|canceled|dibatalkan)$/i.test(String(row.order_status || '').trim())?{cancelled:true}:{}),id:row.id,reference:domain ? 'DOM-'+String(row.id).slice(0,8).toUpperCase() : copy(row.order_id || row.id,253),date,currency:'IDR',total,orderStatus:status(row.order_status),paymentStatus:'Sudah dibayar',method,
+  return {eligible:true,...(/^(cancelled|canceled|dibatalkan)$/i.test(String(row.order_status || '').trim())?{cancelled:true,cancelled_stamp_version:2}:{}),id:row.id,reference:domain ? 'DOM-'+String(row.id).slice(0,8).toUpperCase() : copy(row.order_id || row.id,253),date,currency:'IDR',total,orderStatus:status(row.order_status),paymentStatus:'Sudah dibayar',method,
     issuer:{name:'PT Dirac Inovasi Nusantara',nib:invoiceLegalIdentifier(legal.nib,13,13)||missing,npwp:invoiceLegalIdentifier(legal.npwp,15,16)||missing,address:'GJ3X+HHH, RT.4/RW.1, Kedunggiling, Gelang, Kec. Tulangan, Kabupaten Sidoarjo, Jawa Timur 61273.',email:careEmail,phone:'0878-9252-3968'},
     buyer:{name:copy(row.customer_name,160,missing),email:copy(row.customer_email || (domain && row.owner_email),254,identity.email),phone:copy(domain?row.customer_whatsapp:row.customer_phone,80,missing),address:diracCompactAddressForDisplayV634(copy(row.shipping_address,600,missing))},
     items,totals:[['Subtotal',subtotal],['Ongkos kirim',shipping],['Diskon',discount],['Dasar pengenaan pajak',taxable],['Pajak',tax]],legalMissing:!invoiceLegalIdentifier(legal.nib,13,13)||!invoiceLegalIdentifier(legal.npwp,15,16),website};
@@ -716,7 +716,7 @@ function invoiceLayout(doc){
   function page(){
     pageOps=[];pages.push(pageOps);rect(0,0,1240,1754,'#fffefd');rect(0,0,1240,14,navy);rect(900,14,268,4,gold);
     logo(56,37,196);var brandHeight=label(doc.issuer.name,263,75,542,31,navy,700);label('DOKUMEN TRANSAKSI',264,Math.max(154,75+brandHeight+13),538,16,gold,700);
-    label('INVOICE',877,70,291,48,navy,700,'right');label('RINCIAN PEMBELIAN',873,134,295,16,muted,400,'right');if(doc.cancelled===true){rect(878,178,290,3,'#a52a38');rect(878,237,290,3,'#a52a38');rect(878,178,3,62,'#a52a38');rect(1165,178,3,62,'#a52a38');label('CANCELED',894,183,258,36,'#a52a38',700);}y=Math.max(246,75+brandHeight+58);
+    label('INVOICE',877,70,291,48,navy,700,'right');label('RINCIAN PEMBELIAN',873,134,295,16,muted,400,'right');if(doc.cancelled===true){rect(878,178,290,3,'#a52a38');rect(878,237,290,3,'#a52a38');rect(878,178,3,62,'#a52a38');rect(1165,178,3,62,'#a52a38');ctx.font='700 36px Arial';label('CANCELED',1023-ctx.measureText('CANCELED').width/2,193,258,36,'#a52a38',700);}y=Math.max(246,75+brandHeight+58);
     var referenceHeight=Math.max(fieldHeight('Nomor invoice / referensi',doc.reference,475),fieldHeight('Tanggal pesanan',doc.date,267),fieldHeight('Pembayaran',doc.paymentStatus,235))+22;
     rect(72,y,1096,referenceHeight,'#f3f1eb');rect(72,y,4,referenceHeight,gold);field('Nomor invoice / referensi',doc.reference,94,y+15,475);field('Tanggal pesanan',doc.date,605,y+15,267);field('Pembayaran',doc.paymentStatus,909,y+15,235);y+=referenceHeight+28;
     label('IDENTITAS PENERBIT',72,y,507,16,gold,700);label('DITAGIHKAN KEPADA',657,y,511,16,gold,700);y+=34;
@@ -799,7 +799,7 @@ function invoicePdfObjectsV440(doc,assets){
     let content='q '+num(595.28/1240)+' 0 0 '+num(-841.89/1754)+' 0 841.89 cm\n';
     for(const op of page){
       if(op.kind==='rect'){content+=color(op.color)+[op.x,op.y,op.w,op.h].map(num).join(' ')+' re f\n';}
-      else if(op.kind==='text'){content+=color(op.color)+textOp(op.copy,op.x,op.y,op.font);}
+      else if(op.kind==='text'){content+=color(op.color)+textOp(op.copy,op.x,doc.cancelled===true&&op.copy==='CANCELED'&&op.y===193&&op.font==='700 36px Arial'?189.5:op.y,op.font);}
       else if(op.kind==='logo'||op.kind==='signature'){const image=images[op.kind==='logo'?'logo':'signature'],scale=Math.min(op.w/image.width,op.h/image.height),w=image.width*scale,h=image.height*scale;content+=placeImage(image,op.x+(op.w-w)/2,op.y+(op.h-h)/2,w,h);}
       else if(op.kind==='social'){if(!images[op.platform])throw new Error('INVOICE_PDF_ASSET_INVALID');content+=placeImage(images[op.platform],op.x,op.y,op.w,op.h);}
       else if(op.kind==='watermark'){

@@ -3074,7 +3074,7 @@ async function businessDocumentV464(operation, body, origin, assertContext) {
   const claim = async (key, record) => { assertContext(); const ok = await securityClaim(key, record, ENROLLMENT_SECONDS); assertContext(); return ok; };
   if (operation === 'document_verify') {
     const verified = await documentVerifyV464(body, read, assertContext);
-    if (verified && verified.integrity_verified === true && verified.kind === 'invoice') { const order = await documentInvoiceOrderV471(verified.reference, assertContext); if (order) verified.order = order; }
+    if (verified && (verified.integrity_verified === true || verified.qr_authentic === true || verified.status === 'issued_id') && verified.kind === 'invoice') { const order = await documentInvoiceOrderV471(verified.reference, assertContext); if (order) verified.order = order; }
     return verified;
   }
   if (operation === 'document_prepare') return { ok: true, verification: await documentPrepareV464({ kind: body.document_kind, reference: body.reference,
