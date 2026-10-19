@@ -1074,7 +1074,8 @@ function supportAssertDatabaseOperationV361(path, settings) {
   } else if (!ctx.verifiedAdminId && !ctx.verifiedCustomerId) throw new PublicError(403, 'SUPPORT_DB_OWNER_REQUIRED', 'Pemilik belum diverifikasi.');
   else if (url.pathname === '/rest/v1/support_chat_sessions' && !ctx.verifiedAdminId && url.searchParams.get('customer_user_id') !== 'eq.' + ctx.verifiedCustomerId) throw new PublicError(403, 'SUPPORT_DB_OWNER_REQUIRED', 'Pemilik belum diverifikasi.');
   if (url.pathname === '/rest/v1/support_chat_messages' && !ctx.verifiedAdminId) {
-    const conversationId = String(url.searchParams.get('conversation_id') || '').slice(3);
+    const conversationFilters = url.searchParams.getAll('conversation_id');
+    const conversationId = conversationFilters.length === 1 && conversationFilters[0].startsWith('eq.') ? conversationFilters[0].slice(3) : '';
     if (!ctx.authorizedConversations || !ctx.authorizedConversations.has(conversationId)) throw new PublicError(403, 'SUPPORT_DB_RESOURCE_REQUIRED', 'Percakapan belum diverifikasi.');
   }
 }

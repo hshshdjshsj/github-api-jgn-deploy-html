@@ -38989,7 +38989,7 @@ function diracUltraXssV2CleanText(value, maxLength = 240) {
   return String(value === undefined || value === null ? '' : value)
     .replace(/\u0000/g, ' ')
     .replace(/[\u0000-\u001F\u007F]/g, ' ')
-    .replace(/(?:<\s*\/?\s*(?:script|iframe|object|embed|svg|math|img|video|audio|link|meta|style|base|form|input|button|textarea)[^>]*>)/gi, ' ')
+    .replace(/(?:<\s*(?:\/\s*)?(?:script|iframe|object|embed|svg|math|img|video|audio|link|meta|style|base|form|input|button|textarea)[^>]*>)/gi, ' ')
     .replace(/\b(?:onerror|onload|onclick|onmouseover|onfocus|onmouseenter|onpointerover|onanimationstart|onbegin)\s*=/gi, ' ')
     .replace(/\b(?:javascript|vbscript|data)\s*:/gi, ' ')
     .replace(/[<>{}\[\]"'`&]/g, ' ')
@@ -39073,7 +39073,7 @@ function diracUltraXssV2DetectPayload(value) {
   }
 
   const patterns = [
-    { kind: 'script_tag', pattern: /<\s*\/?\s*script\b/i },
+    { kind: 'script_tag', pattern: /<\s*(?:\/\s*)?script\b/i },
     { kind: 'dangerous_tag', pattern: /<\s*(?:iframe|object|embed|svg|math|img|video|audio|link|meta|style|base|form|input|button|textarea)\b/i },
     { kind: 'event_handler', pattern: /\bon(?:error|load|click|mouseover|mouseenter|focus|pointerover|animationstart|begin)\s*=/i },
     { kind: 'dangerous_protocol', pattern: /\b(?:javascript|vbscript|data)\s*:/i },
@@ -39556,7 +39556,7 @@ function diracLogoutIdleV118CleanText(value, maxLength = 240) {
   return String(value === undefined || value === null ? '' : value)
     .replace(/\u0000/g, ' ')
     .replace(/[\u0000-\u001F\u007F]/g, ' ')
-    .replace(/(?:<\s*\/?\s*(?:script|iframe|object|embed|svg|math|img|video|audio|link|meta|style|base|form|input|button|textarea)[^>]*>)/gi, ' ')
+    .replace(/(?:<\s*(?:\/\s*)?(?:script|iframe|object|embed|svg|math|img|video|audio|link|meta|style|base|form|input|button|textarea)[^>]*>)/gi, ' ')
     .replace(/\b(?:onerror|onload|onclick|onmouseover|onfocus|onmouseenter|onpointerover|onanimationstart|onbegin)\s*=/gi, ' ')
     .replace(/\b(?:javascript|vbscript|data)\s*:/gi, ' ')
     .replace(/[<>{}\[\]"'`&]/g, ' ')
@@ -39757,7 +39757,7 @@ function diracV119DetectXssSample(sample) {
   if (!text) return { detected: false };
 
   const patterns = [
-    { kind: 'xss_script_tag', pattern: /<\s*\/?\s*script\b/i },
+    { kind: 'xss_script_tag', pattern: /<\s*(?:\/\s*)?script\b/i },
     { kind: 'xss_dangerous_html_tag', pattern: /<\s*(?:iframe|object|embed|svg|math|video|audio|link|meta|style|base|form|input|button|textarea|details|marquee|template)\b/i },
     { kind: 'xss_img_event', pattern: /<\s*img\b[\s\S]{0,240}\bon[a-z0-9_-]+\s*=/i },
     { kind: 'xss_event_handler', pattern: /\bon(?:error|load|click|dblclick|mouseover|mouseenter|mouseleave|mousemove|mouseout|focus|blur|change|input|submit|reset|keydown|keyup|keypress|pointerover|pointerenter|pointerdown|pointerup|animationstart|animationend|transitionend|begin|toggle|auxclick)\s*=/i },
@@ -40772,7 +40772,7 @@ function diracBackendXssV4SanitizeString(value, parentKey = '') {
 function diracBackendXssV4HasXssSignal(value) {
   const text = String(value || '');
   if (!text) return false;
-  return /<\s*\/?\s*(?:script|iframe|object|embed|svg|math|link|meta|style|base|form|input|button|textarea|template|details|marquee)\b/i.test(text)
+  return /<\s*(?:\/\s*)?(?:script|iframe|object|embed|svg|math|link|meta|style|base|form|input|button|textarea|template|details|marquee)\b/i.test(text)
     || /\bon[a-z0-9_:-]{2,}\s*=/i.test(text)
     || /\b(?:java|vb)script\s*:/i.test(text)
     || /\bdata\s*:\s*(?:text\/html|image\/svg\+xml|application\/xhtml\+xml)/i.test(text)
@@ -58265,12 +58265,12 @@ const DIRAC_CENTRAL_HIGH_CONFIDENCE_THREATS_V221 = Object.freeze([
   Object.freeze(['xss', /\bexpression\s*\(|@import\s+(?:url\s*\(\s*)?["']?https?:\/\/[^\s"'<>)]{1,500}/i]),
   Object.freeze(['spreadsheet_formula_injection', /^\s*[=+@-]\s*(?:cmd(?:\.exe)?\s*\||powershell\s*\||hyperlink\s*\(|importxml\s*\(|importdata\s*\(|webservice\s*\(|dde\b|msexcel\b)/i]),
   Object.freeze(['xss', /<\s*[a-z][a-z0-9:-]{0,63}\b[^<>]{0,4096}\bon[a-z]{3,32}\s*=\s*(?:["']|[^\s>])/i]),
-  Object.freeze(['ssti_template_injection', /(?:\{\{|\$\{|#\{)\s*\d{1,16}\s*[+*\/%-]\s*\d{1,16}\s*(?:\}\}|\})|(?:\{\{|\$\{|#\{)[^\r\n]{0,240}(?:getruntime\s*\(|java\.lang\.runtime|__globals__|__builtins__|__subclasses__)[^\r\n]{0,240}(?:\}\}|\})/i]),
+  Object.freeze(['ssti_template_injection', /(?:\{\{|\$\{|#\{)\s*\d{1,16}\s*[+*\/%-]\s*\d{1,16}\s*(?:\}\}|\})|(?:\{\{|\$\{|#\{)[^\r\n]{0,240}(?:getruntime\s*\(|java\.lang\.runtime|__globals__|__builtins__|__subclasses__)[^\r\n]{0,240}(?:\}\}|\})|<%=?[\s\S]{0,240}%>/i]),
   Object.freeze(['command_injection_rce', /(?:;|&&|\|\||\|)\s*(?:\/(?:usr\/(?:local\/)?)?(?:s?bin)\/)?(?:sh|bash|zsh|dash|cmd(?:\.exe)?|powershell|pwsh|curl|wget|nc|ncat|netcat|python\d*|perl|ruby|php|node|chmod|chown|rm|cat|id|ls|pwd|env|printenv|whoami|uname)\b|\(\)\s*\{\s*:;\s*\};/i]),
   Object.freeze(['xxe', /<!\s*entity\s+[^<>]{1,240}\bpublic\s+["'][^"']{0,240}["']\s+["'](?:file|https?|ftp):/i]),
   Object.freeze(['ssrf_protocol', /\b(?:file|gopher|dict|phar|expect|php):\/\//i]),
   Object.freeze(['sql_injection', /\bunion\s+(?:all\s+|distinct\s+)?select\b|(?:^|[\s'"`])(?:or|and)\s+(?:1|true)\s*=\s*(?:1|true)(?=$|[\s'"`);#]|--|\/\*)|['"`]\s*(?:or|and)\s+['"`]?\w+['"`]?\s*=\s*['"`]?\w+|;\s*(?:select|insert|update|delete|drop|alter|truncate|create|grant|revoke)\b|\b(?:information_schema|pg_catalog|sqlite_master|mysql\.user|sysobjects|syscolumns)\b|\b(?:sleep|pg_sleep|benchmark)\s*\(|\bwaitfor\s+delay\b|\bload_file\s*\(|\binto\s+outfile\b|\bxp_cmdshell\b|\b(?:extractvalue|updatexml)\s*\(|\bcopy\s+[\s\S]{0,160}\bto\s+program\b/i]),
-  Object.freeze(['xss', /<\s*\/?\s*script\b|\b(?:j\s*a\s*v\s*a|v\s*b)\s*s\s*c\s*r\s*i\s*p\s*t\s*:|\bon(?:error|load|click|mouseover|focus|blur|submit|toggle|pointerenter|animationstart)\s*=|\bo\s*n\s*(?:e\s*r\s*r\s*o\s*r|l\s*o\s*a\s*d|c\s*l\s*i\s*c\s*k|f\s*o\s*c\s*u\s*s|m\s*o\s*u\s*s\s*e\s*o\s*v\s*e\s*r)\s*=\s*(?:["\x27]|[^\s>])|<\s*(?:svg|iframe|object|embed|meta|link|math)\b|\bsrcdoc\s*=|\bdata\s*:\s*text\/html\b|\bdocument\s*\.\s*cookie\b|\b(?:eval|settimeout|setinterval|function)\s*\(\s*(?:['"`]|unescape|atob)/i]),
+  Object.freeze(['xss', /<\s*(?:\/\s*)?script\b|\b(?:j\s*a\s*v\s*a|v\s*b)\s*s\s*c\s*r\s*i\s*p\s*t\s*:|\bon(?:error|load|click|mouseover|focus|blur|submit|toggle|pointerenter|animationstart)\s*=|\bo\s*n\s*(?:e\s*r\s*r\s*o\s*r|l\s*o\s*a\s*d|c\s*l\s*i\s*c\s*k|f\s*o\s*c\s*u\s*s|m\s*o\s*u\s*s\s*e\s*o\s*v\s*e\s*r)\s*=\s*(?:["\x27]|[^\s>])|<\s*(?:svg|iframe|object|embed|meta|link|math)\b|\bsrcdoc\s*=|\bdata\s*:\s*text\/html\b|\bdocument\s*\.\s*cookie\b|\b(?:eval|settimeout|setinterval|function)\s*\(\s*(?:['"`]|unescape|atob)/i]),
   Object.freeze(['path_traversal_lfi_rfi', /(?:^|[\/\\])\.\.(?:[\/\\]|$)|%2e%2e(?:%2f|%5c)|%252e%252e(?:%252f|%255c)|\/etc\/(?:passwd|shadow)|\/proc\/self\/environ|\bboot\.ini\b|\bwin\.ini\b|\bWEB-INF\b|(?:php|zip|expect):\/\//i]),
   Object.freeze(['command_injection_rce', /(?:;|\|\||&&|`|\$\()\s*(?:whoami|id|uname|cat|ls|pwd|env|printenv|curl|wget|nc|ncat|netcat|bash|sh|cmd(?:\.exe)?|powershell|pwsh)\b|\b(?:shell_exec|passthru|proc_open|popen|system)\s*\(/i]),
   Object.freeze(['nosql_injection', /(?:^|[.[{\s\"'])\$(?:ne|gt|gte|lt|lte|where|regex|or|and|nor|expr|jsonschema)(?:\b|])/i]),
@@ -58554,7 +58554,7 @@ function diracCentralCanonicalVariantsV221(value) {
         // A malformed escape must not hide valid ASCII escapes elsewhere.
         add(encoded.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
           try { return decodeURIComponent(run); }
-          catch (_) { return run.replace(/%([0-7][0-9a-f])/gi, (match, hex) => String.fromCharCode(parseInt(hex, 16))); }
+          catch (_) { return run.replace(/%([0-9a-f]{2})/gi, (match, hex) => String.fromCharCode(parseInt(hex, 16))); }
         }));
         break;
       }
@@ -58627,11 +58627,14 @@ function diracCentralContextualThreatGuardV221(req, ctx) {
       if (candidate.includes('\u0000') || /[‪-‮⁦-⁩]/.test(candidate)) {
         return { detected: true, kind: 'unicode_control_or_bidi', field: path };
       }
+      if (/https?:\/\//i.test(candidate) && (candidate.match(/https?:\/\/[^\s"'<>]{1,2048}/gi) || []).some((raw) => {
+        try { return diracCentralIsUnsafeHostV146(new URL(raw).hostname); } catch (_) { return false; }
+      })) return { detected: true, kind: 'ssrf_private_or_metadata_target', field: path };
       for (const [kind, pattern] of DIRAC_CENTRAL_HIGH_CONFIDENCE_THREATS_V221) {
         pattern.lastIndex = 0;
         if (pattern.test(candidate)) return { detected: true, kind, field: path };
       }
-      if (policyInputV498 && /<\s*\/?\s*img\b/i.test(candidate)) return { detected: true, kind: 'policy_keyword', field: path };
+      if (policyInputV498 && /<\s*(?:\/\s*)?img\b/i.test(candidate)) return { detected: true, kind: 'policy_keyword', field: path };
       if (policyKeywordV499) return { detected: true, kind: 'policy_keyword', field: path };
       if (diracCentralUrlLikeFieldV221(field)) {
         let parsed = null;
@@ -62592,7 +62595,7 @@ function diracCentralRedactOutputStringV228(value) {
     .replace(/\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\b/g, '[redacted-jwt]')
     .replace(/\b(?:sk|rk|whsec|SB-Mid-server|Mid-server)[A-Za-z0-9_.:-]{12,}\b/g, '[redacted-secret]');
   const decoded = diracCentralHtmlEntityDecodeV146(text);
-  if (/<\s*\/?\s*(?:script|svg|iframe|object|embed|math|meta|link)\b|\bon[a-z]{3,30}\s*=|(?:javascript|vbscript)\s*:|data\s*:\s*text\/html|expression\s*\(/i.test(decoded)) {
+  if (/<\s*(?:\/\s*)?(?:script|svg|iframe|object|embed|math|meta|link)\b|\bon[a-z]{3,30}\s*=|(?:javascript|vbscript)\s*:|data\s*:\s*text\/html|expression\s*\(/i.test(decoded)) {
     text = text
       .replace(/(?:javascript|vbscript)\s*:/gi, '[blocked-script-scheme]:')
       .replace(/data\s*:\s*text\/html/gi, '[blocked-data-html]')
