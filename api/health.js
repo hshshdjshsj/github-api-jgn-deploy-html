@@ -58278,12 +58278,12 @@ const DIRAC_CENTRAL_PREFLIGHT_GUARD_STAGES_V221 = Object.freeze([
 const DIRAC_CENTRAL_HIGH_CONFIDENCE_THREATS_V221 = Object.freeze([
   Object.freeze(['xss', /(?:\.\s*constructor|\[\s*["']c(?:["']\s*(?:\+\s*)?["'])?o(?:["']\s*(?:\+\s*)?["'])?n(?:["']\s*(?:\+\s*)?["'])?s(?:["']\s*(?:\+\s*)?["'])?t(?:["']\s*(?:\+\s*)?["'])?r(?:["']\s*(?:\+\s*)?["'])?u(?:["']\s*(?:\+\s*)?["'])?c(?:["']\s*(?:\+\s*)?["'])?t(?:["']\s*(?:\+\s*)?["'])?o(?:["']\s*(?:\+\s*)?["'])?r["']\s*\])\s*\(\s*["'\x60]/i]),
   Object.freeze(['command_injection_rce', /(?:;|&&|\|\||\||\$\(|\x60)\s*["']*(?:s["']*h|b["']*a["']*s["']*h|z["']*s["']*h|d["']*a["']*s["']*h|c["']*m["']*d|p["']*o["']*w["']*e["']*r["']*s["']*h["']*e["']*l["']*l|p["']*w["']*s["']*h|c["']*u["']*r["']*l|w["']*g["']*e["']*t|n["']*c|n["']*c["']*a["']*t|n["']*e["']*t["']*c["']*a["']*t|p["']*y["']*t["']*h["']*o["']*n|p["']*e["']*r["']*l|r["']*u["']*b["']*y|p["']*h["']*p|n["']*o["']*d["']*e|c["']*h["']*m["']*o["']*d|c["']*h["']*o["']*w["']*n|r["']*m|c["']*a["']*t|i["']*d|l["']*s|p["']*w["']*d|e["']*n["']*v|p["']*r["']*i["']*n["']*t["']*e["']*n["']*v|w["']*h["']*o["']*a["']*m["']*i|u["']*n["']*a["']*m["']*e)["']*(?=$|[\s;&|<>()[\]{}])/i]),
-  Object.freeze(['sql_injection', /["'`]\s*(?:--|#)|\b(?:select(?:\s+(?=\S)[\s\S]{1,160}\s+from|\s{3,}from)|insert\s+into|update\s+[a-z0-9_.`"\[\]-]+\s+set|delete\s+from|drop\s+(?:table|database|schema)|alter\s+table|create\s+(?:table|database)|truncate\s+table)\b/i]),
+  Object.freeze(['sql_injection', /["'`]\s*(?:or|and)\s*\(\s*\d{1,16}\s*(?:<>|!=|<=|>=|=|<|>)\s*\d{1,16}\s*\)|["'`]\s*(?:--|#)|\b(?:select(?:\s+(?=\S)[\s\S]{1,160}\s+from|\s{3,}from)|insert\s+into|update\s+[a-z0-9_.`"\[\]-]+\s+set|delete\s+from|drop\s+(?:table|database|schema)|alter\s+table|create\s+(?:table|database)|truncate\s+table)\b/i]),
   Object.freeze(['command_injection_rce', /(?:\/bin\/(?:ba|z|da)?sh\b|cmd\.exe\s+\/c\b|powershell(?:\.exe)?\s+-(?:enc|encodedcommand)\b)/i]),
   Object.freeze(['xss', /\bexpression\s*\(|@import\s+(?:url\s*\(\s*)?["']?https?:\/\/[^\s"'<>)]{1,500}/i]),
   Object.freeze(['spreadsheet_formula_injection', /^\s*[=+@-]\s*(?:cmd(?:\.exe)?\s*\||powershell\s*\||hyperlink\s*\(|importxml\s*\(|importdata\s*\(|webservice\s*\(|dde\b|msexcel\b)/i]),
   Object.freeze(['xss', /<\s*[a-z][a-z0-9:-]{0,63}\b[^<>]{0,4096}\bon[a-z]{3,32}\s*=\s*(?:["']|[^\s>])/i]),
-  Object.freeze(['ssti_template_injection', /(?:\{\{|\$\{|#\{)\s*\d{1,16}\s*[+*\/%-]\s*\d{1,16}\s*(?:\}\}|\})|(?:\{\{|\$\{|#\{)[^\r\n]{0,240}(?:getruntime\s*\(|java\.lang\.runtime|__globals__|__builtins__|__subclasses__)[^\r\n]{0,240}(?:\}\}|\})|<%=?[\s\S]{0,240}%>/i]),
+  Object.freeze(['ssti_template_injection', /(?:\{\{|\$\{|#\{)\s*(?:\d{1,16}|'\d{1,16}'|"\d{1,16}")\s*[+*\/%-]\s*(?:\d{1,16}|'\d{1,16}'|"\d{1,16}")\s*(?:\}\}|\})|(?:\{\{|\$\{|#\{)[^\r\n]{0,240}(?:getruntime\s*\(|java\.lang\.runtime|__globals__|__builtins__|__subclasses__)[^\r\n]{0,240}(?:\}\}|\})|<%=?[\s\S]{0,240}%>/i]),
   Object.freeze(['command_injection_rce', /(?:;|&&|\|\||\|)\s*(?:\/(?:usr\/(?:local\/)?)?(?:s?bin)\/)?(?:sh|bash|zsh|dash|cmd(?:\.exe)?|powershell|pwsh|curl|wget|nc|ncat|netcat|python\d*|perl|ruby|php|node|chmod|chown|rm|cat|id|ls|pwd|env|printenv|whoami|uname)\b|\(\)\s*\{\s*:;\s*\};/i]),
   Object.freeze(['xxe', /<!\s*entity\s+[^<>]{1,240}\bpublic\s+["'][^"']{0,240}["']\s+["'](?:file|https?|ftp):/i]),
   Object.freeze(['ssrf_protocol', /\b(?:file|gopher|dict|phar|expect|php):\/\//i]),
@@ -67449,6 +67449,16 @@ async function diracCentralServiceRoleOwnerScopeGuardV146(ctx, path, body, optio
       : { ok: false, reason: 'service_role_server_context_unverified' };
   }
   if (ctx.__diracCentralOwnerScopeResolvingV146 === true) return { ok: false, reason: 'service_role_recursive_scope_unbound' };
+  const ownerPathFiltersV146 = Array.from(new URLSearchParams(String(path || '').split('?').slice(1).join('?')));
+  const invalidOwnerPathFilterV146 = ['customer_id', 'auth_user_id', 'user_id'].some((key) => {
+    const values = ownerPathFiltersV146.filter(([name]) => name.toLowerCase() === key).map(([, value]) => value);
+    if (!values.length) return false;
+    if (values.length !== 1) return true;
+    const filter = values[0], valuesToCheck = filter.startsWith('eq.') ? [filter.slice(3)]
+      : /^in\.\([^()]+\)$/.test(filter) ? filter.slice(4, -1).split(',') : [];
+    return !valuesToCheck.length || valuesToCheck.some((value) => value.length !== 36 || !diracCentralLooksLikeUuidV146(value));
+  });
+  if (invalidOwnerPathFilterV146) return { ok: false, reason: 'service_role_owner_filter_invalid' };
   const ids = diracCentralExtractServiceRoleScopeIdsV146(path, body);
   const scopeCounts = {
     customer_id_count: ids.customerIds.length,

@@ -795,6 +795,7 @@ function invoicePdfObjectsV440(doc,assets){
   const imageResources=names.map(name=>'/'+images[name].resource+' '+images[name].id+' 0 R').join(' '),kids=[];
   const textOp=(copy,x,y,font)=>{const parsed=invoiceFont(font);return 'BT /'+parsed.resource+' '+num(parsed.size)+' Tf 1 0 0 -1 '+num(x)+' '+num(y+parsed.size*0.93)+' Tm <'+invoicePdfTextBytes(copy,parsed.key).toString('hex')+'> Tj ET\n';};
   const placeImage=(image,x,y,w,h)=>'q '+[w,0,0,-h,x,y+h].map(num).join(' ')+' cm /'+image.resource+' Do Q\n';
+  let watermarkContent;
   for(const page of pages){
     let content='q '+num(595.28/1240)+' 0 0 '+num(-841.89/1754)+' 0 841.89 cm\n';
     for(const op of page){
@@ -803,12 +804,15 @@ function invoicePdfObjectsV440(doc,assets){
       else if(op.kind==='logo'||op.kind==='signature'){const image=images[op.kind==='logo'?'logo':'signature'],scale=Math.min(op.w/image.width,op.h/image.height),w=image.width*scale,h=image.height*scale;content+=placeImage(image,op.x+(op.w-w)/2,op.y+(op.h-h)/2,w,h);}
       else if(op.kind==='social'){if(!images[op.platform])throw new Error('INVOICE_PDF_ASSET_INVALID');content+=placeImage(images[op.platform],op.x,op.y,op.w,op.h);}
       else if(op.kind==='watermark'){
+        if(watermarkContent===undefined){
         const pattern=op.pattern,size=pattern?pattern.din_size:31,key=pattern?pattern.din_font:'bold',tracking=pattern?pattern.din_tracking/10:0;
         const angle=-Math.PI/5,a=Math.cos(angle),b=Math.sin(angle),width=invoiceMeasure('DIN',(key==='bold'?'700':'400')+' '+size+'px Arial')+tracking*2;
         const glyphs=pattern?'[<'+invoicePdfTextBytes('D',key).toString('hex')+'> '+num(-tracking*1000/size)+' <'+invoicePdfTextBytes('I',key).toString('hex')+'> '+num(-tracking*1000/size)+' <'+invoicePdfTextBytes('N',key).toString('hex')+'>] TJ':'<'+invoicePdfTextBytes('DIN',key).toString('hex')+'> Tj';
-        content+='q /WM gs '+color('#425671');
-        for(let row=0;row<22;row++)for(let col=0;col<14;col++)content+='q '+[a,b,-b,a,(col+.5)*1240/14,(row+.5)*1754/22].map(num).join(' ')+' cm BT /'+(key==='bold'?'F2':'F1')+' '+num(size)+' Tf 1 0 0 -1 '+num(-width/2)+' '+num(size*.3)+' Tm '+glyphs+' ET Q\n';
-        content+='Q\n';
+        let watermark='q /WM gs '+color('#425671');
+        for(let row=0;row<22;row++)for(let col=0;col<14;col++)watermark+='q '+[a,b,-b,a,(col+.5)*1240/14,(row+.5)*1754/22].map(num).join(' ')+' cm BT /'+(key==='bold'?'F2':'F1')+' '+num(size)+' Tf 1 0 0 -1 '+num(-width/2)+' '+num(size*.3)+' Tm '+glyphs+' ET Q\n';
+        watermarkContent=watermark+'Q\n';
+        }
+        content+=watermarkContent;
       }else throw new Error('INVOICE_PDF_OPERATION_INVALID');
       if(content.length>2000000)throw new Error('INVOICE_PDF_PAGE_LIMIT');
     }
@@ -866,6 +870,7 @@ function invoicePngV464(doc,pageNumber){
     invoiceCanvasAssetsV464=loaded;
   }
   const canvas=native.createCanvas(1240,1754),ctx=canvas.getContext('2d');ctx.textBaseline='top';
+  try{
   for(const op of pages[pageNumber-1]){
     if(op.kind==='rect'){ctx.fillStyle=op.color;ctx.fillRect(op.x,op.y,op.w,op.h);}
     else if(op.kind==='text'){ctx.fillStyle=op.color;ctx.font=op.font.replace('Arial','DiracInvoiceV464');ctx.fillText(op.copy,op.x,op.y);}
@@ -875,11 +880,13 @@ function invoicePngV464(doc,pageNumber){
     }else if(op.kind==='social')ctx.drawImage(invoiceCanvasAssetsV464[op.platform],op.x,op.y,op.w,op.h);
     else if(op.kind==='watermark'){
       const pattern=op.pattern,font=(pattern&&pattern.din_font==='regular'?'400':'700')+' '+(pattern?pattern.din_size:31)+'px Arial',tracking=pattern?pattern.din_tracking/10:0,left=-invoiceMeasure('DIN',font)/2-tracking;
+      const dWidth=pattern?invoiceMeasure('D',font):0,diWidth=pattern?invoiceMeasure('DI',font):0;
       ctx.save();ctx.fillStyle='rgba(66,86,113,.085)';ctx.font=font.replace('Arial','DiracInvoiceV464');ctx.textAlign=pattern?'left':'center';ctx.textBaseline='middle';
-      for(let row=0;row<22;row++)for(let col=0;col<14;col++){ctx.save();ctx.translate((col+.5)*1240/14,(row+.5)*1754/22);ctx.rotate(-Math.PI/5);if(pattern){ctx.fillText('D',left,0);ctx.fillText('I',left+invoiceMeasure('D',font)+tracking,0);ctx.fillText('N',left+invoiceMeasure('DI',font)+tracking*2,0);}else ctx.fillText('DIN',0,0);ctx.restore();}ctx.restore();
+      for(let row=0;row<22;row++)for(let col=0;col<14;col++){ctx.save();ctx.translate((col+.5)*1240/14,(row+.5)*1754/22);ctx.rotate(-Math.PI/5);if(pattern){ctx.fillText('D',left,0);ctx.fillText('I',left+dWidth+tracking,0);ctx.fillText('N',left+diWidth+tracking*2,0);}else ctx.fillText('DIN',0,0);ctx.restore();}ctx.restore();
     }else throw new Error('INVOICE_PNG_OPERATION_INVALID');
   }
   return canvas.toBuffer('image/png');
+  }finally{canvas.width=1;canvas.height=1;}
 }
 
 const renderer=doc=>invoicePdfObjectsV440(doc,assets);
