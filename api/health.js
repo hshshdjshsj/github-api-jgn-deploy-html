@@ -27757,6 +27757,20 @@ function diracDashboardStaleBindingPreflightV312(req, res) {
         });
       }
     }
+    if (binding.state === 'not_applicable') {
+      const signedCandidates = diracPasskeyRoundtripCandidatesV243(parseCookies(req), DOMAIN_SIGNED_SESSION_COOKIE);
+      if (signedCandidates.rawCount < 8 && signedCandidates.values.length === 1
+          && verifyDomainSessionCookieValue(signedCandidates.values[0])
+          && !customerSecurityDecodeSignedSessionAnchorV228(signedCandidates.values[0])) {
+        return res.status(401).json({
+          ok: false,
+          ready: false,
+          reauth_required: true,
+          patch: DIRAC_DASHBOARD_STALE_BINDING_REAUTH_V312,
+          code: 'SESSION_AUTHENTICATION_REQUIRED'
+        });
+      }
+    }
     if (binding.state !== 'stale_auth_origin') {
       diracCsrfAppendCsvHeader(res, 'Access-Control-Expose-Headers', 'X-Dirac-Dashboard-Binding-Code');
       res.setHeader('X-Dirac-Dashboard-Binding-Code', 'DASHBOARD_BINDING_PREFLIGHT_READY');
