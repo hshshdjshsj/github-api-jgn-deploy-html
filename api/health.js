@@ -46302,6 +46302,10 @@ async function diracV143ResolveOwner(req) {
 
 async function diracV143ResolveOwnerRowsForIds(ids, req, body) {
   const invoiceContext = diracCentralCurrentContextV149();
+  if (invoiceContext && diracReceiptActionV453(invoiceContext.action)) {
+    const owner = await diracV143ResolveOwner(req);
+    return diracReceiptOwnerRowsV453(req, invoiceContext, owner, body, ids);
+  }
   if (invoiceContext && ['invoice_document_export', 'invoice_email_send'].includes(invoiceContext.action)) {
     // Keep the early ownership check, but resolve the exact invoice in its authoritative databases.
     if (invoiceContext.req !== req || invoiceContext.method !== 'POST' || String(req && req.method || '').toUpperCase() !== 'POST'
@@ -64225,6 +64229,36 @@ function diracReceiptInputV453(ctx, source) {
       || (source.outcome !== 'received' && source.note.trim().length < 10)) return bad;
   return { ok: true };
 }
+async function diracReceiptOwnerRowsV453(req, ctx, owner, source, ids) {
+  const early = ctx && ctx.currentStageV211 === 'body validation' && ctx.currentStageIndexV211 === 18;
+  const idor = ctx && ctx.currentStageV211 === 'IDOR/BOLA' && ctx.currentStageIndexV211 === 26;
+  if (!ctx || ctx.req !== req || diracCentralCurrentContextV149() !== ctx || (!early && !idor)
+      || ctx.method !== 'POST' || String(req && req.method || '').toUpperCase() !== 'POST'
+      || ctx.action !== String(req.query && req.query.action || '') || !diracReceiptActionV453(ctx.action)
+      || ctx.classification !== 'browser' || ctx.executionPhaseV211 !== 'guard'
+      || ctx.centralGuardFullyPassedV211 === true || ctx.failedStageV211 || ctx.failureReasonV211
+      || ctx.terminalResponse || ctx.terminalBlockReason || BigInt(ctx.passport || 0n) !== (early ? 0x3ffffn : 0x3ffffffn)
+      || diracCentralGatewayContextAllowedV211(ctx).ok !== true || !diracCentralPtdinSourceV402(req, ctx.action)
+      || !owner || owner.ok !== true || !customerSecurityLooksLikeUuid(owner.authUserId)
+      || !Array.isArray(owner.customerIds) || owner.customerIds.length !== 1 || !customerSecurityLooksLikeUuid(owner.customerIds[0])
+      || !diracReceiptInputV453(ctx, source).ok || !Array.isArray(ids) || ids.length !== 1
+      || ids[0].key !== 'order_id' || ids[0].value !== source.order_id) throw new Error('SHIPMENT_RECEIPT_OWNER_SCOPE_INVALID');
+  if (source.kind === 'domain') return [];
+  const database = source.kind === 'laboratorium' ? 'security' : 'commerce';
+  const path = '/rest/v1/orders?select=id%2Ccustomer_id%2Corder_id&id=eq.' + encodeURIComponent(source.order_id)
+    + '&customer_id=eq.' + encodeURIComponent(owner.customerIds[0]) + '&limit=2';
+  const options = { method: 'GET', auth: 'service', db: database };
+  DIRAC_CENTRAL_OWNER_LOOKUP_PERMITS_V357.set(options, Object.freeze({
+    ctx, req, requestId: String(ctx.requestId || ''), path, database, expiresAtMs: Date.now() + 30000
+  }));
+  let result;
+  try { result = await supabaseFetch(path, options); }
+  finally { DIRAC_CENTRAL_OWNER_LOOKUP_PERMITS_V357.delete(options); }
+  if (!result || result.ok !== true || !Array.isArray(result.data)) throw new Error('SHIPMENT_RECEIPT_OWNER_STORAGE_UNAVAILABLE');
+  if (result.data.length !== 1 || !result.data[0] || result.data[0].id !== source.order_id
+      || result.data[0].customer_id !== owner.customerIds[0]) throw new Error('SHIPMENT_RECEIPT_ORDER_OWNER_MISMATCH');
+  return [{ ...result.data[0], table: 'orders', database }];
+}
 async function diracReceiptStage26V453(req, ctx, owner, ids) {
   const source = ctx.body; let passport = false;
   try { passport = BigInt(ctx.passport || 0n) === 0x3ffffffn; } catch (_) { passport = false; }
@@ -64232,7 +64266,7 @@ async function diracReceiptStage26V453(req, ctx, owner, ids) {
       || !diracReceiptActionV453(ctx.action) || !diracCentralPtdinSourceV402(req, ctx.action) || !owner || owner.ok !== true || owner.customerIds.length !== 1
       || !diracReceiptInputV453(ctx, source).ok || ids.length !== 1 || ids[0].key !== 'order_id' || ids[0].value !== source.order_id) return { ok: false, reason: 'shipment_receipt_owner_scope_invalid_v453' };
   const database = source.kind === 'domain' ? 'domain' : source.kind === 'laboratorium' ? 'security' : 'commerce';
-  const rows = await diracCentralFetchOwnerRowsV194(source.kind === 'domain' ? 'domain_orders' : 'orders', [source.order_id], ['id'], source.kind === 'domain' ? '' : database);
+  const rows = await diracReceiptOwnerRowsV453(req, ctx, owner, source, ids);
   if (!Array.isArray(rows) || rows.length !== 1 || String(rows[0].id) !== source.order_id || String(rows[0].customer_id) !== owner.customerIds[0]) return { ok: false, reason: 'shipment_receipt_order_owner_mismatch_v453' };
   DIRAC_RECEIPT_OWNERS_V453.set(req, Object.freeze({ req, ctx, userId: owner.authUserId, customerId: owner.customerIds[0], orderId: source.order_id, kind: source.kind, orderDatabase: database, inputDigest: diracCentralStableJsonV148(source), expiresAt: Date.now() + 60000 }));
   ctx.__diracCentralOwnerBoundObjectValuesV194 = new Set([source.order_id]);
