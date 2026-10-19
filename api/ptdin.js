@@ -557,7 +557,7 @@ function invoiceDocumentV440(data, identity, issuer) {
   const domain = data.kind === 'domain', row = data.order, tx = data.transaction;
   const amount = value => { const number = Number(value); if (value === null || value === undefined || value === '' || !Number.isSafeInteger(number) || number < 0) return invalid(); return number; };
   const copy = (value, limit, fallback = '') => { const out = cleanText(value, limit + 1); if (out.length > limit) return invalid(); return out || fallback; };
-  const status = value => ({ paid:'Sudah dibayar', pending:'Menunggu', pending_payment:'Menunggu pembayaran', processing:'Diproses', completed:'Selesai', failed:'Gagal', cancelled:'Dibatalkan', canceled:'Dibatalkan', active:'Aktif' })[String(value || '')] || copy(value,60).replace(/_/g,' ') || 'Tidak tersedia';
+  const status = value => ({ paid:'Sudah dibayar', pending:'Menunggu', pending_payment:'Menunggu pembayaran', processing:'Diproses', completed:'Selesai', failed:'Gagal', cancelled:'Dibatalkan', canceled:'Dibatalkan', dibatalkan:'Dibatalkan', active:'Aktif' })[String(value || '')] || copy(value,60).replace(/_/g,' ') || 'Tidak tersedia';
   const total = amount(domain ? row.total_price : row.total);
   if (row.payment_status !== 'paid' || tx.payment_status !== 'paid' || amount(tx.amount) !== total || tx.currency !== 'IDR' || row.customer_id !== identity.customerId) return invalid();
   let itemSum = 0;
@@ -578,7 +578,7 @@ function invoiceDocumentV440(data, identity, issuer) {
   const legal = issuer || {}, missing = 'Belum dicantumkan';
   let website; try { website = new URL(identity.origin).hostname.replace(/^pt\./,''); } catch (_) { return invalid(); }
   const careEmail = 'care@' + website;
-  return {eligible:true,id:row.id,reference:domain ? 'DOM-'+String(row.id).slice(0,8).toUpperCase() : copy(row.order_id || row.id,253),date,currency:'IDR',total,orderStatus:status(row.order_status),paymentStatus:'Sudah dibayar',method,
+  return {eligible:true,...(/^(cancelled|canceled|dibatalkan)$/i.test(String(row.order_status || '').trim())?{cancelled:true}:{}),id:row.id,reference:domain ? 'DOM-'+String(row.id).slice(0,8).toUpperCase() : copy(row.order_id || row.id,253),date,currency:'IDR',total,orderStatus:status(row.order_status),paymentStatus:'Sudah dibayar',method,
     issuer:{name:'PT Dirac Inovasi Nusantara',nib:invoiceLegalIdentifier(legal.nib,13,13)||missing,npwp:invoiceLegalIdentifier(legal.npwp,15,16)||missing,address:'GJ3X+HHH, RT.4/RW.1, Kedunggiling, Gelang, Kec. Tulangan, Kabupaten Sidoarjo, Jawa Timur 61273.',email:careEmail,phone:'0878-9252-3968'},
     buyer:{name:copy(row.customer_name,160,missing),email:copy(row.customer_email || (domain && row.owner_email),254,identity.email),phone:copy(domain?row.customer_whatsapp:row.customer_phone,80,missing),address:diracCompactAddressForDisplayV634(copy(row.shipping_address,600,missing))},
     items,totals:[['Subtotal',subtotal],['Ongkos kirim',shipping],['Diskon',discount],['Dasar pengenaan pajak',taxable],['Pajak',tax]],legalMissing:!invoiceLegalIdentifier(legal.nib,13,13)||!invoiceLegalIdentifier(legal.npwp,15,16),website};
@@ -716,7 +716,7 @@ function invoiceLayout(doc){
   function page(){
     pageOps=[];pages.push(pageOps);rect(0,0,1240,1754,'#fffefd');rect(0,0,1240,14,navy);rect(900,14,268,4,gold);
     logo(56,37,196);var brandHeight=label(doc.issuer.name,263,75,542,31,navy,700);label('DOKUMEN TRANSAKSI',264,Math.max(154,75+brandHeight+13),538,16,gold,700);
-    label('INVOICE',877,70,291,48,navy,700,'right');label('RINCIAN PEMBELIAN',873,134,295,16,muted,400,'right');y=Math.max(246,75+brandHeight+58);
+    label('INVOICE',877,70,291,48,navy,700,'right');label('RINCIAN PEMBELIAN',873,134,295,16,muted,400,'right');if(doc.cancelled===true){rect(878,178,290,3,'#a52a38');rect(878,237,290,3,'#a52a38');rect(878,178,3,62,'#a52a38');rect(1165,178,3,62,'#a52a38');label('CANCELED',894,183,258,36,'#a52a38',700);}y=Math.max(246,75+brandHeight+58);
     var referenceHeight=Math.max(fieldHeight('Nomor invoice / referensi',doc.reference,475),fieldHeight('Tanggal pesanan',doc.date,267),fieldHeight('Pembayaran',doc.paymentStatus,235))+22;
     rect(72,y,1096,referenceHeight,'#f3f1eb');rect(72,y,4,referenceHeight,gold);field('Nomor invoice / referensi',doc.reference,94,y+15,475);field('Tanggal pesanan',doc.date,605,y+15,267);field('Pembayaran',doc.paymentStatus,909,y+15,235);y+=referenceHeight+28;
     label('IDENTITAS PENERBIT',72,y,507,16,gold,700);label('DITAGIHKAN KEPADA',657,y,511,16,gold,700);y+=34;
@@ -726,6 +726,7 @@ function invoiceLayout(doc){
   }
   function ensure(height){if(y+height>bodyBottom)page();if(y+height>bodyBottom)throw new Error('INVOICE_CONTENT_TOO_LONG');}
   page();
+  if(doc.cancelled===true){var cancellationCopy='Pesanan dibatalkan. Jangan membayar ulang. Untuk tindak lanjut atau pengembalian dana, hubungi WhatsApp +6287892523968 atau support@'+doc.website+' dengan nomor pesanan. Pengembalian dana memerlukan konfirmasi admin.',cancellationHeight=textHeight(cancellationCopy,1064,18,600)+28;ensure(cancellationHeight+80);rect(72,y,1096,cancellationHeight,'#fff0ee');label(cancellationCopy,88,y+14,1064,18,'#a52a38',600);y+=cancellationHeight+20;}
   function tableHead(){rect(72,y,1096,43,navy);label('NO.',87,y+13,46,14,'#fffefd',700);label('DESKRIPSI PESANAN',145,y+13,503,14,'#fffefd',700);label('JML',682,y+13,66,14,'#fffefd',700,'right');label('HARGA SATUAN',779,y+13,180,14,'#fffefd',700,'right');label('JUMLAH',982,y+13,169,14,'#fffefd',700,'right');y+=43;}
   ensure(110);tableHead();
   doc.items.forEach(function(item,index){var title=text(item.title||item.domain_name,600)||'Item pesanan',quantity=item.quantity===undefined||item.quantity===null?'—':text(item.quantity,40),price=money(item.subtotal,doc.currency),unitPrice=money(item.unit_price,doc.currency);
