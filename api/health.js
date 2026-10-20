@@ -58503,7 +58503,7 @@ function diracCentralDecodeEscapesV228(input) {
     });
 }
 
-function diracGuardStripBlockCommentsV533(value, separator) {
+function diracGuardStripBlockCommentsV533(value, separator, executableSql) {
   var text = String(value), opening = text.indexOf('/*');
   if (opening < 0 || text.indexOf('*/', opening + 2) < 0) return text;
   var start = -1, cursor = 0, parts = [];
@@ -58511,7 +58511,7 @@ function diracGuardStripBlockCommentsV533(value, separator) {
     if (at < cursor) return '';
     var token = text.slice(at, at + 2);
     if (token === '/*' && start < 0) start = at;
-    else if (token === '*/' && start >= 0 && at >= start + 2) { parts.push(text.slice(cursor, start), separator); cursor = at + 2; start = -1; }
+    else if (token === '*/' && start >= 0 && at >= start + 2) { var content = text.slice(start + 2, at); parts.push(text.slice(cursor, start), executableSql === true && /^(?:!|m!)/i.test(content) ? content.replace(/^(?:!|m!)(?:\d{5,6})?\s*/i, ' ') : separator); cursor = at + 2; start = -1; }
     return token;
   });
   parts.push(text.slice(cursor));
@@ -58544,6 +58544,7 @@ function diracCentralCanonicalVariantsV221(value) {
     add(text.replace(/\\/g, '/'));
     add(diracGuardStripBlockCommentsV533(text, ' '));
     add(diracGuardStripBlockCommentsV533(text, ''));
+    add(diracGuardStripBlockCommentsV533(text, ' ', true));
     add(text.replace(/[\t\r\n\f ]+/g, ' '));
     add(diracCentralDecodeEscapesV228(text));
     add(text.replace(/\$\{(?:(?:lower|upper):|::-) ?([A-Za-z0-9])\}/gi, (_, char) => char));
@@ -58986,34 +58987,42 @@ async function diracCentralCaptureRawRequestV230(req) {
           if (replayWatchdogV264) clearTimeout(replayWatchdogV264);
           replayWatchdogV264 = null;
         };
+        const cleanupV534 = () => {
+          clearReplayWatchdogV264();
+          if (typeof req.off !== 'function') return;
+          req.off('data', onDataV534); req.off('end', onEndV534);
+          req.off('aborted', onAbortedV534); req.off('close', onCloseV534);
+        };
         const fail = (code) => {
           if (completed) return;
           completed = true;
-          clearReplayWatchdogV264();
+          cleanupV534();
           chunks.length = 0;
           try { if (typeof req.pause === 'function') req.pause(); } catch (pauseErrorV443) { diracCentralRecordSuppressedExceptionV221(pauseErrorV443); }
           const error = new Error(code);
           error.code = code;
           reject(error);
         };
-        req.on('data', (chunk) => {
+        const onDataV534 = (chunk) => {
           if (completed) return;
           const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           total += bytes.length;
           if (total > rawLimit) return fail('raw_body_too_large');
           chunks.push(bytes);
-        });
-        req.on('end', () => {
+        };
+        const onEndV534 = () => {
           if (completed) return;
           completed = true;
-          clearReplayWatchdogV264();
-          resolve(Buffer.concat(chunks, total));
-        });
-        req.on('error', () => fail('raw_body_stream_error'));
-        req.on('aborted', () => fail('raw_body_stream_aborted'));
-        req.on('close', () => {
-          if (!completed && !req.readableEnded) fail('raw_body_stream_closed');
-        });
+          cleanupV534();
+          const capturedV534 = Buffer.concat(chunks, total);
+          chunks.length = 0;
+          resolve(capturedV534);
+        };
+        const onErrorV534 = () => fail('raw_body_stream_error');
+        const onAbortedV534 = () => fail('raw_body_stream_aborted');
+        const onCloseV534 = () => { if (!completed && !req.readableEnded) fail('raw_body_stream_closed'); };
+        req.on('data', onDataV534); req.on('end', onEndV534);
+        req.on('error', onErrorV534); req.on('aborted', onAbortedV534); req.on('close', onCloseV534);
         if (!completed) {
           replayWatchdogV264 = setTimeout(() => fail(rawReplayAttemptV264 ? 'raw_body_replay_unavailable' : 'raw_body_read_timeout'), rawReplayAttemptV264 ? 250 : 6500);
         }
@@ -64304,6 +64313,32 @@ async function diracReceiptFetchV453(ctx, proof, key, oldRow, newRow) {
   try { const result = await supabaseFetch(path, options); if (!diracReceiptContextV453(ctx)) throw Object.assign(new Error('SHIPMENT_RECEIPT_CONTEXT_REQUIRED'), { status: 403 }); return result; }
   finally { DIRAC_RECEIPT_FETCH_V453.delete(options); }
 }
+// V532: notify the configured alert recipients once, only after the receipt CAS commits.
+async function diracReceiptAlertV532(ctx, row) {
+  const proof = ctx && ctx.req && DIRAC_RECEIPT_OWNERS_V453.get(ctx.req);
+  if (!proof || !diracReceiptContextV453(ctx) || DIRAC_RECEIPT_ACCESS_V453.get(ctx.req) !== proof) throw new Error('SHIPMENT_RECEIPT_CONTEXT_REQUIRED');
+  const key = 's2s-admin-shipment-v406:' + proof.kind + ':' + proof.orderId;
+  const shared = diracReceiptDataV453(), value = shared.validateRow(row, key), receipt = value && shared.receipt(value);
+  if (!value || value.customer_id !== proof.customerId || value.order_id !== proof.orderId || value.order_kind !== proof.kind
+      || !receipt || receipt.current !== true || value.receipt.auth_user_id !== proof.userId) throw new Error('SHIPMENT_RECEIPT_RECORD_INVALID');
+  const config = diracSecurityAlertConfigV320();
+  if (!config) return 'unavailable';
+  const origin = diracAppPageOriginV503(), label = { received: 'Sudah diterima pelanggan', issue: 'Diterima dengan selisih / masalah', not_received: 'Belum diterima pelanggan' }[receipt.outcome];
+  const text = ['KONFIRMASI PENERIMAAN PELANGGAN', 'Pernyataan pelanggan tersimpan. Catatan pengiriman admin tetap terpisah.',
+    'Situs: ' + origin, 'Pesanan: ' + value.order_id, 'Jenis pesanan: ' + value.order_kind, 'Pelanggan: ' + value.customer_id,
+    'Resi: ' + receipt.tracking_number, 'Kurir: ' + receipt.courier, 'Pernyataan: ' + label,
+    'Jumlah diterima: ' + (receipt.quantity === null ? 'Tidak diisi' : receipt.quantity), 'Catatan: ' + (receipt.note || 'Tidak ada catatan'),
+    'Waktu: ' + receipt.confirmed_at, 'Urutan konfirmasi: ' + receipt.sequence, 'Administrasi: ' + origin + '/admin.html'].join('\n');
+  const message = Object.freeze({ fromName: config.fromName, recipients: Object.freeze(config.recipients.slice()),
+    subject: 'Konfirmasi penerimaan pelanggan - ' + new URL(origin).hostname,
+    reference: crypto.createHash('sha256').update(value.receipt.mac).digest('hex').slice(0, 32), text,
+    html: '<!doctype html><html lang="id"><meta charset="utf-8"><body><h1>Konfirmasi penerimaan pelanggan</h1><pre>' + diracSecurityMailEscapeV327(text) + '</pre></body></html>' });
+  const result = await diracCustomerMailGmailAttemptV352(message,
+    Object.freeze({ smtpHost: config.host, smtpPort: config.port, timeoutMs: config.timeoutMs, replyTo: '' }),
+    Object.freeze({ user: config.user, appPassword: config.appPassword }), 1);
+  return result && result.ok === true && result.status === 250 ? 'accepted' : 'uncertain';
+}
+
 async function diracReceiptDispatchV453(req, res, ctx) {
   const cors = setCors(req, res, { isDomainAction: true });
   if (!cors.allowed || !diracReceiptContextV453(ctx)) return res.status(403).json({ ok: false, code: 'SHIPMENT_RECEIPT_CONTEXT_REQUIRED' });
@@ -64327,7 +64362,12 @@ async function diracReceiptDispatchV453(req, res, ctx) {
       row = saved.data[0];
     }
     const value = row.record_json;
-    return res.status(200).json({ ok: true, unchanged: built.unchanged, receipt: shared.receipt(value), revision: value.revision, delivery_ref: shared.deliveryRef(value), updated_at: value.updated_at, event: shared.event(value.events[value.events.length - 1], false) });
+    let adminNotification = 'skipped';
+    if (!built.unchanged) {
+      try { adminNotification = await diracReceiptAlertV532(ctx, row); }
+      catch (error) { adminNotification = 'uncertain'; diracSecurityAlertLocalLogV321('shipment_receipt_alert_unconfirmed', error); }
+    }
+    return res.status(200).json({ ok: true, unchanged: built.unchanged, admin_notification: adminNotification, receipt: shared.receipt(value), revision: value.revision, delivery_ref: shared.deliveryRef(value), updated_at: value.updated_at, event: shared.event(value.events[value.events.length - 1], false) });
   } catch (error) {
     const code = /^SHIPMENT_[A-Z0-9_]+$/.test(String(error && (error.code || error.message) || '')) ? String(error.code || error.message) : 'SHIPMENT_RECEIPT_UNAVAILABLE';
     const status = [400,403,409,503].includes(error && error.status) ? error.status : 503;
@@ -69085,6 +69125,7 @@ async function diracCentralPinnedHttpsFetchV230(
   }
   return await new Promise((resolve, reject) => {
     let settled = false;
+    let incomingResponseV541 = null;
     const request = DIRAC_CENTRAL_NATIVE_HTTPS_REQUEST_V230({
       protocol: 'https:', hostname: parsedUrl.hostname, port: pinnedPort,
       servername: parsedUrl.hostname, method: storageMethodV539, path: storagePathV1,
@@ -69098,6 +69139,7 @@ async function diracCentralPinnedHttpsFetchV230(
         callback(null, pinnedIp, pinnedFamily);
       }
     }, (incoming) => {
+      incomingResponseV541 = incoming;
       try {
         const limiter = diracCentralBoundedReadableStreamV230(incoming, request, maximumBytes);
         incoming.setTimeout(streamTimeoutMs, () => {
@@ -69126,6 +69168,13 @@ async function diracCentralPinnedHttpsFetchV230(
         }
       }
     });
+    const streamDeadlineV541 = setTimeout(() => {
+      const errorV541 = Object.assign(new Error('DIRAC_EGRESS_STREAM_TIMEOUT'), { code: 'DIRAC_EGRESS_STREAM_TIMEOUT' });
+      if (incomingResponseV541) incomingResponseV541.destroy(errorV541);
+      request.destroy(errorV541);
+    }, streamTimeoutMs);
+    if (typeof streamDeadlineV541.unref === 'function') streamDeadlineV541.unref();
+    request.once('close', () => { clearTimeout(streamDeadlineV541); incomingResponseV541 = null; });
     request.setTimeout(streamTimeoutMs, () => request.destroy(Object.assign(new Error('DIRAC_EGRESS_STREAM_TIMEOUT'), { code: 'DIRAC_EGRESS_STREAM_TIMEOUT' })));
     request.on('error', (error) => {
       if (!settled) {
@@ -70075,6 +70124,7 @@ async function diracCentralFetchWithRedirectGuardV146(fetchImpl, input, options,
   if (status < 300 || status > 399 || !response || !response.headers || typeof response.headers.get !== 'function') return response;
   const location = response.headers.get('location');
   if (!location) return response;
+  try { if (response.body && typeof response.body.cancel === 'function') await response.body.cancel(); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
   const base = parsedUrl;
   const nextUrl = new URL(location, base);
   const requestMethod = String(options && options.method || 'GET').toUpperCase();
@@ -70095,7 +70145,6 @@ async function diracCentralFetchWithRedirectGuardV146(fetchImpl, input, options,
     error.diracSecurityThreat = decision;
     throw error;
   }
-  try { if (response.body && typeof response.body.cancel === 'function') await response.body.cancel(); } catch (suppressedErrorV221) { diracCentralRecordSuppressedExceptionV221(suppressedErrorV221); }
   return diracCentralFetchWithRedirectGuardV146(fetchImpl, nextUrl.toString(), options, currentDepth + 1);
 }
 
@@ -70171,17 +70220,20 @@ function diracCentralOutboundMaterialV194(url, input, options) {
 async function diracCentralOutboundSecretLeakGuardV194(url, input, options) {
   let material = diracCentralOutboundMaterialV194(url, input, options);
   if ((!options || options.body === undefined) && input && input.body && typeof input.clone === 'function') {
+    let bodyReadTimerV540 = null;
     try {
       const cloned = input.clone();
       const bytes = await Promise.race([
         cloned.arrayBuffer(),
-        new Promise((resolve) => setTimeout(() => resolve(null), 1000))
+        new Promise((resolve) => { bodyReadTimerV540 = setTimeout(() => resolve(null), 1000); })
       ]);
       if (!bytes) return { block: true, reason: 'egress_request_body_uninspectable' };
       if (bytes.byteLength > 16 * 1024 * 1024) return { block: true, reason: 'egress_request_body_too_large' };
       material += '\n' + Buffer.from(bytes).toString('utf8');
     } catch (_) {
       return { block: true, reason: 'egress_request_body_uninspectable' };
+    } finally {
+      if (bodyReadTimerV540 !== null) clearTimeout(bodyReadTimerV540);
     }
   }
   const ctx = diracCentralCurrentContextV149();
