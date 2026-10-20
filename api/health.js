@@ -56776,7 +56776,7 @@ function diracCustomerMailMimeV352(message, account, replyTo) {
   const headers = [
     'From: ' + diracSecurityAlertMimeHeaderV320(String(message.fromName || 'PT Dirac Inovasi Nusantara')) + ' <' + account.user + '>',
     'To: ' + (message.recipients || []).join(', '),
-    replyTo ? 'Reply-To: ' + replyTo : '',
+    ...(replyTo ? ['Reply-To: ' + replyTo] : []),
     'Subject: ' + diracSecurityAlertMimeHeaderV320(String(message.subject || 'PT Dirac Inovasi Nusantara')),
     'Date: ' + new Date().toUTCString(),
     'Message-ID: <' + messageId + '>',
@@ -64324,15 +64324,18 @@ async function diracReceiptAlertV532(ctx, row) {
   const config = diracSecurityAlertConfigV320();
   if (!config) return 'unavailable';
   const origin = diracAppPageOriginV503(), label = { received: 'Sudah diterima pelanggan', issue: 'Diterima dengan selisih / masalah', not_received: 'Belum diterima pelanggan' }[receipt.outcome];
-  const text = ['KONFIRMASI PENERIMAAN PELANGGAN', 'Pernyataan pelanggan tersimpan. Catatan pengiriman admin tetap terpisah.',
-    'Situs: ' + origin, 'Pesanan: ' + value.order_id, 'Jenis pesanan: ' + value.order_kind, 'Pelanggan: ' + value.customer_id,
-    'Resi: ' + receipt.tracking_number, 'Kurir: ' + receipt.courier, 'Pernyataan: ' + label,
-    'Jumlah diterima: ' + (receipt.quantity === null ? 'Tidak diisi' : receipt.quantity), 'Catatan: ' + (receipt.note || 'Tidak ada catatan'),
-    'Waktu: ' + receipt.confirmed_at, 'Urutan konfirmasi: ' + receipt.sequence, 'Administrasi: ' + origin + '/admin.html'].join('\n');
+  const adminStatus = value.state === 'active' && value.status === 'delivered' ? 'Sudah ditandai diterima' : 'Belum ditandai diterima';
+  const confirmedAt = new Date(receipt.confirmed_at).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' WIB';
+  const quantity = receipt.quantity === null ? 'Tidak diisi' : String(receipt.quantity), note = receipt.note || 'Tidak ada catatan';
+  const text = ['KONFIRMASI PENGIRIMAN', '', 'Pelanggan: ' + label, 'Catatan admin: ' + adminStatus, '',
+    'Resi: ' + receipt.tracking_number, 'Kurir: ' + receipt.courier, 'Jumlah diterima: ' + quantity,
+    'Catatan pelanggan: ' + note, 'Waktu konfirmasi: ' + confirmedAt, '',
+    'Pernyataan pelanggan dan catatan admin disimpan terpisah.', 'Referensi pesanan: ' + value.order_id,
+    'Lihat pesanan: ' + origin + '/admin.html'].join('\n');
   const message = Object.freeze({ fromName: config.fromName, recipients: Object.freeze(config.recipients.slice()),
     subject: 'Konfirmasi penerimaan pelanggan - ' + new URL(origin).hostname,
     reference: crypto.createHash('sha256').update(value.receipt.mac).digest('hex').slice(0, 32), text,
-    html: '<!doctype html><html lang="id"><meta charset="utf-8"><body><h1>Konfirmasi penerimaan pelanggan</h1><pre>' + diracSecurityMailEscapeV327(text) + '</pre></body></html>' });
+    html: '<!doctype html><html lang="id"><meta charset="utf-8"><body style="margin:0;padding:24px;background:#f3f5f7;color:#172334;font:16px/1.6 Arial,sans-serif"><div style="max-width:600px;margin:auto;padding:24px;overflow-wrap:anywhere;word-break:break-word;background:#fff;border:1px solid #dce3ea;border-radius:12px"><h1 style="font-size:22px;margin:0 0 16px">Konfirmasi pengiriman</h1><p><strong>Pelanggan:</strong> ' + diracSecurityMailEscapeV327(label) + '<br><strong>Catatan admin:</strong> ' + diracSecurityMailEscapeV327(adminStatus) + '</p><p><strong>Resi:</strong> ' + diracSecurityMailEscapeV327(receipt.tracking_number) + '<br><strong>Kurir:</strong> ' + diracSecurityMailEscapeV327(receipt.courier) + '<br><strong>Jumlah diterima:</strong> ' + diracSecurityMailEscapeV327(quantity) + '</p><p><strong>Catatan pelanggan</strong><br>' + diracSecurityMailEscapeV327(note) + '</p><p style="font-size:14px">Waktu konfirmasi: ' + diracSecurityMailEscapeV327(confirmedAt) + '<br>Referensi pesanan: ' + diracSecurityMailEscapeV327(value.order_id) + '</p><p><a style="color:#175ca3" href="' + diracSecurityMailEscapeV327(origin + '/admin.html') + '">Buka rincian pesanan</a></p><p style="font-size:13px;color:#526071">Pernyataan pelanggan dan catatan admin disimpan terpisah.</p></div></body></html>' });
   const result = await diracCustomerMailGmailAttemptV352(message,
     Object.freeze({ smtpHost: config.host, smtpPort: config.port, timeoutMs: config.timeoutMs, replyTo: '' }),
     Object.freeze({ user: config.user, appPassword: config.appPassword }), 1);
