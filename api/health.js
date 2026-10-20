@@ -18862,9 +18862,7 @@ const DIRAC_COMMERCE_PRICING_V401 = Object.freeze({
   taxDppDenominator: 12,
   volumetricDivisor: 6000,
   packagingBaseGrams: 200,
-  packagingPerItemGrams: 50,
-  freeShipThresholdIdr: 299000,
-  freeShipMaxSubsidyIdr: 25000
+  packagingPerItemGrams: 50
 });
 
 const DIRAC_SHIPPING_ORIGINS_V401 = Object.freeze({
@@ -19010,16 +19008,13 @@ function sessionOwnershipCheckoutBuildShippingQuote(body, shippingInput, taxable
   const extraKg = Math.max(0, billableKg - 1);
   const extraItems = Math.max(0, itemCount - 1);
   const standardRaw = band.base + (extraKg * band.perKg) + (extraItems * band.perExtraItem) + regionalSurcharge;
-  const grossShipping = mode === 'pickup' ? 0 : Math.ceil((mode === 'express' ? standardRaw * 1.6 : standardRaw) / 1000) * 1000;
-  const freeShippingSubsidy = mode === 'standard' && Number(taxableAmount || 0) >= DIRAC_COMMERCE_PRICING_V401.freeShipThresholdIdr
-    ? Math.min(grossShipping, DIRAC_COMMERCE_PRICING_V401.freeShipMaxSubsidyIdr)
-    : 0;
-  const shippingCost = Math.max(0, grossShipping - freeShippingSubsidy);
+  const grossShipping = mode === 'pickup' ? 0 : Math.max(55000, Math.ceil((mode === 'express' ? standardRaw * 1.6 : standardRaw) / 1000) * 1000);
+  const shippingCost = grossShipping;
   return {
     mode,
     shippingCost,
     grossShipping,
-    freeShippingSubsidy,
+    freeShippingSubsidy: 0,
     originCode: origin.code,
     originLabel: origin.label,
     destinationProvince: destination.province,
@@ -62177,7 +62172,7 @@ function diracCentralBindOwnerScopedSessionRowsV197(ctx, path, options = {}, res
       if (params.get('order') !== 'created_at.desc' || params.get('limit') !== '80') return false;
 
       const expectedSelect = table === 'orders'
-        ? 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_method,payment_status,order_status,created_at'
+        ? 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,admin_order_state_v1,total,payment_method,payment_status,order_status,created_at'
         : 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,dns_method,target_platform,domain_name,total_price,currency,order_status,payment_status,created_at';
       if (params.get('select') !== expectedSelect) return false;
     }
