@@ -62507,7 +62507,7 @@ function diracCentralApplyHeadersV146(res) {
     const origin=String(ctx && ctx.req && ctx.req.headers && ctx.req.headers.origin || '');
     // Guard terminals run before the business handler that normally applies CORS.
     // Publish only to the existing origin allowlist; every checkpoint still runs.
-    if (ctx && /^(?:security_report|domain_health|dirac_mfa_passkey_start|dirac_mfa_passkey_verify|customer_security_recovery_codes_generate|customer_security_recovery_code_verify)$/.test(ctx.action) && DIRAC_CENTRAL_ALLOWED_ORIGINS_V146.has(origin)
+    if (ctx && /^(?:security_report|domain_health|domain_register|dirac_mfa_passkey_start|dirac_mfa_passkey_verify|customer_security_recovery_codes_generate|customer_security_recovery_code_verify)$/.test(ctx.action) && DIRAC_CENTRAL_ALLOWED_ORIGINS_V146.has(origin)
         && (typeof res.getHeader!=='function' || res.getHeader('Access-Control-Allow-Origin')!==origin)) {
       setCors(ctx.req,res,{isDomainAction:true});
     }
