@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import DIRAC_SHARED_CENTRAL_V545 from '../lib/central-guard.js';
+import DIRAC_DATA_PROTECTION_V545 from '../lib/data-protection.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import https from 'node:https';
 import { promises as dns } from 'node:dns';
@@ -744,32 +746,40 @@ function clearCookie(res, name, sameSite) { appendCookie(res, cookieString(name,
 
 function sessionKey() {
   const requestMemoV404 = supportRequestMemoV404();
-  const cachedKeyV404 = requestMemoV404 && requestMemoV404.get('sessionKey');
+  const cachedKeyV404 = requestMemoV404 && requestMemoV404.get('sessionKey:v545');
   if (Buffer.isBuffer(cachedKeyV404) && cachedKeyV404.length === 32) return cachedKeyV404;
-  const resolvedKeyV404 = crypto.createHash('sha256').update(config().cookieSecret, 'utf8').digest();
-  if (requestMemoV404) requestMemoV404.set('sessionKey', resolvedKeyV404);
+  let resolvedKeyV404;
+  {
+    const master = DIRAC_DATA_PROTECTION_V545.deriveCipherKeyV545('support-cookie');
+    try { resolvedKeyV404 = Buffer.from(crypto.hkdfSync('sha512', master,
+      Buffer.from('dirac-support-cookie-v545'), Buffer.from(config().cookieSecret, 'utf8'), 32)); }
+    finally { master.fill(0); }
+  }
+  if (requestMemoV404) requestMemoV404.set('sessionKey:v545', resolvedKeyV404);
   return resolvedKeyV404;
 }
 function seal(name, payload) {
   const nonce = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', sessionKey(), nonce, { authTagLength: 16 });
-  cipher.setAAD(Buffer.from(name, 'utf8'));
+  cipher.setAAD(Buffer.from(name + ':v545', 'utf8'));
   const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
   try {
     const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-    return b64u(Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]));
+    return 'v545.' + b64u(Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]));
   } finally { plaintext.fill(0); }
 }
 function unseal(name, value) {
   let plaintext = null, tail = null, decoded = null;
   try {
-    const encoded = String(value || '');
+    const suppliedV545 = String(value || '');
+    if (!suppliedV545.startsWith('v545.')) return null;
+    const encoded = suppliedV545.slice(5);
     const packed = Buffer.from(encoded, 'base64url');
     if (packed.toString('base64url') !== encoded) return null;
     if (packed.length < 29 || packed.length > 7000) return null;
     const nonce = packed.subarray(0, 12); const tag = packed.subarray(12, 28); const ciphertext = packed.subarray(28);
     const decipher = crypto.createDecipheriv('aes-256-gcm', sessionKey(), nonce, { authTagLength: 16 });
-    decipher.setAAD(Buffer.from(name, 'utf8')); decipher.setAuthTag(tag);
+    decipher.setAAD(Buffer.from(name + ':v545', 'utf8')); decipher.setAuthTag(tag);
     plaintext = decipher.update(ciphertext); tail = decipher.final(); decoded = Buffer.concat([plaintext, tail]);
     const payload = parseStrictJson(decoded, { maxBytes: 7000 });
     if (!payload || payload.v !== 1 || !Number.isSafeInteger(payload.exp) || payload.exp <= Date.now()) return null;
@@ -2589,6 +2599,7 @@ function supportCentralAssertExecutionContextV146() {
   if (!ctx || ctx.fullyPassed !== true || !['handler', 'audit'].includes(ctx.phase)) {
     throw new PublicError(500, 'CENTRAL_EGRESS_CONTEXT_REQUIRED', 'Konteks keamanan egress tidak tersedia.');
   }
+  DIRAC_SHARED_CENTRAL_V545.assertPassed(ctx.req, ctx.res, 'support');
   return ctx;
 }
 
@@ -2625,7 +2636,8 @@ function supportCentralAuthorizeHealthEgressV355(input, options) {
   if (!ctx) return !isProduction();
   const method = String(options && options.method || 'GET').trim().toUpperCase();
   if (ctx.phase === 'guard') {
-    if (ctx.currentStage !== 'rate limit' || method !== 'POST') return false;
+    if (ctx.currentStage !== 'rate limit' || method !== 'POST'
+        || !DIRAC_SHARED_CENTRAL_V545.at(ctx.req, 'support', 9)) return false;
     let target;
     let supportDatabaseOrigin;
     try {
@@ -2898,13 +2910,15 @@ async function handler(req, res) {
       securityHeaders(req, res, String(queryValue(req, 'action') || '').trim().toLowerCase());
       setHeader(res, 'X-Dirac-Request-ID', ctx.requestId);
       setHeader(res, 'X-Dirac-Central-Security-Guard', DIRAC_SUPPORT_CENTRAL_SECURITY_GUARD_V146);
-      for (let index = 0; index < DIRAC_SUPPORT_CENTRAL_PIPELINE_V146.length; index += 1) {
-        const stage = DIRAC_SUPPORT_CENTRAL_PIPELINE_V146[index];
+      const centralExecutionV545 = await DIRAC_SHARED_CENTRAL_V545.run(req, res, 'support', DIRAC_SUPPORT_CENTRAL_PIPELINE_V146, async (stage, index) => {
         ctx.currentStage = stage.name;
         if (Date.now() - ctx.startedAt > 5000) throw new PublicError(503, 'CENTRAL_GUARD_TIMEOUT', 'Central Guard support melewati batas waktu.');
         await stage.guard(ctx);
         ctx.passport |= 1n << BigInt(index);
-      }
+        return DIRAC_SHARED_CENTRAL_V545.PASSED;
+      });
+      if (!centralExecutionV545.passed) return centralExecutionV545.value;
+      DIRAC_SHARED_CENTRAL_V545.assertPassed(req, res, 'support');
       const allCheckpoints = (1n << BigInt(DIRAC_SUPPORT_CENTRAL_PIPELINE_V146.length)) - 1n;
       if (ctx.passport !== allCheckpoints) throw new PublicError(500, 'CENTRAL_INTEGRITY_FAILED', 'Checkpoint Central Guard tidak lengkap.');
       if (ctx.preflight) {
@@ -2987,6 +3001,7 @@ async function handler(req, res) {
       }
       return json(res, safe.status, { ok: false, code: safe.code, message: safe.message, requestId: ctx.requestId, time: nowIso() });
     } finally {
+      DIRAC_SHARED_CENTRAL_V545.close(req, res);
       ctx.sample = '';
       ctx.body = null;
       req.diracSupportBody = null;

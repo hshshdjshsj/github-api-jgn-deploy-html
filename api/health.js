@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const DIRAC_SHARED_CENTRAL_V545 = require('../lib/central-guard.js');
 const { parseStrictJson: diracParseStrictJsonV357 } = (() => {
 'use strict';
 
@@ -1936,29 +1937,34 @@ async function diracEncryptBannedExportV472(payload, password, authUserId) {
   const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
   if (plaintext.length < 2 || plaintext.length > 2 * 1024 * 1024) { plaintext.fill(0); return null; }
   const salt = crypto.randomBytes(32), iv = crypto.randomBytes(12);
-  let key = null;
+  let key = null, passwordKeyV546 = null, wrappedKeyV546 = null;
   try {
-    key = await diracPbkdf2V472(password, salt);
-    const aad = Buffer.from('dirac-banned-data-export-v1:' + String(authUserId || ''), 'utf8');
+    key = require('../lib/data-protection.js').randomCipherKeyV546('data-export');
+    passwordKeyV546 = await diracPbkdf2V472(password, salt);
+    const wrapperV546 = crypto.createCipheriv('id-aes256-wrap', passwordKeyV546, Buffer.from('a6a6a6a6a6a6a6a6','hex'));
+    wrappedKeyV546 = Buffer.concat([wrapperV546.update(key), wrapperV546.final()]);
+    if (wrappedKeyV546.length !== 40) throw new Error('DATA_EXPORT_KEY_WRAP_FAILED');
+    const aad = Buffer.from('dirac-banned-data-export-v2:' + String(authUserId || ''), 'utf8');
     const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
     cipher.setAAD(aad);
     const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     const tag = cipher.getAuthTag();
     return {
-      format: 'dirac-banned-data-export-v1',
+      format: 'dirac-banned-data-export-v2',
       encrypted: true,
       cipher: 'AES-256-GCM',
-      kdf: 'PBKDF2-HMAC-SHA512',
+      kdf: 'PBKDF2-HMAC-SHA512+A256KW+5KEY-HKDF-SHA512',
       iterations: 210000,
       salt: salt.toString('base64'),
       iv: iv.toString('base64'),
       tag: tag.toString('base64'),
       aad: aad.toString('base64'),
-      ciphertext: ciphertext.toString('base64'),
+      ciphertext: Buffer.concat([wrappedKeyV546, ciphertext]).toString('base64'),
       plaintext_sha256: crypto.createHash('sha256').update(plaintext).digest('hex')
     };
   } finally {
     plaintext.fill(0); salt.fill(0); iv.fill(0); if (Buffer.isBuffer(key)) key.fill(0);
+    if (passwordKeyV546) passwordKeyV546.fill(0); if (wrappedKeyV546) wrappedKeyV546.fill(0);
   }
 }
 function diracDataArchiveTransportV473(bundle) {
@@ -10152,9 +10158,11 @@ function diracPartnerReferralCodeFromUserIdV479(userId) {
   const plain = Buffer.from(clean.replace(/-/g, ''), 'hex');
   const nonce = diracPartnerReferralNonceV479(clean);
   if (plain.length !== 16 || nonce.length !== 12) return '';
+  let keyV545;
   try {
-    const cipher = crypto.createCipheriv('aes-256-gcm', diracPartnerReferralKeyV479('cipher'), nonce);
-    cipher.setAAD(Buffer.from(DIRAC_PARTNER_REFERRAL_PATCH_V479, 'utf8'));
+    keyV545 = require('../lib/data-protection.js').deriveCipherKeyV545('referral');
+    const cipher = crypto.createCipheriv('aes-256-gcm', keyV545, nonce);
+    cipher.setAAD(Buffer.from(DIRAC_PARTNER_REFERRAL_PATCH_V479 + ':v545', 'utf8'));
     const encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
     const tag = cipher.getAuthTag();
     return encrypted.length === 16 && tag.length === 16
@@ -10162,7 +10170,7 @@ function diracPartnerReferralCodeFromUserIdV479(userId) {
       : '';
   } catch (_) {
     return '';
-  }
+  } finally { if (keyV545) keyV545.fill(0); plain.fill(0); }
 }
 
 function diracPartnerReferralCodeParseV479(value) {
@@ -10177,12 +10185,22 @@ function diracPartnerReferralCodeParseV479(value) {
     const ciphertext = packed.subarray(12, 28);
     const tag = packed.subarray(28, 44);
     if (nonce.length !== 12 || ciphertext.length !== 16 || tag.length !== 16) return Object.freeze({ ok: false, code: '', userId: '' });
-    const decipher = crypto.createDecipheriv('aes-256-gcm', diracPartnerReferralKeyV479('cipher'), nonce);
-    decipher.setAAD(Buffer.from(DIRAC_PARTNER_REFERRAL_PATCH_V479, 'utf8'));
-    decipher.setAuthTag(tag);
-    const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    const keyV545 = require('../lib/data-protection.js').deriveCipherKeyV545('referral');
+    const decryptV545 = () => {
+      const key = Buffer.from(keyV545);
+      try {
+        const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce);
+        decipher.setAAD(Buffer.from(DIRAC_PARTNER_REFERRAL_PATCH_V479 + ':v545', 'utf8'));
+        decipher.setAuthTag(tag);
+        return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      } finally { key.fill(0); }
+    };
+    let plain;
+    try { plain = decryptV545(); }
+    finally { keyV545.fill(0); }
     if (plain.length !== 16) return Object.freeze({ ok: false, code: '', userId: '' });
     const hex = plain.toString('hex').toLowerCase();
+    plain.fill(0);
     const userId = hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
     const expectedNonce = diracPartnerReferralNonceV479(userId);
     if (!customerSecurityLooksLikeUuid(userId) || expectedNonce.length !== 12 || !crypto.timingSafeEqual(nonce, expectedNonce)) {
@@ -14757,7 +14775,7 @@ function customerSecurityRecoveryWorkerSealV190(innerPayload, caller, timestampT
   };
   const aad = Buffer.from(customerSecurityLostPasskeyCanonical(customerSecurityRecoveryWorkerTransportAadV190(envelope)), 'utf8');
   const transcriptHash = crypto.createHash('sha512').update(aad).digest();
-  const ikm = Buffer.concat([classicShared, pq.sharedKey]);
+  const ikm = (() => { const material = Buffer.concat([classicShared, pq.sharedKey]); try { return require('../lib/data-protection.js').deriveBoundCipherKeyV546('recovery-worker', material, 64); } finally { material.fill(0); classicShared.fill(0); pq.sharedKey.fill(0); } })();
   const requestKey = Buffer.from(crypto.hkdfSync('sha512', ikm, salt, Buffer.concat([
     Buffer.from('dirac/recovery-worker/v190/request\n', 'utf8'),
     transcriptHash
@@ -16323,7 +16341,7 @@ function diracRecoveryBrowserRootCauseDiagnosticV344(req, body, error, expectedA
 }
 
 function diracRecoveryBrowserTransportKeyMaterialV287() {
-  const seed = Buffer.from(diracCentralDeriveSecretV146('recovery-browser-transport-p256-v287'));
+  const seed = require('../lib/data-protection.js').deriveCipherKeyV545('recovery-browser');
   try {
     for (let counter = 0; counter < 256; counter += 1) {
       const counterBytes = Buffer.alloc(4);
@@ -47782,7 +47800,10 @@ async function createVault(options) {
   const extraNonceEntropy = Buffer.from(randomBytes(32));
   const kekSalt = Buffer.from(randomBytes(32));
   const transportWrapSalt = Buffer.from(randomBytes(32));
-  const dek = Buffer.from(randomBytes(32));
+  const dekEntropyV546 = Buffer.from(randomBytes(32));
+  let dek;
+  try { if (dekEntropyV546.length !== 32) throw fail('CSPRNG_OUTPUT_INVALID'); dek = require('../lib/data-protection.js').deriveBoundCipherKeyV546('recovery-vault', dekEntropyV546); }
+  finally { dekEntropyV546.fill(0); }
   if ([vaultSalt, vaultId, extraNonceEntropy, kekSalt, transportWrapSalt, dek].some((value) => value.length !== 32)) {
     throw fail('CSPRNG_OUTPUT_INVALID');
   }
@@ -48038,7 +48059,8 @@ function validateEnvelope(body, expectedHpkeKeyId, expectedMlkemKeyId) {
 function openHybridEnvelope(options) {
   const body = options.body;
   const bundle = options.bundle;
-  const xPrivate = options.x25519PrivateKey || parsePrivateKey(envText('DIRAC_RECOVERY_HPKE_PRIVATE_KEY'), 'x25519');
+  const xPrivate = options.x25519PrivateKey || require('../lib/data-protection.js').deriveX25519PrivateV546(
+    'recovery-hpke', parsePrivateKey(envText('DIRAC_RECOVERY_HPKE_PRIVATE_KEY'), 'x25519'));
   validateEnvelope(body, options.expectedHpkeKeyId, bundle.transport.mlkem_key_id);
   const enc = decodeB64u(body.enc, 32, 128);
   const nonce = decodeB64u(body.aead_nonce, 12, 128);
@@ -48929,7 +48951,7 @@ function customerSecurityRecoveryWorkerOpenV190(envelope, caller, timestampText)
   }
   const aad = Buffer.from(customerSecurityLostPasskeyCanonical(customerSecurityRecoveryWorkerTransportAadV190(source)), 'utf8');
   const transcriptHash = crypto.createHash('sha512').update(aad).digest();
-  const ikm = Buffer.concat([classicShared, pqShared]);
+  const ikm = (() => { const material = Buffer.concat([classicShared, pqShared]); try { return require('../lib/data-protection.js').deriveBoundCipherKeyV546('recovery-worker', material, 64); } finally { material.fill(0); classicShared.fill(0); pqShared.fill(0); } })();
   const requestKey = Buffer.from(crypto.hkdfSync('sha512', ikm, salt, Buffer.concat([
     Buffer.from('dirac/recovery-worker/v190/request\n', 'utf8'),
     transcriptHash
@@ -51468,7 +51490,7 @@ function diracRecoveryHpkePrivateKeyV159() {
   const normalized = raw.includes('-----BEGIN') ? raw.replace(/\\n/g, '\n') : Buffer.from(raw, 'base64').toString('utf8');
   const key = crypto.createPrivateKey(normalized);
   if (key.asymmetricKeyType !== 'x25519') throw new Error('RECOVERY_HPKE_PRIVATE_KEY_TYPE_INVALID');
-  return key;
+  return require('../lib/data-protection.js').deriveX25519PrivateV546('recovery-hpke', key);
 }
 
 /* RECO donor source lines 10155-10181 */
@@ -51696,7 +51718,10 @@ function diracRecoveryHpkeProofSignatureRecoV251(caller, timestamp, body) {
 function diracRecoveryHpkeProofResponseKeyRecoV251(body) {
   const secretText = customerSecurityRecoveryWorkerSecret();
   if (!secretText) throw DIRAC_RECOVERY_CRYPTO_V2.fail('RECOVERY_HPKE_PROOF_RESPONSE_SECRET_MISSING');
-  const secret = Buffer.from(secretText, 'utf8');
+  const materialV546 = Buffer.from(secretText, 'utf8');
+  let secret;
+  try { secret = require('../lib/data-protection.js').deriveBoundCipherKeyV546('recovery-proof', materialV546); }
+  finally { materialV546.fill(0); }
   const salt = crypto.createHash('sha512').update(customerSecurityLostPasskeyCanonical(body || {})).digest();
   const info = Buffer.from([
     'dirac/recovery-hpke/v190/proof-response',
@@ -57654,6 +57679,7 @@ function diracCentralGuardPhaseValidV211(ctx) {
 }
 
 function diracCentralHandlerContextFullyPassedV211(ctx, req) {
+  try { DIRAC_SHARED_CENTRAL_V545.assertPassed(req); } catch (_) { return false; }
   if (!ctx || !req || ctx.req !== req || !ctx.res) return false;
   if (diracCentralCurrentContextV149() !== ctx) return false;
   if (ctx.executionPhaseV211 !== 'handler') return false;
@@ -62317,8 +62343,7 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
     DIRAC_CENTRAL_CONTEXT_STACK_V146.push(ctx);
     diracCentralSetCurrentContextV149(ctx);
 
-    for (let stageIndex = 0; stageIndex < SECURITY_PIPELINE.length; stageIndex += 1) {
-      const stage = SECURITY_PIPELINE[stageIndex];
+    const centralExecutionV545 = await DIRAC_SHARED_CENTRAL_V545.run(req, res, 'health', SECURITY_PIPELINE, async (stage, stageIndex) => {
       ctx.currentStageV211 = String(stage && stage.name || 'unknown_stage');
       ctx.currentStageIndexV211 = stageIndex;
       diracLoginFatalMarkV324(req, 'central_guard.stage', 'begin', {
@@ -62378,7 +62403,9 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
         return await diracCentralBanAndBlockV146(req, res, ctx, String(result && result.action || ctx.action || 'central_guard_error'), method, reason);
       }
       diracCentralStampV146(ctx, stage.stamp, result.decision || 'passed');
-    }
+      return DIRAC_SHARED_CENTRAL_V545.PASSED;
+    });
+    if (!centralExecutionV545.passed) return centralExecutionV545.value;
 
     if ((ctx.passport & DIRAC_V202_ALL_CHECKPOINTS) !== DIRAC_V202_ALL_CHECKPOINTS) {
       return await diracCentralBanAndBlockV146(req, res, ctx, ctx.action || 'central_guard_error', method, 'central_guard_integrity_final_incomplete');
@@ -62485,6 +62512,7 @@ async function diracCentralSecurityGuardV146(req, res, nextHandler) {
     if (ctx) return await diracCentralBanAndBlockV146(req, res, ctx, ctx.action || 'central_guard_error', method, 'central_guard_error');
     return diracCentralBlockedResponseV146(res, 'CENTRAL_GUARD_ERROR');
   } finally {
+    DIRAC_SHARED_CENTRAL_V545.close(req, res);
     diracLoginFatalMarkV324(req, 'central_guard.finally', 'begin', {
       status: Number(res && res.statusCode || 0)
     }, res);
@@ -64611,7 +64639,7 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
     prepareDocument: async (doc) => { assertContext(); if (!doc || doc.id !== proof.orderId || doc.eligible !== true) throw new Error('INVOICE_DOCUMENT_SCOPE_INVALID'); return documentServiceV464.prepare({kind:'invoice',reference:doc.reference,content_sha256:crypto.createHash('sha256').update(JSON.stringify(doc)).digest('hex'),page_count:ptdin.__diracInvoicePageCountV464(doc)},documentOwnerV464,origin,documentClaimV464,assertContext,'/admin.html'); },
     sealDocument: async (bytes, verification, format, page) => { assertContext(); return documentServiceV464.seal(bytes,verification.identity,format,page,documentOwnerV464,documentReadV464,documentClaimV464,assertContext); },
     verifyCachedDocument: async (cached) => { assertContext(); const result = await documentServiceV464.verify({file_sha256:cached.cache_digest,document_id:cached.cache_ref},documentReadV464,assertContext,documentOwnerV464);assertContext();return result; },
-    storageKey: () => { assertContext(); return crypto.createHmac('sha256', diracCentralRootSecretV146()).update('DIRAC_INVOICE_V440_STORAGE:' + proof.userId + ':' + proof.customerId).digest(); },
+    storageKey: () => { assertContext(); const master = require('../lib/data-protection.js').deriveCipherKeyV545('invoice-storage'); try { return crypto.createHmac('sha256', master).update('DIRAC_INVOICE_V440_STORAGE:' + proof.userId + ':' + proof.customerId).digest(); } finally { master.fill(0); } },
     claim: async (key, record, ttl) => {
       assertContext(); if (action !== 'invoice_email_send' || !recordAllowed(key, record)
           || ((key === sendKey || key === headKey || key === transportKey(record.file_id)) && record.next_allowed_at !== record.created_at + 14 * 86400000)
@@ -71255,13 +71283,17 @@ function diracCentralCollectIdsV146(req, body) {
     diracCentralExtractValuesV146(value).forEach((item) => out.push({ key: cleanKey, value: item }));
   };
   Object.entries(req && req.query || {}).forEach(([key, value]) => { if (key !== 'action') push(key, value); });
-  diracCentralFlattenObjectV146(body || {}, 0, '', 4096, true).forEach((item) => push(item.key.split('.').pop(), item.value));
+  const fieldsV544 = diracCentralFlattenObjectV146(body || {}, 0, '', 4096, true);
+  if (fieldsV544.truncated) throw Object.assign(new Error('DIRAC_INPUT_STRUCTURE_INVALID'), { code: 'DIRAC_INPUT_STRUCTURE_INVALID', statusCode: 413 });
+  fieldsV544.forEach((item) => push(item.key.split('.').pop(), item.value));
   return out.slice(0, 100);
 }
 
 function diracCentralFlattenObjectV146(value, depth, prefix, max, complete = false) {
   const out = [];
+  let visitedV544 = 0;
   const walk = (v, d, p) => {
+    if (complete && ++visitedV544 > 8192) { out.truncated = true; return; }
     if (v === null || v === undefined) return;
     if (out.length >= max || d > (complete ? 8 : 6)) {
       if (complete) out.truncated = true;
@@ -71276,8 +71308,9 @@ function diracCentralFlattenObjectV146(value, depth, prefix, max, complete = fal
       v.slice(0, complete ? 100 : 50).forEach((item, index) => walk(item, d + 1, p ? p + '.' + index : String(index)));
       return;
     }
-    if (complete && Object.keys(v).length > 160) out.truncated = true;
-    Object.entries(v).slice(0, complete ? 160 : 120).forEach(([key, child]) => walk(child, d + 1, p ? p + '.' + key : key));
+    const entriesV544 = Object.entries(v);
+    if (complete && entriesV544.length > 160) out.truncated = true;
+    entriesV544.slice(0, complete ? 160 : 120).forEach(([key, child]) => walk(child, d + 1, p ? p + '.' + key : key));
   };
   walk(value, depth || 0, prefix || '');
   return out;
@@ -71946,7 +71979,10 @@ const DIRAC_RECOVERY_HPKE_PROOF_RESPONSE_VERSION_V190 = 'dirac-recovery-hpke-pro
 function diracRecoveryHpkeProofResponseKeyV190(body) {
   const secretText = customerSecurityRecoveryWorkerSecret();
   if (!secretText) throw new Error('RECOVERY_HPKE_PROOF_RESPONSE_SECRET_MISSING');
-  const secret = Buffer.from(secretText, 'utf8');
+  const materialV546 = Buffer.from(secretText, 'utf8');
+  let secret;
+  try { secret = require('../lib/data-protection.js').deriveBoundCipherKeyV546('recovery-proof', materialV546); }
+  finally { materialV546.fill(0); }
   const salt = crypto.createHash('sha512').update(customerSecurityLostPasskeyCanonical(body || {})).digest();
   const info = Buffer.from([
     'dirac/recovery-hpke/v190/proof-response',
@@ -73389,7 +73425,7 @@ function diracSessionHandoffSealV250(payload, sourceRole, targetRole, targetActi
   };
   const aad = Buffer.from(diracS2SStableJsonV206(diracSessionHandoffAadV250(envelope)), 'utf8');
   const transcriptHash = crypto.createHash('sha512').update(aad).digest();
-  const ikm = Buffer.concat([classicShared, pq.sharedKey]);
+  const ikm = (() => { const material = Buffer.concat([classicShared, pq.sharedKey]); try { return require('../lib/data-protection.js').deriveBoundCipherKeyV546('session-handoff', material, 64); } finally { material.fill(0); classicShared.fill(0); pq.sharedKey.fill(0); } })();
   const key = Buffer.from(crypto.hkdfSync('sha512', ikm, salt, Buffer.concat([
     Buffer.from('dirac/role-mesh/session-handoff/v250\n', 'utf8'), transcriptHash
   ]), 32));
@@ -73450,7 +73486,7 @@ function diracSessionHandoffOpenV250(envelope, expectedSourceRole, expectedTarge
   }
   const aad = Buffer.from(diracS2SStableJsonV206(diracSessionHandoffAadV250(source)), 'utf8');
   const transcriptHash = crypto.createHash('sha512').update(aad).digest();
-  const ikm = Buffer.concat([classicShared, pqShared]);
+  const ikm = (() => { const material = Buffer.concat([classicShared, pqShared]); try { return require('../lib/data-protection.js').deriveBoundCipherKeyV546('session-handoff', material, 64); } finally { material.fill(0); classicShared.fill(0); pqShared.fill(0); } })();
   const key = Buffer.from(crypto.hkdfSync('sha512', ikm, salt, Buffer.concat([
     Buffer.from('dirac/role-mesh/session-handoff/v250\n', 'utf8'), transcriptHash
   ]), 32));
@@ -76201,6 +76237,26 @@ if (__diracRecoveryRoleV250) {
     || !DIRAC_CENTRAL_DISABLED_ACTIONS_V146.has(DIRAC_RECOVERY_WORKER_ACTION)) {
   throw new Error('DIRAC_NON_RECOVERY_ROLE_PROXY_ONLY_INVARIANT_FAILED_V250');
 }
+function diracCentralInspectGatewayInputV545(body) {
+  const textFields = /^(?:email|name|full_name|phone|subject|body_text|reason|description|note|notes|message|location|courier|tracking_number|origin|destination|reference|recipients)$/i;
+  const inspect = source => {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return;
+    Object.entries(source).forEach(([key,value]) => {
+      if (!textFields.test(key) || typeof value !== 'string') return;
+      if (value.length > 16384) throw Object.assign(new Error('ADMIN_FIELD_TOO_LARGE'),{code:'ADMIN_FIELD_TOO_LARGE',status:413,statusCode:413});
+      const slices = value.length > 12288 ? [value.slice(0,12288),value.slice(-12288)] : [value];
+      slices.forEach(slice => diracCentralCanonicalVariantsV221(slice).forEach(candidate => {
+        if (DIRAC_CENTRAL_INPUT_POLICY_V498.test(candidate) || DIRAC_CENTRAL_THREAT_CHECKS_V146.some(entry => entry[1].test(candidate)))
+          throw Object.assign(new Error('ADMIN_INPUT_THREAT_REJECTED'),{code:'ADMIN_INPUT_THREAT_REJECTED',status:400,statusCode:400});
+      }));
+    });
+  };
+  inspect(body);
+  if (body && body.operation && body.payload) inspect(body.payload);
+  return true;
+}
+Object.defineProperty(module.exports,'__diracCentralInspectGatewayInputV545',{value:diracCentralInspectGatewayInputV545,enumerable:false});
+
 Object.defineProperty(module.exports, '__diracCentralAdminEntryV405', { value: diracCentralAdminEntryV405, enumerable: false, writable: false, configurable: false });
 Object.defineProperty(module.exports, '__diracCentralPtdinEntryV402', { value: diracCentralPtdinEntryV402, enumerable: false, writable: false, configurable: false });
 Object.defineProperty(module.exports, '__diracRecoveryRoleAwareV250', { value: true, enumerable: false });

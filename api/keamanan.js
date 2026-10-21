@@ -262,7 +262,7 @@ async function openD10Request(carrier, ops) {
   const sentAt = Number(parts[4]);
   const expiresAt = Number(parts[5]);
   const clientNonce = String(parts[6] || '');
-  if (!/^[A-Za-z0-9_-]{8,80}$/.test(keyId)
+  if (!/^[A-Za-z0-9_-]{82}$/.test(keyId)
       || !/^[A-Za-z0-9_-]{32}$/.test(requestId)
       || !/^[A-Za-z0-9_-]{43}$/.test(clientNonce)
       || !Number.isSafeInteger(sentAt) || !Number.isSafeInteger(expiresAt)
@@ -420,7 +420,10 @@ async function passwordResetEngine(req, res, ops, body) {
     return resetResponse(res, 400, { ok: false, code: 'PASSWORD_RESET_ENVELOPE_REQUEST_INVALID' });
   }
   diracResetDiagnosticV335(req, 'd10.open', 'begin', { carrier_length: String(input.resetToken || '').length });
-  const opened = await openD10Request(input.resetToken, ops);
+  const preparedV545=SECURITY_CENTRAL_REQUESTS_V545.get(req);
+  let opened;
+  if(preparedV545&&preparedV545.opened&&preparedV545.body===body&&preparedV545.carrier===input.resetToken){CENTRAL_V545.assertPassed(req,res,'security');opened=preparedV545.opened;preparedV545.opened=null;}
+  else opened=await openD10Request(input.resetToken,ops);
   const inner = opened.inner;
   diracResetDiagnosticV335(req, 'd10.open', 'success', { op: String(inner && inner.op || ''), request_id_hash: crypto.createHash('sha256').update(String(inner && inner.request_id || '')).digest('hex').slice(0, 20), key_id_length: String(opened && opened.context && opened.context.keyId || '').length });
   let payload;
@@ -1224,6 +1227,8 @@ function securityResetValidateHeadersV361(req) {
   if (bytes > 65536) throw resetError('SECURITY_RESET_HEADERS_TOO_LARGE', 431);
 }
 async function securityResetReadJsonV334(req) {
+  const preparedV545=SECURITY_CENTRAL_REQUESTS_V545.get(req);
+  if(preparedV545&&preparedV545.bodyReady&&!preparedV545.bodyConsumed){CENTRAL_V545.assertPassed(req,preparedV545.res,'security');preparedV545.bodyConsumed=true;return preparedV545.body;}
   const contentType = securityResetHeaderV334(req, 'content-type').trim().toLowerCase();
   if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/.test(contentType)) throw resetError('SECURITY_RESET_CONTENT_TYPE_INVALID', 415);
   if (securityResetHeaderV334(req, 'transfer-encoding').trim()) throw resetError('SECURITY_RESET_TRANSFER_ENCODING_REJECTED', 400);
@@ -1659,6 +1664,8 @@ async function diracCentralAtomicConsumeV230({ namespace, jti, expiresAt, contex
   return {ok:Boolean(r && r.ok === true && r.data === true)};
 }
 async function securityResetRateLimitV334(req, action) {
+  const preparedV545=SECURITY_CENTRAL_REQUESTS_V545.get(req);
+  if(preparedV545&&preparedV545.rateAction===action&&preparedV545.rateChecked){CENTRAL_V545.assertPassed(req,preparedV545.res,'security');return;}
   const ip = trustedClientIp(req, process.env);
   const key = 's2s-central-rate-v230:' + diracCentralHashV146(['keamanan-reset-v361',action,ip].join('|'));
   const r = await supabaseFetch('/rest/v1/rpc/dirac_central_atomic_rate_limit_v230',{method:'POST',auth:'service',body:{p_security_key:key,p_limit:12,p_window_seconds:60,p_block_seconds:60}}).catch(()=>null);
@@ -1767,6 +1774,12 @@ function diracPasswordResetSigningKeyV333(req) {
   return { privateKey, publicDer, fingerprint };
 }
 
+function securityFiveCipherKeyV545(purpose, context) {
+  const master=require('../lib/data-protection.js').deriveCipherKeyV545(purpose);
+  try{return crypto.createHmac('sha256',master).update('dirac-five-server-v545:'+String(context||'')).digest();}
+  finally{master.fill(0);}
+}
+
 function diracPasswordResetSealX25519PrivateV333(rawPrivate) {
   const privateBytes = Buffer.from(rawPrivate || Buffer.alloc(0));
   if (privateBytes.length !== 32) throw diracPasswordResetErrorV333('DIRAC_D10_X25519_PRIVATE_INVALID', 503);
@@ -1775,15 +1788,15 @@ function diracPasswordResetSealX25519PrivateV333(rawPrivate) {
   const minuteBytes = Buffer.alloc(2);
   minuteBytes.writeUInt16BE(minute, 0);
   const nonce = crypto.randomBytes(10);
-  const key = Buffer.from(diracCentralDeriveSecretV146('password-reset-d10-x25519-v361:' + fullMinute)).subarray(0, 32);
-  const aad = Buffer.from(DIRAC_PASSWORD_RESET_V333.protocol + '\n' + DIRAC_PASSWORD_RESET_V333.suite + '\n' + String(fullMinute), 'utf8');
+  const key = securityFiveCipherKeyV545('reset-private','password-reset-d10-x25519-v545:'+fullMinute);
+  const aad = Buffer.from(DIRAC_PASSWORD_RESET_V333.protocol + '\n' + DIRAC_PASSWORD_RESET_V333.suite + '\n' + String(fullMinute) + '\nv545', 'utf8');
   try {
     const cipher = crypto.createCipheriv('aes-256-gcm', key, Buffer.concat([minuteBytes, nonce]), { authTagLength: 16 });
     cipher.setAAD(aad);
     const ciphertext = Buffer.concat([cipher.update(privateBytes), cipher.final()]);
     const tag = cipher.getAuthTag();
-    const packed = Buffer.concat([minuteBytes, nonce, ciphertext, tag]);
-    if (packed.length !== 60) throw diracPasswordResetErrorV333('DIRAC_D10_KEY_ID_LENGTH_INVALID', 503);
+    const packed = Buffer.concat([Buffer.from([2]), minuteBytes, nonce, ciphertext, tag]);
+    if (packed.length !== 61) throw diracPasswordResetErrorV333('DIRAC_D10_KEY_ID_LENGTH_INVALID', 503);
     return packed.toString('base64url');
   } finally {
     privateBytes.fill(0); key.fill(0); aad.fill(0);
@@ -1793,18 +1806,19 @@ function diracPasswordResetSealX25519PrivateV333(rawPrivate) {
 function diracPasswordResetUnsealX25519PrivateV333(keyId) {
   let packed;
   try { packed = Buffer.from(String(keyId || ''), 'base64url'); } catch (_) { packed = Buffer.alloc(0); }
-  if (packed.length !== 60 || packed.toString('base64url') !== String(keyId || '')) throw diracPasswordResetErrorV333('DIRAC_D10_KEY_ID_INVALID', 403);
-  const minute = packed.readUInt16BE(0);
+  if (packed.length !== 61 || packed[0] !== 2 || packed.toString('base64url') !== String(keyId || '')) throw diracPasswordResetErrorV333('DIRAC_D10_KEY_ID_INVALID', 403);
+  const offsetV545=1;
+  const minute = packed.readUInt16BE(offsetV545);
   const currentFullMinute = Math.floor(Date.now() / 60000);
   const current = currentFullMinute & 0xffff;
   const forward = (current - minute + 65536) & 0xffff;
   if (forward > 10) throw diracPasswordResetErrorV333('DIRAC_D10_PROFILE_KEY_EXPIRED', 403);
   const fullMinute = currentFullMinute - forward;
-  const nonce = packed.subarray(0, 12);
-  const ciphertext = packed.subarray(12, 44);
-  const tag = packed.subarray(44, 60);
-  const key = Buffer.from(diracCentralDeriveSecretV146('password-reset-d10-x25519-v361:' + fullMinute)).subarray(0, 32);
-  const aad = Buffer.from(DIRAC_PASSWORD_RESET_V333.protocol + '\n' + DIRAC_PASSWORD_RESET_V333.suite + '\n' + String(fullMinute), 'utf8');
+  const nonce = packed.subarray(offsetV545, offsetV545+12);
+  const ciphertext = packed.subarray(offsetV545+12, offsetV545+44);
+  const tag = packed.subarray(offsetV545+44, offsetV545+60);
+  const key = securityFiveCipherKeyV545('reset-private','password-reset-d10-x25519-v545:'+fullMinute);
+  const aad = Buffer.from(DIRAC_PASSWORD_RESET_V333.protocol + '\n' + DIRAC_PASSWORD_RESET_V333.suite + '\n' + String(fullMinute) + '\nv545', 'utf8');
   try {
     const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce, { authTagLength: 16 });
     decipher.setAAD(aad);
@@ -2031,14 +2045,14 @@ function diracPasswordResetIssueGrantV333(verified, context) {
   plaintext.writeUInt32BE(securityEpoch >>> 0, 52);
   emailHash.copy(plaintext, 56);
   const nonce = crypto.randomBytes(12);
-  const key = Buffer.from(diracCentralDeriveSecretV146('password-reset-grant-token-v333')).subarray(0, 32);
+  const key = securityFiveCipherKeyV545('reset-mfa','password-reset-grant-token-v545');
   const aad = diracPasswordResetGrantAadV333(context);
   try {
     const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce, { authTagLength: 16 });
     cipher.setAAD(aad);
     const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     const tag = cipher.getAuthTag();
-    const raw = Buffer.concat([Buffer.from([1]), nonce, ciphertext, tag]);
+    const raw = Buffer.concat([Buffer.from([2]), nonce, ciphertext, tag]);
     try {
       if (raw.length !== 117) throw diracPasswordResetErrorV333('PASSWORD_RESET_GRANT_TOKEN_LENGTH_INVALID', 503);
       return raw.toString('base64url');
@@ -2052,14 +2066,14 @@ function diracPasswordResetReadGrantV333(grantToken, context) {
   const clean = String(grantToken || '').trim();
   let raw;
   try { raw = Buffer.from(clean, 'base64url'); } catch (_) { raw = Buffer.alloc(0); }
-  if (raw.length !== 117 || raw.toString('base64url') !== clean || raw[0] !== 1) {
+  if (raw.length !== 117 || raw.toString('base64url') !== clean || raw[0] !== 2) {
     if (raw.length) raw.fill(0);
     throw diracPasswordResetErrorV333('PASSWORD_RESET_GRANT_TOKEN_INVALID', 403);
   }
   const nonce = Buffer.from(raw.subarray(1, 13));
   const ciphertext = Buffer.from(raw.subarray(13, 101));
   const tag = Buffer.from(raw.subarray(101, 117));
-  const key = Buffer.from(diracCentralDeriveSecretV146('password-reset-grant-token-v333')).subarray(0, 32);
+  const key = securityFiveCipherKeyV545('reset-mfa','password-reset-grant-token-v545');
   const aad = diracPasswordResetGrantAadV333(context);
   let plaintext;
   try {
@@ -4514,6 +4528,8 @@ function diracPasswordResetOpsV333(req) {
 }
 
 const centralHandler = require('./health.js');
+const CENTRAL_V545 = require('../lib/central-guard.js');
+const SECURITY_CENTRAL_REQUESTS_V545 = new WeakMap();
 
 function diracSecurityPasskeyResetServerDeviceAuthorityV367() {
   const authority=centralHandler&&centralHandler.__diracPasskeyServerDeviceBindingAuthorityV360;
@@ -4984,10 +5000,96 @@ async function keamananDispatchV361(req, res) {
   return invokeCentral(req, res, parsed);
 }
 
+function securityPreflightV545(ctx) {
+  const req=ctx.req,base=resetPreflightBaseDomain(),origin=resetPreflightHeader(req,'origin').trim().toLowerCase();
+  if(!base||!['https://auth.'+base,'https://pt.'+base].includes(origin))throw resetError('SECURITY_RESET_PREFLIGHT_ORIGIN_INVALID',403);
+  const host=resetPreflightHeader(req,'host').trim().toLowerCase().replace(/:443$/,''),forwarded=resetPreflightHeader(req,'x-forwarded-host').trim().toLowerCase().replace(/:443$/,'');
+  if(host!=='api.'+base||forwarded&&forwarded!==host)throw resetError('SECURITY_RESET_PREFLIGHT_HOST_INVALID',403);
+  const proto=resetPreflightHeader(req,'x-forwarded-proto').trim().toLowerCase();
+  if(process.env.NODE_ENV==='production'?proto!=='https':proto&&proto!=='https')throw resetError('SECURITY_RESET_PREFLIGHT_HTTPS_REQUIRED',403);
+  if(resetPreflightHeader(req,'access-control-request-method').trim().toUpperCase()!==(ctx.bootstrap?'GET':'POST'))throw resetError('SECURITY_RESET_PREFLIGHT_METHOD_INVALID',405);
+  const headers=resetPreflightHeader(req,'access-control-request-headers').split(',').map(v=>v.trim().toLowerCase()).filter(Boolean);
+  if(headers.length>RESET_PREFLIGHT_ALLOWED_HEADERS.size||headers.some(v=>!RESET_PREFLIGHT_ALLOWED_HEADERS.has(v)))throw resetError('SECURITY_RESET_PREFLIGHT_HEADER_INVALID',403);
+  if(resetPreflightHeader(req,'authorization')||resetPreflightHeader(req,'cookie')||Number(resetPreflightHeader(req,'content-length')||0)!==0||resetPreflightHeader(req,'transfer-encoding')||resetPreflightHeader(req,'access-control-request-private-network').toLowerCase()==='true')throw resetError('SECURITY_RESET_PREFLIGHT_CREDENTIALS_REJECTED',403);
+  const site=resetPreflightHeader(req,'sec-fetch-site'),mode=resetPreflightHeader(req,'sec-fetch-mode');
+  if(site&&!['same-origin','same-site'].includes(site)||mode&&mode!=='cors')throw resetError('SECURITY_RESET_PREFLIGHT_FETCH_MODE_INVALID',403);
+  const original=diracCentralCurrentContextV149();if(original&&original.req===req)original.browserChecked=true;
+  return origin;
+}
+function securityPolicyBindingV545(ctx) {
+  if(SECURITY_CENTRAL_REQUESTS_V545.get(ctx.req)!==ctx||ctx.action!==(ctx.bootstrap||ctx.parsed.action)
+      ||ctx.binding!==securityResetSessionBindingV334(ctx.req))throw resetError('SECURITY_RESET_DB_CONTEXT_REQUIRED',503);
+}
+function securityContractV545(ctx) {
+  if(ctx.method!=='POST')return;
+  const b=ctx.body;
+  if(ctx.parsed.trustCurrentDeviceStandalone){if(!exactKeys(b,[]))throw resetError('SECURITY_TRUST_DEVICE_BODY_INVALID',400);return;}
+  if(String(b.action||'').trim().toLowerCase().replace(/-/g,'_')!==ctx.action)throw resetError('SECURITY_RESET_ACTION_MISMATCH',400);
+  if(ctx.action==='request_password_reset'){if(!exactKeys(b,['action','email'])||b.email!==RESET_PROFILE_CARRIER)throw resetError('PASSWORD_RESET_PROFILE_REQUEST_INVALID',400);}
+  else if(ctx.action==='confirm_password_reset'){if(!exactKeys(b,['action','code','resetToken'])||b.code!==RESET_CONFIRM_MARKER)throw resetError('PASSWORD_RESET_ENVELOPE_REQUEST_INVALID',400);}
+  else if(ctx.action==='security_passkey_reset_start'){if(!exactKeys(b,['action','password']))throw resetError('SECURITY_PASSKEY_RESET_START_BODY_INVALID',400);}
+  else if(ctx.action==='security_passkey_reset_verify'){
+    if(!['email','authorize','register','confirm','status'].includes(b.phase))throw resetError('SECURITY_PASSKEY_RESET_PHASE_INVALID',400);
+    const keys=b.phase==='status'?['action','phase','new_credential_id','old_credential_id']:b.phase==='email'?['action','phase','setupToken','code']:['action','phase','setupToken','credential','response'];
+    if(!exactKeys(b,keys))throw resetError('SECURITY_PASSKEY_RESET_VERIFY_BODY_INVALID',400);
+  }else throw resetError('PASSWORD_RESET_ACTION_INVALID',400);
+}
+const SECURITY_CENTRAL_POLICY_V545=CENTRAL_V545.policy(Object.freeze({
+  'identity':ctx=>{securityResetValidateHeadersV361(ctx.req);ctx.origin=ctx.method==='OPTIONS'?securityPreflightV545(ctx):securityResetValidateBrowserV334(ctx.req,ctx.method);ctx.binding=securityResetSessionBindingV334(ctx.req);},
+  'memory ban':async ctx=>{await securityResetCheckCentralBanV354(ctx.req);ctx.banChecked=true;},
+  'persistent ban':ctx=>{const prior=diracCentralCurrentContextV149();if(!ctx.banChecked||!prior||!prior.banChecked)throw resetError('SECURITY_RESET_CENTRAL_BAN_CHECK_UNAVAILABLE',503);},
+  'action format':ctx=>{if(!/^[a-z][a-z0-9_]{1,79}$/.test(ctx.action))throw resetError('SECURITY_ROUTE_ACTION_NOT_ALLOWED',403);},
+  'alias':ctx=>{if(!ctx.bootstrap&&(!ctx.parsed.ok||ctx.parsed.canonicalUrl.indexOf(CENTRAL_ROUTE_PATH)!==0))throw resetError('SECURITY_ROUTE_ACTION_NOT_ALLOWED',403);},
+  'whitelist':ctx=>{if(!RESET_ACTIONS.has(ctx.action)&&!DIRAC_SECURITY_PASSKEY_RESET_ACTIONS_V363.has(ctx.action)&&ctx.action!=='customer_security_trust_current_device')throw resetError('SECURITY_ROUTE_ACTION_NOT_ALLOWED',403);if(!ctx.bootstrap&&!ACTION_METHODS[ctx.action].has(ctx.method))throw resetError('SECURITY_ROUTE_METHOD_NOT_ALLOWED',405);},
+  'server role':ctx=>{if(ctx.method==='OPTIONS')securityPreflightV545(ctx);else securityResetValidateBrowserV334(ctx.req,ctx.method);},
+  'ENV partition':()=>{const k=require('../lib/data-protection.js').deriveCipherKeyV545('reset-private');k.fill(0);},
+  'classification':ctx=>{securityPolicyBindingV545(ctx);ctx.classification=ctx.bootstrap?'security_bootstrap':ctx.parsed.trustCurrentDeviceStandalone?'security_trust':'security_recovery';},
+  'rate limit':async ctx=>{ctx.rateAction=(ctx.method==='OPTIONS'?'preflight_':'')+(ctx.bootstrap?'bootstrap_':'')+ctx.action;await securityResetRateLimitV334(ctx.req,ctx.rateAction);ctx.rateChecked=true;},
+  'server authentication':ctx=>{if(Object.keys(ctx.req.headers||{}).some(k=>/^x-dirac-(?:server-id|target-server-id|s2s)$/i.test(k))||securityResetHeaderV334(ctx.req,'authorization'))throw resetError('SECURITY_RESET_AUTHORIZATION_HEADER_REJECTED',403);},
+  'browser authenticity':ctx=>{if(ctx.method==='OPTIONS')securityPreflightV545(ctx);else securityResetPageRoleV334(ctx.req);},
+  'CSRF':ctx=>{if(ctx.method==='POST'){const a=securityResetHeaderV334(ctx.req,'x-dirac-csrf-token').trim(),b=securityResetHeaderV334(ctx.req,'x-csrf-token').trim();if(!a||!b||!safeEqual(a,b)||!securityResetVerifyCsrfV334(ctx.req,a))throw resetError('SECURITY_RESET_CSRF_INVALID',403);}else if(ctx.method==='OPTIONS')securityPreflightV545(ctx);else if(!ctx.bootstrap)throw resetError('SECURITY_ROUTE_METHOD_NOT_ALLOWED',405);},
+  'page nonce':ctx=>{if(ctx.method==='POST'){const raw=(securityResetHeaderV334(ctx.req,'x-dirac-page-nonce')||securityResetHeaderV334(ctx.req,'x-page-nonce')).trim();ctx.nonce=securityResetVerifyPageNonceV334(ctx.req,raw,ctx.action);if(!ctx.nonce)throw resetError('SECURITY_RESET_PAGE_NONCE_INVALID',403);}else if(ctx.bootstrap!==securityResetBootstrapTargetV334(ctx.req)&&ctx.method!=='OPTIONS')throw resetError('SECURITY_RESET_BOOTSTRAP_FAILED',403);},
+  'browser signal':ctx=>{securityResetValidateHeadersV361(ctx.req);if(ctx.method==='OPTIONS')securityPreflightV545(ctx);else securityResetValidateBrowserV334(ctx.req,ctx.method);},
+  'device binding':ctx=>{securityPolicyBindingV545(ctx);if(!/^[a-f0-9]{64}$/.test(securityResetRequestFingerprintV334(ctx.req)))throw resetError('SECURITY_RESET_DB_CONTEXT_REQUIRED',503);},
+  'admin authentication':ctx=>{securityPolicyBindingV545(ctx);if(ctx.method!=='OPTIONS'&&securityResetHeaderV334(ctx.req,'authorization'))throw resetError('SECURITY_RESET_AUTHORIZATION_HEADER_REJECTED',403);},
+  'public-read policy':ctx=>{if(ctx.method!=='POST'&&(Number(securityResetHeaderV334(ctx.req,'content-length')||0)!==0||securityResetHeaderV334(ctx.req,'transfer-encoding')))throw resetError('SECURITY_RESET_CONTENT_LENGTH_INVALID',400);},
+  'body validation':async ctx=>{ctx.body=ctx.method==='POST'?await securityResetReadJsonV334(ctx.req):{};ctx.bodyReady=ctx.method==='POST';},
+  'light guard':ctx=>{if(!ctx.body||typeof ctx.body!=='object'||Array.isArray(ctx.body))throw resetError('SECURITY_RESET_BODY_INVALID',400);securityPolicyBindingV545(ctx);},
+  'contract validation':securityContractV545,
+  'A2F signature':async ctx=>{if(ctx.method==='POST'&&ctx.action==='confirm_password_reset'){ctx.carrier=ctx.body.resetToken;ctx.opened=await openD10Request(ctx.carrier,diracPasswordResetOpsV333(ctx.req));}},
+  'security report':ctx=>{if(ctx.action==='security_report')throw resetError('SECURITY_ROUTE_ACTION_NOT_ALLOWED',403);securityPolicyBindingV545(ctx);},
+  'request sample':ctx=>{securityContractV545(ctx);if(ctx.method==='POST'&&!ctx.nonce)throw resetError('SECURITY_RESET_PAGE_NONCE_INVALID',403);},
+  'threat detection':ctx=>{if(ctx.opened)centralHandler.__diracCentralInspectGatewayInputV545(ctx.opened.inner);else if(ctx.method==='POST'&&!RESET_ACTIONS.has(ctx.action))centralHandler.__diracCentralInspectGatewayInputV545(ctx.body);},
+  'zero-day protection':ctx=>{securityResetValidateHeadersV361(ctx.req);securityContractV545(ctx);},
+  'IDOR/BOLA':async ctx=>{securityPolicyBindingV545(ctx);if(ctx.method==='POST'&&(ctx.parsed.passkeyReset||ctx.parsed.trustCurrentDeviceStandalone||securityResetPageRoleV334(ctx.req)==='security'))ctx.resolved=await diracSecurityPasskeyResetResolveOwnerV363(ctx.req);if(ctx.action==='confirm_password_reset'&&ctx.method==='POST'&&(!ctx.opened||!['start','verify','commit'].includes(ctx.opened.inner.op)))throw resetError('DIRAC_D10_INNER_BINDING_INVALID',403);},
+  'circuit breaker':ctx=>{if(Date.now()-ctx.startedAt>30000)throw resetError('SECURITY_RESET_DB_CONTEXT_REQUIRED',503);securityPolicyBindingV545(ctx);},
+  'MFA':ctx=>{if(ctx.method==='POST'&&ctx.parsed.trustCurrentDeviceStandalone){if(!ctx.resolved)throw resetError('SECURITY_TRUST_DEVICE_CONTEXT_INVALID',503);securityTrustCurrentDeviceVerifyMfaV366(ctx.req,ctx.resolved,securityTrustCurrentDeviceReadAnchorV366(ctx.req));}else{securityContractV545(ctx);securityPolicyBindingV545(ctx);}},
+  'integrity':ctx=>{const p=CENTRAL_V545.audit(ctx.req);if(!p||p.completed!==29||p.current!==29)throw resetError('SECURITY_RESET_DB_CONTEXT_REQUIRED',503);securityPolicyBindingV545(ctx);}
+}));
+async function securityCentralDispatchV545(req,res,bootstrap,parsed) {
+  const ctx={req,res,bootstrap,parsed,action:bootstrap||parsed.action,method:String(req.method||'').toUpperCase(),startedAt:Date.now(),bodyReady:false,bodyConsumed:false};
+  SECURITY_CENTRAL_REQUESTS_V545.set(req,ctx);
+  try {
+    const result=await CENTRAL_V545.run(req,res,'security',SECURITY_CENTRAL_POLICY_V545,async stage=>{await stage.guard(ctx);return CENTRAL_V545.PASSED;});
+    if(!result.passed)return result.value;
+    CENTRAL_V545.assertPassed(req,res,'security');res.setHeader('X-Dirac-Central-Security-Guard',CENTRAL_V545.version);
+    return await keamananDispatchV361(req,res);
+  }catch(cause){
+    const error=parsed&&parsed.passkeyReset?await diracSecurityCountInvalidCredentialV374(req,cause,'passkey_reset'):cause;
+    try{if(ctx.origin)securityResetApplyHeadersV334(req,res,ctx.origin);}catch(_){}
+    const retryAfter=Number(error&&error.retryAfterSeconds||error&&error.retryAfter||0);
+    if(retryAfter>0)res.setHeader('Retry-After',String(Math.max(1,Math.ceil(retryAfter))));
+    return resetResponse(res,Math.max(400,Math.min(599,Number(error&&error.statusCode||503)||503)),{ok:false,code:String(error&&error.code||'SECURITY_RESET_CENTRAL_GATE_FAILED'),message:'Permintaan keamanan ditolak.',...(retryAfter>0?{retry_after_seconds:Math.max(1,Math.ceil(retryAfter)),reset_at:String(error.resetAt||'')}:{})});
+  }finally{
+    if(ctx.opened&&ctx.opened.context)Object.values(ctx.opened.context).forEach(v=>{if(Buffer.isBuffer(v))v.fill(0);});
+    ctx.opened=null;ctx.body=null;SECURITY_CENTRAL_REQUESTS_V545.delete(req);CENTRAL_V545.close(req,res);
+  }
+}
+
 async function keamananHandler(req, res) {
   const context = { req, startedAt: Date.now(), banChecked: false, browserChecked: false, action: '', active: true };
   return SECURITY_RESET_REQUEST_CONTEXT_V361.run(context, async () => {
-    try { return await keamananDispatchV361(req, res); }
+    try { const bootstrap=securityResetBootstrapTargetV334(req),parsed=parseExactRequest(req);return bootstrap||parsed.ok&&(parsed.reset||parsed.passkeyReset||parsed.trustCurrentDeviceStandalone)?await securityCentralDispatchV545(req,res,bootstrap,parsed):await keamananDispatchV361(req,res); }
     finally { context.active = false; }
   });
 }

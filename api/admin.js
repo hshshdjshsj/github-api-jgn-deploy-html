@@ -2,6 +2,7 @@
 
 // Standalone administrator endpoint. The browser page is handled entirely by this module.
 const crypto = require('node:crypto');
+const CENTRAL_V545 = require('../lib/central-guard.js');
 const tls = require('node:tls');
 const ADMIN_STANDALONE_FETCH = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
 if (!ADMIN_STANDALONE_FETCH) throw new Error('ADMIN_FETCH_UNAVAILABLE');
@@ -61,6 +62,8 @@ const CONTRACTS = Object.freeze({
   admin_banned_data: get(['export_ref']),
   admin_unban: post(['block_id', 'approval'], ['block_id', 'approval']),
   admin_banned_pdf: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'export_ref', 'mode', 'raw_pdf_base64', 'raw_pdf_sha256', 'approval']), required: Object.freeze(['export_ref', 'mode', 'raw_pdf_base64', 'raw_pdf_sha256', 'approval']), maxBodyBytes: 5700000, maxFieldBytes: 5500000, mutation: true, allowArrayItems: false }),
+  admin_account_lookup: post(['email'], ['email']),
+  admin_account_upgrade: post(['email', 'role', 'user_id', 'expected_state', 'approval'], ['email', 'role', 'user_id', 'expected_state', 'approval']),
   admin_account_create: post(['role', 'email', 'name', 'phone', 'partner_request_id', 'approval'], ['email', 'approval']),
   admin_account_disable: post(['email', 'approval'], ['email', 'approval']),
   admin_account_enable: post(['email', 'approval'], ['email', 'approval']),
@@ -78,7 +81,7 @@ const CONTRACTS = Object.freeze({
 });
 const ACTIONS = Object.freeze(Object.keys(CONTRACTS));
 const ADMIN_ACCOUNT_ACTION_MODES = Object.freeze({ admin_account_create: 'create', admin_account_disable: 'disable', admin_account_enable: 'enable', admin_account_delete: 'delete', admin_account_password_reset: 'reset_password', admin_account_passkey_reset: 'reset_passkey' });
-const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_order_cancel: 'order_cancel', admin_order_price: 'order_price', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_account_disable: 'account_disable', admin_account_enable: 'account_enable', admin_account_delete: 'account_delete', admin_account_password_reset: 'account_password_reset', admin_account_passkey_reset: 'account_passkey_reset', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal' });
+const ADMIN_APPROVAL_MUTATIONS = Object.freeze({ admin_account_upgrade: 'account_upgrade', admin_order_cancel: 'order_cancel', admin_order_price: 'order_price', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_account_disable: 'account_disable', admin_account_enable: 'account_enable', admin_account_delete: 'account_delete', admin_account_password_reset: 'account_password_reset', admin_account_passkey_reset: 'account_passkey_reset', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal' });
 const ORDER_SELECT = Object.freeze({
   regular: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at,updated_at,admin_order_state_v1,tax_effective_rate_bps',
   laboratorium: 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,total,payment_method,payment_status,order_status,created_at,updated_at,admin_order_state_v1,tax_effective_rate_bps',
@@ -173,8 +176,8 @@ function totp(secret, counter) {
     return String((hash.readUInt32BE(index) & 0x7fffffff) % 1000000).padStart(6, '0');
   } finally { hash.fill(0); message.fill(0); }
 }
-function encryptionKey(ops) {
-  const key = ops.deriveKey('totp-storage');
+function encryptionKey(ops, purpose = 'totp-storage-five') {
+  const key = ops.deriveKey(purpose);
   if (!Buffer.isBuffer(key) || key.length !== 32) fail('ADMIN_SECRET_UNAVAILABLE', 503);
   return key;
 }
@@ -187,8 +190,8 @@ function seal(ops, value, context) {
     return [nonce, encrypted, cipher.getAuthTag()].map(v => v.toString('base64url')).join('.');
   } finally { key.fill(0); }
 }
-function open(ops, value, context, keyPurpose = 'totp-storage') {
-  const key = keyPurpose === 'totp-storage' ? encryptionKey(ops) : ops.deriveKey(keyPurpose); let plaintext = null, tail = null;
+function open(ops, value, context, keyPurpose = 'totp-storage-five') {
+  const key = ops.deriveKey(keyPurpose); let plaintext = null, tail = null;
   if (!Buffer.isBuffer(key) || key.length !== 32) fail('ADMIN_SECRET_UNAVAILABLE', 503);
   try {
     if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)) fail('ADMIN_STATE_INVALID', 503);
@@ -621,6 +624,113 @@ async function adminAccountRevokePasskeysV480(link, reason, assertContext, trace
   adminAccountDeleteDiagnosticV489('passkeys.completed', { trace_ref: diagTrace, email: link.email, auth_user_id: link.auth_user_id, customer_id: link.customer_id, has_security_link: true, reason, table: 'domain_passkeys', request_method: 'PATCH', expected_row_count: revoked.data.length, condition_result_present: true, condition_ok_true: true, condition_data_array: true, condition_row_count_match: true });
   return revoked.data.length;
 }
+// V544: explicit account review and role change, under the existing admin ceremony.
+function adminAccountUpgradePayloadV544(body) {
+  const email = adminAccountMutationPayload({ mode: 'disable', email: body && body.email }).email;
+  const role = body && body.role, userId = body && body.user_id, expected = body && body.expected_state;
+  if (!['reseller', 'partner'].includes(role) || !isUuid(userId) || userId !== userId.toLowerCase()
+      || typeof expected !== 'string' || !/^[a-f0-9]{64}$/.test(expected)) fail('ADMIN_ACCOUNT_UPGRADE_INPUT_INVALID', 400);
+  return { email, role, user_id: userId, expected_state: expected };
+}
+function adminAccountStateV544(user, email) {
+  if (!user || !isUuid(user.id) || String(user.email || '').trim().toLowerCase() !== email
+      || email === ADMIN_EMAIL || /^(?:admin|service_role|supabase_admin)$/i.test(String(user.role || '')))
+    fail('ADMIN_ACCOUNT_UPGRADE_TARGET_INVALID', 409);
+  const app = user.app_metadata;
+  if (app != null && (typeof app !== 'object' || Array.isArray(app))) fail('ADMIN_ACCOUNT_STATE_UNAVAILABLE', 503);
+  const role = adminAccountRoleFromUser(user);
+  const explicitCustomer = app && String(app.dirac_account_role || '').trim().toLowerCase() === 'customer' && app.dirac_account_provisioned !== true;
+  if (app && (app.dirac_account_role || app.dirac_account_provisioned) && !role && !explicitCustomer) fail('ADMIN_ACCOUNT_STATE_UNAVAILABLE', 503);
+  const bannedUntil = String(user.banned_until || user.bannedUntil || '').trim();
+  if (bannedUntil && !Number.isFinite(Date.parse(bannedUntil))) fail('ADMIN_ACCOUNT_STATE_UNAVAILABLE', 503);
+  const disabled = !!(String(user.deleted_at || '').trim() || String(user.disabled_at || '').trim()
+    || user.disabled === true || user.is_disabled === true || user.is_anonymous === true);
+  const actualRole = role || 'customer';
+  return { user_id: String(user.id).toLowerCase(), email, account_role: actualRole,
+    account_label: role ? adminAccountLabel(role) : 'Pelanggan', account_active: !disabled && !adminAccountBanned(user),
+    can_upgrade: !disabled,
+    expected_state: digest(stableJson({ id: user.id, email, app_metadata: app || {}, user_metadata: user.user_metadata || {},
+      updated_at: user.updated_at || '', email_confirmed_at: user.email_confirmed_at || '', banned_until: bannedUntil,
+      deleted_at: user.deleted_at || '', disabled_at: user.disabled_at || '', disabled: user.disabled === true,
+      is_disabled: user.is_disabled === true, is_anonymous: user.is_anonymous === true })) };
+}
+async function adminAccountUpgradeLockV544(user, email, assertContext) {
+  const expected = adminAccountStateV544(user, email);
+  assertContext();
+  // Existing atomic claim RPC/table; the short claim also suppresses duplicate mail after uncertainty.
+  const claimed = await securityClaim(PREFIX + 'account-upgrade:' + digest(expected.user_id),
+    { version: VERSION, operation: 'account_upgrade', user_id: expected.user_id, created_at: Date.now() }, 300);
+  assertContext();
+  if (!claimed) fail('ADMIN_ACCOUNT_UPGRADE_BUSY', 409);
+  const result = await authAdminUserRequest('/auth/v1/admin/users/' + expected.user_id, 'GET');
+  assertContext();
+  if (!result || result.ok !== true) fail('ADMIN_ACCOUNT_LOOKUP_FAILED', 503);
+  const current = adminAccountExactUser(result.data, email);
+  if (!current || adminAccountStateV544(current, email).expected_state !== expected.expected_state)
+    fail('ADMIN_ACCOUNT_STATE_CHANGED', 409);
+  return current;
+}
+async function businessAccountLookupV544(body, origin, assertContext) {
+  const email = adminAccountMutationPayload({ mode: 'disable', email: body && body.email }).email;
+  if (email === ADMIN_EMAIL) fail('ADMIN_FACTORS_IMMUTABLE', 403);
+  adminAccountEmailForOrigin(email, origin);
+  assertContext();
+  const result = await authAdminUserRequest('/auth/v1/admin/users?filter=' + encodeURIComponent(email), 'GET');
+  assertContext();
+  if (!result || result.ok !== true) fail('ADMIN_ACCOUNT_LOOKUP_FAILED', 503);
+  const user = adminAccountExactUser(result.data, email);
+  if (!user) return { ok: true, found: false, email };
+  return { ok: true, found: true, ...adminAccountStateV544(user, email) };
+}
+async function businessAccountUpgradeV544(body, origin, assertContext) {
+  const account = adminAccountUpgradePayloadV544(body);
+  if (account.email === ADMIN_EMAIL) fail('ADMIN_FACTORS_IMMUTABLE', 403);
+  adminAccountEmailForOrigin(account.email, origin);
+  assertContext();
+  const path = '/auth/v1/admin/users/' + account.user_id;
+  const lookup = await authAdminUserRequest(path, 'GET');
+  assertContext();
+  if (!lookup || lookup.ok !== true) fail('ADMIN_ACCOUNT_LOOKUP_FAILED', 503);
+  const original = adminAccountExactUser(lookup.data, account.email);
+  if (!original) fail('ADMIN_ACCOUNT_STATE_CHANGED', 409);
+  const previous = adminAccountStateV544(original, account.email);
+  if (previous.user_id !== account.user_id || previous.expected_state !== account.expected_state || !previous.can_upgrade)
+    fail('ADMIN_ACCOUNT_STATE_CHANGED', 409);
+  if (previous.account_role === account.role) fail('ADMIN_ACCOUNT_ROLE_UNCHANGED', 409);
+  if (!customerMailConfiguredV451('auto')) fail('ADMIN_SMTP_CONFIGURATION_UNAVAILABLE', 503);
+  const current = await adminAccountUpgradeLockV544(original, account.email, assertContext);
+  const appMetadata = { ...(current.app_metadata || {}), ...adminAccountProvisionMetadata(account.role, null) };
+  assertContext();
+  // Only server-owned role metadata changes. No password, confirmation, profile or ban mutation.
+  const changed = await authAdminUserRequest(path, 'PUT', { app_metadata: appMetadata });
+  assertContext();
+  if (!changed || changed.ok !== true) fail('ADMIN_ACCOUNT_UPGRADE_UNCONFIRMED', 503);
+  const verify = await authAdminUserRequest(path, 'GET');
+  assertContext();
+  const confirmed = verify && verify.ok === true ? adminAccountExactUser(verify.data, account.email) : null;
+  if (!confirmed || String(confirmed.id).toLowerCase() !== account.user_id || adminAccountRoleFromUser(confirmed) !== account.role
+      || stableJson(confirmed.app_metadata || {}) !== stableJson(appMetadata)
+      || stableJson(confirmed.user_metadata || {}) !== stableJson(current.user_metadata || {})
+      || String(confirmed.email_confirmed_at || '') !== String(current.email_confirmed_at || '')
+      || String(confirmed.banned_until || confirmed.bannedUntil || '') !== String(current.banned_until || current.bannedUntil || '')
+      || String(confirmed.deleted_at || '') !== String(current.deleted_at || '') || String(confirmed.disabled_at || '') !== String(current.disabled_at || '')
+      || (confirmed.disabled === true) !== (current.disabled === true) || (confirmed.is_disabled === true) !== (current.is_disabled === true))
+    fail('ADMIN_ACCOUNT_UPGRADE_UNCONFIRMED', 503);
+  const state = adminAccountStateV544(confirmed, account.email);
+  let notification = { sent: false, provider: '', requested_provider: 'auto' };
+  try {
+    const result = await sendCustomerMail({ origin, provider: 'auto', recipients: [account.email], kind: 'document',
+      subject: 'Pembaruan tipe akun', body: 'Tipe akun ' + account.email + ' telah diperbarui dari ' + previous.account_label
+        + ' menjadi ' + state.account_label + '.\nPassword dan pengaturan keamanan akun tetap berlaku.'
+        + '\nMasuk kembali melalui ' + origin + '/dashboard.html untuk melihat tipe akun terbaru.'
+        + (state.account_active ? '' : '\nPembatasan akses akun tetap berlaku; perubahan tipe akun tidak membuka blokir.') }, assertContext);
+    notification = { sent: customerMailAcceptedV451(result, 'auto', 1),
+      provider: result && ['mailjet', 'brevo', 'resend', 'google'].includes(result.provider) ? result.provider : '', requested_provider: 'auto' };
+  } catch (_) { /* A committed role update is never repeated to retry an uncertain notification. */ }
+  assertContext();
+  return { ok: true, ...state, previous_role: previous.account_role, password_preserved: true, notification };
+}
+
 async function businessAccountManage(body, origin, assertContext) {
   const account = adminAccountMutationPayload(body);
   if (account.email === ADMIN_EMAIL) fail('ADMIN_FACTORS_IMMUTABLE', 403);
@@ -649,6 +759,7 @@ async function businessAccountManage(body, origin, assertContext) {
       if (!lookupExisting || lookupExisting.ok !== true) fail('ADMIN_ACCOUNT_LOOKUP_FAILED', 503);
       const existing = adminAccountExactUser(lookupExisting.data, account.email);
       if (!adminAccountUserUpgradeable(existing, account.email)) fail('ADMIN_ACCOUNT_EMAIL_EXISTS', 409);
+      await adminAccountUpgradeLockV544(existing, account.email, assertContext);
       preservedProviderBan = adminAccountBanned(existing);
       const existingAppMetadata = existing.app_metadata && typeof existing.app_metadata === 'object' && !Array.isArray(existing.app_metadata) ? { ...existing.app_metadata } : {};
       const existingUserMetadata = existing.user_metadata && typeof existing.user_metadata === 'object' && !Array.isArray(existing.user_metadata) ? { ...existing.user_metadata } : {};
@@ -817,6 +928,7 @@ function validateDurableEnrollment(key, value) {
       || (value.factorGuardV466 !== undefined && (typeof value.factorGuardV466 !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(value.factorGuardV466)))
       || (value.factorIdentityV507 !== undefined && (typeof value.factorIdentityV507 !== 'string' || !/^[a-f0-9]{64}$/.test(value.factorIdentityV507)))
       || (value.totpKeyV466 !== undefined && value.totpKeyV466 !== true)
+      || (value.totpFiveKeysV545 !== undefined && (value.totpFiveKeysV545 !== true || value.totpKeyV466 !== true))
       || (value.legacyConfigKeyV466 !== undefined && (typeof value.legacyConfigKeyV466 !== 'string' || !/^s2s-admin-v405:enrollment:[a-f0-9]{64}$/.test(value.legacyConfigKeyV466)))
       || Buffer.byteLength(JSON.stringify(value), 'utf8') > 16384) fail('ADMIN_ENROLLMENT_INVALID', 503);
   let origin; try { origin = new URL(value.origin); } catch (_) { fail('ADMIN_ENROLLMENT_INVALID', 503); }
@@ -1268,6 +1380,7 @@ function approvalPayload(action, body) {
     return { action, export_ref: value.export_ref, mode: value.mode, raw_pdf_sha256: value.raw_pdf_sha256 };
   }
   if (Object.prototype.hasOwnProperty.call(ADMIN_ACCOUNT_ACTION_MODES, action)) { const account = adminAccountMutationPayload({ ...value, mode: ADMIN_ACCOUNT_ACTION_MODES[action] }); return { action, ...account }; }
+  if (action === 'admin_account_upgrade') return { action, ...adminAccountUpgradePayloadV544(value) };
   if (action === 'admin_partner_request_update') { const request = adminPartnerRequestUpdatePayloadV478(value); return { action, ...request }; }
   if (action === 'admin_smtp_send') return { action, provider: value.provider, recipient_count: value.recipient_count, recipients_sha256: value.recipients_sha256, subject_sha256: value.subject_sha256, body_sha256: value.body_sha256, document_kind: value.document_kind, attachment_name: value.attachment_name || '', attachment_type: value.attachment_type || '', attachment_sha256: value.attachment_sha256 || '', legal_confirm: value.legal_confirm === true };
   fail('ADMIN_ACTION_APPROVAL_OPERATION_INVALID', 400);
@@ -1769,7 +1882,8 @@ async function config(ops, scope) {
       const legacy = await stored(ops, legacyKey);
       if (legacy) {
         const migrated = { ...legacy, owner: scope.owner, revision: randomToken(), legacyConfigKeyV466: legacyKey };
-        if (await ops.claim(key, migrated, migrated.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS) === true) value = migrated;
+        if (ops.readOnlyPreludeV545 === true) value = migrated;
+        else if (await ops.claim(key, migrated, migrated.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS) === true) value = migrated;
         else value = await stored(ops, key);
       }
     }
@@ -1790,7 +1904,7 @@ function adminFactorGuardV466(enrolled) {
   if (!primary.configured || !recovery.configured || !enrolled || typeof enrolled.totp !== 'string') fail('ADMIN_FACTOR_GUARD_UNAVAILABLE', 503);
   const key = deriveSecret('admin-factor-immutability-v466');
   try {
-    const binding = { version: 466, owner: ADMIN_OWNER_V466, email: ADMIN_EMAIL, admin_secret: secretBinding(primary.secret), recovery_secret: secretBinding(recovery.secret), totp: digest(enrolled.totp), totp_key: enrolled.totpKeyV466 === true ? 466 : 405 };
+    const binding = { version: 466, owner: ADMIN_OWNER_V466, email: ADMIN_EMAIL, admin_secret: secretBinding(primary.secret), recovery_secret: secretBinding(recovery.secret), totp: digest(enrolled.totp), totp_key: enrolled.totpFiveKeysV545 === true ? 545 : enrolled.totpKeyV466 === true ? 466 : 405 };
     if (enrolled.factorIdentityV507 !== undefined) binding.factor_identity = enrolled.factorIdentityV507;
     return crypto.createHmac('sha512', key).update(stableJson(binding)).digest('base64url');
   } finally { key.fill(0); }
@@ -1802,13 +1916,8 @@ function assertAdminFactorGuardV466(enrolled) {
   if (enrolled.factorIdentityV507 === undefined && !safeEqual(ADMIN_LEGACY_PASSKEY_IDENTITY_V507, digest(stableJson({ credentialId: enrolled.passkey.credentialId, publicKeyJwk: enrolled.passkey.publicKeyJwk, userHandle: enrolled.userHandle })))) fail('ADMIN_FACTOR_GUARD_MISMATCH', 403);
   return true;
 }
-function totpKeyPurposeV466(enrolled) { return enrolled && enrolled.totpKeyV466 === true ? 'totp-storage' : 'totp-storage-legacy'; }
-function migrateTotpKeyAfterPasskeyV466(ops, scope, enrolled) {
-  if (!enrolled || enrolled.totpKeyV466 === true) return enrolled;
-  const legacyContext = typeof enrolled.legacyConfigKeyV466 === 'string' ? enrolled.legacyConfigKeyV466 : configKey(scope);
-  const secret = open(ops, enrolled.totp, legacyContext, 'totp-storage-legacy');
-  try { const next = { ...enrolled, totp: seal(ops, secret, configKey(scope)), totpKeyV466: true }; delete next.legacyConfigKeyV466; return next; } finally { secret.fill(0); }
-}
+function totpKeyPurposeV466(enrolled) { if (!enrolled || enrolled.totpFiveKeysV545 !== true) fail('ADMIN_TOTP_KEY_VERSION_INVALID', 503); return 'totp-storage-five'; }
+function migrateTotpKeyAfterPasskeyV466(ops, scope, enrolled) { totpKeyPurposeV466(enrolled); return enrolled; }
 async function issue(ops, scope, stage, values = {}, seconds = FACTOR_SECONDS) {
   const token = randomToken(), now = Date.now(); const record = { version: VERSION, owner: scope.owner, binding: scope.binding, origin: scope.origin, stage, ...values, expiresAt: now + seconds * 1000 };
   if (await ops.claim(PREFIX + 'ticket:' + digest(token), record, seconds) !== true) fail('ADMIN_STORE_UNAVAILABLE', 503); return token;
@@ -1923,7 +2032,7 @@ async function execute(ops) {
       try {
         const encrypted = seal(ops, secret, configKey(scope));
         provisioning = { secret: base32(secret) };
-        const pending = sealAdminFactorGuardV466({ version: VERSION, owner: scope.owner, origin: scope.origin, enrollmentState: 'pending_totp', revision: randomToken(), passkey, userHandle: proof.userHandle, totp: encrypted, totpKeyV466: true, createdAt: Date.now() });
+        const pending = sealAdminFactorGuardV466({ version: VERSION, owner: scope.owner, origin: scope.origin, enrollmentState: 'pending_totp', revision: randomToken(), passkey, userHandle: proof.userHandle, totp: encrypted, totpKeyV466: true, totpFiveKeysV545: true, createdAt: Date.now() });
         if (await ops.claim(configKey(scope), pending, PENDING_ENROLLMENT_SECONDS) !== true) fail('ADMIN_ALREADY_ENROLLED', 409); enrolled = pending;
       } finally { secret.fill(0); }
     } else {
@@ -1955,11 +2064,12 @@ async function execute(ops) {
     const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); const loginAlert = await ops.loginAlert(); return { ok: true, login_alert_sent: loginAlert && loginAlert.ok === true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_logout') { const active = await session(ops, scope, false, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
-  await session(ops, scope); const operation = { admin_orders: 'orders', admin_order_cancel: 'order_cancel', admin_order_price: 'order_price', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_banned_data: 'banned_data', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_account_disable: 'account_create', admin_account_enable: 'account_create', admin_account_delete: 'account_create', admin_account_password_reset: 'account_create', admin_account_passkey_reset: 'account_create', admin_partner_requests: 'partner_requests', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
+  await session(ops, scope); const operation = { admin_account_lookup: 'account_lookup', admin_account_upgrade: 'account_upgrade', admin_orders: 'orders', admin_order_cancel: 'order_cancel', admin_order_price: 'order_price', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_banned_data: 'banned_data', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_account_disable: 'account_create', admin_account_enable: 'account_create', admin_account_delete: 'account_create', admin_account_password_reset: 'account_create', admin_account_passkey_reset: 'account_create', admin_partner_requests: 'partner_requests', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
   if (!operation) fail('ADMIN_ACTION_INVALID', 400);
   if (Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS, action)) { const approval = await ticket(ops, scope, body.approval, 'action-approval'); if (approval.value.operation !== action || approval.value.payloadHash !== approvalPayloadHash(action, body)) fail('ADMIN_ACTION_APPROVAL_MISMATCH', 403); await consume(ops, approval); }
   if (action === 'admin_smtp_send') { await throttle(ops, scope, 'smtp-send-minute', 2, 60); await throttle(ops, scope, 'smtp-send-hour', 5, 3600); }
-  if (Object.prototype.hasOwnProperty.call(ADMIN_ACCOUNT_ACTION_MODES, action)) { await throttle(ops, scope, 'account-create-minute', 3, 60); await throttle(ops, scope, 'account-create-hour', 5, 3600); }
+  if (action === 'admin_account_lookup') { await throttle(ops, scope, 'account-lookup-minute', 5, 60); await throttle(ops, scope, 'account-lookup-hour', 5, 3600); }
+  if (action === 'admin_account_upgrade' || Object.prototype.hasOwnProperty.call(ADMIN_ACCOUNT_ACTION_MODES, action)) { await throttle(ops, scope, 'account-create-minute', 3, 60); await throttle(ops, scope, 'account-create-hour', 5, 3600); }
   if (action === 'admin_partner_request_update') { await throttle(ops, scope, 'partner-request-update-minute', 6, 60); await throttle(ops, scope, 'partner-request-update-hour', 30, 3600); }
   if (action === 'admin_banned_pdf') { await throttle(ops, scope, 'banned-pdf-minute', 3, 60); await throttle(ops, scope, 'banned-pdf-hour', 5, 3600); }
   const businessBody = Object.prototype.hasOwnProperty.call(ADMIN_ACCOUNT_ACTION_MODES, action) ? { ...body, mode: ADMIN_ACCOUNT_ACTION_MODES[action] } : body;
@@ -2592,7 +2702,7 @@ function adminBannedPdfEncryptV476(raw, password) {
   if (offsetLines.length !== size-1 || offsetLines.some(line=>!/^\d{10} 00000 n $/.test(line))) fail('ADMIN_BANNED_PDF_INVALID',400);
   const offsets=offsetLines.map(line=>Number(line.slice(0,10)));
   if (offsets.some((value,index)=>!Number.isInteger(value) || value < 9 || value >= xref || (index>0 && value<=offsets[index-1]))) fail('ADMIN_BANNED_PDF_INVALID',400);
-  const fileKey = crypto.randomBytes(32), userPassword = Buffer.from(String(password || ''),'utf8').subarray(0,127), ownerPassword = Buffer.from(crypto.randomBytes(48).toString('base64url'),'utf8').subarray(0,127);
+  const fileKey = require('../lib/data-protection.js').randomCipherKeyV546('admin-pdf'), userPassword = Buffer.from(String(password || ''),'utf8').subarray(0,127), ownerPassword = Buffer.from(crypto.randomBytes(48).toString('base64url'),'utf8').subarray(0,127);
   if (userPassword.length < 12) fail('ADMIN_BANNED_PDF_PASSWORD_INVALID',503);
   const uv=crypto.randomBytes(8), uk=crypto.randomBytes(8), U=Buffer.concat([adminBannedPdfSha256V476(userPassword,uv),uv,uk]), UE=adminBannedPdfAesNoPadV476(adminBannedPdfSha256V476(userPassword,uk),fileKey);
   const ov=crypto.randomBytes(8), ok=crypto.randomBytes(8), O=Buffer.concat([adminBannedPdfSha256V476(ownerPassword,ov,U),ov,ok]), OE=adminBannedPdfAesNoPadV476(adminBannedPdfSha256V476(ownerPassword,ok,U),fileKey);
@@ -2666,6 +2776,7 @@ async function businessUnban(body) {
   const path = '/rest/v1/dirac_persistent_bans?security_key=in.(' + row.storage_keys.map(encodeURIComponent).join(',') + ')&blocked_until_ms=gt.' + now + '&select=' + encodeURIComponent(ACCESS_BLOCK_SELECT), patched = await dbFetch(path, { method: 'PATCH', prefer: 'return=representation', body: { record_json: next, blocked_until_ms: now } }, 'security'); if (!patched.ok || !Array.isArray(patched.data) || patched.data.length !== row.storage_keys.length) fail('ADMIN_BLOCK_REVOCATION_UNVERIFIED', 503); const returned = patched.data.map(item => validateAccessBlock(item, false)); if (returned.some(item => !item || item.block_id !== id || item.state !== 'revoked') || returned.map(item => item.security_key).sort().some((item, index) => item !== row.storage_keys[index])) fail('ADMIN_BLOCK_REVOCATION_UNVERIFIED', 503); return { ok: true, affected_rows: 1, time: new Date().toISOString() };
 }
 const ADMIN_CENTRAL_BAN_FAILURE_CODES = Object.freeze([
+  'ADMIN_INPUT_THREAT_REJECTED',
   'ADMIN_BODY_FIELD_INVALID', 'ADMIN_BODY_REQUIRED_FIELD', 'ADMIN_QUERY_FIELD_INVALID', 'ADMIN_FIELD_TOO_LARGE',
   'ADMIN_ACTION_APPROVAL_MISMATCH', 'ADMIN_ACTION_MISMATCH', 'ADMIN_BODY_FRAMING_INVALID', 'ADMIN_BODY_INVALID', 'ADMIN_BODY_KEY_INVALID',
   'ADMIN_BODY_TOO_COMPLEX', 'ADMIN_BODY_TOO_LARGE', 'ADMIN_CLIENT_HEADERS_INVALID', 'ADMIN_CONTENT_TYPE_INVALID', 'ADMIN_CREDENTIALS_INVALID', 'ADMIN_FACTOR_GUARD_MISMATCH', 'ADMIN_FACTORS_IMMUTABLE',
@@ -2684,7 +2795,7 @@ function adminCentralBanRequired(error) {
 }
 function adminGuardSelfTest() {
   try {
-    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_order_cancel','admin_order_price','admin_blocks','admin_banned_data','admin_unban','admin_banned_pdf','admin_account_create','admin_account_disable','admin_account_enable','admin_account_delete','admin_account_password_reset','admin_account_passkey_reset','admin_partner_requests','admin_partner_request_update','admin_smtp_send','admin_local_authorize','admin_document_prepare','admin_document_seal','admin_document_verify','admin_monitor'];
+    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_order_cancel','admin_order_price','admin_blocks','admin_banned_data','admin_unban','admin_banned_pdf','admin_account_lookup','admin_account_upgrade','admin_account_create','admin_account_disable','admin_account_enable','admin_account_delete','admin_account_password_reset','admin_account_passkey_reset','admin_partner_requests','admin_partner_request_update','admin_smtp_send','admin_local_authorize','admin_document_prepare','admin_document_seal','admin_document_verify','admin_monitor'];
     return Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && ACTIONS.length === expected.length && expected.every((name, index) => ACTIONS[index] === name && Object.isFrozen(CONTRACTS[name]) && Object.isFrozen(CONTRACTS[name].methods) && Object.isFrozen(CONTRACTS[name].allowed) && Object.isFrozen(CONTRACTS[name].required))
       && exactToken(randomToken()) && PASSWORD_COOKIE.startsWith('__Host-') && SESSION_COOKIE.startsWith('__Host-') && adminSecretState().configured === true;
   } catch (_) { return false; }
@@ -3185,9 +3296,9 @@ async function businessMonitor(body) {
   const summaryRead = view === 'overview' ? businessOrders({ kind: 'all', offset: 0, view: 'summary', from: String(input.from || ''), until: String(input.until || '') }) : Promise.resolve(null);
   const reads = await Promise.all([eventRead, summaryRead]), result = reads[0], summary = reads[1];
   let rows = [], ready = false; if (result && result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; }
-  const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Guard internal handler admin mandiri yang menangani permintaan ini.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [], ...(view === 'overview' ? { overview_summary: summary } : {}) };
+  const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Central Guard bersama: seluruh 30 tahap wajib sebelum handler admin.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [], ...(view === 'overview' ? { overview_summary: summary } : {}) };
 }
-async function business(operation, body, origin, assertContext) { if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'order_cancel' || operation === 'order_price') return businessOrderChangeV1(operation, body, origin, assertContext); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'banned_data') return businessBannedDataV476(body); if (operation === 'unban') return businessUnban(body); if (operation === 'banned_pdf') return businessBannedPdfV476(body, origin, assertContext); if (operation === 'account_create') return businessAccountManage(body, origin, assertContext); if (operation === 'partner_requests') return businessPartnerRequestsV478(assertContext); if (operation === 'partner_request_update') return businessPartnerRequestUpdateV478(body, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(body); fail('ADMIN_OPERATION_INVALID', 400); }
+async function business(operation, body, origin, assertContext) { if (operation === 'account_lookup') return businessAccountLookupV544(body, origin, assertContext); if (operation === 'account_upgrade') return businessAccountUpgradeV544(body, origin, assertContext); if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'order_cancel' || operation === 'order_price') return businessOrderChangeV1(operation, body, origin, assertContext); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'banned_data') return businessBannedDataV476(body); if (operation === 'unban') return businessUnban(body); if (operation === 'banned_pdf') return businessBannedPdfV476(body, origin, assertContext); if (operation === 'account_create') return businessAccountManage(body, origin, assertContext); if (operation === 'partner_requests') return businessPartnerRequestsV478(assertContext); if (operation === 'partner_request_update') return businessPartnerRequestUpdateV478(body, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(body); fail('ADMIN_OPERATION_INVALID', 400); }
 
 function adminCentralBanReason(error) {
   const raw = String(error && error.code || 'admin_failure').trim().toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');
@@ -3276,6 +3387,7 @@ async function replaceEnrollment(records, key, expectedRevision, record, ttl) {
   if (!prior || !safeEqual(adminFactorIdentityV507(prior), adminFactorIdentityV507(next))
       || (prior.enrollmentState === 'active' && next.enrollmentState !== 'active')
       || next.passkey.signCount < prior.passkey.signCount
+      || (prior.totpFiveKeysV545 === true && next.totpFiveKeysV545 !== true)
       || (prior.totpKeyV466 === true && (next.totpKeyV466 !== true || next.totp !== prior.totp))
       || (prior.totpKeyV466 !== true && next.totpKeyV466 !== true && (next.totp !== prior.totp || next.legacyConfigKeyV466 !== prior.legacyConfigKeyV466))) fail('ADMIN_FACTORS_IMMUTABLE', 403);
   // Compare-and-swap on a revision, not a timestamp; enrollment has no TTL.
@@ -3289,10 +3401,10 @@ async function replaceEnrollment(records, key, expectedRevision, record, ttl) {
 }
 function buildOps(req, res, state) {
   const records = new Map(), secretState = adminSecretState(), identity = Object.freeze({ email: ADMIN_EMAIL, userId: ADMIN_USER_ID, active: true, role: 'owner', origin: state.origin, binding: secretState.configured ? scopeBinding(state.origin, state.device, secretState.secret) : digest('unconfigured:' + state.origin + ':' + state.device) });
-  let active = true, sessionPublished = false; const assertFullGuard = () => { if (!active || state.req !== req || state.method !== String(req.method || '').toUpperCase() || state.action !== state.currentAction || state.origin !== sourceOrigin(req) || state.device !== deviceFingerprint(req, state.origin)) fail('ADMIN_FULL_GUARD_REQUIRED', 503); };
+  let active = true, sessionPublished = false; const assertFullGuard = () => { CENTRAL_V545.assertPassed(req, res, 'admin'); if (!active || state.req !== req || state.method !== String(req.method || '').toUpperCase() || state.action !== state.currentAction || state.origin !== sourceOrigin(req) || state.device !== deviceFingerprint(req, state.origin)) fail('ADMIN_FULL_GUARD_REQUIRED', 503); };
   const ops = Object.freeze({
     version: VERSION, action: state.action, method: state.method, identity, body: state.body, assertFullGuard,
-    deriveKey: purpose => { assertFullGuard(); if (!['totp-storage', 'totp-storage-legacy'].includes(purpose)) fail('ADMIN_KEY_PURPOSE_INVALID', 503); const key = deriveSecret('admin-v405-totp-storage'); try { return crypto.createHmac('sha256', key).update(purpose === 'totp-storage' ? ADMIN_OWNER_V466 : ADMIN_USER_ID).digest(); } finally { key.fill(0); } },
+    deriveKey: purpose => { assertFullGuard(); if (purpose !== 'totp-storage-five') fail('ADMIN_KEY_PURPOSE_INVALID', 503); const master = require('../lib/data-protection.js').deriveCipherKeyV545('admin-totp'); try { return crypto.createHmac('sha256',master).update(ADMIN_OWNER_V466).digest(); } finally { master.fill(0); } },
     read: async key => { assertFullGuard(); if (!allowedAdminKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503); const result = enrollmentKey(key) ? await durableEnrollmentRead(key) : await securityRead(key); assertFullGuard(); if (result.ok && result.found) records.set(key, { revision: result.record.revision, expiresAt: result.expiresAt, record: enrollmentKey(key) ? JSON.parse(JSON.stringify(result.record)) : undefined }); return result; },
     claim: async (key, record, ttl) => { assertFullGuard(); if (!allowedAdminKey(key) || !record || record.version !== VERSION) fail('ADMIN_STORAGE_CLAIM_INVALID', 503); const result = enrollmentKey(key) ? await durableEnrollmentClaim(key, record) : await securityClaim(key, record, ttl); assertFullGuard(); if (result && enrollmentKey(key)) records.set(key, { revision: record.revision, record: JSON.parse(JSON.stringify(record)) }); return result; },
     replace: async (key, expectedRevision, record, ttl) => { assertFullGuard(); const result = await replaceEnrollment(records, key, expectedRevision, record, ttl); assertFullGuard(); return result; },
@@ -3308,7 +3420,7 @@ function buildOps(req, res, state) {
     verifySecret: value => { assertFullGuard(); const current = adminSecretState(); return current.configured && typeof value === 'string' && safeEqual(digest(value), digest(current.secret)); },
     publishPassword: async () => { assertFullGuard(); const current = adminSecretState(); if (!current.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503); await publishPasswordProof(req, res, state.origin, state.device, current.secret); },
     securityReport: async report => { assertFullGuard(); const evidence = report && ADMIN_VERIFIED_SECURITY_REPORTS.get(report); if (state.action !== 'admin_security_report' || !evidence || evidence.body !== state.body || evidence.origin !== state.origin) fail('SECURITY_REPORT_EVIDENCE_REJECTED', 403); ADMIN_VERIFIED_SECURITY_REPORTS.delete(report); const centralBan = await adminCentralBanFailure(req, Object.assign(new Error('ADMIN_SECURITY_REPORT_ONE_STRIKE'), { code: 'ADMIN_SECURITY_REPORT_ONE_STRIKE', status: 403, statusCode: 403 })); if (!centralBan || centralBan.ok !== true) fail('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', 503); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); res.setHeader('X-Dirac-Central-Ban', '1'); return { blockedUntil: centralBan.blocked_until_ms, central_ban: true }; },
-    business: async (operation, body) => { assertFullGuard(); if (!state.passwordAuthority || !['orders', 'order_cancel', 'order_price', 'shipment_update', 'shipment_cancel', 'blocks', 'banned_data', 'unban', 'banned_pdf', 'account_create', 'partner_requests', 'partner_request_update', 'smtp_send', 'local_authorize', 'document_prepare', 'document_seal', 'document_verify', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
+    business: async (operation, body) => { assertFullGuard(); CENTRAL_V545.assertPassed(req, res, 'admin'); if (!state.passwordAuthority || !['orders', 'order_cancel', 'order_price', 'shipment_update', 'shipment_cancel', 'blocks', 'banned_data', 'unban', 'banned_pdf', 'account_lookup', 'account_upgrade', 'account_create', 'partner_requests', 'partner_request_update', 'smtp_send', 'local_authorize', 'document_prepare', 'document_seal', 'document_verify', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
   });
   state.deactivate = () => { active = false; records.clear(); };
   return ops;
@@ -3319,6 +3431,12 @@ function setCommonHeaders(res, origin) {
 }
 function queryObject(query) { const out = {}; query.forEach((value, key) => { if (Object.prototype.hasOwnProperty.call(out, key)) fail('ADMIN_QUERY_DUPLICATE', 400); out[key] = value; }); return out; }
 async function readJsonBody(req, maximum) {
+  const preparedV545 = ADMIN_CENTRAL_CONTEXTS_V545.get(req);
+  if (preparedV545 && preparedV545.bodyReady && !preparedV545.bodyConsumed) {
+    CENTRAL_V545.assertPassed(req, preparedV545.res, 'admin');
+    if (maximum !== preparedV545.contract.maxBodyBytes) fail('ADMIN_BODY_INVALID', 400);
+    preparedV545.bodyConsumed = true; return preparedV545.body;
+  }
   const contentType = String(req.headers && req.headers['content-type'] || '').trim().toLowerCase(); if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/.test(contentType)) fail('ADMIN_CONTENT_TYPE_INVALID', 415);
   if (String(req.headers && req.headers['transfer-encoding'] || '').trim()) fail('ADMIN_BODY_FRAMING_INVALID', 400);
   const encoding = String(req.headers && req.headers['content-encoding'] || '').trim().toLowerCase(); if (encoding && encoding !== 'identity') fail('ADMIN_CONTENT_TYPE_INVALID', 415);
@@ -3387,7 +3505,10 @@ async function adminBusiness(req, res, operations) {
     return adminBanResponse(res, error, centralBan);
   }
 }
-async function adminHandler(req, res) {
+async function adminDispatchV545(req, res) {
+  CENTRAL_V545.assertPassed(req, res, 'admin');
+  const preparedV545 = ADMIN_CENTRAL_CONTEXTS_V545.get(req);
+  if (!preparedV545 || preparedV545.req !== req) fail('ADMIN_FULL_GUARD_REQUIRED', 503);
   let origin = '';
   try {
     const raw = String(req && req.url || ''), split = raw.indexOf('?'), path = split < 0 ? raw : raw.slice(0, split);
@@ -3420,8 +3541,8 @@ async function adminHandler(req, res) {
     }
     const contract = CONTRACTS[action], query = queryObject(queryParams), body = method === 'POST' ? await readJsonBody(req, contract.maxBodyBytes) : query; validateShape(action, method, query, body);
     const currentAction = action, state = { req, action, currentAction, method, origin, device, body, passwordAuthority: null, deactivate: null };
-    if (method === 'POST') await verifyPageNonce(req, action, origin, device);
-    if (!['admin_entry', 'admin_security_report', 'admin_login'].includes(action)) state.passwordAuthority = await verifyPasswordProof(req, origin, device, ['admin_email_start', 'admin_email_verify', 'admin_passkey_start', 'admin_passkey_verify', 'admin_passkey_recovery_start', 'admin_passkey_recovery_verify', 'admin_totp_verify'].includes(action));
+    if (method === 'POST' && preparedV545.nonceVerified !== true) await verifyPageNonce(req, action, origin, device);
+    if (!['admin_entry', 'admin_security_report', 'admin_login'].includes(action)) state.passwordAuthority = preparedV545.passwordAuthority || await verifyPasswordProof(req, origin, device, ['admin_email_start', 'admin_email_verify', 'admin_passkey_start', 'admin_passkey_verify', 'admin_passkey_recovery_start', 'admin_passkey_recovery_verify', 'admin_totp_verify'].includes(action));
     if (action === 'admin_entry') {
       const target = String(query._dirac_page_nonce_for || ''); if (target) { if (!CONTRACTS[target] || !CONTRACTS[target].methods.includes('POST')) fail('ADMIN_NONCE_TARGET_INVALID', 400); const proof = issuePageNonce(target, origin, device); res.setHeader('X-Dirac-CSRF-Token', proof.csrf); res.setHeader('X-Dirac-Page-Nonce', proof.nonce); }
     }
@@ -3434,6 +3555,127 @@ async function adminHandler(req, res) {
     return adminBanResponse(res, error, centralBan);
   }
 }
+// V545: route policy for the common central executor. The v411 credentials,
+// replay claims and the original action-specific guards are preserved.
+const ADMIN_CENTRAL_CONTEXTS_V545 = new WeakMap();
+const ADMIN_FACTOR_ACTIONS_V545 = new Set(['admin_email_start', 'admin_email_verify', 'admin_passkey_start',
+  'admin_passkey_verify', 'admin_passkey_recovery_start', 'admin_passkey_recovery_verify', 'admin_totp_verify']);
+function adminPreludeOpsV545(ctx) {
+  if (ctx.stageOps) return ctx.stageOps;
+  const assertRead = () => {
+    if (ADMIN_CENTRAL_CONTEXTS_V545.get(ctx.req) !== ctx
+        || !(CENTRAL_V545.at(ctx.req, 'admin', 21) || CENTRAL_V545.at(ctx.req, 'admin', 28))) fail('ADMIN_FULL_GUARD_REQUIRED', 503);
+    adminPolicyShapeV545(ctx);
+  };
+  const rejectWrite = () => fail('ADMIN_FULL_GUARD_REQUIRED', 503), secret = adminSecretState();
+  assertRead();
+  const identity = Object.freeze({ email: ADMIN_EMAIL, userId: ADMIN_USER_ID, active: true, role: 'owner',
+    origin: ctx.origin, binding: scopeBinding(ctx.origin, ctx.device, secret.secret) });
+  const denied = Object.fromEntries(['claim','replace','takeRate','deriveKey','mail','recoveryAlert',
+    'verifyRegistration','verifyAssertion','setSession','loginAlert','clearSession','verifySecret',
+    'publishPassword','securityReport','business'].map(name => [name,rejectWrite]));
+  ctx.stageOps = Object.freeze({ ...denied, version: VERSION, action: ctx.action, method: ctx.method,
+    identity, body: ctx.body, readOnlyPreludeV545: true, assertFullGuard: assertRead,
+    readSession: () => { assertRead(); return cookieToken(ctx.req, SESSION_COOKIE); },
+    read: async key => {
+      assertRead(); if (!allowedAdminKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503);
+      let result = enrollmentKey(key) ? await durableEnrollmentRead(key, false) : await securityRead(key);
+      if (enrollmentKey(key) && result.ok && !result.found) {
+        const legacy = await securityRead(key);
+        if (!legacy || legacy.ok !== true) fail('ADMIN_PASSKEY_MIGRATION_UNAVAILABLE', 503);
+        if (legacy.found) result = { ok: true, found: true, record: validateDurableEnrollment(key, legacy.record) };
+      }
+      assertRead(); return result;
+    }
+  });
+  return ctx.stageOps;
+}
+function adminPreflightV545(ctx) {
+  if (ctx.method !== 'OPTIONS') return;
+  const h = ctx.req.headers || {}, method = String(h['access-control-request-method'] || '').toUpperCase();
+  const headers = String(h['access-control-request-headers'] || '').toLowerCase().split(',').map(v => v.trim()).filter(Boolean);
+  if (method !== 'POST' || !ctx.contract.methods.includes(method)
+      || headers.some(v => !['content-type', 'x-csrf-token', 'x-dirac-csrf-token', 'x-dirac-page-nonce'].includes(v))) fail('ADMIN_PREFLIGHT_INVALID', 403);
+}
+function adminHeaderGuardV545(ctx) {
+  const h = ctx.req.headers || {}, raw = ctx.req.rawHeaders;
+  const seen = new Set(), critical = new Set(['host','origin','referer','cookie','authorization','content-type','content-length',
+    'transfer-encoding','content-encoding','x-forwarded-host','x-forwarded-proto','x-csrf-token','x-dirac-csrf-token','x-dirac-page-nonce']);
+  if (Array.isArray(raw) && (raw.length % 2 || raw.some((v,i) => {
+    if (i % 2 || !critical.has(String(v).toLowerCase())) return false;
+    const name = String(v).toLowerCase(); if (seen.has(name)) return true; seen.add(name); return false;
+  }))) fail('ADMIN_CLIENT_HEADERS_INVALID', 400);
+  if (Object.entries(h).some(([k,v]) => critical.has(k.toLowerCase()) && Array.isArray(v)
+      || /[\r\n\0]/.test(String(v || '')))
+      || Object.entries(h).reduce((n,[k,v]) => n + Buffer.byteLength(k + ':' + String(v || '')),0) > 65536) fail('ADMIN_CLIENT_HEADERS_INVALID', 400);
+}
+function adminPolicyShapeV545(ctx) {
+  if (!ctx.contract || CONTRACTS[ctx.action] !== ctx.contract || ctx.origin !== sourceOrigin(ctx.req)
+      || ctx.device !== deviceFingerprint(ctx.req,ctx.origin)) fail('ADMIN_FULL_GUARD_REQUIRED',503);
+}
+const ADMIN_CENTRAL_POLICY_V545 = CENTRAL_V545.policy(Object.freeze({
+  'identity': ctx => {
+    const raw = String(ctx.req.url || ''), split = raw.indexOf('?');
+    ctx.path = split < 0 ? raw : raw.slice(0,split); ctx.raw = raw;
+    if (ctx.path !== '/api/admin' || raw.length > 8192 || /[\u0000-\u0020\u007f#]/.test(raw)) fail('ADMIN_REQUEST_INVALID',400);
+    ctx.params = new URLSearchParams(split < 0 ? '' : raw.slice(split+1));
+    const actions = ctx.params.getAll('action');ctx.action = actions.length === 1 ? String(actions[0]) : '';
+    ctx.origin = sourceOrigin(ctx.req);ctx.device = deviceFingerprint(ctx.req,ctx.origin);adminHeaderGuardV545(ctx);
+  },
+  'memory ban': async ctx => { if (adminSecretState().configured || ctx.action !== 'admin_entry') await enforceAdminCentralBan(ctx.req);ctx.banChecked = true; },
+  'persistent ban': async ctx => {
+    if (!ctx.banChecked) fail('ADMIN_FULL_GUARD_REQUIRED',503);
+    if (adminSecretState().configured && !['admin_security_report','admin_logout'].includes(ctx.action)) {
+      const blocked = await activeSecurityBlock(ctx.origin,ctx.device);
+      if (blocked) { ctx.res.setHeader('Retry-After',String(Math.max(1,Math.ceil((blocked.blockedUntil-Date.now())/1000))));fail('ADMIN_SECURITY_BLOCKED',403); }
+    }
+  },
+  'action format': ctx => { if (!/^[a-z][a-z0-9_]{1,79}$/.test(ctx.action)) fail('ADMIN_ACTION_INVALID',400);ctx.query = queryObject(ctx.params); },
+  'alias': ctx => { if (ctx.path !== '/api/admin' || ctx.raw !== String(ctx.req.url || '')) fail('ADMIN_REQUEST_INVALID',400); },
+  'whitelist': ctx => { if (!ACTIONS.includes(ctx.action)) fail('ADMIN_ACTION_INVALID',400);ctx.contract=CONTRACTS[ctx.action];if(ctx.method!=='OPTIONS'&&!ctx.contract.methods.includes(ctx.method))fail('ADMIN_METHOD_NOT_ALLOWED',405);adminPreflightV545(ctx); },
+  'server role': ctx => { sourceOrigin(ctx.req);if(isProduction()&&String(process.env.DIRAC_APP_ROLE||'').trim().toLowerCase()!=='auth')fail('ADMIN_ORIGIN_INVALID',403); },
+  'ENV partition': () => { const key=require('../lib/data-protection.js').deriveCipherKeyV545('admin-totp');key.fill(0); },
+  'classification': ctx => { adminPolicyShapeV545(ctx);ctx.classification=ctx.action==='admin_entry'||ctx.action==='admin_login'?'admin_authentication':'admin'; },
+  'rate limit': async ctx => {
+    if (adminSecretState().configured && await atomicRate(PREFIX+'rate:'+digest('central-ingress-v545:'+ctx.origin+':'+ctx.device),100,60)!==true)fail('ADMIN_RATE_LIMITED',429);
+  },
+  'server authentication': ctx => { if(Object.keys(ctx.req.headers||{}).some(k=>/^x-dirac-(?:s2s|server-id|target-server-id)$/i.test(k))||String(ctx.req.headers&&ctx.req.headers.authorization||''))fail('ADMIN_CLIENT_HEADERS_INVALID',403); },
+  'browser authenticity': ctx => { validateReferer(ctx.req,ctx.origin,ctx.method==='OPTIONS'); },
+  'CSRF': ctx => { if(ctx.method==='POST'){const h=ctx.req.headers||{};if(!exactToken(h['x-csrf-token'])||h['x-csrf-token']!==h['x-dirac-csrf-token'])fail('ADMIN_PROOF_INVALID',403);}else adminPreflightV545(ctx); },
+  'page nonce': async ctx => { if(ctx.method==='POST'){await verifyPageNonce(ctx.req,ctx.action,ctx.origin,ctx.device);ctx.nonceVerified=true;}else if(ctx.action==='admin_entry'&&ctx.query._dirac_page_nonce_for&&(!CONTRACTS[ctx.query._dirac_page_nonce_for]||!CONTRACTS[ctx.query._dirac_page_nonce_for].methods.includes('POST')))fail('ADMIN_NONCE_TARGET_INVALID',400); },
+  'browser signal': ctx => { const h=ctx.req.headers||{};if(h['sec-fetch-site']&&!['same-origin','same-site'].includes(String(h['sec-fetch-site'])))fail('ADMIN_ORIGIN_INVALID',403);if(h['sec-fetch-mode']&&!['cors','same-origin'].includes(String(h['sec-fetch-mode'])))fail('ADMIN_ORIGIN_INVALID',403);if(h['sec-fetch-dest']&&h['sec-fetch-dest']!=='empty')fail('ADMIN_ORIGIN_INVALID',403); },
+  'device binding': ctx => { if(ctx.device!==deviceFingerprint(ctx.req,ctx.origin))fail('ADMIN_FULL_GUARD_REQUIRED',503); },
+  'admin authentication': async ctx => { if(ctx.method!=='OPTIONS'&&!['admin_entry','admin_security_report','admin_login'].includes(ctx.action))ctx.passwordAuthority=await verifyPasswordProof(ctx.req,ctx.origin,ctx.device,ADMIN_FACTOR_ACTIONS_V545.has(ctx.action)); },
+  'public-read policy': ctx => { if(['GET','HEAD'].includes(ctx.method)&&Number(ctx.req.headers&&ctx.req.headers['content-length']||0)!==0)fail('ADMIN_BODY_FRAMING_INVALID',400);adminPolicyShapeV545(ctx); },
+  'body validation': async ctx => { ctx.body=ctx.method==='POST'?await readJsonBody(ctx.req,ctx.contract.maxBodyBytes):ctx.query;ctx.bodyReady=ctx.method==='POST'; },
+  'light guard': ctx => { if(!ctx.body||typeof ctx.body!=='object'||Array.isArray(ctx.body))fail('ADMIN_BODY_INVALID',400);adminHeaderGuardV545(ctx); },
+  'contract validation': ctx => { if(ctx.method!=='OPTIONS')validateShape(ctx.action,ctx.method,ctx.query,ctx.body); },
+  'A2F signature': async ctx => { if(ctx.method==='POST'&&Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS,ctx.action)){const ops=adminPreludeOpsV545(ctx),scope=checkOperations(ops),approval=await ticket(ops,scope,ctx.body.approval,'action-approval');if(approval.value.operation!==ctx.action||approval.value.payloadHash!==approvalPayloadHash(ctx.action,ctx.body))fail('ADMIN_ACTION_APPROVAL_MISMATCH',403);} },
+  'security report': ctx => { if(ctx.action==='admin_security_report'&&ctx.method==='POST'&&(!ctx.body.evidence||!ctx.body.reason||ctx.body.version!=='dirac-html-shell-v1'))fail('ADMIN_SECURITY_REPORT_INVALID',400); },
+  'request sample': ctx => { if(ctx.method!=='OPTIONS')validateShape(ctx.action,ctx.method,ctx.query,ctx.body); },
+  'threat detection': ctx => { if(ctx.action!=='admin_security_report')require('./health.js').__diracCentralInspectGatewayInputV545(ctx.body); },
+  'zero-day protection': ctx => { adminHeaderGuardV545(ctx);if(ctx.method==='POST'&&!ctx.nonceVerified)fail('ADMIN_PROOF_INVALID',403); },
+  'IDOR/BOLA': ctx => { adminPolicyShapeV545(ctx);if(ctx.passwordAuthority&&(!ctx.passwordAuthority.proof||ctx.passwordAuthority.proof.email!==ADMIN_EMAIL||ctx.passwordAuthority.proof.userId!==ADMIN_USER_ID))fail('ADMIN_FIXED_OWNER_REQUIRED',403); },
+  'circuit breaker': ctx => { if(Date.now()-ctx.startedAt>30000)fail('ADMIN_OPERATION_UNAVAILABLE',503);adminPolicyShapeV545(ctx); },
+  'MFA': async ctx => { if(ctx.method!=='OPTIONS'&&!['admin_entry','admin_security_report','admin_login'].includes(ctx.action)&&!ADMIN_FACTOR_ACTIONS_V545.has(ctx.action)){const ops=adminPreludeOpsV545(ctx),scope=checkOperations(ops);await session(ops,scope,ctx.action!=='admin_status'&&ctx.action!=='admin_logout');} },
+  'integrity': ctx => { const proof=CENTRAL_V545.audit(ctx.req);if(!proof||proof.completed!==29||proof.current!==29||ADMIN_CENTRAL_CONTEXTS_V545.get(ctx.req)!==ctx)fail('ADMIN_FULL_GUARD_REQUIRED',503);adminPolicyShapeV545(ctx); }
+}));
+async function adminHandler(req,res) {
+  const ctx={req,res,method:String(req&&req.method||'').toUpperCase(),startedAt:Date.now(),origin:'',bodyReady:false,bodyConsumed:false};
+  ADMIN_CENTRAL_CONTEXTS_V545.set(req,ctx);
+  try {
+    const outcome=await CENTRAL_V545.run(req,res,'admin',ADMIN_CENTRAL_POLICY_V545,async(stage)=>{await stage.guard(ctx);return CENTRAL_V545.PASSED;});
+    if(!outcome.passed)return outcome.value;
+    CENTRAL_V545.assertPassed(req,res,'admin');
+    res.setHeader('X-Dirac-Central-Security-Guard',CENTRAL_V545.version);
+    return await adminDispatchV545(req,res);
+  } catch(error) {
+    const centralBan=await adminCentralBanFailure(req,error);
+    try { if(ctx.origin)setCommonHeaders(res,ctx.origin);else{res.setHeader('Cache-Control','no-store');res.setHeader('Content-Type','application/json; charset=utf-8');res.setHeader('X-Content-Type-Options','nosniff');} } catch(_){}
+    return adminBanResponse(res,error,centralBan);
+  } finally { if(ctx.stageState&&ctx.stageState.deactivate)ctx.stageState.deactivate();ADMIN_CENTRAL_CONTEXTS_V545.delete(req);CENTRAL_V545.close(req,res); }
+}
+
 Object.defineProperties(adminHandler, {
   config: { value: Object.freeze({ api: Object.freeze({ bodyParser: false }) }), enumerable: true },
   __diracAdminBusinessV405: { value: adminBusiness },

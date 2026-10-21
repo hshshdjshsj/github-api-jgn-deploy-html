@@ -926,7 +926,7 @@ function invoicePdfEncryptV440(objects, password, rootId = 1) {
   for (let index = 0; index < objects.length; index += 1) {
     if (!Object.hasOwn(objects, index)) throw new Error('INVOICE_PDF_OBJECT_INVALID');
   }
-  const key = crypto.randomBytes(32);
+  const key = require('../lib/data-protection.js').randomCipherKeyV546('invoice-pdf');
   const owner = Buffer.from(crypto.randomBytes(32).toString('hex'), 'ascii');
   const user = Buffer.from(password, 'ascii');
   const aes = (algorithm, material, iv, input, padding) => {
