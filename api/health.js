@@ -33906,6 +33906,12 @@ function orderMailCatalogImagePath(productDocId, value) {
   return fileName;
 }
 function orderMailProductAssetUrl(productDocId, value) {
+  const imageId = Number(productDocId);
+  const catalogImage = imageId >= 1001 && imageId <= 1037
+    && String(productDocId).trim() === String(imageId)
+    ? DIRAC_EMBEDDED_PERFUME_CATALOG_V602.products[imageId - 1]?.image_url : '';
+  if (catalogImage && String(value || '').trim() === catalogImage
+      && /^https:\/\/[A-Za-z0-9.-]+\/imgdrc\/sarung(?:[1-9]\d{0,2}|1000)\.webp$/.test(catalogImage)) return catalogImage;
   const clean = orderMailAssetUrl(orderMailCatalogImagePath(productDocId, value));
   if (!clean) return '';
   try {
