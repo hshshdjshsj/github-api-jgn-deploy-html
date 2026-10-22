@@ -947,12 +947,20 @@ function invoicePdfEncryptV440(objects, password, rootId = 1) {
     if (!Object.hasOwn(objects, index)) throw new Error('INVOICE_PDF_OBJECT_INVALID');
   }
   const configuredOwnerPassword = process.env.DIRAC_INVOICE_PDF_OWNER_PASSWORD;
-  if (configuredOwnerPassword && (!/^[\x21-\x7e]{20,96}$/.test(configuredOwnerPassword)
-      || !/[A-Z]/.test(configuredOwnerPassword) || !/[a-z]/.test(configuredOwnerPassword)
-      || !/[0-9]/.test(configuredOwnerPassword) || !/[^A-Za-z0-9]/.test(configuredOwnerPassword)))
+  // PDF Standard Security Handler R6 accepts Unicode after SASLprep normalization.
+  // Reject only strings that PDF password processing cannot represent safely;
+  // never replace a configured value with a random owner password.
+  if (configuredOwnerPassword !== undefined && (!configuredOwnerPassword.isWellFormed()
+      || /[\u0000-\u001f\u007f-\u009f]/u.test(configuredOwnerPassword)))
     throw new Error('INVOICE_PDF_OWNER_PASSWORD_CONFIG_INVALID');
+  const ownerText = configuredOwnerPassword === undefined ? crypto.randomBytes(32).toString('hex')
+    : configuredOwnerPassword
+        .replace(/[\u00ad\u034f\u1806\u180b-\u180d\u200b-\u200d\u2060\ufe00-\ufe0f\ufeff]/gu, '')
+        .replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu, ' ')
+        .normalize('NFKC');
+  if (!ownerText) throw new Error('INVOICE_PDF_OWNER_PASSWORD_CONFIG_INVALID');
   const key = require('../lib/data-protection.js').randomCipherKeyV546('invoice-pdf');
-  const owner = Buffer.from(configuredOwnerPassword || crypto.randomBytes(32).toString('hex'), 'ascii');
+  const owner = Buffer.from(ownerText, 'utf8').subarray(0, 127);
   const user = Buffer.from(password, 'ascii');
   const aes = (algorithm, material, iv, input, padding) => {
     const cipher = crypto.createCipheriv(algorithm, material, iv);
@@ -960,6 +968,8 @@ function invoicePdfEncryptV440(objects, password, rootId = 1) {
     return Buffer.concat([cipher.update(input), cipher.final()]);
   };
   try {
+    if (owner.length === user.length && crypto.timingSafeEqual(owner, user))
+      throw new Error('INVOICE_PDF_OWNER_PASSWORD_CONFIG_INVALID');
     const userSalt = crypto.randomBytes(16), ownerSalt = crypto.randomBytes(16), empty = Buffer.alloc(0);
     const U = Buffer.concat([invoicePdfHashV440(user, userSalt.subarray(0, 8), empty), userSalt]);
     const userKey = invoicePdfHashV440(user, userSalt.subarray(8), empty);
