@@ -64437,7 +64437,7 @@ function diracInvoiceInputV440(ctx, source) {
           || typeof source.cache_digest !== 'string' || !/^[a-f0-9]{64}$/.test(source.cache_digest)
           || !Number.isInteger(source.cache_pages) || source.cache_pages < 1 || source.cache_pages > 64
           || typeof source.cache_content !== 'string' || !/^[a-f0-9]{64}$/.test(source.cache_content)
-          || typeof source.cache_box !== 'string' || (source.format === 'pdf' ? !/^[A-Za-z0-9_-]{48}$/.test(source.cache_box) : source.cache_box !== '')
+          || typeof source.cache_box !== 'string' || (source.format === 'pdf' ? !/^(?:[A-Za-z0-9_-]{48}|[A-Za-z0-9_-]{70})$/.test(source.cache_box) : source.cache_box !== '')
           || typeof source.cache_proof !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(source.cache_proof))) return { ok:false,reason:'invoice_cache_contract_invalid_v537' };
   }
   if (ctx.action === 'invoice_email_unlock' && (typeof source.file_id !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(source.file_id)
