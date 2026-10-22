@@ -343,7 +343,7 @@ function invoiceCacheReceiptV537(input) {
       || typeof input.cache_digest !== 'string' || !/^[a-f0-9]{64}$/.test(input.cache_digest)
       || !Number.isInteger(input.cache_pages) || input.cache_pages < 1 || input.cache_pages > 64
       || typeof input.cache_content !== 'string' || !/^[a-f0-9]{64}$/.test(input.cache_content)
-      || typeof input.cache_box !== 'string' || (input.format === 'pdf' ? !/^[A-Za-z0-9_-]{48}$/.test(input.cache_box) : input.cache_box !== '')
+      || typeof input.cache_box !== 'string' || (input.format === 'pdf' ? !/^(?:[A-Za-z0-9_-]{48}|[A-Za-z0-9_-]{70})$/.test(input.cache_box) : input.cache_box !== '')
       || typeof input.cache_proof !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(input.cache_proof)) throw invoiceErrorV440('INVOICE_CACHE_INVALID',409);
   return Object.fromEntries(names.map(name => [name,input[name]]));
 }
@@ -357,22 +357,30 @@ function invoiceCacheMacV537(storageKey, context, box) {
 function invoiceCacheArtifactKeyV537(storageKey, context, box) {
   return invoiceCryptoV440.createHmac('sha256',storageKey).update('DIRAC_INVOICE_CACHE_V537:artifact\0').update(context).update('\0').update(box).digest('base64url');
 }
+function invoiceCacheOwnerTagV537(storageKey) {
+  return invoiceCryptoV440.createHmac('sha256',storageKey).update('DIRAC_INVOICE_PDF_OWNER_POLICY_V537\0')
+    .update(process.env.DIRAC_INVOICE_PDF_OWNER_PASSWORD || '', 'utf8').digest().subarray(0,16);
+}
 function invoiceCacheBoxV537(storageKey, context, value, decrypt) {
   const key = invoiceCryptoV440.createHmac('sha256',storageKey).update('DIRAC_INVOICE_CACHE_V537:pdf-box\0').update(context).digest();
   let plain = null, first = null, tail = null;
   try {
     if (decrypt) {
       const packed = Buffer.from(value,'base64url');
-      if (packed.length !== 36 || packed.toString('base64url') !== value) throw new Error('invalid');
+      if (![36,52].includes(packed.length) || packed.toString('base64url') !== value) throw new Error('invalid');
       const cipher = invoiceCryptoV440.createDecipheriv('aes-256-gcm',key,packed.subarray(0,12));
       cipher.setAAD(Buffer.from(context,'utf8'));cipher.setAuthTag(packed.subarray(-16));
       first = cipher.update(packed.subarray(12,-16));tail = cipher.final();plain = Buffer.concat([first,tail]);
-      if (plain.length !== 8 || !/^\d{8}$/.test(plain.toString('ascii'))) throw new Error('invalid');
-      return plain.toString('ascii');
+      if (![8,24].includes(plain.length) || !/^\d{8}$/.test(plain.toString('ascii',0,8))) throw new Error('invalid');
+      const ownerTag = invoiceCacheOwnerTagV537(storageKey);
+      try { return { code: plain.toString('ascii',0,8), ownerMatches: plain.length === 24
+        ? invoiceCryptoV440.timingSafeEqual(plain.subarray(8),ownerTag)
+        : !process.env.DIRAC_INVOICE_PDF_OWNER_PASSWORD }; }
+      finally { ownerTag.fill(0); }
     }
     if (!/^\d{8}$/.test(value)) throw new Error('invalid');
     const iv = invoiceCryptoV440.randomBytes(12), cipher = invoiceCryptoV440.createCipheriv('aes-256-gcm',key,iv);
-    cipher.setAAD(Buffer.from(context,'utf8'));plain = Buffer.from(value,'ascii');
+    cipher.setAAD(Buffer.from(context,'utf8'));plain = Buffer.concat([Buffer.from(value,'ascii'),invoiceCacheOwnerTagV537(storageKey)]);
     return Buffer.concat([iv,cipher.update(plain),cipher.final(),cipher.getAuthTag()]).toString('base64url');
   } catch (_) { throw invoiceErrorV440('INVOICE_CACHE_INVALID',409); }
   finally { key.fill(0);if (plain) plain.fill(0);if (first) first.fill(0);if (tail) tail.fill(0); }
@@ -456,10 +464,12 @@ async function invoiceBusinessV440(req, res, ops) {
               || verified.document_id !== cached.cache_ref || verified.file_sha256 !== cached.cache_digest || verified.content_sha256 !== content
               || verified.format !== format || verified.page !== page || verified.page_count !== cached.cache_pages || verified.reference !== doc.reference
               || !verified.hidden_pattern_verification || verified.hidden_pattern_verification.verified !== true || verified.hidden_pattern_verification.count !== 20) throw invoiceErrorV440('INVOICE_CACHE_INVALID',409);
-          const code = format === 'pdf' ? invoiceCacheBoxV537(storageKey,context,cached.cache_box,true) : '';
-          ops.assertFullGuard();await ops.verifyOwner();ops.assertFullGuard();
-          invoiceCacheHeadersV537(res,cached,invoiceCacheArtifactKeyV537(storageKey,context,cached.cache_box),code,format,page);
-          return res.status(204).end();
+          const cachedKey = format === 'pdf' ? invoiceCacheBoxV537(storageKey,context,cached.cache_box,true) : { code:'', ownerMatches:true };
+          if (cachedKey.ownerMatches) {
+            ops.assertFullGuard();await ops.verifyOwner();ops.assertFullGuard();
+            invoiceCacheHeadersV537(res,cached,invoiceCacheArtifactKeyV537(storageKey,context,cached.cache_box),cachedKey.code,format,page);
+            return res.status(204).end();
+          }
         }
       }
       const verification = await ops.prepareDocument(doc), printable = { ...doc, verification };
