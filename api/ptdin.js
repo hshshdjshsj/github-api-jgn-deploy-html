@@ -446,8 +446,10 @@ async function invoiceBusinessV440(req, res, ops) {
     return publish(429, { ok: false, code: 'INVOICE_SEND_DAILY_LIMIT', prepared: true, delivery_status: held.state, status: held.state,
       next_allowed_at: invoiceIsoV440(next) });
   }
+  let exportStageV538 = 'entry';
   try {
     if (ops.action === 'invoice_document_export') {
+      exportStageV538 = 'read_order';
       const doc = await ops.document();
       if (!doc || doc.eligible !== true || doc.id !== order) throw invoiceErrorV440('INVOICE_PAID_REQUIRED',409);
       const format = input.format, page = input.page;
@@ -472,15 +474,19 @@ async function invoiceBusinessV440(req, res, ops) {
           }
         }
       }
+      exportStageV538 = 'prepare_document';
       const verification = await ops.prepareDocument(doc), printable = { ...doc, verification };
       if (format === 'png' && page > verification.identity.page_count) throw invoiceErrorV440('INVOICE_EXPORT_PAGE_INVALID',400);
       const code = format === 'pdf' ? invoiceRandomCodeV440() : '';
+      exportStageV538 = format === 'png' ? 'render_png' : 'render_pdf';
       const bytes = format === 'png' ? invoicePdfObjectsV440.png(printable,page) : invoicePdfEncryptV440(invoicePdfObjectsV440(printable),code);
+      exportStageV538 = 'seal_document';
       const sealed = await ops.sealDocument(bytes,verification,format,page);
       const receipt = { cache_ref:sealed.document_id,cache_digest:sealed.file_sha256,cache_pages:verification.identity.page_count,cache_content:content,cache_box:'',cache_proof:'' };
       const context = invoiceCacheContextV537(identity,scope,input,receipt);
       if (code) receipt.cache_box = invoiceCacheBoxV537(storageKey,context,code,false);
       receipt.cache_proof = invoiceCacheMacV537(storageKey,context,receipt.cache_box);
+      exportStageV538 = 'verify_owner';
       ops.assertFullGuard();await ops.verifyOwner();ops.assertFullGuard();
       invoiceCacheHeadersV537(res,receipt,invoiceCacheArtifactKeyV537(storageKey,context,receipt.cache_box),code,format,page);
       return res.status(200).end(sealed.file);
@@ -548,8 +554,12 @@ async function invoiceBusinessV440(req, res, ops) {
     } finally { if (attachment) attachment.fill(0); }
   } catch (error) {
     ops.assertFullGuard();
+    const ownerConfigInvalidV538 = ops.action === 'invoice_document_export' && error && error.message === 'INVOICE_PDF_OWNER_PASSWORD_CONFIG_INVALID';
+    if (ops.action === 'invoice_document_export' && ![400,409].includes(Number(error && error.status))) {
+      try { console.warn('[dirac-invoice-export-v538]', JSON.stringify({ stage:exportStageV538, reason:ownerConfigInvalidV538 ? 'OWNER_CONFIG_INVALID' : (error && /^INVOICE_[A-Z0-9_]{3,80}$/.test(error.message) ? error.message : (error && error.code === 'MODULE_NOT_FOUND' ? 'MODULE_NOT_FOUND' : 'UNCLASSIFIED')) })); } catch (_) {}
+    }
     const allowed = ['INVOICE_CACHE_INVALID', 'INVOICE_PDF_INVALID', 'INVOICE_CONTENT_TOO_LONG', 'INVOICE_PAID_REQUIRED', 'INVOICE_DOCUMENT_INVALID', 'INVOICE_ATTACHMENT_LIMIT', 'INVOICE_STORAGE_UNAVAILABLE', 'INVOICE_KEY_UNAVAILABLE', 'INVOICE_RECORD_INVALID', 'INVOICE_RANDOM_UNAVAILABLE', 'INVOICE_OWNER_UNAVAILABLE', 'INVOICE_PAID_EVIDENCE_UNAVAILABLE'];
-    return res.status(allowed.includes(error && error.code) && [400,409].includes(error.status) ? error.status : 503).json({ ok: false, code: allowed.includes(error && error.code) ? error.code : 'INVOICE_TEMPORARILY_UNAVAILABLE' });
+    return res.status(allowed.includes(error && error.code) && [400,409].includes(error.status) ? error.status : 503).json({ ok: false, code: ownerConfigInvalidV538 ? 'INVOICE_PDF_OWNER_PASSWORD_CONFIG_INVALID' : (allowed.includes(error && error.code) ? error.code : 'INVOICE_TEMPORARILY_UNAVAILABLE') });
   } finally { if (storageKey) storageKey.fill(0); }
 }
 
