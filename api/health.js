@@ -24597,7 +24597,7 @@ async function diracPasskeyA2FListActivePasskeys(owner, freshAfterMutation = fal
       + (freshAfterMutation === true
         ? '&rotation_state=eq.active&order=updated_at.desc,created_at.desc&limit=20'
         : '&order=created_at.desc&limit=20');
-    const result = await supabaseFetch(path, { method: 'GET', auth: 'service' });
+    const result = await supabaseFetch(path, { method: 'GET', auth: 'service', timeoutMs: (typeof diracCentralCurrentContextV149 === 'function' && diracCentralCurrentContextV149()?.action === 'dirac_mfa_passkey_verify') ? 12000 : undefined });
     const passkeyRows = result.ok ? result.data : null;
     if (!result.ok || !Array.isArray(passkeyRows)) {
       const error = new Error('PASSKEY_ACTIVE_STATE_READ_FAILED');
@@ -24741,7 +24741,7 @@ async function diracPasskeyA2FFetchByCredentialId(credentialId, owner, readbackA
     + (readbackAfterInsert === true
       ? '&is_active=eq.true&order=created_at.desc&limit=2'
       : '&limit=1');
-  return supabaseFetch(path, { method: 'GET', auth: 'service' });
+  return supabaseFetch(path, { method: 'GET', auth: 'service', timeoutMs: (typeof diracCentralCurrentContextV149 === 'function' && diracCentralCurrentContextV149()?.action === 'dirac_mfa_passkey_verify') ? 12000 : undefined });
 }
 
 
@@ -24820,7 +24820,7 @@ async function diracPasskeyA2FFetchCredentialStateV237({ owner, credentialId, ro
   if (rowId) path += '&id=eq.' + encodeURIComponent(rowId);
   if (activeOnly === true) path += '&is_active=eq.true&rotation_state=eq.active';
   path += '&order=updated_at.desc,created_at.desc&limit=2';
-  return supabaseFetch(path, { method: 'GET', auth: 'service' });
+  return supabaseFetch(path, { method: 'GET', auth: 'service', timeoutMs: (typeof diracCentralCurrentContextV149 === 'function' && diracCentralCurrentContextV149()?.action === 'dirac_mfa_passkey_verify') ? 12000 : undefined });
 }
 
 function diracPasskeyA2FExpectedEpochV237(payload) {
