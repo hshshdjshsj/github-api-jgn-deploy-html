@@ -339,6 +339,16 @@ async function dbFetch(path, options = {}, target = '') {
   const cleanPath = String(path || '');
   const method = String(options.method || 'GET').toUpperCase();
   if (!cleanPath.startsWith('/rest/v1/') || cleanPath.startsWith('//') || cleanPath.includes('\\') || /[\r\n\0]/.test(cleanPath) || !['GET', 'POST', 'PATCH'].includes(method)) fail('ADMIN_DATABASE_REQUEST_INVALID', 503);
+  // Validate the final URL interpretation before attaching service credentials.
+  // Encoded filter values remain untouched; only pathname ambiguity is rejected.
+  let parsedPathV547;
+  try { parsedPathV547 = new URL(cleanPath, 'https://database.invalid'); }
+  catch (_) { fail('ADMIN_DATABASE_REQUEST_INVALID', 503); }
+  if (parsedPathV547.origin !== 'https://database.invalid' || parsedPathV547.hash
+      || parsedPathV547.pathname !== cleanPath.split('?', 1)[0]
+      || !/^\/rest\/v1\/(?:rpc\/)?[a-z_][a-z0-9_]*$/.test(parsedPathV547.pathname)) {
+    fail('ADMIN_DATABASE_REQUEST_INVALID', 503);
+  }
   let creds;
   if (/^\/rest\/v1\/(?:domain_orders|domain_order_items)(?:[?]|$)/.test(cleanPath)) fail('DOMAIN_ORDERS_RETIRED', 410);
   if (target === 'commerce' && cleanPath === '/rest/v1/rpc/dirac_admin_order_change_v1') creds = businessTarget('orders');
@@ -964,25 +974,17 @@ async function durableEnrollmentRead(key, migrate = true) {
     if (!row || row.security_key !== key || !row.record_json || row.revision !== row.record_json.revision) fail('ADMIN_ENROLLMENT_INVALID', 503);
     return { ok: true, found: true, record: validateDurableEnrollment(key, row.record_json) };
   }
-  if (migrate) {
-    // One-time, same-origin import; never overwrite a newer durable enrollment.
-    // Expired/deleted legacy rows are NOT silently resurrected.
-    const legacy = await securityRead(key);
-    if (!legacy || legacy.ok !== true) fail('ADMIN_PASSKEY_MIGRATION_UNAVAILABLE', 503);
-    if (legacy.found === true) {
-      const record = validateDurableEnrollment(key, legacy.record);
-      if (await durableEnrollmentClaim(key, record)) return { ok: true, found: true, record };
-      return durableEnrollmentRead(key, false);
-    }
-  }
+  // Owner deletion is authoritative; never resurrect an older factor record.
   return { ok: true, found: false };
 }
 async function durableEnrollmentClaim(key, value) {
   const record = validateDurableEnrollment(key, value);
+  if (record.enrollmentState !== 'pending_totp') fail('ADMIN_FACTORS_IMMUTABLE', 403);
   const result = await dbFetch('/rest/v1/' + ADMIN_PASSKEY_TABLE + '?on_conflict=security_key&select=security_key,revision', {
     method: 'POST', prefer: 'resolution=ignore-duplicates,return=representation',
     body: { security_key: key, revision: record.revision, record_json: record, updated_at: new Date().toISOString() }
   }, 'security');
+  if (!result.ok && result.status === 409 && result.data && result.data.code === '23505') return false;
   assertPasskeyStoreResultV454(result, 'claim');
   if (!result.data.length) return false;
   if (result.data[0].security_key !== key || result.data[0].revision !== record.revision) fail('ADMIN_PASSKEY_WRITE_UNVERIFIED', 503);
@@ -1876,18 +1878,6 @@ function configKey(scope) { return PREFIX + 'enrollment:' + digest(scope.owner +
 async function stored(ops, key) { ops.assertFullGuard(); const result = await ops.read(key); ops.assertFullGuard(); if (!result || result.ok !== true) fail('ADMIN_STORE_UNAVAILABLE', 503); return result.found === true ? result.record : null; }
 async function config(ops, scope) {
   const key = configKey(scope); let value = await stored(ops, key);
-  if (!value) {
-    const legacyOwner = legacyAdminOwnerV466(), legacyKey = configKey({ owner: legacyOwner, origin: scope.origin });
-    if (legacyKey !== key) {
-      const legacy = await stored(ops, legacyKey);
-      if (legacy) {
-        const migrated = { ...legacy, owner: scope.owner, revision: randomToken(), legacyConfigKeyV466: legacyKey };
-        if (ops.readOnlyPreludeV545 === true) value = migrated;
-        else if (await ops.claim(key, migrated, migrated.enrollmentState === 'pending_totp' ? PENDING_ENROLLMENT_SECONDS : ENROLLMENT_SECONDS) === true) value = migrated;
-        else value = await stored(ops, key);
-      }
-    }
-  }
   if (!value) return null;
   const enrollmentState = value.enrollmentState === undefined ? 'active' : value.enrollmentState;
   if (value.version !== VERSION || value.owner !== scope.owner || value.origin !== scope.origin || !exactToken(value.revision) || !value.passkey || !exactToken(value.userHandle) || !Number.isSafeInteger(value.passkey.signCount) || value.passkey.signCount < 0 || typeof value.totp !== 'string' || !['active', 'pending_totp'].includes(enrollmentState)) fail('ADMIN_ENROLLMENT_INVALID', 503);
@@ -1931,7 +1921,18 @@ async function consume(ops, entry) { const remaining = Math.max(60, Math.ceil((e
 async function throttle(ops, scope, name, limit, seconds) { if (await ops.takeRate(PREFIX + 'rate:' + digest(scope.owner + ':' + scope.origin + ':' + name), limit, seconds) !== true) fail('ADMIN_RATE_LIMITED', 429); }
 async function session(ops, scope, must = true, enforceFactorGuard = true) {
   const raw = ops.readSession(); if (!exactToken(raw)) { if (must) fail('ADMIN_THREE_FACTORS_REQUIRED', 401); return null; }
-  try { const entry = await ticket(ops, scope, raw, 'session'); if (entry.value.factors !== 'email+passkey+totp') fail('ADMIN_THREE_FACTORS_REQUIRED', 401); if (enforceFactorGuard) assertAdminFactorGuardV466(await config(ops, scope)); return entry; }
+  try {
+    const entry = await ticket(ops, scope, raw, 'session');
+    if (entry.value.factors !== 'email+passkey+totp') fail('ADMIN_THREE_FACTORS_REQUIRED', 401);
+    if (enforceFactorGuard) {
+      const enrolled = await config(ops, scope);
+      if (!enrolled || enrolled.enrollmentState !== 'active') fail('ADMIN_THREE_FACTORS_REQUIRED', 401);
+      assertAdminFactorGuardV466(enrolled);
+      if (typeof entry.value.factorBinding !== 'string' || !/^[a-f0-9]{64}$/.test(entry.value.factorBinding)
+          || !safeEqual(entry.value.factorBinding, digest(enrolled.factorGuardV466))) fail('ADMIN_THREE_FACTORS_REQUIRED', 401);
+    }
+    return entry;
+  }
   catch (error) { if (!must && [401, 409].includes(error.status)) return null; throw error; }
 }
 function validateClientData(credential, proof, scope) {
@@ -2016,7 +2017,8 @@ async function execute(ops) {
     return { ok: true, approval, operation: proof.operation, expires_in: EMAIL_CODE_SECONDS, one_time: true };
   }
   if (action === 'admin_passkey_start') {
-    const entry = await ticket(ops, scope, body.ticket, 'passkey-start'), enrolled = await config(ops, scope); await consume(ops, entry);
+    const entry = await ticket(ops, scope, body.ticket, 'passkey-start'), enrolled = await config(ops, scope);
+    await consume(ops, entry);
     const challenge = randomToken(), userHandle = enrolled ? enrolled.userHandle : randomToken(), mode = enrolled ? 'authentication' : 'registration';
     const token = await issue(ops, scope, 'passkey', { challenge, mode, userHandle, revision: enrolled ? enrolled.revision : null });
     const publicKey = mode === 'registration' ? { challenge, rp: { id: scope.rpId, name: 'PT DIRAC INOVASI NUSANTARA' }, user: { id: userHandle, name: ADMIN_EMAIL_MASKED, displayName: 'Administrator DIRAC' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, attestation: 'none' } : { challenge, rpId: scope.rpId, userVerification: 'required', timeout: 60000, allowCredentials: [{ id: enrolled.passkey.credentialId, type: 'public-key' }] };
@@ -2061,7 +2063,7 @@ async function execute(ops) {
     try { const current = Math.floor(Date.now() / 30000), match = [current, current - 1, current + 1].find(counter => safeEqual(totp(secret, counter), body.code)); accepted = Number.isSafeInteger(match) ? match : null; } finally { secret.fill(0); }
     if (accepted === null) fail('ADMIN_TOTP_INVALID', 401); if (await ops.claim(PREFIX + 'totp-used:' + digest(scope.owner + ':' + scope.origin + ':' + enrolled.totp + ':' + accepted), { version: VERSION }, 120) !== true) fail('ADMIN_TOTP_ALREADY_USED', 409); await consume(ops, entry);
     if (proof.enroll) { const active = { ...enrolled, enrollmentState: 'active', revision: randomToken(), activatedAt: Date.now() }; if (await ops.replace(configKey(scope), enrolled.revision, active, ENROLLMENT_SECONDS) !== true) fail('ADMIN_ENROLLMENT_STATE_CHANGED', 409); }
-    const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp' }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); const loginAlert = await ops.loginAlert(); return { ok: true, login_alert_sent: loginAlert && loginAlert.ok === true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
+    const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp', factorBinding: digest(enrolled.factorGuardV466) }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); const loginAlert = await ops.loginAlert(); return { ok: true, login_alert_sent: loginAlert && loginAlert.ok === true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_logout') { const active = await session(ops, scope, false, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
   await session(ops, scope); const operation = { admin_account_lookup: 'account_lookup', admin_account_upgrade: 'account_upgrade', admin_orders: 'orders', admin_order_cancel: 'order_cancel', admin_order_price: 'order_price', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_banned_data: 'banned_data', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_account_disable: 'account_create', admin_account_enable: 'account_create', admin_account_delete: 'account_create', admin_account_password_reset: 'account_create', admin_account_passkey_reset: 'account_create', admin_partner_requests: 'partner_requests', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
@@ -3385,6 +3387,7 @@ async function replaceEnrollment(records, key, expectedRevision, record, ttl) {
   if (!enrollmentKey(key) || !previous || previous.revision !== expectedRevision || !record || record.revision === expectedRevision || ttl !== expectedTtl) fail('ADMIN_STORAGE_COMPARE_INVALID', 503);
   const next = validateDurableEnrollment(key, record), prior = previous.record;
   if (!prior || !safeEqual(adminFactorIdentityV507(prior), adminFactorIdentityV507(next))
+      || next.factorGuardV466 !== prior.factorGuardV466 || next.totp !== prior.totp
       || (prior.enrollmentState === 'active' && next.enrollmentState !== 'active')
       || next.passkey.signCount < prior.passkey.signCount
       || (prior.totpFiveKeysV545 === true && next.totpFiveKeysV545 !== true)
@@ -3429,7 +3432,15 @@ function buildOps(req, res, state) {
 function setCommonHeaders(res, origin) {
   res.setHeader('Cache-Control', 'no-store, max-age=0'); res.setHeader('Pragma', 'no-cache'); res.setHeader('Expires', '0'); res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'same-origin'); res.setHeader('Vary', 'Origin'); res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Access-Control-Allow-Credentials', 'true'); res.setHeader('Access-Control-Expose-Headers', 'X-Dirac-CSRF-Token, X-Dirac-Page-Nonce, X-Dirac-Central-Ban, Retry-After'); res.setHeader('Content-Type', 'application/json; charset=utf-8');
 }
-function queryObject(query) { const out = {}; query.forEach((value, key) => { if (Object.prototype.hasOwnProperty.call(out, key)) fail('ADMIN_QUERY_DUPLICATE', 400); out[key] = value; }); return out; }
+function queryObject(query) {
+  const out = Object.create(null);
+  query.forEach((value, key) => {
+    if (['__proto__', 'prototype', 'constructor'].includes(key)) fail('ADMIN_QUERY_FIELD_INVALID', 400);
+    if (Object.prototype.hasOwnProperty.call(out, key)) fail('ADMIN_QUERY_DUPLICATE', 400);
+    out[key] = value;
+  });
+  return out;
+}
 async function readJsonBody(req, maximum) {
   const preparedV545 = ADMIN_CENTRAL_CONTEXTS_V545.get(req);
   if (preparedV545 && preparedV545.bodyReady && !preparedV545.bodyConsumed) {
@@ -3579,12 +3590,7 @@ function adminPreludeOpsV545(ctx) {
     readSession: () => { assertRead(); return cookieToken(ctx.req, SESSION_COOKIE); },
     read: async key => {
       assertRead(); if (!allowedAdminKey(key)) fail('ADMIN_STORAGE_KEY_INVALID', 503);
-      let result = enrollmentKey(key) ? await durableEnrollmentRead(key, false) : await securityRead(key);
-      if (enrollmentKey(key) && result.ok && !result.found) {
-        const legacy = await securityRead(key);
-        if (!legacy || legacy.ok !== true) fail('ADMIN_PASSKEY_MIGRATION_UNAVAILABLE', 503);
-        if (legacy.found) result = { ok: true, found: true, record: validateDurableEnrollment(key, legacy.record) };
-      }
+      const result = enrollmentKey(key) ? await durableEnrollmentRead(key, false) : await securityRead(key);
       assertRead(); return result;
     }
   });
