@@ -19065,7 +19065,7 @@ function sessionOwnershipCheckoutShippingMode(body) {
   return raw;
 }
 
-function sessionOwnershipCheckoutBuildShippingQuote(body, shippingInput, taxableAmount) {
+function sessionOwnershipCheckoutBuildShippingQuote(body, shippingInput, taxableAmount, isParfumCheckout) {
   const input = shippingInput && typeof shippingInput === 'object' ? shippingInput : {};
   const mode = sessionOwnershipCheckoutShippingMode(body);
   const itemCount = sessionOwnershipCheckoutPositiveInteger(input.itemCount || 0, 0, 49950);
@@ -19095,12 +19095,16 @@ function sessionOwnershipCheckoutBuildShippingQuote(body, shippingInput, taxable
   const extraKg = Math.max(0, billableKg - 1);
   const extraItems = Math.max(0, itemCount - 1);
   const standardRaw = band.base + (extraKg * band.perKg) + (extraItems * band.perExtraItem) + regionalSurcharge;
-  const grossShipping = mode === 'pickup' ? 0 : Math.max(55000, Math.ceil((mode === 'express' ? standardRaw * 1.6 : standardRaw) / 1000) * 1000);
-  const shippingCost = grossShipping;
+  const roundedShipping = Math.ceil((mode === 'express' ? standardRaw * 1.6 : standardRaw) / 1000) * 1000;
+  const grossShipping = mode === 'pickup' ? 0 : (isParfumCheckout === true ? roundedShipping : Math.max(55000, roundedShipping));
+  // No authenticated courier rate is configured: disclose and reserve 20% only on delivery.
+  const uncertainRateBuffer = isParfumCheckout === true && mode !== 'pickup' ? Math.ceil(grossShipping / 5) : 0;
+  const shippingCost = grossShipping + uncertainRateBuffer;
   return {
     mode,
     shippingCost,
     grossShipping,
+    ...(isParfumCheckout === true ? { uncertainRateBuffer, uncertainRateBufferPercent: mode === 'pickup' ? 0 : 20 } : {}),
     freeShippingSubsidy: 0,
     originCode: origin.code,
     originLabel: origin.label,
@@ -19572,7 +19576,7 @@ async function sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, s
   const discount = Math.min(baseSubtotal, sessionOwnershipCheckoutNonNegativeMoney(rawDiscount));
   const taxableAmount = Math.max(0, baseSubtotal - discount);
   const taxAmount = Math.round(taxableAmount * DIRAC_COMMERCE_PRICING_V401.taxEffectiveRateBps / 10000);
-  const shippingQuote = sessionOwnershipCheckoutBuildShippingQuote(body, shippingInput, taxableAmount);
+  const shippingQuote = sessionOwnershipCheckoutBuildShippingQuote(body, shippingInput, taxableAmount, serviceType === 'parfum');
   const shippingCost = shippingQuote.shippingCost;
   const total = Math.max(0, taxableAmount + taxAmount + shippingCost);
 
