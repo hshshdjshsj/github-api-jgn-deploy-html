@@ -18880,7 +18880,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
 function sessionOwnershipCheckoutExtractParfumItems(body, requestedProductTitle, fallbackQuantity) {
   const items = [];
   const rawItems = Array.isArray(body && body.items) ? body.items : [];
-  if (rawItems.length > 50) return [];
+  if (rawItems.length > 100) return [];
 
   for (const raw of rawItems) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
@@ -18928,7 +18928,7 @@ function sessionOwnershipCheckoutExtractParfumItems(body, requestedProductTitle,
     if (title) items.push({ product_title: title, title, quantity: qty, qty });
   }
 
-  return items.slice(0, 50);
+  return items.length > 100 ? [] : items;
 }
 
 function sessionOwnershipCheckoutBuildParfumQuoteTitle(items) {
@@ -66453,7 +66453,7 @@ function diracCentralCheckoutOrderFieldWidthV191(ctx, flat) {
 
   const items = body.items;
   if (!Array.isArray(items)) return { ok: false, reason: 'zeroday_checkout_items_invalid' };
-  if (items.length > 50) return { ok: false, reason: 'zeroday_checkout_items_too_many' };
+  if (items.length > 100) return { ok: false, reason: 'zeroday_checkout_items_too_many' };
 
   const contract = diracCentralContractForActionV146(ctx.action);
   const allowed = new Set(['action'].concat(contract.allowed || []));
@@ -66499,7 +66499,7 @@ function diracCentralZeroDayShieldV146(req, ctx, normalized) {
   if (flat.truncated) return { ok: false, reason: 'zeroday_inspection_limit' };
   const checkoutWidth = diracCentralCheckoutOrderFieldWidthV191(ctx, flat);
   if (!checkoutWidth.ok) return checkoutWidth;
-  if (checkoutWidth.width > 80) return { ok: false, reason: 'zeroday_field_too_many' };
+  if (checkoutWidth.width > (ctx.action === 'checkout_order' && ctx.method === 'POST' ? 120 : 80)) return { ok: false, reason: 'zeroday_field_too_many' };
   if (flat.some((item) => item.depth > 5)) return { ok: false, reason: 'zeroday_nested_too_deep' };
   if (String(ctx.sample || '').length > 10 * 1024) return { ok: false, reason: 'zeroday_payload_too_long' };
   const headers = req && req.headers || {};
@@ -68308,7 +68308,7 @@ function diracCentralCheckoutOrderItemRowsSafeV152(body) {
     'shipping_width_cm',
     'shipping_height_cm'
   ]);
-  if (!rows.length || rows.length > 50) return false;
+  if (!rows.length || rows.length > 100) return false;
   return rows.every((row) => {
     if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
     const keys = Object.keys(row);
