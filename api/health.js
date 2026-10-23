@@ -8619,6 +8619,12 @@ function diracBanStorageValidateV501(row) {
   const aliases = record.entries.map(entry => entry.security_key).sort();
   const prefixes = diracBanStoragePrefixesV501(record.entries);
   const aliasHashes = aliases.map(key => diracCentralHashV146('compact-ban-alias-v501:' + key)).sort();
+  if (Object.prototype.hasOwnProperty.call(record, 'identity_email_hash_v551')
+      && (record.identity_email_verified !== true || !isValidAuthEmail(normalizeAuthEmail(record.identity_email || ''))
+        || typeof record.identity_email_hash_v551 !== 'string'
+        || !safeEqual(record.identity_email_hash_v551, diracCentralHashV146('compact-ban-email-v551:' + normalizeAuthEmail(record.identity_email))))) {
+    throw new Error('BAN_STORAGE_ACCOUNT_HASH_INVALID');
+  }
   if (new Set(aliases).size !== aliases.length
       || aliases.join('\n') !== record.aliases.join('\n')
       || aliasHashes.join('\n') !== record.alias_hashes.join('\n')
@@ -8627,9 +8633,38 @@ function diracBanStorageValidateV501(row) {
   return record;
 }
 
+function diracBanStorageAccountV551(req) {
+  if (!req || typeof req !== 'object') return null;
+  const bindingV551 = DIRAC_BAN_STORAGE_CONTEXT_V501.getStore();
+  if (bindingV551 && bindingV551.origin === req && bindingV551.accountV551) return bindingV551.accountV551;
+  const ctx = diracCentralCurrentContextV149();
+  const current = ctx && ctx.req === req ? ctx : null;
+  const proof = DIRAC_CENTRAL_BAN_VERIFIED_USERS_V357.get(req);
+  const publication = proof && current && proof.ctx === current
+    && proof.requestId === String(current.requestId || '') ? proof : null;
+  if (publication && customerSecurityLooksLikeUuid(publication.userId)
+      && isValidAuthEmail(normalizeAuthEmail(publication.email))) {
+    return Object.freeze({ id: String(publication.userId).trim().toLowerCase(), email: normalizeAuthEmail(publication.email) });
+  }
+  const signed = readCookieTokenCandidates(parseCookies(req), DOMAIN_SIGNED_SESSION_COOKIE);
+  if (signed.length > 8) throw new Error('BAN_STORAGE_ACCOUNT_AMBIGUOUS');
+  const identities = [
+    current && current.identity && { id: current.identity.verifiedAuthUserId, email: current.identity.verifiedAuthEmail },
+    ...signed.map(verifyDomainSessionCookieValue)
+  ].filter(value => value && customerSecurityLooksLikeUuid(value.id)
+    && isValidAuthEmail(normalizeAuthEmail(value.email)))
+    .map(value => ({ id: String(value.id).trim().toLowerCase(), email: normalizeAuthEmail(value.email) }));
+  const verified = identities.find(value => value);
+  if (!verified) return null;
+  if (identities.some(value => value.id !== verified.id || value.email !== verified.email)) {
+    throw new Error('BAN_STORAGE_ACCOUNT_AMBIGUOUS');
+  }
+  return Object.freeze(verified);
+}
+
 function diracBanStorageOriginV501(req, operation) {
   if (!req || typeof req !== 'object' || typeof operation !== 'function') throw new Error('BAN_STORAGE_ORIGIN_INVALID');
-  return DIRAC_BAN_STORAGE_CONTEXT_V501.run({ origin: req }, operation);
+  return DIRAC_BAN_STORAGE_CONTEXT_V501.run(Object.freeze({ origin: req, accountV551: diracBanStorageAccountV551(req) }), operation);
 }
 
 function diracBanStorageTransportDigestV501(path, options) {
@@ -8640,7 +8675,7 @@ async function diracBanStorageTransportV501(path, options) {
   const current = DIRAC_BAN_STORAGE_CONTEXT_V501.getStore();
   if (current && current.physical === true) return diracBanStorageFailureV501();
   const origin = current && current.origin || (diracCentralCurrentContextV149() || {}).req;
-  const permit = Object.freeze({ origin, physical: true, digest: diracBanStorageTransportDigestV501(path, options) });
+  const permit = Object.freeze({ origin, accountV551: diracBanStorageAccountV551(origin), physical: true, digest: diracBanStorageTransportDigestV501(path, options) });
   return DIRAC_BAN_STORAGE_CONTEXT_V501.run(permit, () => diracCentralRunInternalComplianceContextV230(
     () => supabaseFetch(path, options)
   ));
@@ -8674,6 +8709,20 @@ function diracBanStorageQueryV501(selector) {
   const terms = selector.prefix
     ? ['record_json->prefixes.cs.' + JSON.stringify([selector.prefix])]
     : selector.keys.map(key => 'record_json->alias_hashes.cs.' + JSON.stringify([diracCentralHashV146('compact-ban-alias-v501:' + key)]));
+  const contextV551 = diracCentralCurrentContextV149();
+  const originV551 = (DIRAC_BAN_STORAGE_CONTEXT_V501.getStore() || {}).origin;
+  const accountV551 = selector.keys && diracBanStorageAccountV551(originV551 || contextV551 && contextV551.req);
+  const accountKeyV551 = accountV551 && diracCentralBanAccountKeysV357(accountV551.id)
+    .some(item => selector.keys.includes(item.key));
+  if (accountKeyV551) {
+    terms.push('security_key.eq.' + DIRAC_BAN_STORAGE_PREFIX_V501
+      + diracCentralHashV146('compact-ban-id-v501:verified-account:' + accountV551.id));
+    // Legacy bundles may contain verified encrypted attribution without account aliases.
+    // The reader verifies their signature, live entries and exact account email.
+    terms.push('and(record_json->>identity_email_verified.eq.true,record_json->>identity_email_hash_v551.eq.'
+      + diracCentralHashV146('compact-ban-email-v551:' + accountV551.email) + ')');
+    terms.push('and(record_json->>identity_email_verified.eq.true,record_json->>identity_email_hash_v551.is.null)');
+  }
   const filter = '(' + terms.join(',') + ')';
   if (Buffer.byteLength(filter, 'utf8') > 8192) throw new Error('BAN_STORAGE_QUERY_INVALID');
   return '/rest/v1/' + DIRAC_PERSISTENT_BAN_TABLE
@@ -8690,9 +8739,11 @@ function diracBanStorageIdV501(req, rows) {
   const verified = reportPageV504
     ? (reportPageV504.pathname !== '/masuk.html' && reportProofV504
       ? { verifiedAuthUserId: reportProofV504.userId, verifiedAuthEmail: reportProofV504.email } : null)
-    : context && context.req === req && context.identity;
-  const userId = String(verified && verified.verifiedAuthUserId || '').trim().toLowerCase();
-  const email = normalizeAuthEmail(verified && verified.verifiedAuthEmail || '');
+    : diracBanStorageAccountV551(req);
+  const verifiedIdentityV551 = !reportPageV504 && verified
+    ? { verifiedAuthUserId: verified.id, verifiedAuthEmail: verified.email } : verified;
+  const userId = String(verifiedIdentityV551 && verifiedIdentityV551.verifiedAuthUserId || '').trim().toLowerCase();
+  const email = normalizeAuthEmail(verifiedIdentityV551 && verifiedIdentityV551.verifiedAuthEmail || '');
   if (customerSecurityLooksLikeUuid(userId) && isValidAuthEmail(email)) {
     return diracCentralHashV146('compact-ban-id-v501:verified-account:' + userId);
   }
@@ -8768,6 +8819,7 @@ async function diracBanStorageCommitV501(state, incoming, fields, prefer) {
     created_at: previous ? previous.record_json.created_at : new Date(now).toISOString(), updated_at: new Date(now).toISOString(),
     identity_email: attributed ? normalizeAuthEmail(attributed.identity_email) : null,
     identity_email_verified: Boolean(attributed), identity_email_source: attributed ? String(attributed.identity_email_source || 'record') : 'unavailable_unauthenticated',
+    ...(attributed ? { identity_email_hash_v551: diracCentralHashV146('compact-ban-email-v551:' + normalizeAuthEmail(attributed.identity_email)) } : {}),
     reason: String(original.reason || 'security_ban').slice(0, 500), source: 'compact_ban_storage_v501',
     risk: String(original.risk || original.severity || 'high').slice(0, 40),
     action: String(original.action || '').slice(0, 120), method: String(original.method || '').slice(0, 12)
@@ -8891,7 +8943,23 @@ async function diracBanStorageReadV501(path, options, result, preparedReadV501) 
     const found = await (preparedReadV501 || diracBanStorageTransportV501(diracBanStorageQueryV501(selector), { method: 'GET', auth: 'service' }));
     if (!found || found.ok !== true || !Array.isArray(found.data) || found.data.length > 40
         || new Set(found.data.map(row => row && row.security_key)).size !== found.data.length) return diracBanStorageFailureV501();
-    const candidates = found.data.flatMap(row => diracBanStorageValidateV501(row).entries.filter(entry => selector.matches(entry.security_key, entry)));
+    const contextV551 = diracCentralCurrentContextV149();
+    const accountV551 = selector.keys && diracBanStorageAccountV551(
+      (DIRAC_BAN_STORAGE_CONTEXT_V501.getStore() || {}).origin || contextV551 && contextV551.req);
+    const accountKeyV551 = accountV551 && diracCentralBanAccountKeysV357(accountV551.id)
+      .find(item => selector.keys.includes(item.key));
+    const candidates = found.data.flatMap(row => {
+      const packet = diracBanStorageValidateV501(row);
+      const matched = packet.entries.filter(entry => selector.matches(entry.security_key, entry));
+      const boundV551 = accountKeyV551 && (row.security_key === DIRAC_BAN_STORAGE_PREFIX_V501
+        + diracCentralHashV146('compact-ban-id-v501:verified-account:' + accountV551.id)
+        || packet.identity_email_verified === true
+          && normalizeAuthEmail(packet.identity_email || '') === accountV551.email);
+      if (boundV551 && packet.entries.some(entry => diracBanStorageReadPriorityV501(entry)[0] > Date.now())) {
+        matched.push({ ...row, security_key: accountKeyV551.key });
+      }
+      return matched;
+    });
     const effective = new Map();
     [...result.data, ...candidates.map(entry => diracBanStorageProjectV501(entry, fields))].forEach(row => {
       const old = effective.get(row.security_key);
@@ -37293,13 +37361,14 @@ async function diracCentralReportWriteAccountKeysV504(req) {
 async function diracCentralLoginPublicationBanV357(req, verifiedUser) {
   const ctx = diracCentralCurrentContextV149();
   const userId = String(verifiedUser && verifiedUser.id || '').trim().toLowerCase();
+  const emailV551 = normalizeAuthEmail(verifiedUser && verifiedUser.email || '');
   if (!ctx || ctx.req !== req || !diracCentralHandlerContextFullyPassedV211(ctx, req)
-      || !customerSecurityLooksLikeUuid(userId)) {
+      || !customerSecurityLooksLikeUuid(userId) || !isValidAuthEmail(emailV551)) {
     return { ok: false, blocked: true, reason: 'login_publication_ban_context_invalid' };
   }
   // This internal entry point is called only after authoritative provider user
   // verification. No HTTP body, token payload or mutable request property is used.
-  DIRAC_CENTRAL_BAN_VERIFIED_USERS_V357.set(req, Object.freeze({ ctx, requestId: String(ctx.requestId || ''), userId }));
+  DIRAC_CENTRAL_BAN_VERIFIED_USERS_V357.set(req, Object.freeze({ ctx, requestId: String(ctx.requestId || ''), userId, email: emailV551 }));
   const identity = ctx.identity;
   if (!identity || !String(identity.key || '')) return { ok: false, blocked: true, reason: 'login_publication_ban_identity_missing' };
   try {
@@ -37313,7 +37382,8 @@ async function diracCentralLoginPublicationBanV357(req, verifiedUser) {
     if (!keys.length || keys.length > 40 || keys.some((key) => !/^[A-Za-z0-9:._-]{1,500}$/.test(String(key)))) {
       return { ok: false, blocked: true, reason: 'login_publication_ban_keyset_invalid' };
     }
-    const result = await diracCentralRunInternalComplianceContextV230(() => readPersistentSecurityJsonManyStrictV194(keys));
+    const result = await diracBanStorageOriginV501(req, () =>
+      diracCentralRunInternalComplianceContextV230(() => readPersistentSecurityJsonManyStrictV194(keys)));
     if (!result || result.ok !== true || !Array.isArray(result.records)) {
       return { ok: false, blocked: true, reason: 'login_publication_ban_store_unavailable' };
     }
@@ -58215,7 +58285,7 @@ const DIRAC_CENTRAL_BAN_FUNCTION_HASHES_V221 = Object.freeze({
   diracCentralWritePersistentBanV146: '39aff298cdaa263aeb6d6e4592ea7554d32f2e56006efdef7cffc88a4b8ee89a',
   diracCentralCheckPersistentBanV146: 'c2e2e9a7ab28fe0fc54202459184643ac9df57f0a5445ad5b418ca77fb4b7629',
   diracCentralBlockMsV146: '15ba6d2ca1c5370c7d650b5f82b0e93169f7e9085426877664d962412f7dfce2',
-  diracCentralSetMemoryBanV146: '2aae1755a113d229b2a0c132b6dd75d1a4e239349bafc4c523255c2b2a142ca0'
+  diracCentralSetMemoryBanV146: '6450cdac0972a3608288cca80f7b47568dd1e2ccb4d02c4857f506d96dbd32d1'
 });
 const DIRAC_CENTRAL_BAN_FUNCTIONS_V221 = Object.freeze({
   diracCentralBanAndBlockV146,
@@ -58335,7 +58405,7 @@ const DIRAC_CENTRAL_HIGH_CONFIDENCE_THREATS_V221 = Object.freeze([
   Object.freeze(['xss', /<\s*(?:\/\s*)?script\b|\b(?:j\s*a\s*v\s*a|v\s*b)\s*s\s*c\s*r\s*i\s*p\s*t\s*:|\bon(?:error|load|click|mouseover|focus|blur|submit|toggle|pointerenter|animationstart)\s*=|\bo\s*n\s*(?:e\s*r\s*r\s*o\s*r|l\s*o\s*a\s*d|c\s*l\s*i\s*c\s*k|f\s*o\s*c\s*u\s*s|m\s*o\s*u\s*s\s*e\s*o\s*v\s*e\s*r)\s*=\s*(?:["\x27]|[^\s>])|<\s*(?:svg|iframe|object|embed|meta|link|math)\b|\bsrcdoc\s*=|\bdata\s*:\s*text\/html\b|\bdocument\s*\.\s*cookie\b|\b(?:eval|settimeout|setinterval|function)\s*\(\s*(?:['"`]|unescape|atob)/i]),
   Object.freeze(['path_traversal_lfi_rfi', /(?:^|[\/\\])\.\.(?:[\/\\]|$)|%2e%2e(?:%2f|%5c)|%252e%252e(?:%252f|%255c)|\/etc\/(?:passwd|shadow)|\/proc\/self\/environ|\bboot\.ini\b|\bwin\.ini\b|\bWEB-INF\b|(?:php|zip|expect):\/\//i]),
   Object.freeze(['command_injection_rce', /(?:;|\|\||&&|`|\$\()\s*(?:whoami|id|uname|cat|ls|pwd|env|printenv|curl|wget|nc|ncat|netcat|bash|sh|cmd(?:\.exe)?|powershell|pwsh)\b|\b(?:shell_exec|passthru|proc_open|popen|system)\s*\(/i]),
-  Object.freeze(['nosql_injection', /(?:^|[.[{\s\"'])\$(?:ne|gt|gte|lt|lte|where|regex|or|and|nor|expr|jsonschema)(?:\b|])/i]),
+  Object.freeze(['nosql_injection', /(?:^|[.[{\s\"'])\$(?:ne|gt|gte|lt|lte|where|regex|in|nin|exists|expr|function|accumulator|or|and|not|nor|jsonschema)(?:\b|])/i]),
   Object.freeze(['xxe', /<!DOCTYPE[\s\S]{0,800}<!ENTITY|<!ENTITY[\s\S]{0,400}\bSYSTEM\b|\bSYSTEM\s+["'](?:file|http|https):/i]),
   Object.freeze(['ssti_template_injection', /\{\{\s*7\s*\*\s*7\s*\}\}|\$\{\s*7\s*\*\s*7\s*\}|<%=\s*7\s*\*\s*7\s*%>|#\{\s*7\s*\*\s*7\s*\}|\{\{[\s\S]{0,240}(?:__class__|__mro__|subclasses|config|self)[\s\S]{0,240}\}\}/i]),
   Object.freeze(['log4shell', /\$\{\s*jndi\s*:\s*(?:ldap|rmi|dns|iiop|corba):/i]),
@@ -61213,7 +61283,7 @@ const DIRAC_CENTRAL_THREAT_CHECKS_V146 = [
   ['path_traversal_lfi_rfi', /\.\.\/|\.\.\\|%2e%2e%2f|%252e%252e%252f|\/etc\/passwd|\/etc\/shadow|\/proc\/self\/environ|\bboot\.ini\b|\bwin\.ini\b|\bWEB-INF\b|php:\/\/|zip:\/\/|expect:\/\//i],
   ['command_injection_rce', /(?:;|\||&&|`|\$\()\s*(?:whoami|id|uname|cat|ls|pwd)\b|\b(?:bash|sh|cmd\.exe|powershell|pwsh|nc|ncat|netcat|wget|curl|perl|python|php|ruby|lua)\b|\b(?:shell_exec|passthru|proc_open|popen|system)\s*\(/i],
   ['prototype_pollution', /__proto__|constructor\.prototype|prototype\s*=|prototype\[|constructor\[/i],
-  ['nosql_injection', /\$(?:ne|gt|gte|lt|lte|where|regex|or|and|nor|expr|jsonschema)\b/i],
+  ['nosql_injection', /\$(?:ne|gt|gte|lt|lte|where|regex|in|nin|exists|expr|function|accumulator|or|and|not|nor|jsonschema)\b/i],
   ['xxe', /<!DOCTYPE|<!ENTITY|\bSYSTEM\b|\bPUBLIC\b|file:\/\/\/etc\/passwd/i],
   ['ssti_template_injection', /\{\{7\*7\}\}|\$\{7\*7\}|<%=\s*7\*7\s*%>|#\{7\*7\}|\{\{.*(?:config|self|class|mro|subclasses).*\}\}/i],
   ['log4shell', /\$\{jndi:|\b(?:ldap|rmi|dns):\/\//i],
@@ -62805,6 +62875,16 @@ async function diracCentralBuildIdentityV146(req) {
 function diracCentralCheckMemoryBanV146(identity) {
   const now = Date.now();
   const key = String(identity && identity.key || '');
+  const contextV551 = diracCentralCurrentContextV149();
+  const accountV551 = String(identity && identity.verifiedAuthUserId
+    || (diracBanStorageAccountV551(contextV551 && contextV551.req) || {}).id || '').trim().toLowerCase();
+  const accountKeyV551 = customerSecurityLooksLikeUuid(accountV551)
+    ? key + ':account:' + diracCentralHashV146('persistent-memory-account-v551:' + accountV551) : '';
+  const accountRowV551 = accountKeyV551 && DIRAC_CENTRAL_MEMORY_BAN_V146.get(accountKeyV551);
+  if (accountRowV551 && Number(accountRowV551.blockedUntilMs || 0) > now) {
+    return { blocked: true, blockedUntilMs: Number(accountRowV551.blockedUntilMs) };
+  }
+  if (accountRowV551) DIRAC_CENTRAL_MEMORY_BAN_V146.delete(accountKeyV551);
   const row = DIRAC_CENTRAL_MEMORY_BAN_V146.get(key);
   if (row && Number(row.blockedUntilMs || 0) > now) return { blocked: true, blockedUntilMs: Number(row.blockedUntilMs) };
   if (row) DIRAC_CENTRAL_MEMORY_BAN_V146.delete(key);
@@ -62955,8 +63035,17 @@ function diracCentralSetNegativeCacheV146(identity) {
 }
 
 function diracCentralSetMemoryBanV146(identity, blockedUntilMs, reason) {
-  const key = String(identity && identity.key || '');
+  let key = String(identity && identity.key || '');
   if (!key) return false;
+  if (reason === 'persistent_ban') {
+    const contextV551 = diracCentralCurrentContextV149();
+    const accountV551 = String(identity && identity.verifiedAuthUserId
+      || (diracBanStorageAccountV551(contextV551 && contextV551.req) || {}).id || '').trim().toLowerCase();
+    // An account lookup must not turn its cached result into a shared network ban.
+    // Network bans are still read from the authoritative store on every cache miss.
+    if (customerSecurityLooksLikeUuid(accountV551)) key += ':account:'
+      + diracCentralHashV146('persistent-memory-account-v551:' + accountV551);
+  }
   const now = Date.now();
   if (!DIRAC_CENTRAL_MEMORY_BAN_V146.has(key) && DIRAC_CENTRAL_MEMORY_BAN_V146.size >= 5000) {
     diracBoundedMapSweepV321(
@@ -70642,7 +70731,7 @@ async function diracCentralWriteTransientFailureBanV284(ctx, action, method, rea
   const reportProofV504 = reportPageV504 && diracCentralReadSecurityReportProofV504(ctx.req, ctx);
   const verifiedAuthUserIdV358 = String(reportPageV504
     ? (reportPageV504.pathname !== '/masuk.html' && reportProofV504 && reportProofV504.userId || '')
-    : ctx && ctx.identity && ctx.identity.verifiedAuthUserId || '').trim().toLowerCase();
+    : (diracBanStorageAccountV551(ctx && ctx.req) || {}).id || '').trim().toLowerCase();
   const accountBoundHtmlBanV358 = String(action || '') === 'security_report'
     && String(method || '').toUpperCase() === 'POST'
     && String(reason || '') === 'html_security_report'
@@ -70933,7 +71022,8 @@ async function diracCentralBanAuthorityCheckV354(req) {
     const identity = diracCentralExternalBanIdentityV404(req);
     const cleanKeys = identity.keys.map((item) => item.key);
     if (!cleanKeys.length) return Object.freeze({ ok: false, blocked: true, reason: 'central_ban_identity_unavailable' });
-    const result = await diracCentralBanAuthorityDatabaseV355('read', cleanKeys).catch(() => null);
+    const result = await diracBanStorageOriginV501(req, () =>
+      diracCentralBanAuthorityDatabaseV355('read', cleanKeys)).catch(() => null);
     if (!result || result.ok !== true || !Array.isArray(result.data)) return Object.freeze({ ok: false, blocked: true, reason: 'central_ban_store_unavailable' });
     const now = Date.now();
     const active = result.data.filter((row) => row && cleanKeys.includes(String(row.security_key || ''))
