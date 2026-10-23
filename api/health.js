@@ -1804,6 +1804,7 @@ async function domainHealth(req, res) {
   if (['customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify'].includes(String(req.query && req.query._dirac_page_nonce_for || ''))) {
     healthPayload.recovery_browser_transport = diracRecoveryBrowserPublicConfigV287();
   }
+  if (String(req.query && req.query._dirac_page_nonce_for || '') === 'checkout_order') healthPayload.checkout_max_items = 100;
   return res.status(200).json(healthPayload);
 }
 
