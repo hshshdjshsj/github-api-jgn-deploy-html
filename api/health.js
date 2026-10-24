@@ -18964,7 +18964,7 @@ const DIRAC_SHIPPING_ORIGINS_V401 = Object.freeze({
 // Koordinat hanya perkiraan lokasi, bukan verifikasi GPS gudang atau tarif ekspedisi.
 const DIRAC_SHIPPING_STANDARD_REFERENCE_V641 = Object.freeze({
   code: 'surabaya',
-  label: 'CV Multi Usaha Mandiri, Gelang, Tulangan, Sidoarjo',
+  label: 'PT Dirac Inovasi Nusantara, Gelang, Tulangan, Sidoarjo',
   facility: 'cv_multi_usaha_mandiri_gelang',
   address: 'Jl. AMD Manunggal III, RT 04/RW 01, Desa Gelang, Kecamatan Tulangan, Kabupaten Sidoarjo, Jawa Timur 61273',
   lat: -7.49635,
