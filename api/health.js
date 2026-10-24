@@ -197,7 +197,7 @@ const DIRAC_REQUEST_PERFORMANCE_STATE_V340 = {
 const DIRAC_REQUEST_PERFORMANCE_ACTIONS_V340 = Object.freeze({
   domain_login: 'POST', domain_register: 'POST',
   dirac_mfa_passkey_start: 'POST', dirac_mfa_passkey_verify: 'POST',
-  domain_dashboard_me: 'GET', domain_health: 'GET', my_orders: 'GET',
+  domain_dashboard_me: 'GET', domain_health: 'GET', my_orders: 'GET', simulate_expire_unpaid_order: 'POST',
   checkout_order: 'POST', create_payment: 'POST', midtrans_webhook: 'POST',
   customer_session_handoff_issue: 'POST', customer_session_handoff_consume: 'POST'
 });
@@ -32263,7 +32263,7 @@ __diracV202RegisterMiddleware(async function diracPasskeyDbStatusWrapper(req, re
    ============================================================ */
 
 const __diracUniversalPesananPaymentPreviousHandler = __diracV202DispatcherSentinel;
-const DIRAC_UNIVERSAL_PESANAN_PAYMENT_ACTIONS = new Set(['create_payment', 'my_orders']);
+const DIRAC_UNIVERSAL_PESANAN_PAYMENT_ACTIONS = new Set(['create_payment', 'my_orders', 'simulate_expire_unpaid_order']);
 
 __diracV202RegisterMiddleware(async function diracUniversalPesananPaymentWrapper(req, res, nextHandlerV202) {
   const rawAction = String((req.query && req.query.action) || '').trim();
@@ -32281,6 +32281,11 @@ __diracV202RegisterMiddleware(async function diracUniversalPesananPaymentWrapper
     if (action === 'my_orders') {
       if (req.method !== 'GET') return res.status(405).json({ ok: false, message: 'Gunakan GET.' });
       return await diracUniversalPesananReadOrders(req, res);
+    }
+
+    if (action === 'simulate_expire_unpaid_order') {
+      if (req.method !== 'POST') return res.status(405).json({ ok: false, message: 'Gunakan POST.' });
+      return await diracSimulateExpireUnpaidOrderV700(req, res);
     }
 
     if (action === 'create_payment') {
@@ -32492,7 +32497,7 @@ async function diracUniversalPesananDecorateOrders(orders) {
     return [copy];
   });
   // Cleanup is server-driven and only after the protected payment-transaction read succeeded.
-  // A short settlement grace protects payment creation that was already in flight at expiry.
+  // Expire after exactly 24 hours; existing payment transaction checks remain mandatory.
   await diracServerDeleteExpiredUnpaidOrdersV671(rows, txMap);
   return decorated;
 }
@@ -32508,7 +32513,7 @@ async function diracServerDeleteExpiredUnpaidOrdersV671(orders, txMap) {
   if (!verifiedOwner || verifiedOwner.ok !== true || !Array.isArray(verifiedOwner.customerIds)
       || verifiedOwner.customerIds.length !== 1 || !customerSecurityLooksLikeUuid(verifiedOwner.customerIds[0])) return;
   const ownerId = verifiedOwner.customerIds[0];
-  const cutoff = Date.now() - DIRAC_UNPAID_ORDER_WINDOW_MS_V670 - 10 * 60 * 1000;
+  const cutoff = Date.now() - DIRAC_UNPAID_ORDER_WINDOW_MS_V670;
   const candidates = (Array.isArray(orders) ? orders : []).filter((order) => {
     if (!order || !customerSecurityLooksLikeUuid(order.id)
         || order.customer_id !== ownerId
@@ -32527,7 +32532,7 @@ async function diracServerDeleteExpiredUnpaidOrdersV671(orders, txMap) {
       + '&customer_id=eq.' + encodeURIComponent(ownerId)
       + '&service_type=in.(parfum,laboratorium)&payment_status=eq.unpaid&order_status=eq.pending'
       + '&payment_method=eq.' + encodeURIComponent('Belum dipilih')
-      + '&created_at=lt.' + encodeURIComponent(new Date(cutoff).toISOString());
+      + '&created_at=lte.' + encodeURIComponent(new Date(cutoff).toISOString());
     try {
       const removed = await supabaseFetch(path, {
         method: 'DELETE', auth: 'service', db: database, prefer: 'return=representation'
@@ -32540,6 +32545,96 @@ async function diracServerDeleteExpiredUnpaidOrdersV671(orders, txMap) {
       console.warn('[order-expiry-v671] Conditional deletion could not be completed safely.');
     }
   }));
+}
+
+
+// Explicit customer-requested EARLY expiry simulation v700. This is an irreversible
+// deletion, not a visual preview. It never expires or deletes another account's
+// order, an order with a payment attempt, or a paid/processed order. No cron.
+async function diracSimulateExpireUnpaidOrderV700(req, res) {
+  const access = await requireDomainDashboardAccess(req, res);
+  if (!access) return;
+  const context = diracCentralCurrentContextV149();
+  const owner = context && context.req === req && context.action === 'simulate_expire_unpaid_order'
+    && context.method === 'POST' && diracCentralHandlerContextFullyPassedV211(context, req) === true
+      ? diracCentralOwnerFromVerifiedContextV215(req) : null;
+  if (!owner || owner.ok !== true || !Array.isArray(owner.customerIds) || owner.customerIds.length !== 1
+      || !customerSecurityLooksLikeUuid(owner.customerIds[0])
+      || String(access.user && access.user.id || '') !== owner.authUserId) {
+    return res.status(403).json({ok:false, code:'EXPIRY_OWNER_UNVERIFIED'});
+  }
+  const body = await readBody(req);
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).sort().join(',') !== 'order_code,order_id') {
+    return res.status(400).json({ok:false, code:'EXPIRY_REQUEST_INVALID'});
+  }
+  const id = String(body.order_id || ''), code = String(body.order_code || '');
+  const customerId = owner.customerIds[0];
+  if (!customerSecurityLooksLikeUuid(id) || !/^ORD-[0-9]{8}-[A-Z0-9]{8}$/.test(code)) {
+    return res.status(400).json({ok:false, code:'EXPIRY_ORDER_REFERENCE_INVALID'});
+  }
+  const filter = '?select=' + encodeURIComponent('id,order_id,customer_id,service_type,payment_status,order_status,payment_method,created_at')
+    + '&id=eq.' + encodeURIComponent(id) + '&customer_id=eq.' + encodeURIComponent(customerId) + '&limit=2';
+  const [commerce, security] = await Promise.all([
+    supabaseFetch('/rest/v1/orders' + filter, {method:'GET', auth:'service', db:'commerce'}).catch(() => null),
+    supabaseFetch('/rest/v1/orders' + filter, {method:'GET', auth:'service', db:'security'}).catch(() => null)
+  ]);
+  if (!commerce || !commerce.ok || !Array.isArray(commerce.data)
+      || !security || !security.ok || !Array.isArray(security.data)) {
+    return res.status(503).json({ok:false, code:'EXPIRY_ORDER_LOOKUP_UNAVAILABLE'});
+  }
+  if (commerce.data.length + security.data.length !== 1) {
+    return res.status(409).json({ok:false, code:'EXPIRY_ORDER_NOT_UNIQUE_OR_NOT_FOUND'});
+  }
+  const row = commerce.data.length === 1 ? commerce.data[0] : security.data[0];
+  const database = commerce.data.length === 1 ? 'commerce' : 'security';
+  if (!row || row.id !== id || row.customer_id !== customerId || row.order_id !== code
+      || !['parfum','laboratorium'].includes(String(row.service_type || '').toLowerCase())
+      || String(row.payment_status || '').toLowerCase() !== 'unpaid'
+      || String(row.order_status || '').toLowerCase() !== 'pending'
+      || String(row.payment_method || '').trim().toLowerCase() !== 'belum dipilih'
+      || !Number.isFinite(Date.parse(String(row.created_at || '')))) {
+    return res.status(409).json({ok:false, code:'EXPIRY_ORDER_NOT_ELIGIBLE'});
+  }
+  const txPath = '/rest/v1/payment_transactions?select=' + encodeURIComponent('id,order_id,customer_id')
+    + '&order_id=eq.' + encodeURIComponent(id) + '&customer_id=eq.' + encodeURIComponent(customerId) + '&limit=1';
+  const probe = () => supabaseFetch(txPath, {method:'GET', auth:'service'}).catch(() => null);
+  const before = await probe();
+  if (!before || !before.ok || !Array.isArray(before.data)) {
+    return res.status(503).json({ok:false, code:'EXPIRY_PAYMENT_LOOKUP_UNAVAILABLE'});
+  }
+  if (before.data.length) return res.status(409).json({ok:false, code:'EXPIRY_PAYMENT_EXISTS'});
+
+  // Reserve terminal status atomically before the second payment check. All
+  // concurrent create_payment calls must see a non-pending order and decline.
+  const target = '/rest/v1/orders?id=eq.' + encodeURIComponent(id)
+    + '&customer_id=eq.' + encodeURIComponent(customerId)
+    + '&service_type=eq.' + encodeURIComponent(row.service_type)
+    + '&payment_status=eq.unpaid&order_status=eq.pending'
+    + '&payment_method=eq.' + encodeURIComponent('Belum dipilih');
+  const marked = await supabaseFetch(target, {method:'PATCH', auth:'service', db:database,
+    body:{order_status:'expired'}, prefer:'return=representation'}).catch(() => null);
+  if (!marked || !marked.ok || !Array.isArray(marked.data) || marked.data.length !== 1
+      || marked.data[0].id !== id || marked.data[0].payment_status !== 'unpaid') {
+    return res.status(409).json({ok:false, code:'EXPIRY_ORDER_CHANGED_BEFORE_DELETE'});
+  }
+  const after = await probe();
+  if (!after || !after.ok || !Array.isArray(after.data) || after.data.length) {
+    // Keep the record for reconciliation if a payment appeared or status is unknown.
+    return res.status(409).json({ok:false, code:'EXPIRY_PAYMENT_RECHECK_BLOCKED'});
+  }
+  const del = await supabaseFetch('/rest/v1/orders?id=eq.' + encodeURIComponent(id)
+    + '&customer_id=eq.' + encodeURIComponent(customerId)
+    + '&service_type=eq.' + encodeURIComponent(row.service_type)
+    + '&payment_status=eq.unpaid&order_status=eq.expired'
+    + '&payment_method=eq.' + encodeURIComponent('Belum dipilih'),
+    {method:'DELETE', auth:'service', db:database, prefer:'return=representation'}).catch(() => null);
+  if (!del || !del.ok || !Array.isArray(del.data) || del.data.length !== 1 || del.data[0].id !== id) {
+    return res.status(503).json({ok:false, code:'EXPIRY_DELETE_NOT_CONFIRMED'});
+  }
+  // Physical deletion of child order_items uses the existing ON DELETE CASCADE FK.
+  res.setHeader('Cache-Control','no-store');
+  return res.status(200).json({ok:true, deleted:true, order_code:code});
 }
 
 function diracUniversalPesananOrderTxKey(order) {
@@ -34668,6 +34763,7 @@ const DIRAC_SENSITIVE_POST_ORIGIN_ACTIONS = new Set([
   'domain_checkout',
   'checkout_order',
   'create_payment',
+  'simulate_expire_unpaid_order',
   'customer_security_revoke_session',
   'customer_security_revoke_other_sessions',
   'customer_security_account_request',
@@ -34719,6 +34815,7 @@ function diracSensitivePostOriginNormalizeAction(action) {
     pengembangan_checkout: 'checkout_order',
     create_checkout_order: 'checkout_order',
     create_payment: 'create_payment',
+    simulate_expire_unpaid_order: 'simulate_expire_unpaid_order',
     create_payment_order: 'create_payment',
     pay_order: 'create_payment',
     order_payment: 'create_payment',
@@ -57616,6 +57713,7 @@ const DIRAC_CENTRAL_VERIFIED_OWNER_ACTIONS_V217 = Object.freeze([
   'customer_security_recovery_code_verify',
   'checkout_order',
   'my_orders',
+  'simulate_expire_unpaid_order',
   'customer_orders',
   'pesanan_saya',
   'my_invoices',
@@ -59957,6 +60055,7 @@ const DIRAC_CENTRAL_DEVICE_BOOTSTRAP_ACTIONS_V224 = Object.freeze(new Set([
   'checkout_order',
   'create_payment',
   'my_orders',
+  'simulate_expire_unpaid_order',
   'customer_security_recovery_codes_generate',
   'customer_security_recovery_code_verify',
   'dirac_mfa_passkey_start',
@@ -61531,6 +61630,7 @@ const DIRAC_CENTRAL_ACTIVE_ACTIONS_V146 = new Set([
   'admin_security_unblock_user',
   'checkout_order',
   'my_orders',
+  'simulate_expire_unpaid_order',
   'customer_orders',
   'pesanan_saya',
   'my_invoices',
@@ -61631,6 +61731,7 @@ const DIRAC_CENTRAL_SENSITIVE_ACTIONS_V146 = new Set([
   'domain_checkout',
   'checkout_order',
   'create_payment',
+  'simulate_expire_unpaid_order',
   'customer_security_revoke_session',
   'customer_security_revoke_other_sessions',
   'customer_security_recovery_codes_generate',
@@ -61683,7 +61784,8 @@ const DIRAC_CENTRAL_USER_DATA_ACTIONS_V146 = new Set([
   'customer_security_prune_login_history',
   'checkout_order',
   'my_orders',
-  'create_payment'
+  'create_payment',
+  'simulate_expire_unpaid_order'
 ]);
 
 const DIRAC_CENTRAL_KNOWN_JS_ACTION_INPUTS_V146 = [
@@ -65175,7 +65277,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
     'parfum_products', 'perfume_products', 'parfum_catalog', 'katalog_parfum', 'katalog_produk', 'lihat_produk'
   ]);
   const pesanan = new Set([
-    'domain_checkout', 'domain_orders', 'checkout_order', 'create_payment', 'midtrans_health',
+    'domain_checkout', 'domain_orders', 'checkout_order', 'create_payment', 'simulate_expire_unpaid_order', 'midtrans_health',
     'midtrans_webhook', 'my_orders', 'customer_orders', 'pesanan_saya', 'my_invoices',
     'customer_invoices', 'invoices', 'invoice_saya', 'my_bills', 'my_shipments',
     'customer_shipments', 'pengiriman_saya'
@@ -65233,7 +65335,7 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
     }
   }
 
-  if (role === 'auth' && (clean === 'my_orders' || clean === 'create_payment')) {
+  if (role === 'auth' && (clean === 'my_orders' || clean === 'create_payment' || clean === 'simulate_expire_unpaid_order')) {
     try {
       const expectedOrigin = diracAppPageOriginV503().toLowerCase();
       const headers = req && req.headers || {};
@@ -65242,7 +65344,8 @@ function diracCentralVercel2OnlyActionGuardV150(action, req) {
       if (origin !== expectedOrigin) return { ok: false, reason: 'order_gateway_origin_invalid' };
       if (method === 'OPTIONS') return { ok: true };
       if ((clean === 'my_orders' && method !== 'GET')
-          || (clean === 'create_payment' && method !== 'POST')) {
+          || (clean === 'create_payment' && method !== 'POST')
+          || (clean === 'simulate_expire_unpaid_order' && method !== 'POST')) {
         return { ok: false, reason: 'order_gateway_method_invalid' };
       }
       const referer = new URL(String(headers.referer || headers.referrer || '').trim());
@@ -67108,7 +67211,7 @@ async function diracCentralLookupOwnerRowsV146(objects) {
   const values = (regex) => Array.from(new Set((objects || []).filter((item) => regex.test(item.key)).map((item) => String(item.value || '').trim()).filter(Boolean))).slice(0, 40);
   const orderValuesV445 = values(/^(order_id|order_code)$/i);
   const ownerLookupCtxV445 = diracCentralCurrentContextV149();
-  if (ownerLookupCtxV445 && ownerLookupCtxV445.action === 'create_payment' && ownerLookupCtxV445.method === 'POST'
+  if (ownerLookupCtxV445 && ['create_payment', 'simulate_expire_unpaid_order'].includes(ownerLookupCtxV445.action) && ownerLookupCtxV445.method === 'POST'
       && diracCentralCheckoutStage26BootstrapModeV216(ownerLookupCtxV445, ownerLookupCtxV445.req)) {
     const orderRowsV445 = await Promise.all([
       diracCentralFetchOwnerRowsV194('orders', orderValuesV445, ['id', 'order_id'], 'commerce'),
@@ -71480,6 +71583,7 @@ function diracCentralContractForActionV146(action) {
     admin_security_events: getOnly,
     admin_security_blocks: getOnly,
     my_orders: getOnly,
+    simulate_expire_unpaid_order: { methods: ['POST'], allowed: ['order_id', 'order_code'], required: ['order_id', 'order_code'], maxBodyBytes: 512, maxFieldBytes: 128, mutation: true },
     customer_orders: getOnly,
     pesanan_saya: getOnly,
     my_invoices: getOnly,
