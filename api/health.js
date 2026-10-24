@@ -67387,7 +67387,7 @@ function diracCentralMidtransWebhookServiceRoleDecisionV350(ctx, table, path, op
       ? 'id,customer_id,total,payment_status,order_status'
       : 'id,customer_id,total_price,payment_status,order_status,status';
     const invoiceSelect = expectedTable === 'orders'
-      ? 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_status,order_status,created_at'
+      ? 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,shipping_breakdown,total,payment_status,order_status,created_at'
       : 'id,customer_id,customer_name,customer_whatsapp,customer_email,owner_email,domain_name,total_price,currency,order_status,status,payment_status,created_at';
     const selectOk = one('select', select) || Boolean(cap.success && state && one('select', invoiceSelect));
     const sourceOptionsOk = cap.parentType === 'r' && cap.orderDatabase === 'security'
