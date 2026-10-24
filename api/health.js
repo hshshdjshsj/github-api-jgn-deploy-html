@@ -32308,6 +32308,20 @@ function diracUniversalPesananGatewayConfigured() {
   return Boolean(midtransPaymentIsConfigured());
 }
 
+// Order visibility expiry v670. No deletion of financial evidence or active payment attempts.
+// Evaluated on the server from persisted created_at; no browser timer or periodic JS work.
+const DIRAC_UNPAID_ORDER_WINDOW_MS_V670 = 24 * 60 * 60 * 1000;
+function diracUnpaidOrderExpiredV670(order, nowMs = Date.now()) {
+  if (!order || order.type === 'domain_order' || !['parfum', 'laboratorium'].includes(String(order.service_type || '').trim().toLowerCase())) return false;
+  const payment = String(order.payment_status || '').trim().toLowerCase().replace(/_/g, ' ');
+  const status = String(order.order_status || '').trim().toLowerCase().replace(/_/g, ' ');
+  if (!['unpaid', 'belum bayar', 'belum dibayar', 'menunggu pembayaran', 'pending'].includes(payment)
+      || !['pending', 'unpaid', 'menunggu pembayaran', 'waiting payment', 'pending payment'].includes(status)) return false;
+  const createdAt = Date.parse(String(order.created_at || ''));
+  return Number.isSafeInteger(createdAt) && createdAt > 0
+    && Number.isSafeInteger(nowMs) && createdAt <= nowMs - DIRAC_UNPAID_ORDER_WINDOW_MS_V670;
+}
+
 async function diracUniversalPesananReadOrders(req, res) {
   const access = await requireDomainDashboardAccess(req, res);
   if (!access) return;
@@ -32395,13 +32409,26 @@ async function diracUniversalPesananDecorateOrders(orders) {
   const txMap = await diracUniversalPesananFetchReusableTransactionsForOrders(rows);
   const gatewayConfigured = diracUniversalPesananGatewayConfigured();
 
-  return rows.map((order) => {
+  const decorated = rows.flatMap((order) => {
     const copy = { ...order };
     const key = diracUniversalPesananOrderTxKey(copy);
     const tx = key ? txMap.get(key) : null;
     const canPay = gatewayConfigured && diracUniversalPesananOrderCanPay(copy);
     const method = key ? txMap.get('method:' + key) : null;
     const paid = key ? txMap.get('paid:' + key) : null;
+    const expiredWithoutPayment = diracUnpaidOrderExpiredV670(copy)
+      && !txMap.has('__dirac_tx_lookup_unavailable_v670')
+      && !(key && txMap.has('attempt:' + key));
+    if (expiredWithoutPayment) return [];
+    const createdAtMsV671 = Date.parse(String(copy.created_at || ''));
+    if (copy.type === 'standard_order'
+        && ['parfum', 'laboratorium'].includes(String(copy.service_type || '').toLowerCase())
+        && String(copy.payment_status || '').toLowerCase() === 'unpaid'
+        && String(copy.order_status || '').toLowerCase() === 'pending'
+        && !(key && txMap.has('attempt:' + key))
+        && Number.isSafeInteger(createdAtMsV671) && createdAtMsV671 > 0) {
+      copy.payment_deadline_at = new Date(createdAtMsV671 + DIRAC_UNPAID_ORDER_WINDOW_MS_V670).toISOString();
+    }
     if (copy.payment_status === 'paid' && paid && copy.currency === paid.currency
         && midtransStrictMoneyV350(paid.amount) !== null
         && midtransStrictMoneyV350(paid.amount) === midtransStrictMoneyV350(copy.total)) {
@@ -32429,7 +32456,7 @@ async function diracUniversalPesananDecorateOrders(orders) {
       copy.can_pay = diracUniversalPesananOrderCanPay(copy);
       copy.payment_message = 'Payment sudah tersedia. Tekan tombol untuk melanjutkan pembayaran.';
       delete copy.order_database;
-      return copy;
+      return [copy];
     }
 
     copy.payment_url = copy.payment_url || null;
@@ -32441,8 +32468,56 @@ async function diracUniversalPesananDecorateOrders(orders) {
         ? 'Invoice ini belum eligible untuk payment otomatis.'
         : 'Layanan pembayaran belum tersedia.');
     delete copy.order_database;
-    return copy;
+    return [copy];
   });
+  // Cleanup is server-driven and only after the protected payment-transaction read succeeded.
+  // A short settlement grace protects payment creation that was already in flight at expiry.
+  await diracServerDeleteExpiredUnpaidOrdersV671(rows, txMap);
+  return decorated;
+}
+
+// No database cron, new table or client-supplied expiry override.
+// This path is reached only by the existing fully authenticated GET my_orders handler.
+async function diracServerDeleteExpiredUnpaidOrdersV671(orders, txMap) {
+  if (!(txMap instanceof Map) || txMap.has('__dirac_tx_lookup_unavailable_v670')) return;
+  const context = diracCentralCurrentContextV149();
+  if (!context || !context.req || context.action !== 'my_orders' || context.method !== 'GET'
+      || diracCentralHandlerContextFullyPassedV211(context, context.req) !== true) return;
+  const verifiedOwner = diracCentralOwnerFromVerifiedContextV215(context.req);
+  if (!verifiedOwner || verifiedOwner.ok !== true || !Array.isArray(verifiedOwner.customerIds)
+      || verifiedOwner.customerIds.length !== 1 || !customerSecurityLooksLikeUuid(verifiedOwner.customerIds[0])) return;
+  const ownerId = verifiedOwner.customerIds[0];
+  const cutoff = Date.now() - DIRAC_UNPAID_ORDER_WINDOW_MS_V670 - 10 * 60 * 1000;
+  const candidates = (Array.isArray(orders) ? orders : []).filter((order) => {
+    if (!order || !customerSecurityLooksLikeUuid(order.id)
+        || !['commerce', 'security'].includes(String(order.order_database || ''))
+        || !['parfum', 'laboratorium'].includes(String(order.service_type || '').toLowerCase())
+        || String(order.payment_status || '').toLowerCase() !== 'unpaid'
+        || String(order.order_status || '').toLowerCase() !== 'pending'
+        || String(order.payment_method || '').trim().toLowerCase() !== 'belum dipilih'
+        || !diracUnpaidOrderExpiredV670(order, cutoff + DIRAC_UNPAID_ORDER_WINDOW_MS_V670)) return false;
+    const key = diracUniversalPesananOrderTxKey(order);
+    return Boolean(key) && !txMap.has('attempt:' + key) && !txMap.has('paid:' + key);
+  }).slice(0, 4); // fixed small budget, no timer, polling or retry added
+  await Promise.all(candidates.map(async (order) => {
+    const database = diracRegularOrderDatabaseV443(order.order_database);
+    const path = '/rest/v1/orders?id=eq.' + encodeURIComponent(order.id)
+      + '&customer_id=eq.' + encodeURIComponent(ownerId)
+      + '&service_type=in.(parfum,laboratorium)&payment_status=eq.unpaid&order_status=eq.pending'
+      + '&payment_method=eq.' + encodeURIComponent('Belum dipilih')
+      + '&created_at=lt.' + encodeURIComponent(new Date(cutoff).toISOString());
+    try {
+      const removed = await supabaseFetch(path, {
+        method: 'DELETE', auth: 'service', db: database, prefer: 'return=representation'
+      });
+      if (!removed || !removed.ok || !Array.isArray(removed.data)
+          || removed.data.length > 1 || (removed.data.length === 1 && removed.data[0].id !== order.id)) {
+        console.warn('[order-expiry-v671] Conditional deletion not confirmed; payment state unchanged.');
+      }
+    } catch (_) {
+      console.warn('[order-expiry-v671] Conditional deletion could not be completed safely.');
+    }
+  }));
 }
 
 function diracUniversalPesananOrderTxKey(order) {
@@ -32534,7 +32609,10 @@ async function diracUniversalPesananFillTxMap(map, type, ids, database) {
     if (!parentProofs.size) DIRAC_MY_ORDERS_PAYMENT_PARENT_PROOFS_V365.delete(parentContext.req);
   }
   if (result && result.status === 503 && result.data && result.data.code === 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE') throw parentUnavailable();
-  if (!result || !result.ok || !Array.isArray(result.data)) return;
+  if (!result || !result.ok || !Array.isArray(result.data) || result.data.length >= 240) {
+    map.set('__dirac_tx_lookup_unavailable_v670', true);
+    return;
+  }
 
   const now = Date.now();
   result.data.forEach((tx) => {
@@ -32542,6 +32620,11 @@ async function diracUniversalPesananFillTxMap(map, type, ids, database) {
     const paidParent = tx && (type === 'domain' ? tx.domain_order_id : tx.order_id);
     const metadata = tx && tx.metadata;
     const txOrderDatabase = diracPaymentTransactionOrderDatabaseV443(tx, type);
+    if (tx && type === 'regular' && txOrderDatabase === orderDatabase
+        && tx.customer_id === parentOwner.customerIds[0]
+        && customerSecurityLooksLikeUuid(tx.order_id) && cleanIds.includes(tx.order_id)) {
+      map.set('attempt:regular:' + orderDatabase + ':' + tx.order_id, true);
+    }
     if (tx && txOrderDatabase === orderDatabase && tx.customer_id === parentOwner.customerIds[0] && paidParent && cleanIds.includes(String(paidParent))
         && tx.gateway_name === 'midtrans' && tx.currency === 'IDR' && tx.payment_status === 'paid'
         && metadata && typeof metadata === 'object' && !Array.isArray(metadata)
@@ -32715,6 +32798,13 @@ async function diracUniversalPesananCreatePayment(req, res) {
       ownership_locked: true,
       amount_locked: true,
       frontend_ignored_fields: ['amount', 'total', 'subtotal', 'payment_status', 'order_status', 'paid', 'completed', 'payment_url', 'customer_id']
+    });
+  }
+
+  if (paymentInput.kind === 'regular' && diracUnpaidOrderExpiredV670(lookup.order)) {
+    return res.status(409).json({
+      ok: false, code: 'UNPAID_ORDER_24H_EXPIRED',
+      message: 'Pesanan yang belum dibayar melewati batas 24 jam dan sudah ditutup. Silakan buat pesanan baru.'
     });
   }
 
