@@ -25302,10 +25302,16 @@ async function diracPasskeyA2FSaveRegistration({ owner, credential, response, cl
     p_pending_expires_at: new Date(pendingExpiresAtMs).toISOString()
   });
   if (!created.ok) {
+    const providerCode = diracPasskeyA2FRpcProviderCodeV237(created);
     console.error('[passkey-create-pending-rpc-failed]', {
       status: Number(created.status || 0),
-      provider_code: diracPasskeyA2FRpcProviderCodeV237(created)
+      provider_code: providerCode
     });
+    if (providerCode === 'DIRAC_V237_PENDING_ROTATION_ALREADY_EXISTS') {
+      return { ok: false, status: 409,
+        message: 'Pendaftaran Passkey sebelumnya masih menunggu konfirmasi. Selesaikan di halaman yang sama. Jika halaman sudah ditutup, tunggu hingga pending kedaluwarsa (maksimal sekitar 5 menit) sebelum mendaftar lagi.',
+        code: 'PASSKEY_PENDING_CONFIRMATION_ALREADY_EXISTS' };
+    }
     return { ok: false, status: created.status || 500, message: 'Gagal membuat Passkey pending secara atomik.', code: 'PASSKEY_CREATE_PENDING_RPC_FAILED' };
   }
 
