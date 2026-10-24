@@ -20194,6 +20194,21 @@ async function myOrdersFetchGenericOrders(owner, userEmail) {
   if (new Set(storageIds).size !== storageIds.length) {
     return { ok: false, error: 'ORDER_DATABASE_AMBIGUOUS', orders: [] };
   }
+  // Register only DB-read UUIDs demonstrably owned by this fully verified customer.
+  // This supplies strict child/payment read guards with their missing object proof.
+  const ordersContextV672 = diracCentralCurrentContextV149();
+  if (ordersContextV672 && ordersContextV672.action === 'my_orders' && ordersContextV672.method === 'GET') {
+    const verifiedOwnerV672 = diracCentralOwnerFromVerifiedContextV215(ordersContextV672.req);
+    if (diracCentralHandlerContextFullyPassedV211(ordersContextV672, ordersContextV672.req) !== true
+        || !verifiedOwnerV672 || verifiedOwnerV672.ok !== true
+        || verifiedOwnerV672.customerIds.length !== 1
+        || !owner.customerIds.includes(verifiedOwnerV672.customerIds[0])
+        || orderRows.some((row) => !customerSecurityLooksLikeUuid(row && row.id)
+          || row.customer_id !== verifiedOwnerV672.customerIds[0])
+        || (storageIds.length > 0 && diracCentralAddOwnerBoundObjectValuesV198(ordersContextV672, storageIds) !== true)) {
+      return { ok: false, error: 'ORDER_PARENT_OWNERSHIP_UNAVAILABLE', orders: [] };
+    }
+  }
   diracCustomerShipmentRegisterParentsV406('regular', orderRows);
   const commerceRows = orderRows.filter((row) => row && row.order_database === 'commerce');
   const securityRows = orderRows.filter((row) => row && row.order_database === 'security');
@@ -32496,6 +32511,7 @@ async function diracServerDeleteExpiredUnpaidOrdersV671(orders, txMap) {
   const cutoff = Date.now() - DIRAC_UNPAID_ORDER_WINDOW_MS_V670 - 10 * 60 * 1000;
   const candidates = (Array.isArray(orders) ? orders : []).filter((order) => {
     if (!order || !customerSecurityLooksLikeUuid(order.id)
+        || order.customer_id !== ownerId
         || !['commerce', 'security'].includes(String(order.order_database || ''))
         || !['parfum', 'laboratorium'].includes(String(order.service_type || '').toLowerCase())
         || String(order.payment_status || '').toLowerCase() !== 'unpaid'
