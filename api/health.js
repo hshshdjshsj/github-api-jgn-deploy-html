@@ -32435,6 +32435,7 @@ async function diracUniversalPesananDecorateOrders(orders) {
   const txMap = await diracUniversalPesananFetchReusableTransactionsForOrders(rows);
   const gatewayConfigured = diracUniversalPesananGatewayConfigured();
 
+  const physicallyDeletedIds = await diracServerDeleteExpiredUnpaidOrdersV671(rows, txMap);
   const decorated = rows.flatMap((order) => {
     const copy = { ...order };
     const key = diracUniversalPesananOrderTxKey(copy);
@@ -32445,13 +32446,12 @@ async function diracUniversalPesananDecorateOrders(orders) {
     const expiredWithoutPayment = diracUnpaidOrderExpiredV670(copy)
       && !txMap.has('__dirac_tx_lookup_unavailable_v670')
       && !(key && txMap.has('attempt:' + key));
-    if (expiredWithoutPayment) return [];
+    if (expiredWithoutPayment && physicallyDeletedIds.has(copy.id)) return [];
     const createdAtMsV671 = Date.parse(String(copy.created_at || ''));
     if (copy.type === 'standard_order'
         && ['parfum', 'laboratorium'].includes(String(copy.service_type || '').toLowerCase())
         && String(copy.payment_status || '').toLowerCase() === 'unpaid'
         && String(copy.order_status || '').toLowerCase() === 'pending'
-        && !(key && txMap.has('attempt:' + key))
         && Number.isSafeInteger(createdAtMsV671) && createdAtMsV671 > 0) {
       copy.payment_deadline_at = new Date(createdAtMsV671 + DIRAC_UNPAID_ORDER_WINDOW_MS_V670).toISOString();
     }
@@ -32498,20 +32498,20 @@ async function diracUniversalPesananDecorateOrders(orders) {
   });
   // Cleanup is server-driven and only after the protected payment-transaction read succeeded.
   // Expire after exactly 24 hours; existing payment transaction checks remain mandatory.
-  await diracServerDeleteExpiredUnpaidOrdersV671(rows, txMap);
   return decorated;
 }
 
 // No database cron, new table or client-supplied expiry override.
 // This path is reached only by the existing fully authenticated GET my_orders handler.
 async function diracServerDeleteExpiredUnpaidOrdersV671(orders, txMap) {
-  if (!(txMap instanceof Map) || txMap.has('__dirac_tx_lookup_unavailable_v670')) return;
+  const physicallyDeletedIds = new Set();
+  if (!(txMap instanceof Map) || txMap.has('__dirac_tx_lookup_unavailable_v670')) return physicallyDeletedIds;
   const context = diracCentralCurrentContextV149();
   if (!context || !context.req || context.action !== 'my_orders' || context.method !== 'GET'
-      || diracCentralHandlerContextFullyPassedV211(context, context.req) !== true) return;
+      || diracCentralHandlerContextFullyPassedV211(context, context.req) !== true) return physicallyDeletedIds;
   const verifiedOwner = diracCentralOwnerFromVerifiedContextV215(context.req);
   if (!verifiedOwner || verifiedOwner.ok !== true || !Array.isArray(verifiedOwner.customerIds)
-      || verifiedOwner.customerIds.length !== 1 || !customerSecurityLooksLikeUuid(verifiedOwner.customerIds[0])) return;
+      || verifiedOwner.customerIds.length !== 1 || !customerSecurityLooksLikeUuid(verifiedOwner.customerIds[0])) return physicallyDeletedIds;
   const ownerId = verifiedOwner.customerIds[0];
   const cutoff = Date.now() - DIRAC_UNPAID_ORDER_WINDOW_MS_V670;
   const candidates = (Array.isArray(orders) ? orders : []).filter((order) => {
@@ -32537,14 +32537,17 @@ async function diracServerDeleteExpiredUnpaidOrdersV671(orders, txMap) {
       const removed = await supabaseFetch(path, {
         method: 'DELETE', auth: 'service', db: database, prefer: 'return=representation'
       });
-      if (!removed || !removed.ok || !Array.isArray(removed.data)
-          || removed.data.length > 1 || (removed.data.length === 1 && removed.data[0].id !== order.id)) {
+      if (removed && removed.ok && Array.isArray(removed.data)
+          && removed.data.length === 1 && removed.data[0].id === order.id) {
+        physicallyDeletedIds.add(order.id);
+      } else {
         console.warn('[order-expiry-v671] Conditional deletion not confirmed; payment state unchanged.');
       }
     } catch (_) {
       console.warn('[order-expiry-v671] Conditional deletion could not be completed safely.');
     }
   }));
+  return physicallyDeletedIds;
 }
 
 
