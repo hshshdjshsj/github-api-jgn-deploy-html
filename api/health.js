@@ -18958,6 +18958,19 @@ const DIRAC_SHIPPING_ORIGINS_V401 = Object.freeze({
   sleman: Object.freeze({ code: 'sleman', label: 'Sleman', lat: -7.7325, lng: 110.4024 })
 });
 
+// Standar ALAMAT ACUAN tarif untuk parfum serta alat/bahan laboratorium.
+// Kode "surabaya" dipertahankan demi kontrak DB dan Central Guard lama;
+// label/alamat/koordinat acuan baru berasal dari area Gelang, Tulangan, Sidoarjo.
+// Koordinat hanya perkiraan lokasi, bukan verifikasi GPS gudang atau tarif ekspedisi.
+const DIRAC_SHIPPING_STANDARD_REFERENCE_V641 = Object.freeze({
+  code: 'surabaya',
+  label: 'CV Multi Usaha Mandiri, Gelang, Tulangan, Sidoarjo',
+  facility: 'cv_multi_usaha_mandiri_gelang',
+  address: 'Jl. AMD Manunggal III, RT 04/RW 01, Desa Gelang, Kecamatan Tulangan, Kabupaten Sidoarjo, Jawa Timur 61273',
+  lat: -7.49635,
+  lng: 112.64998
+});
+
 const DIRAC_SHIPPING_PROVINCE_CENTROIDS_V401 = Object.freeze({
   'aceh': [5.5483,95.3238], 'sumatera utara':[3.5952,98.6722], 'sumatera barat':[-0.9471,100.4172],
   'riau':[0.5333,101.4500], 'kepulauan riau':[0.9167,104.4500], 'jambi':[-1.6101,103.6131],
@@ -19082,7 +19095,7 @@ function sessionOwnershipCheckoutBuildShippingQuote(body, shippingInput, taxable
     error.statusCode = 400;
     throw error;
   }
-  const origin = sessionOwnershipCheckoutChooseShippingOrigin(destinationCoords, input.forcedOriginCode || '');
+  const origin = DIRAC_SHIPPING_STANDARD_REFERENCE_V641;
   if (!origin) {
     const error = new Error('Gudang asal pengiriman belum dapat ditentukan.');
     error.statusCode = 409;
@@ -19096,10 +19109,10 @@ function sessionOwnershipCheckoutBuildShippingQuote(body, shippingInput, taxable
   const extraItems = Math.max(0, itemCount - 1);
   const standardRaw = band.base + (extraKg * band.perKg) + (extraItems * band.perExtraItem) + regionalSurcharge;
   const roundedShipping = Math.ceil((mode === 'express' ? standardRaw * 1.6 : standardRaw) / 1000) * 1000;
-  const grossShipping = mode === 'pickup' ? 0 : (isParfumCheckout === true ? roundedShipping : Math.max(55000, roundedShipping));
+  const grossShipping = mode === 'pickup' ? 0 : (isParfumCheckout === true ? roundedShipping : Math.max(30000, roundedShipping));
   // No authenticated courier rate is configured: disclose and reserve 20% only on delivery.
   const uncertainRateBuffer = isParfumCheckout === true && mode !== 'pickup' ? Math.ceil(grossShipping / 5) : 0;
-  const shippingCost = grossShipping + uncertainRateBuffer;
+  const shippingCost = mode === 'pickup' ? 0 : (isParfumCheckout === true ? Math.max(30000, grossShipping + uncertainRateBuffer) : grossShipping) + 7000;
   return {
     mode,
     shippingCost,
@@ -19108,6 +19121,9 @@ function sessionOwnershipCheckoutBuildShippingQuote(body, shippingInput, taxable
     freeShippingSubsidy: 0,
     originCode: origin.code,
     originLabel: origin.label,
+    originFacility: origin.facility,
+    originAddress: origin.address,
+    originCoordinatesApproximate: true,
     destinationProvince: destination.province,
     destinationCity: destination.city,
     destinationPostalCode: destination.postalCode,
@@ -19199,6 +19215,7 @@ async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, re
     let shippingVolumetricWeightGrams = 0;
     let shippingItemCount = 0;
     let shippingForcedOriginCode = '';
+    let shippingAutoOriginPresent = false;
     const requireReady = String(process.env.CHECKOUT_REQUIRE_PRODUCT_READY || 'false').trim().toLowerCase() === 'true';
 
     if (!checkoutItems.length) {
@@ -19277,6 +19294,7 @@ async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, re
           || !['auto', 'surabaya', 'jakarta', 'sleman'].includes(shippingOriginCode)) {
         return { ok: false, status: 409, message: `Data berat/dimensi/gudang produk ${productTitle || itemTitle} belum valid untuk perhitungan ongkir.` };
       }
+      if (!laboratoryService && shippingOriginCode === 'auto') shippingAutoOriginPresent = true;
       if (shippingOriginCode !== 'auto') {
         if (shippingForcedOriginCode && shippingForcedOriginCode !== shippingOriginCode) {
           return { ok: false, status: 409, message: 'Satu checkout tidak boleh mencampur produk dari gudang asal yang berbeda.' };
@@ -19310,11 +19328,14 @@ async function sessionOwnershipCheckoutBuildBackendQuote({ body, serviceType, re
       return acc;
     }, { subtotal: 0, quantity: 0 });
     const subtotal = quoteAggregate.subtotal;
+    if (!laboratoryService && shippingAutoOriginPresent && shippingForcedOriginCode && shippingForcedOriginCode !== 'surabaya') {
+      return { ok: false, status: 409, message: 'Produk yang belum ditetapkan gudangnya tidak dapat digabung dengan produk dari gudang rekanan. Pisahkan pesanan atau pastikan gudang asal produk terlebih dahulu.' };
+    }
     const adjustments = await sessionOwnershipCheckoutBuildPricingAdjustments(body, subtotal, normalizedServiceType, {
       actualWeightGrams: shippingActualWeightGrams,
       volumetricWeightGrams: shippingVolumetricWeightGrams,
       itemCount: shippingItemCount,
-      forcedOriginCode: shippingForcedOriginCode
+      forcedOriginCode: laboratoryService ? shippingForcedOriginCode : (shippingForcedOriginCode || 'surabaya')
     }, accountPolicy);
     const totalQty = quoteAggregate.quantity;
     if (!Number.isSafeInteger(subtotal) || subtotal <= 0
@@ -20139,7 +20160,7 @@ function diracPaymentTransactionOrderDatabaseV443(transaction, kind) {
 async function myOrdersFetchGenericOrders(owner, userEmail) {
   const orderMap = new Map();
   const errors = [];
-  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,admin_order_state_v1,total,payment_method,payment_status,order_status,created_at';
+  const select = 'id,order_id,customer_id,customer_name,customer_email,customer_phone,shipping_address,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,shipping_breakdown,admin_order_state_v1,total,payment_method,payment_status,order_status,created_at';
 
   async function addRowsFromPath(path, database) {
     const orderDatabase = diracRegularOrderDatabaseV443(database);
@@ -20291,7 +20312,10 @@ function myOrdersNormalizeGenericOrder(row, items) {
     tax_dpp_numerator: Number(row.tax_dpp_numerator || DIRAC_COMMERCE_PRICING_V401.taxDppNumerator),
     tax_dpp_denominator: Number(row.tax_dpp_denominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator),
     shipping_origin_code: myOrdersCleanText(row.shipping_origin_code || '', 40),
-    shipping_origin_label: sessionOwnershipCheckoutShippingOrigin(row.shipping_origin_code) && sessionOwnershipCheckoutShippingOrigin(row.shipping_origin_code).label || '',
+    shipping_origin_label: String(row.shipping_breakdown && row.shipping_breakdown.originFacility || '') === DIRAC_SHIPPING_STANDARD_REFERENCE_V641.facility
+      && String(row.shipping_origin_code || '') === DIRAC_SHIPPING_STANDARD_REFERENCE_V641.code
+      ? DIRAC_SHIPPING_STANDARD_REFERENCE_V641.label
+      : (sessionOwnershipCheckoutShippingOrigin(row.shipping_origin_code) && sessionOwnershipCheckoutShippingOrigin(row.shipping_origin_code).label || ''),
     shipping_distance_km: Number(row.shipping_distance_km || 0),
     shipping_actual_weight_grams: Number(row.shipping_actual_weight_grams || 0),
     shipping_volumetric_weight_grams: Number(row.shipping_volumetric_weight_grams || 0),
@@ -23082,7 +23106,7 @@ async function midtransFetchPaidInvoiceOrderAfterBindingV376(tx) {
     const orderId = String(tx.order_id || '').trim();
     const orderDatabase = diracPaymentTransactionOrderDatabaseV443(tx, 'regular');
     if (!orderId || !/^(commerce|security)$/.test(orderDatabase)) return null;
-    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_status,order_status,created_at';
+    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,shipping_breakdown,total,payment_status,order_status,created_at';
     const orderOptions = orderDatabase === 'security'
       ? { method: 'GET', auth: 'service', db: 'security' }
       : { method: 'GET', auth: 'service' };
@@ -33389,7 +33413,7 @@ async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, pai
     && paidOrder.payment_status === 'paid'
     && midtransStrictMoneyV350(paidOrder.total) === midtransStrictMoneyV350(tx.amount) ? paidOrder : null;
   if (!order) {
-    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,total,payment_status,order_status,created_at';
+    const select = 'id,order_id,customer_id,customer_name,customer_phone,customer_email,shipping_address,note,service_type,subtotal,shipping_cost,discount,taxable_amount,tax_amount,tax_effective_rate_bps,tax_statutory_rate_bps,tax_dpp_numerator,tax_dpp_denominator,shipping_origin_code,shipping_distance_km,shipping_actual_weight_grams,shipping_volumetric_weight_grams,shipping_billable_weight_grams,shipping_mode,shipping_breakdown,total,payment_status,order_status,created_at';
     const orderOptions = orderDatabase === 'security'
       ? { method: 'GET', auth: 'service', db: 'security' }
       : { method: 'GET', auth: 'service' };
@@ -33435,6 +33459,7 @@ async function orderMailBuildPaidRegularInvoiceContext(tx, provider, paidAt, pai
         tax_dpp_numerator: Number(order.tax_dpp_numerator || DIRAC_COMMERCE_PRICING_V401.taxDppNumerator),
         tax_dpp_denominator: Number(order.tax_dpp_denominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator),
         shipping_origin_code: orderMailCleanText(order.shipping_origin_code || '', 40),
+        shipping_origin_facility: String(order.shipping_breakdown && order.shipping_breakdown.originFacility || ''),
         shipping_distance_km: Number(order.shipping_distance_km || 0),
         shipping_actual_weight_grams: Number(order.shipping_actual_weight_grams || 0),
         shipping_volumetric_weight_grams: Number(order.shipping_volumetric_weight_grams || 0),
@@ -33706,6 +33731,7 @@ function orderMailNormalizeOrderInput(input) {
       tax_dpp_numerator: Number(order.tax_dpp_numerator || DIRAC_COMMERCE_PRICING_V401.taxDppNumerator),
       tax_dpp_denominator: Number(order.tax_dpp_denominator || DIRAC_COMMERCE_PRICING_V401.taxDppDenominator),
       shipping_origin_code: orderMailCleanText(order.shipping_origin_code || '', 40),
+      shipping_origin_facility: orderMailCleanText(order.shipping_origin_facility || '', 70),
       shipping_distance_km: Number(order.shipping_distance_km || 0),
       shipping_actual_weight_grams: Number(order.shipping_actual_weight_grams || 0),
       shipping_volumetric_weight_grams: Number(order.shipping_volumetric_weight_grams || 0),
@@ -33793,7 +33819,10 @@ function orderMailBuildNewOrderMessages(data) {
   const noteInfoRows = orderNote ? [['Catatan', orderNote]] : [];
   const shippingOrigin = sessionOwnershipCheckoutShippingOrigin(data.order.shipping_origin_code);
   const shippingSummaryRows = data.order.shipping_origin_code ? [
-    ['Gudang asal', shippingOrigin ? shippingOrigin.label : data.order.shipping_origin_code],
+    ['Alamat acuan ongkir', data.order.shipping_origin_facility === DIRAC_SHIPPING_STANDARD_REFERENCE_V641.facility
+      && data.order.shipping_origin_code === DIRAC_SHIPPING_STANDARD_REFERENCE_V641.code
+      ? DIRAC_SHIPPING_STANDARD_REFERENCE_V641.label
+      : (shippingOrigin ? shippingOrigin.label : data.order.shipping_origin_code)],
     ['Jarak estimasi', `${Number(data.order.shipping_distance_km || 0)} km`],
     ['Berat tagihan', `${Math.max(0, Number(data.order.shipping_billable_weight_grams || 0))} gram`],
     ['Mode pengiriman', String(data.order.shipping_mode || 'standard').toUpperCase()]
