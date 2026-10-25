@@ -32541,6 +32541,8 @@ async function diracServerDeleteExpiredUnpaidOrdersV671(orders, txMap) {
 
 // Keep both ownership checkpoints. Each lookup binds the UUID AND visible code
 // to the authenticated customer in both existing order databases, never a foreign row.
+const DIRAC_EXPIRY_OWNER_PROOFS_V704 = new WeakMap();
+const DIRAC_EXPIRY_TX_PROOFS_V704 = new WeakMap();
 async function diracUnpaidExpiryOwnerRowsV701(req, ctx, owner, body, ids) {
   const early = ctx && ctx.currentStageV211 === 'body validation' && ctx.currentStageIndexV211 === 18;
   const idor = ctx && ctx.currentStageV211 === 'IDOR/BOLA' && ctx.currentStageIndexV211 === 26;
@@ -32587,7 +32589,57 @@ async function diracUnpaidExpiryOwnerRowsV701(req, ctx, owner, body, ids) {
   };
   const [commerce, security] = await Promise.all([read('commerce'), read('security')]);
   if (commerce.length + security.length !== 1) throw new Error('EXPIRY_ORDER_NOT_UNIQUE_OR_NOT_FOUND');
+  if (idor) DIRAC_EXPIRY_OWNER_PROOFS_V704.set(req, Object.freeze({ ctx, req,
+    requestId: String(ctx.requestId || ''), authUserId: owner.authUserId,
+    row: Object.freeze({ ...(commerce.length ? commerce[0] : security[0]) }) }));
   return commerce.concat(security);
+}
+
+// Ownership metadata only: reuse the exact stage-26 storage proof inside this request.
+// The guarded business query still reaches storage with its owner/object predicates.
+function diracExpiryOwnerMetadataRowsV704(ids, table, database) {
+  const ctx = diracCentralCurrentContextV149(), req = ctx && ctx.req;
+  const proof = req && DIRAC_EXPIRY_OWNER_PROOFS_V704.get(req), row = proof && proof.row;
+  if (!proof || proof.ctx !== ctx || proof.req !== req || proof.requestId !== String(ctx.requestId || '')
+      || !Object.isFrozen(proof) || !Object.isFrozen(row) || ctx.action !== 'simulate_expire_unpaid_order'
+      || ctx.method !== 'POST' || ctx.classification !== 'browser' || req.__diracCentralSecurityGuardPassedV146 !== true
+      || diracCentralHandlerContextFullyPassedV211(ctx, req) !== true
+      || !ctx.body || ctx.body.order_id !== row.id || ctx.body.order_code !== row.order_id
+      || !(ctx.__diracCentralOwnerBoundObjectValuesV194 instanceof Set)
+      || !ctx.__diracCentralOwnerBoundObjectValuesV194.has(row.id) || !ctx.__diracCentralOwnerBoundObjectValuesV194.has(row.order_id)) return null;
+  const owner = diracCentralOwnerFromVerifiedContextV215(req);
+  const permit = diracCentralCurrentDatabaseEgressPermitV230();
+  const binding = permit && DIRAC_CENTRAL_DATABASE_PERMIT_BINDINGS_V362.get(permit);
+  if (!owner || owner.ok !== true || owner.authUserId !== proof.authUserId || !Array.isArray(owner.customerIds) || owner.customerIds.length !== 1
+      || owner.customerIds[0] !== row.customer_id || !permit || !binding || binding.ctx !== ctx || binding.req !== req
+      || binding.dispatched !== false || binding.requestId !== proof.requestId || permit.action !== ctx.action || permit.caller !== ctx.classification
+      || permit.authMode !== 'service' || !['GET','PATCH','DELETE'].includes(permit.method)
+      || permit.bodyBytes !== (permit.method === 'PATCH' ? 26 : 0)
+      || permit.bodyHash !== crypto.createHash('sha256').update(permit.method === 'PATCH' ? '{"order_status":"expired"}' : '').digest('hex')
+      || !Number.isSafeInteger(permit.expiresAtMs) || permit.expiresAtMs <= Date.now()) return null;
+  const url = new URL(permit.path, permit.origin), q = url.searchParams;
+  if (url.origin !== permit.origin || url.pathname !== '/rest/v1/' + table
+      || q.getAll('customer_id').length !== 1 || q.get('customer_id') !== 'eq.' + row.customer_id
+      || q.has('or') || q.has('and')) return null;
+  if (table === 'orders') {
+    if (q.getAll('id').length !== 1 || q.get('id') !== 'eq.' + row.id || ids.length !== 1 || ids[0] !== row.id) return null;
+    if (database === row.database) return [{ ...row }];
+    // Stage 26 read BOTH databases and confirmed the other source had no owned match.
+    return permit.method === 'GET' && ['commerce','security'].includes(database) ? [] : null;
+  }
+  const tx = DIRAC_EXPIRY_TX_PROOFS_V704.get(req);
+  const txBound = tx && tx.ctx === ctx && tx.req === req && tx.requestId === proof.requestId
+    && Object.isFrozen(tx) && tx.customer_id === row.customer_id && tx.order_id === row.id
+    && ctx.__diracCentralOwnerBoundObjectValuesV194.has(tx.id);
+  if (database !== 'paymentService' || permit.method === 'PATCH') return null;
+  if (table === 'payment_gateway_events') return txBound && permit.method === 'GET' && !q.has('id')
+    && q.getAll('payment_transaction_id').length === 1 && q.get('payment_transaction_id') === 'eq.' + tx.id
+    && ids.length === 1 && ids[0] === tx.id ? [{ id: tx.id, customer_id: tx.customer_id, table: 'payment_transactions' }] : null;
+  if (table !== 'payment_transactions' || q.getAll('order_id').length !== 1 || q.get('order_id') !== 'eq.' + row.id) return null;
+  if (!q.has('id')) return permit.method === 'GET' && ids.length === 1 && ids[0] === row.id ? [{ ...row }] : null;
+  if (!txBound || q.getAll('id').length !== 1 || q.get('id') !== 'eq.' + tx.id || ids.length !== 2
+      || !((ids[0] === tx.id && ids[1] === row.id) || (ids[1] === tx.id && ids[0] === row.id))) return null;
+  return [{ id: tx.id, customer_id: tx.customer_id, table: 'payment_transactions' }, { ...row }];
 }
 
 // Shared order-operation lease. Uses existing security storage after all guards.
@@ -32711,7 +32763,7 @@ function diracAbandonedSnapEgressAllowedV703(url, options, ctx) {
     && Object.isFrozen(options) && Object.isFrozen(options.headers)
     && Object.keys(options.headers).sort().join(',') === 'Accept,Authorization,Content-Type'
     && options.headers.Accept === 'application/json' && options.headers['Content-Type'] === 'application/json'
-    && options.headers.Authorization === midtransServerKey());
+    && options.headers.Authorization === midtransBasicAuthHeader());
 }
 async function diracCancelAbandonedSnapV703(order, database, lock) {
   const ctx = diracCentralCurrentContextV149();
@@ -32748,6 +32800,8 @@ async function diracCancelAbandonedSnapV703(order, database, lock) {
       || meta.gateway_invoice_id !== token[1] || !snap || snap.token !== token[1] || snap.redirect_url !== trustedUrl
       || !request || request.order_id !== tx.gateway_reference || midtransStrictMoneyV350(request.gross_amount) !== amount
       || !diracCentralAddOwnerBoundObjectValuesV198(ctx, [tx.id])) return false;
+  DIRAC_EXPIRY_TX_PROOFS_V704.set(ctx.req, Object.freeze({ ctx, req: ctx.req, requestId: String(ctx.requestId || ''),
+    id: tx.id, customer_id: tx.customer_id, order_id: tx.order_id }));
   const eventsPath = '/rest/v1/payment_gateway_events?select=id&customer_id=eq.' + encodeURIComponent(order.customer_id)
     + '&payment_transaction_id=eq.' + encodeURIComponent(tx.id) + '&limit=1';
   const hasEvents = async () => {
@@ -32758,7 +32812,7 @@ async function diracCancelAbandonedSnapV703(order, database, lock) {
   if (await hasEvents()) return false;
   const cancelUrl = new URL('/snap/v1/transactions/' + token[1] + '/cancel', midtransSnapBaseUrl()).href;
   const cancelOptions = Object.freeze({ method: 'POST', headers: Object.freeze({
-    Accept: 'application/json', 'Content-Type': 'application/json', Authorization: midtransServerKey()
+    Accept: 'application/json', 'Content-Type': 'application/json', Authorization: midtransBasicAuthHeader()
   }) });
   if (DIRAC_ABANDONED_SNAP_EGRESS_V703.has(ctx)) return false;
   DIRAC_ABANDONED_SNAP_EGRESS_V703.set(ctx, Object.freeze({ ctx, req: ctx.req, lock, options: cancelOptions,
@@ -32773,6 +32827,11 @@ async function diracCancelAbandonedSnapV703(order, database, lock) {
   const alreadyCancelled = response && [200, 400, 409, 422].includes(response.status) && result
     && Object.keys(result).join(',') === 'error_messages' && Array.isArray(result.error_messages)
     && result.error_messages.length === 1 && result.error_messages[0] === 'token already canceled';
+  console.info('[order-expiry-midtrans-v704]', JSON.stringify({ request_id: String(ctx.requestId || '').slice(0, 64),
+    http_status: Number(response && response.status || 0),
+    result: confirmed ? 'cancelled' : alreadyCancelled ? 'already_cancelled' : 'cancellation_unconfirmed' }));
+  if (response && [401, 403].includes(response.status)) throw diracExpiryFailureV702('EXPIRY_SNAP_AUTHENTICATION_REJECTED');
+  if (response && response.status >= 500) throw diracExpiryFailureV702('EXPIRY_SNAP_CANCELLATION_UNAVAILABLE');
   if (!confirmed && !alreadyCancelled) return false;
   if (await hasEvents()) return false;
   const removed = await supabaseFetch('/rest/v1/payment_transactions?id=eq.' + encodeURIComponent(tx.id) + parent
@@ -43649,6 +43708,8 @@ async function diracBolaIdorV128ResolveKnownObjectOwners(objectIds, preferredTab
   if (!ids.length) return [];
 
   const preferred = String(preferredTable || '').toLowerCase();
+  const expiryRowsV704 = diracExpiryOwnerMetadataRowsV704(ids, preferred, database);
+  if (expiryRowsV704) return expiryRowsV704;
   if (preferred === 'payment_transactions') {
     const paymentContext = diracCentralCurrentContextV149();
     const paymentLegacyContext = diracBolaIdorV128CurrentContext();
