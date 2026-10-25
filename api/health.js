@@ -23930,8 +23930,10 @@ const DIRAC_PASSKEY_SERVER_DEVICE_BINDING_POLICY_V360 = 'httponly-server-bound-v
 const DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_TYPE_V360 = 'dirac-passkey-server-device-cookie-v2';
 const DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_MAX_AGE_V360 = 365 * 24 * 60 * 60;
 
-function diracPasskeyServerDeviceCookieNameV360() {
-  return process.env.NODE_ENV === 'production' ? '__Host-dirac_pk_device_v2' : 'dirac_pk_device_v2';
+function diracPasskeyServerDeviceCookieNameV360(owner) {
+  const base = process.env.NODE_ENV === 'production' ? '__Host-dirac_pk_device_v2' : 'dirac_pk_device_v2';
+  const customerId = String(owner && owner.customerId || '').trim().toLowerCase();
+  return customerSecurityLooksLikeUuid(customerId) ? base + '_' + customerId : base;
 }
 
 function diracPasskeyServerDeviceSecretV360(purpose) {
@@ -23981,7 +23983,13 @@ function diracPasskeyServerDeviceEncodeV360(owner, deviceId) {
 
 function diracPasskeyServerDeviceReadV360(req, owner) {
   const cookies = typeof parseCookies === 'function' ? parseCookies(req) : {};
-  const raw = String(cookies && cookies[diracPasskeyServerDeviceCookieNameV360()] || '').trim();
+  const scopedName = diracPasskeyServerDeviceCookieNameV360(owner);
+  const cookieName = Object.prototype.hasOwnProperty.call(cookies, scopedName)
+    ? scopedName : diracPasskeyServerDeviceCookieNameV360();
+  if (cookies.__all && Array.isArray(cookies.__all[cookieName]) && cookies.__all[cookieName].length !== 1) {
+    return { ok: false, reason: 'server_device_cookie_ambiguous', tampered: true };
+  }
+  const raw = String(cookies && cookies[cookieName] || '').trim();
   if (!raw) return { ok: false, reason: 'server_device_cookie_missing' };
   const parts = raw.split('.');
   if (parts.length !== 2 || !parts[0] || !/^[A-Za-z0-9_-]{86}$/.test(parts[1])) {
@@ -24036,6 +24044,10 @@ function diracPasskeyServerDeviceEnsureV360(req, res, owner, expectedStoredKeyId
     && current.rebindable === true
     && /^[a-f0-9]{64}$/.test(storedKeyId)
     && safeEqual(String(current.legacyKeyId || ''), storedKeyId);
+  if (storedKeyId && (!/^[a-f0-9]{64}$/.test(storedKeyId)
+      || (!ownerRebind && (current.ok !== true || !safeEqual(String(current.keyId || ''), storedKeyId))))) {
+    return { ok: false, reason: 'server_device_binding_recovery_required', recoveryRequired: true };
+  }
   const deviceId = current.ok === true || ownerRebind
     ? current.deviceId
     : crypto.randomBytes(32).toString('base64url');
@@ -24043,7 +24055,7 @@ function diracPasskeyServerDeviceEnsureV360(req, res, owner, expectedStoredKeyId
   if (!issued || !/^[a-f0-9]{64}$/.test(String(issued.keyId || ''))) {
     return { ok: false, reason: 'server_device_cookie_issue_failed' };
   }
-  appendSetCookie(res, makeCookie(diracPasskeyServerDeviceCookieNameV360(), issued.value, {
+  appendSetCookie(res, makeCookie(diracPasskeyServerDeviceCookieNameV360(owner), issued.value, {
     maxAge: DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_MAX_AGE_V360,
     domain: ''
   }));
@@ -24381,7 +24393,7 @@ function diracPasskeyA2FValidateAuthenticationResponse({ row, response, payload,
     return { ok: false, reason: 'passkey_signature_invalid' };
   }
   const previousCount = Math.max(0, Number(row && row.sign_count || 0));
-  if (previousCount > 0 && parsed.signCount > 0 && parsed.signCount <= previousCount) {
+  if (previousCount > 0 && parsed.signCount <= previousCount) {
     return {
       ...parsed,
       ok: false,
@@ -25642,6 +25654,13 @@ async function diracPasskeyA2FUpdateUsage({ row, owner, response, credential, cl
   const assertion = diracPasskeyA2FValidateAuthenticationResponse({ row, response, payload, clientData, req });
   if (!assertion.ok) {
     if (assertion.reason === 'passkey_sign_count_replay') {
+      const replayDeviceBinding = diracPasskeyA2FValidateAuthenticationDeviceBinding({
+        row, body, setupToken, payload, credentialId: String(row.credential_id || ''), req, owner
+      });
+      if (!replayDeviceBinding.ok) {
+        return { ok: false, status: 403, message: 'Binding perangkat belum terverifikasi. Passkey tidak dicabut.',
+          code: String(replayDeviceBinding.reason || 'DEVICE_BINDING_AUTHENTICATION_INVALID').toUpperCase() };
+      }
       if (typeof consumeChallengeForCommitV281 !== 'function' || !await consumeChallengeForCommitV281()) {
         return { ok: false, status: 409, message: 'Challenge Passkey sudah dipakai atau tidak valid.', code: 'PASSKEY_CHALLENGE_ALREADY_USED' };
       }
@@ -26961,7 +26980,7 @@ async function diracPasskeyA2FStart(req, res) {
       req,
       res,
       owner,
-      activeBindingAtStartV360 && activeBindingAtStartV360.serverBound === true
+      mode === 'authentication' && activeBindingAtStartV360 && activeBindingAtStartV360.serverBound === true
         ? String(activeBindingAtStartV360.keyId || '')
         : ''
     );
@@ -26978,15 +26997,18 @@ async function diracPasskeyA2FStart(req, res) {
       if (serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true) {
         await diracA2FHardBanCurrentRequest('passkey_server_device_cookie_tampered');
       }
-      return res.status(serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true ? 403 : 503).json({
+      const bindingRecoveryRequired = Boolean(serverDeviceBindingV360 && serverDeviceBindingV360.recoveryRequired === true);
+      return res.status(serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true ? 403 : bindingRecoveryRequired ? 409 : 503).json({
         ok: false,
         method: 'passkey',
         code: serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true
           ? 'PASSKEY_SERVER_DEVICE_COOKIE_INVALID'
-          : 'PASSKEY_SERVER_DEVICE_COOKIE_UNAVAILABLE',
+          : bindingRecoveryRequired ? 'PASSKEY_DEVICE_BINDING_RECOVERY_REQUIRED' : 'PASSKEY_SERVER_DEVICE_COOKIE_UNAVAILABLE',
         message: serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true
           ? 'Binding perangkat browser tidak valid. Proses dihentikan.'
-          : 'Binding perangkat server belum dapat diterbitkan. Coba lagi.'
+          : bindingRecoveryRequired
+            ? 'Bukti binding browser untuk akun ini tidak tersedia atau tidak cocok. Ini tidak berarti Passkey telah diganti. Gunakan pemulihan Lost Passkey untuk memulihkan akses dengan aman.'
+            : 'Binding perangkat server belum dapat diterbitkan. Coba lagi.'
       });
     }
   }
