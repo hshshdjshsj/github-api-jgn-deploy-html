@@ -32592,7 +32592,7 @@ async function diracUnpaidExpiryOwnerRowsV701(req, ctx, owner, body, ids) {
 
 // Shared order-operation lease. Uses existing security storage after all guards.
 const DIRAC_EXPIRY_LOCKS_V702 = new WeakSet();
-const DIRAC_EXPIRY_SELECT_V702 = 'id,order_id,customer_id,service_type,payment_status,order_status,payment_method,created_at,updated_at';
+const DIRAC_EXPIRY_SELECT_V702 = 'id,order_id,customer_id,service_type,payment_status,order_status,payment_method,created_at,updated_at,total';
 function diracExpiryFailureV702(code) {
   return Object.assign(new Error(code), { code, statusCode: 503 });
 }
@@ -32666,7 +32666,10 @@ async function diracDeleteUnpaidOrderV702(order, database, early) {
       if (!found || found.ok !== true || !Array.isArray(found.data)) throw diracExpiryFailureV702('EXPIRY_PAYMENT_LOOKUP_UNAVAILABLE');
       return found.data.length > 0;
     };
-    if (await probe()) return { deleted: false, reason: 'payment_exists' };
+    if (await probe()) {
+      if (!early || !await diracCancelAbandonedSnapV703(row, database, lock)) return { deleted: false, reason: 'payment_exists' };
+      if (await probe()) return { deleted: false, reason: 'payment_exists' };
+    }
     const target = base + '&service_type=eq.' + service + '&payment_status=eq.unpaid&payment_method=eq.' + encodeURIComponent('Belum dipilih')
       + '&created_at=eq.' + encodeURIComponent(row.created_at) + '&updated_at=eq.' + encodeURIComponent(row.updated_at);
     if (row.order_status === 'pending') {
@@ -32691,9 +32694,100 @@ async function diracDeleteUnpaidOrderV702(order, database, early) {
     return { deleted: true };
   } finally { await diracExpiryReleaseLockV702(lock); }
 }
+// Only an abandoned, never-processed Snap session can be removed by this manual action.
+// Midtrans must close the exact stored token first; any payment evidence preserves the order.
+const DIRAC_ABANDONED_SNAP_EGRESS_V703 = new WeakMap();
+function diracAbandonedSnapEgressAllowedV703(url, options, ctx) {
+  const cap = ctx && DIRAC_ABANDONED_SNAP_EGRESS_V703.get(ctx);
+  return Boolean(cap && cap.ctx === ctx && cap.req === ctx.req && cap.options === options
+    && ctx.action === 'simulate_expire_unpaid_order' && ctx.method === 'POST'
+    && ctx.req.__diracCentralSecurityGuardPassedV146 === true
+    && diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) === true
+    && DIRAC_EXPIRY_LOCKS_V702.has(cap.lock) && cap.lock.ctx === ctx
+    && Date.now() < cap.expiresAt && Date.parse(cap.lock.expiresAt) > Date.now()
+    && ctx.body && ctx.body.order_id === cap.orderId && ctx.body.order_code === cap.orderCode
+    && url.href === cap.url && url.origin === midtransSnapBaseUrl() && !url.search && !url.hash
+    && options.method === 'POST' && Object.keys(options).sort().join(',') === 'headers,method'
+    && Object.isFrozen(options) && Object.isFrozen(options.headers)
+    && Object.keys(options.headers).sort().join(',') === 'Accept,Authorization,Content-Type'
+    && options.headers.Accept === 'application/json' && options.headers['Content-Type'] === 'application/json'
+    && options.headers.Authorization === midtransServerKey());
+}
+async function diracCancelAbandonedSnapV703(order, database, lock) {
+  const ctx = diracCentralCurrentContextV149();
+  const owner = ctx && ctx.req && diracCentralOwnerFromVerifiedContextV215(ctx.req);
+  if (!ctx || !ctx.req || ctx.action !== 'simulate_expire_unpaid_order' || ctx.method !== 'POST'
+      || ctx.req.__diracCentralSecurityGuardPassedV146 !== true
+      || diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) !== true
+      || !DIRAC_EXPIRY_LOCKS_V702.has(lock) || lock.ctx !== ctx
+      || lock.key !== 's2s-order-op-v702:' + database + ':' + order.id
+      || !owner || owner.ok !== true || !Array.isArray(owner.customerIds) || owner.customerIds.length !== 1 || owner.customerIds[0] !== order.customer_id
+      || !ctx.body || ctx.body.order_id !== order.id || ctx.body.order_code !== order.order_id
+      || !midtransPaymentIsConfigured()) return false;
+  const select = 'id,order_id,domain_order_id,customer_id,service_type,gateway_name,gateway_reference,payment_status,amount,currency,payment_url,paid_at,created_at,updated_at,metadata';
+  const parent = '&order_id=eq.' + encodeURIComponent(order.id) + '&customer_id=eq.' + encodeURIComponent(order.customer_id);
+  const found = await supabaseFetch('/rest/v1/payment_transactions?select=' + encodeURIComponent(select) + parent + '&limit=2',
+    { method: 'GET', auth: 'service', db: 'paymentService' });
+  if (!found || found.ok !== true || !Array.isArray(found.data)) throw diracExpiryFailureV702('EXPIRY_PAYMENT_LOOKUP_UNAVAILABLE');
+  if (found.data.length !== 1) return false;
+  const tx = found.data[0], meta = tx && tx.metadata;
+  const amount = midtransStrictMoneyV350(order.total);
+  if (!tx || !customerSecurityLooksLikeUuid(tx.id) || tx.order_id !== order.id || tx.customer_id !== order.customer_id
+      || tx.domain_order_id !== null || tx.service_type !== order.service_type || tx.gateway_name !== 'midtrans'
+      || tx.payment_status !== 'unpaid' || tx.paid_at !== null || tx.currency !== 'IDR'
+      || amount === null || amount <= 0 || midtransStrictMoneyV350(tx.amount) !== amount
+      || !/^PAY-[A-Za-z0-9._:@-]{1,116}$/.test(String(tx.gateway_reference || ''))
+      || !Number.isFinite(Date.parse(tx.created_at)) || !Number.isFinite(Date.parse(tx.updated_at))
+      || !meta || typeof meta !== 'object' || Array.isArray(meta) || meta.order_database !== database
+      || Object.keys(meta).some(key => /^midtrans_/i.test(key))) return false;
+  const trustedUrl = midtransTrustedPaymentUrlV352(tx.payment_url);
+  const page = trustedUrl && new URL(trustedUrl);
+  const token = page && /^\/snap\/v[1-4]\/redirection\/([A-Za-z0-9_-]{16,128})\/?$/.exec(page.pathname);
+  const raw = meta.gateway_raw, request = raw && raw.request, snap = raw && raw.midtrans;
+  if (!token || page.origin !== midtransSnapBaseUrl() || page.search || page.hash
+      || meta.gateway_invoice_id !== token[1] || !snap || snap.token !== token[1] || snap.redirect_url !== trustedUrl
+      || !request || request.order_id !== tx.gateway_reference || midtransStrictMoneyV350(request.gross_amount) !== amount
+      || !diracCentralAddOwnerBoundObjectValuesV198(ctx, [tx.id])) return false;
+  const eventsPath = '/rest/v1/payment_gateway_events?select=id&customer_id=eq.' + encodeURIComponent(order.customer_id)
+    + '&payment_transaction_id=eq.' + encodeURIComponent(tx.id) + '&limit=1';
+  const hasEvents = async () => {
+    const events = await supabaseFetch(eventsPath, { method: 'GET', auth: 'service', db: 'paymentService' });
+    if (!events || events.ok !== true || !Array.isArray(events.data)) throw diracExpiryFailureV702('EXPIRY_PAYMENT_EVIDENCE_UNAVAILABLE');
+    return events.data.length > 0;
+  };
+  if (await hasEvents()) return false;
+  const cancelUrl = new URL('/snap/v1/transactions/' + token[1] + '/cancel', midtransSnapBaseUrl()).href;
+  const cancelOptions = Object.freeze({ method: 'POST', headers: Object.freeze({
+    Accept: 'application/json', 'Content-Type': 'application/json', Authorization: midtransServerKey()
+  }) });
+  if (DIRAC_ABANDONED_SNAP_EGRESS_V703.has(ctx)) return false;
+  DIRAC_ABANDONED_SNAP_EGRESS_V703.set(ctx, Object.freeze({ ctx, req: ctx.req, lock, options: cancelOptions,
+    url: cancelUrl, orderId: order.id, orderCode: order.order_id, expiresAt: Date.now() + 30000 }));
+  let response, result;
+  try { response = await fetch(cancelUrl, cancelOptions); result = await parseFetchResponse(response); }
+  catch (_) { throw diracExpiryFailureV702('EXPIRY_SNAP_CANCELLATION_UNCONFIRMED'); }
+  finally { DIRAC_ABANDONED_SNAP_EGRESS_V703.delete(ctx); }
+  const cancelledAt = result && Date.parse(result.canceled_at);
+  const confirmed = response && response.status === 200 && result && Object.keys(result).join(',') === 'canceled_at'
+    && Number.isFinite(cancelledAt) && cancelledAt >= Date.parse(tx.created_at) && cancelledAt <= Date.now() + 30000;
+  const alreadyCancelled = response && [200, 400, 409, 422].includes(response.status) && result
+    && Object.keys(result).join(',') === 'error_messages' && Array.isArray(result.error_messages)
+    && result.error_messages.length === 1 && result.error_messages[0] === 'token already canceled';
+  if (!confirmed && !alreadyCancelled) return false;
+  if (await hasEvents()) return false;
+  const removed = await supabaseFetch('/rest/v1/payment_transactions?id=eq.' + encodeURIComponent(tx.id) + parent
+    + '&domain_order_id=is.null&service_type=eq.' + order.service_type + '&gateway_name=eq.midtrans&payment_status=eq.unpaid&paid_at=is.null'
+    + '&amount=eq.' + amount + '&currency=eq.IDR&created_at=eq.' + encodeURIComponent(tx.created_at)
+    + '&updated_at=eq.' + encodeURIComponent(tx.updated_at) + '&select=id',
+    { method: 'DELETE', auth: 'service', db: 'paymentService', prefer: 'return=representation' });
+  if (!removed || removed.ok !== true || !Array.isArray(removed.data) || removed.data.length !== 1 || removed.data[0].id !== tx.id) {
+    throw diracExpiryFailureV702('EXPIRY_SNAP_TRANSACTION_DELETE_UNCONFIRMED');
+  }
+  return true;
+}
 // Explicit customer-requested EARLY expiry simulation v700. This is an irreversible
-// deletion, not a visual preview. It never expires or deletes another account's
-// order, an order with a payment attempt, or a paid/processed order. No cron.
+// deletion, not a visual preview. Paid/processed orders and financial evidence
+// stay protected; an abandoned Snap token must be closed by Midtrans first. No cron.
 async function diracSimulateExpireUnpaidOrderV700(req, res) {
   const access = await requireDomainDashboardAccess(req, res);
   if (!access) return;
@@ -69309,6 +69403,9 @@ function diracCentralEgressRouteAllowedV228(url, method, ctx, options) {
   const midtrans = exact('app.midtrans.com', '/snap/v1/transactions', ['POST'], ['domain_checkout', 'create_payment'], 'midtrans_snap')
     || exact('app.sandbox.midtrans.com', '/snap/v1/transactions', ['POST'], ['domain_checkout', 'create_payment'], 'midtrans_snap');
   if (midtrans) return midtrans;
+  if (action === 'simulate_expire_unpaid_order' && verb === 'POST' && diracAbandonedSnapEgressAllowedV703(url, options, ctx)) {
+    return { ok: true, policy: 'midtrans_abandoned_snap_cancel_v703', action };
+  }
   // Midtrans webhook financial state confirmation. Dynamic path is limited to
   // one PAY-* reference segment and the exact GET /v2/{id}/status operation.
   if ((host === 'api.midtrans.com' || host === 'api.sandbox.midtrans.com')
