@@ -689,7 +689,7 @@ async function resolveMainIdentity(req, res, required) {
     result = await fetchJson(route.endpoint, {
       method: 'GET',
       headers: identityHeadersV360
-    }, 9000);
+    }, 25000);
     if (identityDiagnosticV360) { identityDiagnosticV360.phase = 'after_fetch'; identityDiagnosticV360.response = mainIdentityResponseDiagnosticV360(result); }
   } catch (_) {
     if (identityDiagnosticV360) {

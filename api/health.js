@@ -75838,11 +75838,11 @@ async function diracCentralSupportBrokerTransportV355(input, options) {
     error.code = 'DIRAC_SUPPORT_EGRESS_DNS_PIN_EMPTY';
     throw error;
   }
-  const timeout = diracCentralTimeoutOptionsV221(Object.assign({}, options || {}, { redirect: 'manual' }), 10000);
+  const timeout = diracCentralTimeoutOptionsV221(Object.assign({}, options || {}, { redirect: 'manual' }), route.policy === 'support_main_identity_exact_v355' ? 25000 : 10000);
   DIRAC_CENTRAL_SUPPORT_DISPATCH_BINDINGS_V362.set(timeout.options, supportBinding);
   let response;
   try {
-    response = await diracCentralPinnedHttpsFetchV230(route.target, timeout.options, pinnedIps, route.maxBytes, 10000);
+    response = await diracCentralPinnedHttpsFetchV230(route.target, timeout.options, pinnedIps, route.maxBytes, route.policy === 'support_main_identity_exact_v355' ? 25000 : 10000);
   } finally {
     timeout.cleanup();
   }
