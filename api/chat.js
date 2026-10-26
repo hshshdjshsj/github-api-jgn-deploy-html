@@ -121,15 +121,24 @@ async function __diracChatCentralGuardPrimeBodyActionV2(req) {
       const chunks = [];
       let total = 0;
       let settled = false;
+      let timer;
+      const cleanup = () => {
+        clearTimeout(timer);
+        req.off('data', onData); req.off('end', onEnd); req.off('error', onError);
+        req.off('aborted', onAborted); req.off('close', onClose);
+      };
       const fail = (code, statusCode) => {
         if (settled) return;
         settled = true;
+        cleanup();
+        chunks.length = 0;
+        if (typeof req.pause === 'function') req.pause();
         const error = new Error(code);
         error.code = code;
         error.statusCode = statusCode || 400;
         reject(error);
       };
-      req.on('data', (chunk) => {
+      const onData = (chunk) => {
         if (settled) return;
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         total += bytes.length;
@@ -138,17 +147,24 @@ async function __diracChatCentralGuardPrimeBodyActionV2(req) {
           return fail('DIRAC_CHAT_BODY_TOO_LARGE', 413);
         }
         chunks.push(bytes);
-      });
-      req.on('end', () => {
+      };
+      const onEnd = () => {
         if (settled) return;
         settled = true;
+        cleanup();
         resolve(Buffer.concat(chunks, total));
-      });
-      req.on('error', () => fail('DIRAC_CHAT_BODY_STREAM_ERROR', 400));
-      req.on('aborted', () => fail('DIRAC_CHAT_BODY_STREAM_ABORTED', 400));
-      req.on('close', () => {
+        chunks.length = 0;
+      };
+      const onError = () => fail('DIRAC_CHAT_BODY_STREAM_ERROR', 400);
+      const onAborted = () => fail('DIRAC_CHAT_BODY_STREAM_ABORTED', 400);
+      const onClose = () => {
         if (!settled && !req.readableEnded) fail('DIRAC_CHAT_BODY_STREAM_CLOSED', 400);
-      });
+      };
+      if (req.aborted === true || req.destroyed === true) return onAborted();
+      timer = setTimeout(() => fail('DIRAC_CHAT_BODY_STREAM_TIMEOUT', 408), 10000);
+      if (timer.unref) timer.unref();
+      req.on('data', onData); req.on('end', onEnd); req.on('error', onError);
+      req.on('aborted', onAborted); req.on('close', onClose);
     });
   }
   if (!buffer) return '';

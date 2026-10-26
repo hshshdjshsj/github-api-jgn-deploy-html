@@ -23953,12 +23953,13 @@ function diracPasskeyServerDeviceKeyIdV360(owner, deviceId) {
     .digest('hex');
 }
 
-function diracPasskeyServerDeviceEncodeV360(owner, deviceId) {
+function diracPasskeyServerDeviceEncodeV360(owner, deviceId, retainedKeyId = '') {
   const authUserId = String(owner && owner.authUserId || '').trim();
   const customerId = String(owner && owner.customerId || '').trim();
   const did = String(deviceId || '').trim();
   if (!customerSecurityLooksLikeUuid(authUserId) || !customerSecurityLooksLikeUuid(customerId)
-      || !/^[A-Za-z0-9_-]{43}$/.test(did)) return null;
+      || !/^[A-Za-z0-9_-]{43}$/.test(did)
+      || (retainedKeyId !== '' && !/^[a-f0-9]{64}$/.test(retainedKeyId))) return null;
   const now = Math.floor(Date.now() / 1000);
   const payload = {
     typ: DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_TYPE_V360,
@@ -23968,6 +23969,7 @@ function diracPasskeyServerDeviceEncodeV360(owner, deviceId) {
     iat: now,
     exp: now + DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_MAX_AGE_V360
   };
+  if (retainedKeyId) payload.retained_key_id = retainedKeyId;
   const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const signature = crypto.createHmac('sha512', diracPasskeyServerDeviceSecretV360('cookie'))
     .update(encoded)
@@ -23977,7 +23979,7 @@ function diracPasskeyServerDeviceEncodeV360(owner, deviceId) {
     value,
     payload,
     deviceId: did,
-    keyId: diracPasskeyServerDeviceKeyIdV360(owner, did)
+    keyId: retainedKeyId || diracPasskeyServerDeviceKeyIdV360(owner, did)
   };
 }
 
@@ -24031,7 +24033,11 @@ function diracPasskeyServerDeviceReadV360(req, owner) {
       legacyKeyId
     };
   }
-  const keyId = diracPasskeyServerDeviceKeyIdV360(owner, deviceId);
+  if (Object.prototype.hasOwnProperty.call(payload, 'retained_key_id')
+      && (typeof payload.retained_key_id !== 'string' || !/^[a-f0-9]{64}$/.test(payload.retained_key_id))) {
+    return { ok: false, reason: 'server_device_cookie_retained_binding_invalid', tampered: true };
+  }
+  const keyId = payload.retained_key_id || diracPasskeyServerDeviceKeyIdV360(owner, deviceId);
   if (!/^[a-f0-9]{64}$/.test(keyId)) return { ok: false, reason: 'server_device_cookie_binding_invalid', tampered: true };
   return { ok: true, value: raw, payload, deviceId, keyId };
 }
@@ -24051,7 +24057,8 @@ function diracPasskeyServerDeviceEnsureV360(req, res, owner, expectedStoredKeyId
   const deviceId = current.ok === true || ownerRebind
     ? current.deviceId
     : crypto.randomBytes(32).toString('base64url');
-  const issued = diracPasskeyServerDeviceEncodeV360(owner, deviceId);
+  const issued = diracPasskeyServerDeviceEncodeV360(owner, deviceId,
+    current.ok === true && current.payload ? String(current.payload.retained_key_id || '') : '');
   if (!issued || !/^[a-f0-9]{64}$/.test(String(issued.keyId || ''))) {
     return { ok: false, reason: 'server_device_cookie_issue_failed' };
   }
@@ -24067,6 +24074,87 @@ function diracPasskeyServerDeviceEnsureV360(req, res, owner, expectedStoredKeyId
     ownerRebind,
     rebindFromKeyId: ownerRebind ? storedKeyId : ''
   };
+}
+
+async function diracPasskeyConfirmBrowserBindingV547(req, res, owner, row, body, securityEpoch) {
+  const fail = (status, code) => ({ ok: false, status, code });
+  const boundary = diracPasskeyGuardBoundaryV300(req, owner, { id: owner.authUserId, email: owner.email }, 'start');
+  const stored = diracPasskeyA2FStoredDeviceBinding(row);
+  const token = typeof body.token === 'string' ? body.token : '';
+  const requestId = customerSecurityNormalizeLostPasskeyRequestId(body.request_id || '');
+  if (!boundary || boundary.ok !== true || !diracPasskeyRecoveryBrowserBindingV281(req).ok
+      || !stored.ok || stored.serverBound !== true || !diracPasskeyA2FOwnerMatches(row, owner)
+      || row.is_active !== true || row.rotation_state !== 'active'
+      || !Number.isSafeInteger(securityEpoch) || securityEpoch < 1 || Number(row.credential_epoch) !== securityEpoch
+      || !/^[A-Za-z0-9_-]{24,256}$/.test(token) || !requestId) {
+    return fail(403, 'PASSKEY_BROWSER_CONFIRMATION_INVALID');
+  }
+  // Reuse the existing password + email verification. Its one-use authority
+  // reissues only this browser cookie; it never rotates a WebAuthn credential.
+  const verified = await diracPasskeyA2FValidateLostRecoverySession(owner, token);
+  if (!verified || verified.ok !== true || verified.requestId !== requestId) {
+    return fail(verified && Number(verified.status) >= 500 ? 503 : 403, 'PASSKEY_BROWSER_CONFIRMATION_INVALID');
+  }
+  const session = verified.row;
+  const requestPath = '/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE
+    + '?select=' + encodeURIComponent('request_id,customer_id,auth_user_id,status,attempt_count,used_at,revoked_at,locked_at,expires_at,old_passkey_ids,metadata')
+    + '&request_id=eq.' + encodeURIComponent(requestId) + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+    + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId) + '&limit=2';
+  const read = await supabaseFetch(requestPath, { method: 'GET', auth: 'service' });
+  if (!read || read.ok !== true || !Array.isArray(read.data)) return fail(503, 'PASSKEY_BROWSER_CONFIRMATION_UNAVAILABLE');
+  const request = read.data.length === 1 ? read.data[0] : null;
+  const metadata = request && request.metadata;
+  const now = Date.now();
+  if (!request || request.request_id !== requestId || request.customer_id !== owner.customerId || request.auth_user_id !== owner.authUserId
+      || request.status !== 'verified' || request.used_at || request.revoked_at || request.locked_at
+      || !Number.isSafeInteger(request.attempt_count) || request.attempt_count < 1 || request.attempt_count > LOST_PASSKEY_RECOVERY_ATTEMPT_LIMIT
+      || !(Date.parse(request.expires_at || '') > now) || !(Date.parse(session.expires_at || '') > now)
+      || !Array.isArray(request.old_passkey_ids) || request.old_passkey_ids.length !== 1 || request.old_passkey_ids[0] !== String(row.id)
+      || !metadata || metadata.mode !== 'password_email_code_100_v347' || metadata.delivery !== 'email_code_100'
+      || metadata.password_factor_required_on_verify !== true || metadata.code_verifier !== 'hmac_sha512_root_pepper_v347'
+      || !/^[a-f0-9]{64}$/.test(String(metadata.verification_session_hash || ''))
+      || !safeEqual(metadata.verification_session_hash, String(verified.sessionHash || ''))
+      || !diracPasskeyRecoveryRequestSessionMatchesV352(request, session)) {
+    return fail(403, 'PASSKEY_BROWSER_CONFIRMATION_INVALID');
+  }
+  const nowIso = new Date(now).toISOString();
+  const consumed = { status: 'used', used_at: nowIso, revoked_at: nowIso };
+  const sessionPath = '/rest/v1/' + LOST_PASSKEY_RECOVERY_SESSION_TABLE
+    + '?id=eq.' + encodeURIComponent(verified.id) + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+    + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId) + '&recovery_session_hash=eq.' + encodeURIComponent(verified.sessionHash)
+    + '&status=eq.verified&used_at=is.null&revoked_at=is.null&expires_at=gt.' + encodeURIComponent(nowIso);
+  const sessionUse = await supabaseFetch(sessionPath, { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: consumed });
+  const usedSession = sessionUse && sessionUse.ok === true && Array.isArray(sessionUse.data) && sessionUse.data.length === 1 ? sessionUse.data[0] : null;
+  if (!usedSession || String(usedSession.id) !== verified.id || usedSession.request_id !== requestId
+      || usedSession.customer_id !== owner.customerId || usedSession.auth_user_id !== owner.authUserId
+      || !safeEqual(String(usedSession.recovery_session_hash || ''), verified.sessionHash) || usedSession.status !== 'used'
+      || Date.parse(usedSession.used_at) !== now || Date.parse(usedSession.revoked_at) !== now) {
+    return fail(409, 'PASSKEY_BROWSER_CONFIRMATION_ALREADY_USED');
+  }
+  const requestUse = await supabaseFetch('/rest/v1/' + LOST_PASSKEY_RECOVERY_REQUEST_TABLE
+    + '?request_id=eq.' + encodeURIComponent(requestId) + '&customer_id=eq.' + encodeURIComponent(owner.customerId)
+    + '&auth_user_id=eq.' + encodeURIComponent(owner.authUserId) + '&attempt_count=eq.' + String(request.attempt_count)
+    + '&status=eq.verified&used_at=is.null&revoked_at=is.null&locked_at=is.null&expires_at=gt.' + encodeURIComponent(nowIso),
+    { method: 'PATCH', auth: 'service', prefer: 'return=representation', body: consumed });
+  const usedRequest = requestUse && requestUse.ok === true && Array.isArray(requestUse.data) && requestUse.data.length === 1 ? requestUse.data[0] : null;
+  if (!usedRequest || usedRequest.request_id !== requestId || usedRequest.customer_id !== owner.customerId || usedRequest.auth_user_id !== owner.authUserId
+      || usedRequest.status !== 'used' || usedRequest.attempt_count !== request.attempt_count
+      || Date.parse(usedRequest.used_at) !== now || Date.parse(usedRequest.revoked_at) !== now) {
+    return fail(409, 'PASSKEY_BROWSER_CONFIRMATION_ALREADY_USED');
+  }
+  const publication = await domainLoginEffectiveAccessBlockV320(req, { user: { id: owner.authUserId, email: owner.email } })
+    .catch(() => ({ ok: false }));
+  if (!publication || publication.ok !== true || publication.blocked || publication.onboarding_required) {
+    return fail(publication && publication.ok === true ? 403 : 503, 'PASSKEY_BROWSER_CONFIRMATION_UNAVAILABLE');
+  }
+  if (!(Date.parse(session.expires_at || '') > Date.now()) || !(Date.parse(request.expires_at || '') > Date.now())) {
+    return fail(403, 'PASSKEY_BROWSER_CONFIRMATION_EXPIRED');
+  }
+  const issued = diracPasskeyServerDeviceEncodeV360(owner, crypto.randomBytes(32).toString('base64url'), stored.keyId);
+  if (!issued || !safeEqual(issued.keyId, stored.keyId)) return fail(503, 'PASSKEY_BROWSER_CONFIRMATION_UNAVAILABLE');
+  appendSetCookie(res, makeCookie(diracPasskeyServerDeviceCookieNameV360(owner), issued.value,
+    { maxAge: DIRAC_PASSKEY_SERVER_DEVICE_COOKIE_MAX_AGE_V360, domain: '' }));
+  return { ok: true, keyId: issued.keyId, deviceId: issued.deviceId, refreshed: false };
 }
 
 async function diracPasskeyServerDeviceRecoverOwnerRebindV479(req, owner, row, currentBinding, currentUser) {
@@ -26984,6 +27072,13 @@ async function diracPasskeyA2FStart(req, res) {
         ? String(activeBindingAtStartV360.keyId || '')
         : ''
     );
+    if (mode === 'authentication' && serverDeviceBindingV360 && serverDeviceBindingV360.recoveryRequired === true && body.token) {
+      const confirmation = await diracPasskeyConfirmBrowserBindingV547(req, res, owner, activePasskeys[0], body, securityEpochAtStart)
+        .catch(() => ({ ok: false, status: 503, code: 'PASSKEY_BROWSER_CONFIRMATION_UNAVAILABLE' }));
+      if (!confirmation.ok) return res.status(confirmation.status || 403).json({ ok: false, method: 'passkey',
+        code: confirmation.code, message: 'Konfirmasi browser belum valid atau sudah digunakan. Passkey tersimpan tetap dipertahankan.' });
+      serverDeviceBindingV360 = confirmation;
+    }
     if (serverDeviceBindingV360 && serverDeviceBindingV360.ok === true
         && hasActivePasskey && activePasskeys.length === 1) {
       serverDeviceBindingV360 = await diracPasskeyServerDeviceRecoverOwnerRebindV479(
@@ -27007,7 +27102,7 @@ async function diracPasskeyA2FStart(req, res) {
         message: serverDeviceBindingV360 && serverDeviceBindingV360.tampered === true
           ? 'Binding perangkat browser tidak valid. Proses dihentikan.'
           : bindingRecoveryRequired
-            ? 'Bukti binding browser untuk akun ini tidak tersedia atau tidak cocok. Ini tidak berarti Passkey telah diganti. Gunakan pemulihan Lost Passkey untuk memulihkan akses dengan aman.'
+            ? 'Konfirmasi browser diperlukan karena bukti binding tidak tersedia atau tidak cocok. Passkey tersimpan tetap dipertahankan. Verifikasi password dan kode email, lalu gunakan Passkey yang sama.'
             : 'Binding perangkat server belum dapat diterbitkan. Coba lagi.'
       });
     }
@@ -55561,7 +55656,7 @@ async function diracUserSecurityResolveLoginFailureV336(req, payload, action, ht
   const marker = diracUserSecurityLoginFailureMarkerV336(req);
   const ctx = diracCentralCurrentContextV149();
   if (!marker || !ctx || ctx.req !== req || ctx.action !== action
-      || !diracCentralGuardPassedForHandlerV168(req)
+      || !diracCentralHandlerContextFullyPassedV211(ctx, req)
       || (marker.permanent ? httpStatus !== 423 : httpStatus !== 429)) return null;
   // The attempted login address is never sufficient: use the exact, unique stored customer recipient.
   const found = await customerSecurityFetchCustomerByEmail(marker.email).catch(() => null);
