@@ -2114,15 +2114,17 @@ async function diracBuildBannedDataExportV472(req, user, password, passwordAlrea
     const [orders, laboratoryOrders] = first.map(result => result.value);
     orders.forEach(row => scope.parents.add('commerce:orders:' + row.id));
     laboratoryOrders.forEach(row => scope.parents.add('security:orders:' + row.id));
-    const second = await Promise.allSettled([
-      diracBannedExportItemsV473(scope, 'order_items', orders, 'commerce'),
-      diracBannedExportItemsV473(scope, 'laboratory_items', laboratoryOrders, 'security')
+    const [second, third] = await Promise.all([
+      Promise.allSettled([
+        diracBannedExportItemsV473(scope, 'order_items', orders, 'commerce'),
+        diracBannedExportItemsV473(scope, 'laboratory_items', laboratoryOrders, 'security')
+      ]),
+      Promise.allSettled([
+        diracBannedExportRowsV473(scope, 'security_customer_account_requests'),
+        diracBannedExportRowsV473(scope, 'payment_transactions')
+      ])
     ]);
     if (second.some(result => result.status !== 'fulfilled')) return null;
-    const third = await Promise.allSettled([
-      diracBannedExportRowsV473(scope, 'security_customer_account_requests'),
-      diracBannedExportRowsV473(scope, 'payment_transactions')
-    ]);
     if (third.some(result => result.status !== 'fulfilled') || !diracBannedExportScopeValidV473(ctx, scope)) return null;
     DIRAC_BANNED_EXPORT_SCOPES_V473.delete(req);
     const policy = diracAccountPolicyFromUserV472(user);
@@ -4486,27 +4488,40 @@ function diracRegisterEmailReadChallengeV331(req) {
 
 function diracRegisterEmailVerifyProofV331(req, input, proof) {
   diracRegisterEmailGuardContextV331(req);
+  const reject = (status, code, restart, reason) => {
+    try {
+      const ctx = diracCentralCurrentContextV149();
+      const cookies = parseCookies(req);
+      const values = cookies && cookies.__all && cookies.__all[DIRAC_REGISTER_EMAIL_CHALLENGE_COOKIE_V331];
+      console.info('[dirac-register-verification-rejection-v707]', JSON.stringify({
+        request_id: String(ctx && ctx.requestId || '').slice(0, 96), reason,
+        cookie_header_bytes: Buffer.byteLength(String(req && req.headers && req.headers.cookie || ''), 'utf8'),
+        challenge_cookie_count: Array.isArray(values) ? values.length : 0
+      }));
+    } catch (_) { /* Diagnostic failure must not change the verification decision. */ }
+    return { ok: false, status, code, restart };
+  };
   const candidate = String(proof || '').trim();
   const token = diracRegisterEmailReadChallengeV331(req);
   const payload = token ? diracRegisterEmailDecodeChallengeV331(token) : null;
   if (!payload) {
-    return { ok: false, status: 409, code: 'REGISTER_EMAIL_VERIFICATION_RESTART_REQUIRED', restart: true };
+    return reject(409, 'REGISTER_EMAIL_VERIFICATION_RESTART_REQUIRED', true, token ? 'challenge_invalid_or_expired' : 'challenge_cookie_missing_or_ambiguous');
   }
   const expectedProofLength = Number(payload.proof_length || 0);
   const validProofLength = Number.isSafeInteger(expectedProofLength)
     && expectedProofLength >= DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354
     && expectedProofLength <= DIRAC_REGISTER_EMAIL_PROOF_MAX_LENGTH_V354;
   if (!validProofLength || !diracRegisterEmailProofLooksValidV374(candidate, expectedProofLength)) {
-    return { ok: false, status: 400, code: 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID', restart: false };
+    return reject(400, 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID', false, 'proof_format_invalid');
   }
   const requestHash = diracRegisterEmailRequestHashV331(input);
   const bindingHash = diracRegisterEmailBindingHashV331(req);
   if (!safeEqual(payload.request_hash, requestHash) || !safeEqual(payload.binding_hash, bindingHash)) {
-    return { ok: false, status: 409, code: 'REGISTER_EMAIL_VERIFICATION_RESTART_REQUIRED', restart: true };
+    return reject(409, 'REGISTER_EMAIL_VERIFICATION_RESTART_REQUIRED', true, !safeEqual(payload.request_hash, requestHash) ? 'registration_data_mismatch' : 'browser_binding_mismatch');
   }
   const expectedProofHash = diracRegisterEmailProofHashV331(payload.jti, requestHash, bindingHash, candidate);
   if (!safeEqual(payload.proof_hash, expectedProofHash)) {
-    return { ok: false, status: 401, code: 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID', restart: false };
+    return reject(401, 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID', false, 'proof_value_mismatch');
   }
   return { ok: true, payload, requestHash, bindingHash };
 }
@@ -15500,7 +15515,7 @@ async function customerSecuritySmtpRead(socket) {
       }
       const lines = buffer.split(/\r?\n/).filter(Boolean);
       const last = lines[lines.length - 1] || '';
-      if (/^\d{3}\s/.test(last)) cleanup(resolve, { code: Number(last.slice(0, 3)), text: buffer });
+      if (buffer.endsWith('\n') && /^\d{3} /.test(last)) cleanup(resolve, { code: Number(last.slice(0, 3)), text: buffer });
     };
     const onError = (error) => cleanup(reject, error);
     const onTimeout = () => cleanup(reject, new Error('SMTP_TIMEOUT'));
@@ -33474,6 +33489,14 @@ async function diracUniversalPesananCreatePayment(req, res) {
     });
   }
 
+  const expiryLockRequiredV702 = paymentInput.kind === 'regular'
+    && ['parfum', 'laboratorium'].includes(paymentInput.serviceType);
+  const expiryPaymentLockV702 = expiryLockRequiredV702
+    ? await diracExpiryAcquireLockV702(paymentInput.orderDatabase, paymentInput.orderId) : null;
+  if (expiryLockRequiredV702 && !expiryPaymentLockV702) {
+    return res.status(409).json({ok:false, code:'ORDER_OPERATION_BUSY', message:'Pesanan sedang diverifikasi. Silakan muat ulang status pesanan.'});
+  }
+  try {
   const existing = await diracUniversalPesananFindReusableTransaction({
     kind: paymentInput.kind,
     orderId: paymentInput.orderId,
@@ -33523,14 +33546,6 @@ async function diracUniversalPesananCreatePayment(req, res) {
     paymentInput.kind,
     paymentInput.orderDatabase
   );
-  const expiryLockRequiredV702 = paymentInput.kind === 'regular'
-    && ['parfum', 'laboratorium'].includes(paymentInput.serviceType);
-  const expiryPaymentLockV702 = expiryLockRequiredV702
-    ? await diracExpiryAcquireLockV702(paymentInput.orderDatabase, paymentInput.orderId) : null;
-  if (expiryLockRequiredV702 && !expiryPaymentLockV702) {
-    return res.status(409).json({ok:false, code:'ORDER_OPERATION_BUSY', message:'Pesanan sedang diverifikasi. Silakan muat ulang status pesanan.'});
-  }
-  try {
   if (expiryPaymentLockV702) {
     const freshV702 = await diracUniversalPesananFetchOwnedRegularOrder(paymentInput.orderId, customerId, paymentInput.orderDatabase);
     if (!freshV702 || freshV702.ok !== true || !freshV702.order
@@ -59593,7 +59608,7 @@ function diracCentralUrlLikeFieldV221(field) {
     || field && field.source === 'url';
 }
 
-const DIRAC_CENTRAL_INPUT_POLICY_V498 = /(?:dos|bola|xssultimate|xss[ _-]ultimate|xray|x[ _-]ray|xrey|x[ _-]rey|burp|burp[ _-]suite|zaproxy|owasp[ _-]zap|sql[ _-]map|n[ _-]map|sqlinjection|sql[ _-]injection|commandinjection|command[ _-]injection|codeinjection|code[ _-]injection|xmlinjection|xpathinjection|ldapinjection|nosqlinjection|htmlinjection|templateinjection|template[ _-]injection|headerinjection|hostheaderinjection|csvinjection|orminjection|session[ _-]hijacking|sesion[ _-]hijacking|sesionhijacking|session[ _-]fixation|cookie[ _-]theft|cookiestealing|tokenstealing|jwtnone|jwtconfusion|jwttool|jwt_tool|zeroday|zero[ _-]day|zerodayexploit|zerodayexpolit|slowloris|slowhttptest|hping3|synflood|udpflood|icmpflood|httpflood|pingofdeath|teardropattack|smurfattack|amplificationattack|billionlaughs|quadraticblowup|decompressionbomb|redos|regexdos|asyncrat|sliverc2|bruteratel|sqlpowerinjector|sqlbrute|sqlscanner|dssscan|wpscan|joomscan|drupalscan|droopescan|wapiti|skipfish|arachni|netsparker|invicti|appscan|nessus|openvas|nexpose|qualys|vuls|trivy|grype|naabu|httpx-toolkit|subfinder|amass|dnsx|dnsrecon|dnsenum|theharvester|shodan|censys|searchsploit|exploitdb|exploit-db|routersploit|responder|bettercap|ettercap|aircrack-ng|airmon-ng|aireplay-ng|hydra|medusa|patator|crowbar|ncrack|kerbrute|sprayhound|evilginx|modlishka|gophish|zphisher|setoolkit|social-engineer-toolkit|sql-shell|os-shell|out-file|intooutfile|loadextension|pg_read_binary_file|pg_ls_dir|pg_stat_file|xp_regread|xp_dirtree|sp_oacreate|utl_http|utl_inaddr|dbms_pipe|dbms_lock|extractvalue|updatexml|sys_eval|sys_exec|sleepbenchmark|gopherus|gopher:\/\/|dict:\/\/|expect:\/\/|php:\/\/|phar:\/\/|jar:\/\/|file:\/\/\/|metadata.google.internal|169\.254\.169\.254|instance-data|oastify|interactsh|burpcollaborator|dnslog|canarytokens|DOCTYPE|ENTITY|onauxclick|onbeforeinput|onbeforetoggle|oncanplay|oncanplaythrough|oncontextmenu|oncopy|oncut|ondblclick|ondrag|ondragend|ondragenter|ondragleave|ondragover|ondragstart|ondrop|onended|onfocusin|onfocusout|onhashchange|oninvalid|onkeypress|onmessage|onmousedown|onmousemove|onmouseout|onmouseup|onoffline|ononline|onpageshow|onpagehide|onpaste|onpopstate|onprogress|onratechange|onreset|onresize|onscroll|onsearch|onsecuritypolicyviolation|onselect|onselectionchange|onstalled|onstorage|onsuspend|ontimeupdate|onunhandledrejection|onunload|onvolumechange|onwaiting|onwheel|ontouchstart|ontouchend|onpointercancel|onpointermove|onpointerout|onpointerover|onpointerleave|ongotpointercapture|onlostpointercapture|idor|bfla|crlf|sstimap|tplmap|commix|ghauri|nosqlmap|sqlsus|sqliv|xsstrike|xsser|jexboss|jaeles|kiterunner|masscan|zmap|rustscan|dirsearch|dirbuster|feroxbuster|wfuzz|hashcat|hashpump|johntheripper|credentialstuffing|passwordspraying|bruteforce|sessionfixation|sessionhijacking|clickjacking|tabnabbing|requestsmuggling|responsesplitting|httpdesync|cachepoisoning|cachedeception|dnsrebinding|dnspoisoning|arpspoofing|mitm|phishing|spearphishing|ransomware|malware|spyware|keylogger|rootkit|bootkit|cryptojacking|botnet|ddos|webshell|reverseshell|reverse_shell|bindshell|meterpreter|beefxss|koadic|poshc2|mythicc2|crackmapexec|netexec|psexec|smbexec|wmiexec|atexec|dcomexec|evilwinrm|evil-winrm|impacket|ntlmrelayx|secretsdump|getuserspns|getnpusers|kerbrute|kerberoasting|asreproast|asreproasting|dcsync|dcshadow|pass-the-hash|pass-the-ticket|goldenticket|silverticket|sharphound|certipy|mimikittenz|nanodump|lsassy|winpeas|linpeas|pspy|linenum|linux-exploit-suggester|privilegeescalation|heartbleed|dirtycow|dirtypipe|eternalblue|zerologon|printnightmare|proxyshell|proxylogon|bluekeep|sigred|petitpotam|deserialization|prototypepollution|massassignment|graphqlintrospection|zip-slip|zipbomb|forkbomb|exfiltration|dataexfiltration|supplychainattack|dependencyconfusion|typosquatting|xsshunter|domxss|uxss|blindxss|storedxss|reflectedxss|nosqli|oscommandinjection|oscommand|codeexecution|remotecodeexecution|remotecommandexecution|serverrequestforgery|serversiderequestforgery|clientsidetemplateinjection|csti|httprequestsmuggling|httpresponsesplitting|webcachepoisoning|webcachedeception|corsmisconfiguration|insecuredeserialization|objectinjection|phpobjectinjection|sqltruncation|sqlstacking|secondordersqli|blindsql|blindsqli|timesqli|errorsqli|booleansqli|outofbandsqli|sqlol|sqlmate|bbqsql|sqlifuzzer|sqlchop|sqliv|sleuthql|tidos|w3af|zgrab|zgrab2|whatweb|webinspect|portswigger|xanxss|kxss|gxss|findomain|gauplus|hakrawler|katana|waybackurls|arjun|paramspider|paramminer|smuggler|smugglex|requestbuster|corsy|corscanner|crlfuzz|crlfsuite|ssrfmap|ssrfscan|ssrfproxy|gitleaks|trufflehog|gitdumper|git-dumper|gitextractor|git-extractor|gittools|dumpsterdiver|traversify|dotdotpwn|fimap|liffy|kadimus|lfisuite|weevely|c99shell|r57shell|b374k|wso-shell|antSword|behinder|godzilla-webshell|chisel|ligolo|ligolo-ng|dnscat2|iodine-tunnel|socat|stowaway|frpc|frps|rathole|impacket-secretsdump|adcsrelay|shadowcredentials|resourcebasedconstraineddelegation|rbcd|dcerpc|juicypotato|roguepotato|printspoofer|godpotato|sweetpotato|seatbelt|lazagne|procdump|dumpert|sharpsploit|powersploit|powerupsql|invoke-mimikatz|invoke-expression|iexpression|amsibypass|etwpatch|unhookntdll|reflectivedll|dllinjection|processhollowing|sideloading|dllsideloading|webdavrelay|ntlmrelay|ipspoofing|sessionriding|formjacking|skimmer|magecart|x\s*s\s*s|s\s*q\s*l(?:\s*i)?|a\s*l\s*e\s*r\s*t|e\s*v\s*a\s*l|union|javascript|vbscript|alert|confirm|prompt|xss|sql|sqli|csrf|ssrf|xxe|ssti|rce|lfi|rfi|jndi|log4shell|shellshock|sqlmap|sqlninja|havij|nuclei|nikto|nmap|gobuster|ffuf|dalfox|acunetix|burpsuite|metasploit|msfvenom|msfconsole|netcat|ncat|powershell|cmd\.exe|whoami|onerror|onload|onclick|onfocus|onblur|onmouseover|onanimationstart|onpointerenter|srcdoc|xlink|__proto__|__schema|__type|introspectionquery|xp_cmdshell|load_file|pg_read_file|pg_sleep|benchmark|information_schema|pg_catalog|sqlite_master|sysobjects|syscolumns|mysql\.user|eval|atob|btoa|shell_exec|passthru|proc_open|popen|base64_decode|unserialize|innerhtml|outerhtml|insertadjacenthtml|document\.cookie|document\.write|document\.writeln|oninput|onsubmit|ontoggle|onkeydown|onkeyup|onpointerdown|onpointerup|onmouseenter|onmouseleave|onabort|onanimationend|ontransitionend|formaction|execscript|settimeout|setinterval|fromcharcode|unescape|mshta|rundll32|certutil|regsvr32|wmic|cscript|wscript|bitsadmin|mimikatz|cobaltstrike|bloodhound|ysoserial|phpinfo|php_uname|getenv|readfile|file_get_contents|file_put_contents|create_function|call_user_func|document\.domain|location\.assign|location\.replace)|admin|(?:img|src|srcset|href|iframe|svg|xlink|script|object|embed|template|formaction|o\s*n\s*(?:error|load|click|focus|blur|mouseover|animationstart)|j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t|one\s+error)/i;
+const DIRAC_CENTRAL_INPUT_POLICY_V498 = /(?:dos|bola|xssultimate|xss[ _-]ultimate|xray|x[ _-]ray|xrey|x[ _-]rey|burp|burp[ _-]suite|zaproxy|owasp[ _-]zap|sql[ _-]map|n[ _-]map|sqlinjection|sql[ _-]injection|commandinjection|command[ _-]injection|codeinjection|code[ _-]injection|xmlinjection|xpathinjection|ldapinjection|nosqlinjection|htmlinjection|templateinjection|template[ _-]injection|headerinjection|hostheaderinjection|csvinjection|orminjection|session[ _-]hijacking|sesion[ _-]hijacking|sesionhijacking|session[ _-]fixation|cookie[ _-]theft|cookiestealing|tokenstealing|jwtnone|jwtconfusion|jwttool|jwt_tool|zeroday|zero[ _-]day|zerodayexploit|zerodayexpolit|slowloris|slowhttptest|hping3|synflood|udpflood|icmpflood|httpflood|pingofdeath|teardropattack|smurfattack|amplificationattack|billionlaughs|quadraticblowup|decompressionbomb|redos|regexdos|asyncrat|sliverc2|bruteratel|sqlpowerinjector|sqlbrute|sqlscanner|dssscan|wpscan|joomscan|drupalscan|droopescan|wapiti|skipfish|arachni|netsparker|invicti|appscan|nessus|openvas|nexpose|qualys|vuls|trivy|grype|naabu|httpx-toolkit|subfinder|amass|dnsx|dnsrecon|dnsenum|theharvester|shodan|censys|searchsploit|exploitdb|exploit-db|routersploit|responder|bettercap|ettercap|aircrack-ng|airmon-ng|aireplay-ng|hydra|medusa|patator|crowbar|ncrack|kerbrute|sprayhound|evilginx|modlishka|gophish|zphisher|setoolkit|social-engineer-toolkit|sql-shell|os-shell|out-file|intooutfile|loadextension|pg_read_binary_file|pg_ls_dir|pg_stat_file|xp_regread|xp_dirtree|sp_oacreate|utl_http|utl_inaddr|dbms_pipe|dbms_lock|extractvalue|updatexml|sys_eval|sys_exec|sleepbenchmark|gopherus|gopher:\/\/|dict:\/\/|expect:\/\/|php:\/\/|phar:\/\/|jar:\/\/|file:\/\/\/|metadata.google.internal|169\.254\.169\.254|instance-data|oastify|interactsh|burpcollaborator|dnslog|canarytokens|DOCTYPE|ENTITY|onauxclick|onbeforeinput|onbeforetoggle|oncanplay|oncanplaythrough|oncontextmenu|oncopy|oncut|ondblclick|ondrag|ondragend|ondragenter|ondragleave|ondragover|ondragstart|ondrop|onended|onfocusin|onfocusout|onhashchange|oninvalid|onkeypress|onmessage|onmousedown|onmousemove|onmouseout|onmouseup|onoffline|ononline|onpageshow|onpagehide|onpaste|onpopstate|onprogress|onratechange|onreset|onresize|onscroll|onsearch|onsecuritypolicyviolation|onselect|onselectionchange|onstalled|onstorage|onsuspend|ontimeupdate|onunhandledrejection|onunload|onvolumechange|onwaiting|onwheel|ontouchstart|ontouchend|onpointercancel|onpointermove|onpointerout|onpointerover|onpointerleave|ongotpointercapture|onlostpointercapture|idor|bfla|crlf|sstimap|tplmap|commix|ghauri|nosqlmap|sqlsus|sqliv|xsstrike|xsser|jexboss|jaeles|kiterunner|masscan|zmap|rustscan|dirsearch|dirbuster|feroxbuster|wfuzz|hashcat|hashpump|johntheripper|credentialstuffing|passwordspraying|bruteforce|sessionfixation|sessionhijacking|clickjacking|tabnabbing|requestsmuggling|responsesplitting|httpdesync|cachepoisoning|cachedeception|dnsrebinding|dnspoisoning|arpspoofing|mitm|phishing|spearphishing|ransomware|malware|spyware|keylogger|rootkit|bootkit|cryptojacking|botnet|ddos|webshell|reverseshell|reverse_shell|bindshell|meterpreter|beefxss|koadic|poshc2|mythicc2|crackmapexec|netexec|psexec|smbexec|wmiexec|atexec|dcomexec|evilwinrm|evil-winrm|impacket|ntlmrelayx|secretsdump|getuserspns|getnpusers|kerbrute|kerberoasting|asreproast|asreproasting|dcsync|dcshadow|pass-the-hash|pass-the-ticket|goldenticket|silverticket|sharphound|certipy|mimikittenz|nanodump|lsassy|winpeas|linpeas|pspy|linenum|linux-exploit-suggester|privilegeescalation|heartbleed|dirtycow|dirtypipe|eternalblue|zerologon|printnightmare|proxyshell|proxylogon|bluekeep|sigred|petitpotam|deserialization|prototypepollution|massassignment|graphqlintrospection|zip-slip|zipbomb|forkbomb|exfiltration|dataexfiltration|supplychainattack|dependencyconfusion|typosquatting|xsshunter|domxss|uxss|blindxss|storedxss|reflectedxss|nosqli|oscommandinjection|oscommand|codeexecution|remotecodeexecution|remotecommandexecution|serverrequestforgery|serversiderequestforgery|clientsidetemplateinjection|csti|httprequestsmuggling|httpresponsesplitting|webcachepoisoning|webcachedeception|corsmisconfiguration|insecuredeserialization|objectinjection|phpobjectinjection|sqltruncation|sqlstacking|secondordersqli|blindsql|blindsqli|timesqli|errorsqli|booleansqli|outofbandsqli|sqlol|sqlmate|bbqsql|sqlifuzzer|sqlchop|sqliv|sleuthql|tidos|w3af|zgrab|zgrab2|whatweb|webinspect|portswigger|xanxss|kxss|gxss|findomain|gauplus|hakrawler|katana|waybackurls|arjun|paramspider|paramminer|smuggler|smugglex|requestbuster|corsy|corscanner|crlfuzz|crlfsuite|ssrfmap|ssrfscan|ssrfproxy|gitleaks|trufflehog|gitdumper|git-dumper|gitextractor|git-extractor|gittools|dumpsterdiver|traversify|dotdotpwn|fimap|liffy|kadimus|lfisuite|weevely|c99shell|r57shell|b374k|wso-shell|antSword|behinder|godzilla-webshell|chisel|ligolo|ligolo-ng|dnscat2|iodine-tunnel|socat|stowaway|frpc|frps|rathole|impacket-secretsdump|adcsrelay|shadowcredentials|resourcebasedconstraineddelegation|rbcd|dcerpc|juicypotato|roguepotato|printspoofer|godpotato|sweetpotato|seatbelt|lazagne|procdump|dumpert|sharpsploit|powersploit|powerupsql|invoke-mimikatz|invoke-expression|iexpression|amsibypass|etwpatch|unhookntdll|reflectivedll|dllinjection|processhollowing|sideloading|dllsideloading|webdavrelay|ntlmrelay|ipspoofing|sessionriding|formjacking|skimmer|magecart|x\s*s\s*s|s\s*q\s*l(?:\s*i)?|a\s*l\s*e\s*r\s*t|e\s*v\s*a\s*l|union|javascript|vbscript|alert|confirm|prompt|xss|sql|sqli|csrf|ssrf|xxe|ssti|rce|lfi|rfi|jndi|log4shell|shellshock|sqlmap|sqlninja|havij|nuclei|nikto|nmap|gobuster|ffuf|dalfox|acunetix|burpsuite|metasploit|msfvenom|msfconsole|netcat|ncat|powershell|cmd\.exe|whoami|onerror|onload|onclick|onfocus|onblur|onmouseover|onanimationstart|onpointerenter|srcdoc|xlink|__proto__|__schema|__type|introspectionquery|xp_cmdshell|load_file|pg_read_file|pg_sleep|benchmark|information_schema|pg_catalog|sqlite_master|sysobjects|syscolumns|mysql\.user|eval|atob|btoa|shell_exec|passthru|proc_open|popen|base64_decode|unserialize|innerhtml|outerhtml|insertadjacenthtml|document\.cookie|document\.write|document\.writeln|oninput|onsubmit|ontoggle|onkeydown|onkeyup|onpointerdown|onpointerup|onmouseenter|onmouseleave|onabort|onanimationend|ontransitionend|formaction|execscript|settimeout|setinterval|fromcharcode|unescape|mshta|rundll32|certutil|regsvr32|wmic|cscript|wscript|bitsadmin|mimikatz|cobaltstrike|bloodhound|ysoserial|phpinfo|php_uname|getenv|readfile|file_get_contents|file_put_contents|create_function|call_user_func|document\.domain|location\.assign|location\.replace)|admin|(?:img|src|srcset|href|iframe|svg|xlink|script|object|embed|template|formaction|o\s*n\s*(?:error|load|click|focus|blur|mouseover|animationstart)|j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t|one\s+error)|(?:^|[^a-z0-9_])(?:xspear|xsrfprobe|oralyzer|jwt[ _-]*hack|jwt[ _-]*cracker|jwtcrack|jwt[ _-]*pwn|marshalsec|ysomap|ldaprefserver|jrmplistener|httpparameterpollution|h2csmuggling|h2clsmuggling|h2tesmuggling|cl0smuggling|clientdesync|browserpowereddesync|domclobbering|danglingmarkup|jsonpinjection|jsonphijacking|cswsh|crosssitewebsockethijacking|websocket[ _-]*smuggling|serviceworkerhijacking|samlwrapping|samlinjection|xmlsignaturewrapping|xmldsigwrapping|jwtalgconfusion|jwksinjection|jkuinjection|x5uinjection|kidinjection|kidtraversal|cssinjection|webmessaginginjection|cachekeyconfusion|xsleaks|crosssiteleaks|brotlibomb|zstdbomb|polyglotupload|contenttypespoofing|unicodehomographattack|bidiattack)(?=$|[^a-z0-9_])/i;
 
 function diracCentralContextualThreatGuardV221(req, ctx) {
   const fields = diracCentralThreatFieldsV221(req, ctx);

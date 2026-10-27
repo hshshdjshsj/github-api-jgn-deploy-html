@@ -2975,7 +2975,7 @@ async function securityResetSmtpReadV342(socket) {
       if (Buffer.byteLength(buffer, 'utf8') > 65536) return cleanup(reject, resetError('SECURITY_RESET_SMTP_RESPONSE_TOO_LARGE', 503));
       const lines = buffer.split(/\r?\n/).filter(Boolean);
       const last = lines[lines.length - 1] || '';
-      if (/^\d{3}\s/.test(last)) cleanup(resolve, { code: Number(last.slice(0, 3)), text: buffer });
+      if (buffer.endsWith('\n') && /^\d{3} /.test(last)) cleanup(resolve, { code: Number(last.slice(0, 3)), text: buffer });
     };
     const onError = (error) => cleanup(reject, error);
     const onTimeout = () => cleanup(reject, Object.assign(new Error('SMTP_TIMEOUT'), { code: 'ETIMEDOUT' }));
