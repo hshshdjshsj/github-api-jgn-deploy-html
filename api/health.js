@@ -1804,7 +1804,10 @@ async function domainHealth(req, res) {
   if (['customer_security_recovery_codes_generate', 'customer_security_recovery_code_verify'].includes(String(req.query && req.query._dirac_page_nonce_for || ''))) {
     healthPayload.recovery_browser_transport = diracRecoveryBrowserPublicConfigV287();
   }
-  if (String(req.query && req.query._dirac_page_nonce_for || '') === 'checkout_order') healthPayload.checkout_max_items = 100;
+  if (String(req.query && req.query._dirac_page_nonce_for || '') === 'checkout_order') {
+    healthPayload.checkout_max_items = 100;
+    healthPayload.checkout_address_transport = 'id-wilayah-1';
+  }
   return res.status(200).json(healthPayload);
 }
 
@@ -18674,6 +18677,7 @@ async function sessionOwnershipCheckoutCreateUnpaidOrder(req, res) {
   const quantity = Math.min(rawQuantityV603, 999);
   const requestedProductTitle = sessionOwnershipCheckoutBuildProductTitle(body, serviceType);
   const shippingAddress = sessionOwnershipCheckoutBuildShippingAddress(body);
+  if (shippingAddress === null) return res.status(400).json({ ok: false, code: 'CHECKOUT_ADDRESS_INVALID', message: 'Kode wilayah atau kode pos alamat pengiriman tidak valid.' });
   const checkoutNote = sessionOwnershipCheckoutBuildOrderNote(body);
 
   if (!customerPhone) return res.status(400).json({ ok: false, message: 'Nomor WhatsApp/HP wajib diisi.' });
@@ -19560,6 +19564,18 @@ function sessionOwnershipCheckoutBuildProductTitle(body, serviceType) {
   return sessionOwnershipCheckoutCleanText(combined, 160) || sessionOwnershipCheckoutFallbackTitle(serviceType);
 }
 
+function sessionOwnershipCheckoutResolveAddressTransport(body) {
+  const row = body && typeof body === 'object' ? body : {};
+  const raw = row.shipping_address || row.address || row.alamat || row.customer_address || row.delivery_address || row.recipient_address;
+  if (typeof raw !== 'string' || !raw.startsWith('ID-WILAYAH-1:')) return raw;
+  const match = /^ID-WILAYAH-1:(\d{2})\/(\d{2}\.\d{2})\/(\d{2}\.\d{2}\.\d{2})\/(\d{2}\.\d{2}\.\d{2}\.\d{4})\/(\d{5})\|([^\r\n\x00-\x1f\x7f]{5,180})$/.exec(raw);
+  if (!match) return null;
+  const labels = require('../pt/alamat-indonesia-katalog.js').resolve(match[1], match[2], match[3], match[4], match[5]);
+  if (!labels) return null;
+  const address = ['Negara: Indonesia', 'Provinsi: ' + labels[0], 'Kota: ' + labels[1], 'Kecamatan: ' + labels[2], 'Desa: ' + labels[3], 'Kode Pos: ' + labels[4], 'Detail: ' + match[6]].join(' | ');
+  return address.length <= 520 ? address : null;
+}
+
 function sessionOwnershipCheckoutBuildShippingAddress(body) {
   const row = body && typeof body === 'object' ? body : {};
   const sections = [];
@@ -19568,7 +19584,9 @@ function sessionOwnershipCheckoutBuildShippingAddress(body) {
     if (clean) sections.push(`${label}: ${clean}`);
   };
 
-  add('Alamat', row.shipping_address || row.address || row.alamat || row.customer_address || row.delivery_address || row.recipient_address, 520);
+  const address = sessionOwnershipCheckoutResolveAddressTransport(row);
+  if (address === null) return null;
+  add('Alamat', address, 520);
   add('Detail alamat', row.address_detail || row.detail_alamat || row.detail_address || row.shipping_address_detail || row.delivery_detail || row.patokan, 420);
   add('Catatan', row.customer_note || row.notes || row.note || row.catatan || row.shipping_note || row.order_note, 420);
 
