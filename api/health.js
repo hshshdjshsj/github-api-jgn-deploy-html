@@ -22746,6 +22746,11 @@ async function midtransHandleWebhook(req, res) {
   }
 
   try {
+  if (!success && ['cancelled', 'expired'].includes(mappedStatus)
+      && ['pending', 'cancel', 'expire', 'deny', 'failure'].includes(String(body.transaction_status || '').toLowerCase())
+      && await diracPendingExpiryReceiptV705(capabilityContextV350.ctx, capabilityContextV350.capability, null)) {
+    return res.status(200).json({ ok: true, unpaid_expiry_verified: true });
+  }
   diracMidtransWebhookDiagMarkV620(req, 'capability_verified', { ok: true, guard_passed: true, order_database: binding.orderDatabase });
   const boundOwnerLookupV375 = binding.parentType === 'd'
     ? { domain_order_id: binding.parentId, customer_id: bindingCustomerId, order_database: 'domain' }
@@ -32822,7 +32827,7 @@ async function diracDeleteUnpaidOrderV702(order, database, early) {
     let row = lookup.data[0];
     const cutoff = Date.now() - DIRAC_UNPAID_ORDER_WINDOW_MS_V670;
     if (!row || row.id !== id || row.customer_id !== customerId || row.order_id !== order.order_id || row.service_type !== service
-        || row.payment_status !== 'unpaid' || !['pending', 'expired'].includes(row.order_status) || row.payment_method !== 'Belum dipilih'
+        || (row.payment_status !== 'unpaid' && !(early && row.payment_status === 'pending')) || !['pending', 'expired'].includes(row.order_status) || row.payment_method !== 'Belum dipilih'
         || !Number.isFinite(Date.parse(row.created_at)) || !Number.isFinite(Date.parse(row.updated_at))
         || (!early && diracExpiryCreatedMsV702(row.created_at) > cutoff)) return { deleted: false, reason: 'ineligible' };
     const other = await supabaseFetch(base + '&select=id,customer_id&limit=2', { method: 'GET', auth: 'service', db: database === 'commerce' ? 'security' : 'commerce' });
@@ -32838,22 +32843,34 @@ async function diracDeleteUnpaidOrderV702(order, database, early) {
     if (await probe()) {
       if (!early || !await diracCancelAbandonedSnapV703(row, database, lock)) return { deleted: false, reason: 'payment_exists' };
       if (await probe()) return { deleted: false, reason: 'payment_exists' };
+      const completed = DIRAC_PENDING_EXPIRY_COMPLETED_V705.get(diracCentralCurrentContextV149());
+      if (completed) {
+        if (!diracPendingExpiryContextV705(completed) || completed.orderId !== id || completed.customerId !== customerId) return { deleted: false, reason: 'changed' };
+        const refreshed = await supabaseFetch(base + '&select=' + encodeURIComponent(DIRAC_EXPIRY_SELECT_V702) + '&limit=2', { method: 'GET', auth: 'service', db: database });
+        const current = refreshed && refreshed.ok === true && Array.isArray(refreshed.data) && refreshed.data.length === 1 ? refreshed.data[0] : null;
+        if (!current || current.id !== id || current.customer_id !== customerId || current.order_id !== row.order_id
+            || current.service_type !== service || current.created_at !== row.created_at || current.payment_method !== 'Belum dipilih'
+            || !['unpaid', 'pending', 'cancelled', 'expired'].includes(current.payment_status) || !['pending', 'expired'].includes(current.order_status)
+            || midtransStrictMoneyV350(current.total) !== completed.amount || !Number.isFinite(Date.parse(current.updated_at))) return { deleted: false, reason: 'changed' };
+        row = current;
+      }
     }
-    const target = base + '&service_type=eq.' + service + '&payment_status=eq.unpaid&payment_method=eq.' + encodeURIComponent('Belum dipilih')
+    if (row.payment_status === 'pending' && !DIRAC_PENDING_EXPIRY_COMPLETED_V705.get(diracCentralCurrentContextV149())) return { deleted: false, reason: 'payment_unverified' };
+    const target = base + '&service_type=eq.' + service + '&payment_status=eq.' + row.payment_status + '&payment_method=eq.' + encodeURIComponent('Belum dipilih')
       + '&created_at=eq.' + encodeURIComponent(row.created_at) + '&updated_at=eq.' + encodeURIComponent(row.updated_at);
     if (row.order_status === 'pending') {
       const marked = await supabaseFetch(target + '&order_status=eq.pending', { method: 'PATCH', auth: 'service', db: database,
         body: { order_status: 'expired' }, prefer: 'return=representation' });
       if (!marked || marked.ok !== true || !Array.isArray(marked.data)) throw diracExpiryFailureV702('EXPIRY_RESERVATION_UNAVAILABLE');
       if (marked.data.length !== 1 || !marked.data[0] || marked.data[0].id !== id
-          || marked.data[0].customer_id !== customerId || marked.data[0].payment_status !== 'unpaid'
+          || marked.data[0].customer_id !== customerId || marked.data[0].payment_status !== row.payment_status
           || marked.data[0].order_id !== row.order_id || marked.data[0].service_type !== service
           || marked.data[0].payment_method !== 'Belum dipilih' || marked.data[0].created_at !== row.created_at
           || marked.data[0].order_status !== 'expired' || !Number.isFinite(Date.parse(marked.data[0].updated_at))) return { deleted: false, reason: 'changed' };
       row = marked.data[0];
     }
     if (await probe()) return { deleted: false, reason: 'payment_exists' };
-    const removed = await supabaseFetch(base + '&service_type=eq.' + service + '&payment_status=eq.unpaid&order_status=eq.expired'
+    const removed = await supabaseFetch(base + '&service_type=eq.' + service + '&payment_status=eq.' + row.payment_status + '&order_status=eq.expired'
       + '&payment_method=eq.' + encodeURIComponent('Belum dipilih') + '&created_at=eq.' + encodeURIComponent(row.created_at)
       + '&updated_at=eq.' + encodeURIComponent(row.updated_at) + '&select=id',
     { method: 'DELETE', auth: 'service', db: database, prefer: 'return=representation' });
@@ -32900,6 +32917,7 @@ async function diracCancelAbandonedSnapV703(order, database, lock) {
   if (!found || found.ok !== true || !Array.isArray(found.data)) throw diracExpiryFailureV702('EXPIRY_PAYMENT_LOOKUP_UNAVAILABLE');
   if (found.data.length !== 1) return false;
   const tx = found.data[0], meta = tx && tx.metadata;
+  if (tx && ['pending', 'cancelled', 'expired'].includes(tx.payment_status)) return diracCancelPendingPaymentV705(order, database, lock, tx);
   const amount = midtransStrictMoneyV350(order.total);
   if (!tx || !customerSecurityLooksLikeUuid(tx.id) || tx.order_id !== order.id || tx.customer_id !== order.customer_id
       || tx.domain_order_id !== null || tx.service_type !== order.service_type || tx.gateway_name !== 'midtrans'
@@ -32961,6 +32979,180 @@ async function diracCancelAbandonedSnapV703(order, database, lock) {
   }
   return true;
 }
+// Pending-payment expiry uses the existing verified owner, order lease and gateways.
+// A signed cancellation receipt survives deletion through the existing event FK.
+const DIRAC_PENDING_EXPIRY_COMPLETED_V705 = new WeakMap();
+const DIRAC_PENDING_EXPIRY_V705 = new WeakMap();
+const DIRAC_PENDING_EXPIRY_DB_V705 = new WeakMap();
+function diracPendingExpiryContextV705(cap) {
+  const ctx = cap && cap.ctx, req = ctx && ctx.req;
+  const owner = req && diracCentralOwnerFromVerifiedContextV215(req);
+  return Boolean(ctx && req && cap.req === req && diracCentralCurrentContextV149() === ctx
+    && ctx.action === 'simulate_expire_unpaid_order' && ctx.method === 'POST'
+    && req.__diracCentralSecurityGuardPassedV146 === true
+    && diracCentralHandlerContextFullyPassedV211(ctx, req) === true
+    && DIRAC_EXPIRY_LOCKS_V702.has(cap.lock) && cap.lock.ctx === ctx
+    && cap.lock.key === 's2s-order-op-v702:' + cap.database + ':' + cap.orderId
+    && Date.parse(cap.lock.expiresAt) > Date.now() && cap.expiresAt > Date.now()
+    && ctx.body && ctx.body.order_id === cap.orderId && ctx.body.order_code === cap.orderCode
+    && owner && owner.ok === true && Array.isArray(owner.customerIds) && owner.customerIds.length === 1 && owner.customerIds[0] === cap.customerId);
+}
+function diracPendingExpiryEgressV705(url, options, ctx) {
+  const cap = ctx && DIRAC_PENDING_EXPIRY_V705.get(ctx);
+  return Boolean(diracPendingExpiryContextV705(cap) && cap.options === options && cap.url === url.href
+    && Object.isFrozen(cap) && Object.isFrozen(options) && Object.isFrozen(options.headers)
+    && url.origin === midtransStatusBaseUrlV350() && !url.search && !url.hash
+    && (options.method === 'GET' && url.pathname === '/v2/' + cap.gatewayId + '/status'
+      || options.method === 'POST' && url.pathname === '/v2/' + cap.gatewayId + '/cancel')
+    && Object.keys(options).sort().join(',') === 'headers,method'
+    && Object.keys(options.headers).sort().join(',') === (cap.snap ? 'Accept,Authorization,Content-Type,transaction-source' : 'Accept,Authorization,Content-Type')
+    && options.headers.Accept === 'application/json' && options.headers['Content-Type'] === 'application/json' && options.headers.Authorization === midtransBasicAuthHeader()
+    && (!cap.snap || options.headers['transaction-source'] === 'SNAP_API'));
+}
+function diracPendingExpiryDbDecisionV705(ctx, path, options) {
+  const permit = ctx && DIRAC_PENDING_EXPIRY_DB_V705.get(ctx);
+  if (!permit || permit.options !== options || permit.path !== path) return null;
+  const cap = permit.cap;
+  const valid = ctx.req && diracCentralCurrentContextV149() === ctx && permit.expiresAt > Date.now()
+    && ctx.req.__diracCentralSecurityGuardPassedV146 === true
+    && diracCentralHandlerContextFullyPassedV211(ctx, ctx.req) === true
+    && crypto.createHash('sha256').update(JSON.stringify(options)).digest('hex') === permit.optionsHash
+    && (ctx.action === 'simulate_expire_unpaid_order'
+      ? diracPendingExpiryContextV705(cap) && cap.finalStatus && ['cancel', 'expire'].includes(cap.finalStatus.transaction_status)
+      : ctx.action === 'midtrans_webhook' && options.method === 'GET'
+        && DIRAC_MIDTRANS_WEBHOOK_CAPABILITIES_V350.get(ctx) === cap
+        && cap.expiresAt > Date.now() && cap.success === false && ['cancelled', 'expired'].includes(cap.mappedStatus)
+        && crypto.createHash('sha256').update(JSON.stringify(ctx.body)).digest('hex') === cap.payloadHash);
+  return valid ? { ok: true, guarded: 'pending_expiry_exact_audit_v705' }
+    : { block: true, reason: 'pending_expiry_audit_binding_rejected_v705', status: 403 };
+}
+async function diracPendingExpiryReceiptV705(ctx, cap, receipt) {
+  const transactionId = cap.transactionId, customerId = cap.customerId;
+  if (!customerSecurityLooksLikeUuid(transactionId) || !customerSecurityLooksLikeUuid(customerId)) return false;
+  const secret = midtransWebhookBindingSecret();
+  if (!secret) return false;
+  const key = 'midtrans:unpaid-expiry-v705:' + transactionId;
+  const path = '/rest/v1/payment_gateway_events?select=id,customer_id,gateway_name,gateway_event_id,event_type,event_status,signature_valid,metadata'
+    + '&gateway_event_id=eq.' + encodeURIComponent(key) + '&customer_id=eq.' + customerId + '&limit=2';
+  const store = async (target, options) => {
+    DIRAC_PENDING_EXPIRY_DB_V705.set(ctx, Object.freeze({ ctx, cap, path: target, options,
+      expiresAt: Date.now() + 30000, optionsHash: crypto.createHash('sha256').update(JSON.stringify(options)).digest('hex') }));
+    try { return await supabaseFetch(target, options); }
+    finally { DIRAC_PENDING_EXPIRY_DB_V705.delete(ctx); }
+  };
+  const verify = row => {
+    if (!row || row.customer_id !== customerId || row.gateway_name !== 'midtrans' || row.gateway_event_id !== key
+        || row.event_type !== 'cancel' || row.event_status !== 'processed' || row.signature_valid !== true
+        || !row.metadata || typeof row.metadata.unpaid_expiry_receipt !== 'string'
+        || row.metadata.unpaid_expiry_receipt.length > 16384 || !/^[a-f0-9]{128}$/.test(String(row.metadata.unpaid_expiry_mac || ''))) return false;
+    const raw = row.metadata.unpaid_expiry_receipt;
+    if (!safeEqual(crypto.createHmac('sha512', secret).update(raw).digest('hex'), row.metadata.unpaid_expiry_mac)) return false;
+    let proof; try { proof = JSON.parse(raw); } catch (_) { return false; }
+    const status = proof && proof.finalStatus;
+    return Boolean(proof && proof.version === 705 && proof.transactionId === transactionId && proof.customerId === customerId
+      && proof.orderId === (cap.orderId || cap.parentId) && proof.database === (cap.database || cap.orderDatabase)
+      && proof.serviceType === cap.serviceType && proof.gatewayReference === cap.gatewayReference
+      && proof.amount === (cap.amount || cap.grossAmount) && proof.currency === 'IDR'
+      && status && ['cancel', 'expire'].includes(status.transaction_status) && midtransVerifySignature(status)
+      && status.order_id === cap.gatewayReference && status.transaction_id === proof.gatewayId
+      && proof.gatewayId === (cap.gatewayId || cap.evidence && cap.evidence.transaction_id)
+      && midtransStrictMoneyV350(status.gross_amount) === proof.amount && status.currency === 'IDR');
+  };
+  const existing = await store(path, { method: 'GET', auth: 'service', db: 'paymentService' });
+  if (!existing || existing.ok !== true || !Array.isArray(existing.data) || existing.data.length > 1) return false;
+  if (existing.data.length) return verify(existing.data[0]);
+  if (!receipt || ctx.action !== 'simulate_expire_unpaid_order' || !diracPendingExpiryContextV705(cap)) return false;
+  const raw = JSON.stringify(receipt);
+  if (raw.length > 16384) return false;
+  const row = { payment_transaction_id: transactionId, customer_id: customerId, gateway_name: 'midtrans', gateway_event_id: key,
+    event_type: 'cancel', event_status: 'processed', signature_valid: true,
+    raw_payload: JSON.stringify(receipt.finalStatus), payload: JSON.stringify(receipt.finalStatus),
+    metadata: { unpaid_expiry_receipt: raw, unpaid_expiry_mac: crypto.createHmac('sha512', secret).update(raw).digest('hex') },
+    received_at: new Date().toISOString(), processed_at: new Date().toISOString() };
+  if (!verify(row)) return false;
+  const saved = await store('/rest/v1/payment_gateway_events', { method: 'POST', auth: 'service', db: 'paymentService',
+    prefer: 'return=representation', body: [row] });
+  return Boolean(saved && saved.ok === true && Array.isArray(saved.data) && saved.data.length === 1 && verify(saved.data[0]));
+}
+async function diracCancelPendingPaymentV705(order, database, lock, tx) {
+  const ctx = diracCentralCurrentContextV149(), meta = tx && tx.metadata, amount = midtransStrictMoneyV350(order.total);
+  const gatewayId = String(meta && meta.midtrans_transaction_id || '');
+  const cap = Object.freeze({ ctx, req: ctx && ctx.req, lock, database, orderId: order.id, orderCode: order.order_id,
+    customerId: order.customer_id, transactionId: tx && tx.id, serviceType: order.service_type,
+    gatewayId, gatewayReference: tx && tx.gateway_reference, amount, snap: ['dana', 'ovo'].includes(String(meta && meta.midtrans_payment_type || '').toLowerCase()),
+    expiresAt: Date.now() + 30000 });
+  if (!diracPendingExpiryContextV705(cap) || !customerSecurityLooksLikeUuid(tx.id)
+      || tx.order_id !== order.id || tx.customer_id !== order.customer_id || tx.domain_order_id !== null
+      || tx.service_type !== order.service_type || tx.gateway_name !== 'midtrans' || tx.paid_at !== null
+      || !['pending', 'cancelled', 'expired'].includes(tx.payment_status) || tx.currency !== 'IDR'
+      || !amount || midtransStrictMoneyV350(tx.amount) !== amount
+      || !/^PAY-[A-Za-z0-9._:@-]{1,116}$/.test(String(tx.gateway_reference || ''))
+      || !/^[A-Za-z0-9-]{16,120}$/.test(gatewayId) || !meta || meta.order_database !== database
+      || meta.midtrans_signature_verified !== true || !['pending', 'cancel', 'expire'].includes(String(meta.midtrans_transaction_status || '').toLowerCase())
+      || !Number.isFinite(Date.parse(tx.created_at)) || !Number.isFinite(Date.parse(tx.updated_at))
+      || !diracCentralAddOwnerBoundObjectValuesV198(ctx, [tx.id])) return false;
+  DIRAC_EXPIRY_TX_PROOFS_V704.set(ctx.req, Object.freeze({ ctx, req: ctx.req, requestId: String(ctx.requestId || ''),
+    id: tx.id, customer_id: tx.customer_id, order_id: tx.order_id }));
+  const safeEvents = async () => {
+    const events = await supabaseFetch('/rest/v1/payment_gateway_events?select=event_type,signature_valid'
+      + '&customer_id=eq.' + order.customer_id + '&payment_transaction_id=eq.' + tx.id + '&limit=51',
+    { method: 'GET', auth: 'service', db: 'paymentService' });
+    return Boolean(events && events.ok === true && Array.isArray(events.data) && events.data.length < 51
+      && events.data.every(event => event && event.signature_valid === true && ['pending', 'cancel', 'expire', 'deny', 'failure'].includes(String(event.event_type || '').toLowerCase())));
+  };
+  if (!await safeEvents()) return false;
+  const request = async (method, operation) => {
+    const url = midtransStatusBaseUrlV350() + '/v2/' + gatewayId + '/' + operation;
+    const headers = Object.freeze({ Accept: 'application/json', 'Content-Type': 'application/json', Authorization: midtransBasicAuthHeader(), ...(cap.snap ? { 'transaction-source': 'SNAP_API' } : {}) });
+    const options = Object.freeze({ method, headers });
+    DIRAC_PENDING_EXPIRY_V705.set(ctx, Object.freeze({ ...cap, url, options }));
+    try { const response = await fetch(url, options); return { response, data: await parseFetchResponse(response) }; }
+    finally { DIRAC_PENDING_EXPIRY_V705.delete(ctx); }
+  };
+  const matches = result => result && result.response && result.response.ok === true && result.data
+    && midtransVerifySignature(result.data) && result.data.transaction_id === gatewayId && result.data.order_id === tx.gateway_reference
+    && result.data.currency === 'IDR' && midtransStrictMoneyV350(result.data.gross_amount) === amount;
+  const statusOf = result => String(result && result.data && result.data.transaction_status || '').toLowerCase();
+  const before = await request('GET', 'status');
+  if (!matches(before) || !['pending', 'cancel', 'expire'].includes(statusOf(before))
+      || !(ctx.__diracCentralOwnerBoundObjectValuesV194 instanceof Set) || ctx.__diracCentralOwnerBoundObjectValuesV194.size >= 200) return false;
+  ctx.__diracCentralOwnerBoundObjectValuesV194.add(tx.gateway_reference);
+  let final = before;
+  if (statusOf(before) === 'pending') {
+    const cancelled = await request('POST', 'cancel');
+    if (!cancelled.response || [401, 403].includes(cancelled.response.status) || cancelled.response.status >= 500) return false;
+    final = await request('GET', 'status');
+  }
+  if (!matches(final) || !['cancel', 'expire'].includes(statusOf(final))) return false;
+  const proofStatus = { order_id: final.data.order_id, transaction_id: final.data.transaction_id, transaction_status: statusOf(final),
+    status_code: final.data.status_code, gross_amount: final.data.gross_amount, currency: final.data.currency,
+    signature_key: final.data.signature_key };
+  const completed = Object.freeze({ ...cap, finalStatus: Object.freeze(proofStatus) });
+  const receipt = { version: 705, transactionId: tx.id, customerId: order.customer_id, orderId: order.id, database,
+    orderCode: order.order_id, serviceType: order.service_type, gatewayId, gatewayReference: tx.gateway_reference,
+    amount, currency: 'IDR', finalStatus: proofStatus };
+  if (!await diracPendingExpiryReceiptV705(ctx, completed, receipt)) return false;
+  if (!await safeEvents()) return false;
+  const parent = '&order_id=eq.' + order.id + '&customer_id=eq.' + order.customer_id;
+  const select = 'id,order_id,domain_order_id,customer_id,service_type,gateway_name,gateway_reference,payment_status,amount,currency,paid_at,created_at,updated_at';
+  const fresh = await supabaseFetch('/rest/v1/payment_transactions?select=' + encodeURIComponent(select) + parent + '&id=eq.' + tx.id + '&limit=2',
+    { method: 'GET', auth: 'service', db: 'paymentService' });
+  const row = fresh && fresh.ok === true && Array.isArray(fresh.data) && fresh.data.length === 1 ? fresh.data[0] : null;
+  if (!row || row.id !== tx.id || row.customer_id !== order.customer_id || row.order_id !== order.id || row.domain_order_id !== null
+      || row.service_type !== order.service_type || row.gateway_name !== 'midtrans' || row.gateway_reference !== tx.gateway_reference
+      || row.paid_at !== null || !['pending', 'cancelled', 'expired'].includes(row.payment_status)
+      || row.currency !== 'IDR' || midtransStrictMoneyV350(row.amount) !== amount || row.created_at !== tx.created_at
+      || !Number.isFinite(Date.parse(row.updated_at))) return false;
+  const removed = await supabaseFetch('/rest/v1/payment_transactions?id=eq.' + tx.id + parent
+    + '&domain_order_id=is.null&service_type=eq.' + order.service_type + '&gateway_name=eq.midtrans&gateway_reference=eq.' + encodeURIComponent(tx.gateway_reference)
+    + '&payment_status=eq.' + row.payment_status + '&paid_at=is.null&amount=eq.' + amount + '&currency=eq.IDR'
+    + '&created_at=eq.' + encodeURIComponent(row.created_at) + '&updated_at=eq.' + encodeURIComponent(row.updated_at) + '&select=id',
+  { method: 'DELETE', auth: 'service', db: 'paymentService', prefer: 'return=representation' });
+  const deleted = Boolean(removed && removed.ok === true && Array.isArray(removed.data) && removed.data.length === 1 && removed.data[0].id === tx.id);
+  if (deleted) DIRAC_PENDING_EXPIRY_COMPLETED_V705.set(ctx, completed);
+  return deleted;
+}
+
 // Explicit customer-requested EARLY expiry simulation v700. This is an irreversible
 // deletion, not a visual preview. Paid/processed orders and financial evidence
 // stay protected; an abandoned Snap token must be closed by Midtrans first. No cron.
@@ -33003,7 +33195,7 @@ async function diracSimulateExpireUnpaidOrderV700(req, res) {
   const database = commerce.data.length === 1 ? 'commerce' : 'security';
   if (!row || row.id !== id || row.customer_id !== customerId || row.order_id !== code
       || !['parfum','laboratorium'].includes(String(row.service_type || '').toLowerCase())
-      || String(row.payment_status || '').toLowerCase() !== 'unpaid'
+      || !['unpaid', 'pending'].includes(String(row.payment_status || '').toLowerCase())
       || !['pending', 'expired'].includes(String(row.order_status || '').toLowerCase())
       || String(row.payment_method || '').trim().toLowerCase() !== 'belum dipilih'
       || !Number.isFinite(Date.parse(String(row.created_at || '')))) {
@@ -68088,6 +68280,8 @@ async function diracCentralInspectServiceRoleAccessV146(path, options = {}) {
   if (adminDecisionV406.relevant) return adminDecisionV406.ok
     ? { ok: true, guarded: 'admin_exact_operation_capability_v406' }
     : { block: true, reason: adminDecisionV406.reason, status: 403 };
+  const pendingExpiryDecisionV705 = diracPendingExpiryDbDecisionV705(ctx, path, options);
+  if (pendingExpiryDecisionV705) return pendingExpiryDecisionV705;
   const midtransCapabilityDecisionV350 = diracCentralMidtransWebhookServiceRoleDecisionV350(ctx, table, path, options, method);
   if (midtransCapabilityDecisionV350.relevant === true) {
     if (midtransCapabilityDecisionV350.ok === true) {
@@ -69581,7 +69775,7 @@ function diracCentralEgressRouteAllowedV228(url, method, ctx, options) {
   const midtrans = exact('app.midtrans.com', '/snap/v1/transactions', ['POST'], ['domain_checkout', 'create_payment'], 'midtrans_snap')
     || exact('app.sandbox.midtrans.com', '/snap/v1/transactions', ['POST'], ['domain_checkout', 'create_payment'], 'midtrans_snap');
   if (midtrans) return midtrans;
-  if (action === 'simulate_expire_unpaid_order' && verb === 'POST' && diracAbandonedSnapEgressAllowedV703(url, options, ctx)) {
+  if (action === 'simulate_expire_unpaid_order' && ((verb === 'POST' && diracAbandonedSnapEgressAllowedV703(url, options, ctx)) || diracPendingExpiryEgressV705(url, options, ctx))) {
     return { ok: true, policy: 'midtrans_abandoned_snap_cancel_v703', action };
   }
   // Midtrans webhook financial state confirmation. Dynamic path is limited to
