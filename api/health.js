@@ -32912,11 +32912,27 @@ async function diracCancelAbandonedSnapV703(order, database, lock) {
       || !midtransPaymentIsConfigured()) return false;
   const select = 'id,order_id,domain_order_id,customer_id,service_type,gateway_name,gateway_reference,payment_status,amount,currency,payment_url,paid_at,created_at,updated_at,metadata';
   const parent = '&order_id=eq.' + encodeURIComponent(order.id) + '&customer_id=eq.' + encodeURIComponent(order.customer_id);
-  const found = await supabaseFetch('/rest/v1/payment_transactions?select=' + encodeURIComponent(select) + parent + '&limit=2',
+  const found = await supabaseFetch('/rest/v1/payment_transactions?select=' + encodeURIComponent(select) + parent + '&limit=51',
     { method: 'GET', auth: 'service', db: 'paymentService' });
   if (!found || found.ok !== true || !Array.isArray(found.data)) throw diracExpiryFailureV702('EXPIRY_PAYMENT_LOOKUP_UNAVAILABLE');
-  if (found.data.length !== 1) return false;
-  const tx = found.data[0], meta = tx && tx.metadata;
+  if (!found.data.length || found.data.length > 50) return false;
+  if (found.data.length === 1) return diracCancelUnpaidAttemptV706(order, database, lock, found.data[0]);
+  const amount = midtransStrictMoneyV350(order.total);
+  if (!amount || new Set(found.data.map(tx => tx && tx.id)).size !== found.data.length
+      || !found.data.every(tx => tx && customerSecurityLooksLikeUuid(tx.id) && tx.order_id === order.id
+        && tx.customer_id === order.customer_id && tx.domain_order_id === null && tx.service_type === order.service_type
+        && tx.gateway_name === 'midtrans' && tx.paid_at === null && tx.currency === 'IDR'
+        && ['unpaid', 'pending', 'cancelled', 'expired'].includes(tx.payment_status)
+        && midtransStrictMoneyV350(tx.amount) === amount && tx.metadata && tx.metadata.order_database === database)) return false;
+  // One bounded snapshot, processed in order under the same lease. No retries.
+  return found.data.reduce((previous, tx) => previous.then(ok => ok === true
+    ? diracCancelUnpaidAttemptV706(order, database, lock, tx) : false), Promise.resolve(true));
+}
+async function diracCancelUnpaidAttemptV706(order, database, lock, tx) {
+  const ctx = diracCentralCurrentContextV149(), meta = tx && tx.metadata;
+  if (!diracPendingExpiryContextV705({ ctx, req: ctx && ctx.req, lock, database, orderId: order.id,
+      orderCode: order.order_id, customerId: order.customer_id, expiresAt: Date.now() + 30000 })) return false;
+  const parent = '&order_id=eq.' + encodeURIComponent(order.id) + '&customer_id=eq.' + encodeURIComponent(order.customer_id);
   if (tx && ['pending', 'cancelled', 'expired'].includes(tx.payment_status)) return diracCancelPendingPaymentV705(order, database, lock, tx);
   const amount = midtransStrictMoneyV350(order.total);
   if (!tx || !customerSecurityLooksLikeUuid(tx.id) || tx.order_id !== order.id || tx.customer_id !== order.customer_id
