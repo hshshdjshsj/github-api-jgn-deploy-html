@@ -36903,6 +36903,42 @@ function diracUltraCanonicalBase64UrlV191(value, minBytes, maxBytes) {
 }
 
 function diracUltraIsSafeWebAuthnBinaryIdV333(container, key, value) {
+  if (container && typeof container === 'object' && !Array.isArray(container)
+      && /^(?:publicKey|setupToken|mfaSetupToken)$/.test(String(key || ''))) {
+    try {
+      const ctx = diracCentralCurrentContextV149(), options = container.publicKey;
+      if (!ctx || !diracCentralHandlerContextFullyPassedV211(ctx, ctx.req)
+          || ctx.action !== 'dirac_mfa_passkey_verify' || ctx.method !== 'POST'
+          || Number(ctx.res.statusCode) !== 202 || !ctx.body || ctx.body.passkeyMode !== 'registration'
+          || container.ok !== true || container.verified !== false || container.active !== false
+          || container.method !== 'passkey' || container.passkeyMode !== 'confirm_pending'
+          || container.confirmation_required !== true || container.needsRegistration !== false
+          || container.database_saved !== true || container.pending_created !== true || container.registered_now !== false
+          || container.device_binding_required !== true
+          || !['httponly-server-bound-v2', 'webcrypto-nonextractable-v1'].includes(container.device_binding_policy)
+          || typeof container.setupToken !== 'string' || container.mfaSetupToken !== container.setupToken
+          || (key === 'publicKey' ? value !== options : value !== container.setupToken)
+          || !options || typeof options !== 'object' || Array.isArray(options)
+          || Object.keys(options).sort().join('|') !== 'allowCredentials|challenge|rpId|timeout|userVerification'
+          || options.userVerification !== 'required' || !Number.isSafeInteger(options.timeout) || options.timeout < 1 || options.timeout > 60000
+          || !Array.isArray(options.allowCredentials) || options.allowCredentials.length !== 1
+          || !diracUltraCanonicalBase64UrlV191(options.challenge, 32, 32)) return false;
+      const proof = diracPasskeyA2FDecodeToken(container.setupToken), now = Date.now(), descriptor = options.allowCredentials[0];
+      if (!proof || proof.type !== DIRAC_PASSKEY_A2F_TOKEN_TYPE || proof.method !== 'passkey'
+          || proof.mode !== 'confirm_pending' || proof.assertionPurpose !== DIRAC_PASSKEY_ASSERTION_PURPOSE_CONFIRM_PENDING_V237
+          || !Number.isSafeInteger(proof.issuedAtMs) || proof.issuedAtMs <= 0 || proof.issuedAtMs > now + 30000
+          || !Number.isSafeInteger(proof.expiresAtMs) || proof.expiresAtMs <= now || proof.expiresAtMs <= proof.issuedAtMs
+          || proof.expiresAtMs - proof.issuedAtMs > DIRAC_PASSKEY_A2F_TTL_MS
+          || !Number.isSafeInteger(proof.pendingExpiresAtMs) || proof.expiresAtMs > proof.pendingExpiresAtMs
+          || proof.challenge !== options.challenge || proof.rpId !== options.rpId || proof.rpId !== diracPasskeyA2FRpId(ctx.req)
+          || proof.origin !== requestOrigin(ctx.req) || !descriptor || descriptor.id !== proof.pendingCredentialId
+          || !diracUltraCanonicalBase64UrlV191(descriptor.id, 16, 1023)
+          || !/^[a-f0-9]{64}$/.test(String(proof.pendingCredentialIdHash || ''))
+          || proof.pendingCredentialIdHash !== crypto.createHash('sha256').update(descriptor.id).digest('hex')
+          || container.credential_id_hint !== proof.pendingCredentialIdHash.slice(0, 12)) return false;
+      container = descriptor; key = 'id'; value = descriptor.id;
+    } catch (_) { return false; }
+  }
   if (!container || typeof container !== 'object' || Array.isArray(container)
       || String(key || '').toLowerCase() !== 'id' || typeof value !== 'string') return false;
 
