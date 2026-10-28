@@ -33551,6 +33551,7 @@ async function diracUniversalPesananCreatePayment(req, res) {
   if (expiryLockRequiredV702 && !expiryPaymentLockV702) {
     return res.status(409).json({ok:false, code:'ORDER_OPERATION_BUSY', message:'Pesanan sedang diverifikasi. Silakan muat ulang status pesanan.'});
   }
+  const respondAfterUnlockV707 = await (async () => {
   try {
   const existing = await diracUniversalPesananFindReusableTransaction({
     kind: paymentInput.kind,
@@ -33561,10 +33562,10 @@ async function diracUniversalPesananCreatePayment(req, res) {
     orderDatabase: paymentInput.orderDatabase
   });
 
-  if (!existing.ok) return res.status(503).json({ ok: false, message: 'Transaksi sebelumnya belum dapat diverifikasi.' });
+  if (!existing.ok) return () => res.status(503).json({ ok: false, message: 'Transaksi sebelumnya belum dapat diverifikasi.' });
 
   if (existing.ok && existing.transaction && existing.transaction.payment_url) {
-    return res.status(200).json({
+    return () => res.status(200).json({
       ok: true,
       reused: true,
       message: 'Payment sudah pernah dibuat untuk order ini. Menggunakan payment URL yang sama.',
@@ -33588,7 +33589,7 @@ async function diracUniversalPesananCreatePayment(req, res) {
   }
 
   if (paymentInput.kind === 'regular' && diracUnpaidOrderExpiredV670(lookup.order)) {
-    return res.status(409).json({
+    return () => res.status(409).json({
       ok: false, code: 'UNPAID_ORDER_24H_EXPIRED',
       message: 'Pesanan yang belum dibayar melewati batas 24 jam dan sudah ditutup. Silakan buat pesanan baru.'
     });
@@ -33609,7 +33610,7 @@ async function diracUniversalPesananCreatePayment(req, res) {
         || Number(freshV702.order.total) !== paymentInput.amount
         || !diracUniversalPesananCanPayByStatus(lockedPaymentStatus(freshV702.order.payment_status), lockedPaymentStatus(freshV702.order.order_status), paymentInput.amount)
         || diracUnpaidOrderExpiredV670(freshV702.order)) {
-      return res.status(409).json({ok:false, code:'ORDER_CHANGED_BEFORE_PAYMENT', message:'Status pesanan berubah. Silakan muat ulang daftar pesanan.'});
+      return () => res.status(409).json({ok:false, code:'ORDER_CHANGED_BEFORE_PAYMENT', message:'Status pesanan berubah. Silakan muat ulang daftar pesanan.'});
     }
   }
   const transactionResult = await lockedPaymentInsertTransaction({
@@ -33641,7 +33642,7 @@ async function diracUniversalPesananCreatePayment(req, res) {
   });
 
   if (!transactionResult.ok) {
-    return res.status(transactionResult.status || 500).json({
+    return () => res.status(transactionResult.status || 500).json({
       ok: false,
       message: 'Gagal menyimpan transaksi payment.',
       error: lockedPaymentSafeUpstreamError(transactionResult.data)
@@ -33650,7 +33651,7 @@ async function diracUniversalPesananCreatePayment(req, res) {
 
   const transaction = Array.isArray(transactionResult.data) ? transactionResult.data[0] : transactionResult.data;
   if (!transaction || !transaction.id) {
-    return res.status(500).json({ ok: false, message: 'Transaksi payment dibuat, tetapi ID tidak ditemukan.' });
+    return () => res.status(500).json({ ok: false, message: 'Transaksi payment dibuat, tetapi ID tidak ditemukan.' });
   }
 
   const gateway = await lockedPaymentCreateGatewayInvoice({
@@ -33672,7 +33673,7 @@ async function diracUniversalPesananCreatePayment(req, res) {
 
   if (!gateway.ok || !gateway.paymentUrl) {
     await lockedPaymentMarkTransactionGatewayFailed(transaction.id, gateway.error || gateway.message || 'gateway_create_failed', gateway.raw || null);
-    return res.status(gateway.status || 502).json({
+    return () => res.status(gateway.status || 502).json({
       ok: false,
       message: 'Gateway gagal membuat URL pembayaran.',
       payment_transaction_id: transaction.id,
@@ -33683,7 +33684,7 @@ async function diracUniversalPesananCreatePayment(req, res) {
 
   const patchResult = await lockedPaymentPatchTransactionUrl(transaction.id, gateway.paymentUrl, gateway.invoiceId, gateway.raw);
   if (!patchResult.ok) {
-    return res.status(patchResult.status || 500).json({
+    return () => res.status(patchResult.status || 500).json({
       ok: false,
       message: 'Gateway sudah membuat invoice, tetapi payment URL gagal disimpan ke database.',
       payment_transaction_id: transaction.id,
@@ -33692,7 +33693,7 @@ async function diracUniversalPesananCreatePayment(req, res) {
     });
   }
 
-  return res.status(200).json({
+  return () => res.status(200).json({
     ok: true,
     message: 'Pembayaran siap dilanjutkan sesuai jumlah tagihan Anda.',
     order_kind: paymentInput.kind,
@@ -33716,6 +33717,8 @@ async function diracUniversalPesananCreatePayment(req, res) {
     webhook_required_checks: ['signature', 'gateway_event_id_unique', 'amount_equals_database_total', 'currency_IDR', 'paid_or_settled_status']
   });
   } finally { await diracExpiryReleaseLockV702(expiryPaymentLockV702); }
+  })();
+  return respondAfterUnlockV707();
 }
 
 function diracUniversalPesananNormalizeRequestedType(value) {
