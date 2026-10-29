@@ -4371,6 +4371,44 @@ function diracRegisterEmailBindingHashV331(req) {
     .update(canonical, 'utf8').digest('hex');
 }
 
+// A page-held, non-exportable signing key proves continuity when only the
+// transport IP changes. Every Central Guard stage still evaluates the current
+// request; origin, user agent, client hints and language remain strictly bound.
+function diracRegisterEmailBrowserKeyV709(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{122}$/.test(value)) return null;
+  try {
+    const der = Buffer.from(value, 'base64url');
+    const key = crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
+    return der.length === 91 && der.toString('base64url') === value
+      && key.asymmetricKeyType === 'ec' && key.asymmetricKeyDetails.namedCurve === 'prime256v1'
+      && key.export({ format: 'der', type: 'spki' }).equals(der) ? key : null;
+  } catch (_) { return null; }
+}
+
+function diracRegisterEmailBrowserBindingV709(req) {
+  const ctx = diracRegisterEmailGuardContextV331(req);
+  return crypto.createHmac('sha256', diracCentralDeriveSecretV146('register-email-browser-v709'))
+    .update(JSON.stringify([DIRAC_REGISTER_EMAIL_VERIFICATION_PATCH_V331, ctx.action, ctx.method,
+      ctx.userAgentHash, ctx.identity.parts.origin, ctx.identity.parts.deviceHint]), 'utf8').digest('hex');
+}
+
+function diracRegisterEmailBrowserContinuityV709(req, payload, proof) {
+  const ctx = diracRegisterEmailGuardContextV331(req);
+  const body = ctx.body;
+  if (!payload.browser_key || !body || body.email_verification_browser_credential !== payload.browser_key
+      || !safeEqual(payload.browser_binding, diracRegisterEmailBrowserBindingV709(req))
+      || typeof body.email_verification_browser_signature !== 'string'
+      || !/^[A-Za-z0-9_-]{86}$/.test(body.email_verification_browser_signature)) return false;
+  const key = diracRegisterEmailBrowserKeyV709(payload.browser_key);
+  if (!key) return false;
+  try {
+    const signature = Buffer.from(body.email_verification_browser_signature, 'base64url');
+    return signature.length === 64 && signature.toString('base64url') === body.email_verification_browser_signature
+      && crypto.verify('sha256', Buffer.from(JSON.stringify(['dirac-register-browser-v709', payload.jti, String(proof || '').trim()])),
+        { key, dsaEncoding: 'ieee-p1363' }, signature);
+  } catch (_) { return false; }
+}
+
 function diracRegisterEmailProofHashV331(jti, requestHash, bindingHash, proof) {
   return crypto.createHmac('sha256', diracCentralDeriveSecretV146('register-email-proof-v331'))
     .update(JSON.stringify([String(jti || ''), String(requestHash || ''), String(bindingHash || ''), String(proof || '')]), 'utf8')
@@ -4404,7 +4442,12 @@ function diracRegisterEmailDecodeChallengeV331(value) {
   }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const keys = Object.keys(payload).sort().join(',');
-  if (keys !== 'binding_hash,exp,iat,jti,proof_hash,proof_length,request_hash,typ') return null;
+  const browserBound = Object.prototype.hasOwnProperty.call(payload, 'browser_key');
+  if (keys !== (browserBound
+    ? 'binding_hash,browser_binding,browser_key,exp,iat,jti,proof_hash,proof_length,request_hash,typ'
+    : 'binding_hash,exp,iat,jti,proof_hash,proof_length,request_hash,typ')) return null;
+  if (browserBound && (!diracRegisterEmailBrowserKeyV709(payload.browser_key)
+      || !/^[a-f0-9]{64}$/.test(String(payload.browser_binding || '')))) return null;
   const proofLength = Number(payload.proof_length || 0);
   if (!Number.isSafeInteger(proofLength)
       || proofLength < DIRAC_REGISTER_EMAIL_PROOF_MIN_LENGTH_V354
@@ -4425,7 +4468,7 @@ function diracRegisterEmailDecodeChallengeV331(value) {
   return payload;
 }
 
-function diracRegisterEmailCreateChallengeV331(req, input) {
+function diracRegisterEmailCreateChallengeV331(req, input, browserKey) {
   diracRegisterEmailGuardContextV331(req);
   const now = Math.floor(Date.now() / 1000);
   const proof = diracRegisterEmailCreateProofV354();
@@ -4440,7 +4483,8 @@ function diracRegisterEmailCreateChallengeV331(req, input) {
     request_hash: requestHash,
     binding_hash: bindingHash,
     proof_hash: diracRegisterEmailProofHashV331(jti, requestHash, bindingHash, proof),
-    proof_length: proof.length
+    proof_length: proof.length,
+    ...(browserKey ? { browser_key: browserKey, browser_binding: diracRegisterEmailBrowserBindingV709(req) } : {})
   });
   return Object.freeze({
     proof,
@@ -4519,14 +4563,20 @@ function diracRegisterEmailVerifyProofV331(req, input, proof) {
   }
   const requestHash = diracRegisterEmailRequestHashV331(input);
   const bindingHash = diracRegisterEmailBindingHashV331(req);
-  if (!safeEqual(payload.request_hash, requestHash) || !safeEqual(payload.binding_hash, bindingHash)) {
+  const browserContinuity = payload.browser_key
+    ? diracRegisterEmailBrowserContinuityV709(req, payload, candidate) : false;
+  if (!safeEqual(payload.request_hash, requestHash)
+      || (!safeEqual(payload.binding_hash, bindingHash) && !browserContinuity)) {
     return reject(409, 'REGISTER_EMAIL_VERIFICATION_RESTART_REQUIRED', true, !safeEqual(payload.request_hash, requestHash) ? 'registration_data_mismatch' : 'browser_binding_mismatch');
   }
-  const expectedProofHash = diracRegisterEmailProofHashV331(payload.jti, requestHash, bindingHash, candidate);
+  if (payload.browser_key && !browserContinuity) {
+    return reject(401, 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID', false, 'browser_signature_invalid');
+  }
+  const expectedProofHash = diracRegisterEmailProofHashV331(payload.jti, requestHash, payload.binding_hash, candidate);
   if (!safeEqual(payload.proof_hash, expectedProofHash)) {
     return reject(401, 'REGISTER_EMAIL_VERIFICATION_TOKEN_INVALID', false, 'proof_value_mismatch');
   }
-  return { ok: true, payload, requestHash, bindingHash };
+  return { ok: true, payload, requestHash, bindingHash: payload.binding_hash };
 }
 
 async function diracRegisterEmailConsumeProofV331(req, input, verified) {
@@ -5187,7 +5237,8 @@ function diracRegisterEmailProofFailureBoundV492(req, input) {
   const token = diracRegisterEmailReadChallengeV331(req);
   const payload = token ? diracRegisterEmailDecodeChallengeV331(token) : null;
   return Boolean(payload && safeEqual(String(payload.request_hash || ''), diracRegisterEmailRequestHashV331(input))
-    && safeEqual(String(payload.binding_hash || ''), diracRegisterEmailBindingHashV331(req)));
+    && (safeEqual(String(payload.binding_hash || ''), diracRegisterEmailBindingHashV331(req))
+      || diracRegisterEmailBrowserContinuityV709(req, payload, diracRegisterEmailGuardContextV331(req).body.email_verification_token)));
 }
 
 async function diracRegisterEmailSmtpRateResetV374(req, email) {
@@ -5313,6 +5364,10 @@ async function domainRegister(req, res, preloadedBody) {
   const verificationTokenPresent = Object.prototype.hasOwnProperty.call(body, 'email_verification_token');
 
   if (!verificationTokenPresent) {
+    if (Object.prototype.hasOwnProperty.call(body, 'email_verification_browser_credential')
+        && !diracRegisterEmailBrowserKeyV709(body.email_verification_browser_credential)) {
+      return res.status(400).json({ ok: false, code: 'REGISTER_EMAIL_BROWSER_KEY_INVALID', message: 'Bukti browser pendaftaran tidak valid.' });
+    }
     let smtpRateV374;
     try { smtpRateV374 = await diracRegisterEmailSmtpRateTakeV374(req, email); }
     catch (error) {
@@ -5334,7 +5389,7 @@ async function domainRegister(req, res, preloadedBody) {
         message: 'Layanan verifikasi email pendaftaran belum dikonfigurasi dengan benar.'
       });
     }
-    const challenge = diracRegisterEmailCreateChallengeV331(req, registrationInput);
+    const challenge = diracRegisterEmailCreateChallengeV331(req, registrationInput, body.email_verification_browser_credential);
     const delivery = await diracRegisterEmailDeliverV331(Object.freeze({
       email,
       proof: challenge.proof,
@@ -5365,6 +5420,7 @@ async function domainRegister(req, res, preloadedBody) {
       verification_required: true,
       verification_sent: true,
       verification_token_length: challenge.proof.length,
+      ...(challenge.payload.browser_key ? { verification_browser_challenge: challenge.payload.jti } : {}),
       expires_in_seconds: DIRAC_REGISTER_EMAIL_CHALLENGE_TTL_SECONDS_V331,
       message: 'Kode verifikasi telah dikirim ke email Anda. Masukkan kode tersebut untuk menyelesaikan pendaftaran.'
     });
@@ -72282,7 +72338,7 @@ function diracCentralContractForActionV146(action) {
   const recoveryLinkPostV251 = { methods:['POST'], allowed:['action','rid','token'], required:['action','rid','token'], maxBodyBytes:16*1024, maxFieldBytes:8192, mutation:true, allowProtectedFields:false };
   const recoveryHpkeV251 = { methods:['HEAD','POST'], allowed:['action','aead_nonce','ciphertext','enc','expires_at_ms','hpke_key_id','hpke_suite','mlkem_key_id','request_id','sent_at_ms','version'], required:[], maxBodyBytes:64*1024, maxFieldBytes:64*1024, mutation:true, allowProtectedFields:false };
   const authLoginPost = { methods: ['POST'], allowed: ['email', 'password', 'fullName', 'full_name', 'name', 'phone'], required: ['email', 'password'], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
-  const authRegisterPost = { methods: ['POST'], allowed: ['email', 'password', 'fullName', 'full_name', 'name', 'phone', 'email_verification_token', 'referral_code'], required: ['email', 'password'], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
+  const authRegisterPost = { methods: ['POST'], allowed: ['email', 'password', 'fullName', 'full_name', 'name', 'phone', 'email_verification_token', 'referral_code', 'email_verification_browser_credential', 'email_verification_browser_signature'], required: ['email', 'password'], maxBodyBytes: 20 * 1024, maxFieldBytes: 3000, mutation: true };
   const contracts = {
     domain_health: { ...getOnly, allowed: commonGet.concat(['_csrf_bootstrap']) },
     hostinger_check: { ...getOnly, required: ['domain'] },
@@ -72430,6 +72486,8 @@ function diracCentralValidateFieldFormatV146(key, value) {
   if (!text) return { ok: true };
   if (clean === 'email' && !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(text)) return { ok: false, reason: 'email_format_invalid' };
   if (clean === 'email_verification_token' && !diracRegisterEmailProofLooksValidV374(text, text.length)) return { ok: false, reason: 'email_verification_token_format_invalid' };
+  if (clean === 'email_verification_browser_credential' && !diracRegisterEmailBrowserKeyV709(value)) return { ok: false, reason: 'email_verification_browser_credential_invalid' };
+  if (clean === 'email_verification_browser_signature' && (typeof value !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(value))) return { ok: false, reason: 'email_verification_browser_signature_invalid' };
   if (clean === 'referral_code' && !/^PRT-[A-Za-z0-9_-]{59}$/.test(text)) return { ok: false, reason: 'referral_code_format_invalid' };
   if (/domain/.test(clean) && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(text)) return { ok: false, reason: 'domain_format_invalid' };
   if (/uuid|customer_id|user_id|auth_user_id|owner_user_id|session_id|recovery_code_id|credential_id|project_id|document_id|item_id/.test(clean) && !diracCentralLooksLikeUuidV146(text)) {
