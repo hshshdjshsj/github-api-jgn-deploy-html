@@ -1748,7 +1748,14 @@ function diracCanonicalCompanyNameV381() {
 
 async function domainHealth(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ ok: false, message: 'Gunakan GET.' });
-  await DIRAC_OPERATION_CLEANUP_V507.sweepExpiredChallenges().catch(() => false);
+  const bootstrapQueryV509 = req.query && typeof req.query === 'object' ? req.query : {};
+  const bootstrapTargetV509 = String(bootstrapQueryV509._dirac_page_nonce_for || '').trim().toLowerCase();
+  const bootstrapTimeV509 = String(bootstrapTargetV509 === 'security_report' ? bootstrapQueryV509._t || '' : bootstrapQueryV509._csrf_boot || '').trim();
+  const skipChallengeSweepV509 = /^\d{10,16}$/.test(bootstrapTimeV509)
+    && (bootstrapTargetV509 === 'security_report' || bootstrapTargetV509 === 'domain_register');
+  if (!skipChallengeSweepV509) {
+    await DIRAC_OPERATION_CLEANUP_V507.sweepExpiredChallenges().catch(() => false);
+  }
 
   if (String(req.query && req.query._csrf_bootstrap || '').trim() === 'dashboard_stale_binding_reauth_v312') {
     return diracDashboardStaleBindingPreflightV312(req, res);
