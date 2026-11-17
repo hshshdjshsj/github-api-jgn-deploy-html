@@ -1122,15 +1122,15 @@ function diracUniversalBrowserOriginsV250() {
 function diracExecutiveEscalationTextV380() {
   return [
     'LAPOR LANGSUNG KE DIREKTUR & FOUNDER',
-    'Jalur privat pelanggan untuk melaporkan dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra PT Dirac Inovasi Nusantara kepada Achmad Zaenuddin, Direktur & Founder.',
+    'Jalur privat pelanggan untuk melaporkan dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra PT Dincorp Inovasi Asia kepada Achmad Zaenuddin, Direktur & Founder.',
     'Email: companydirac@gmail.com',
-    "Template laporan:\r\nHalo Achmad Zaenuddin, Direktur & Founder PT Dirac Inovasi Nusantara,\r\n\r\nSaya ingin menyampaikan laporan pelanggan berikut.\r\n\r\nIDENTITAS PELAPOR\r\nNama lengkap:\r\nEmail akun:\r\nKontak balasan (opsional):\r\n\r\nRINCIAN KEJADIAN\r\nNomor pesanan/invoice/tiket (jika ada):\r\nLayanan dan alamat halaman yang digunakan:\r\nTanggal dan waktu kejadian (WIB):\r\nNama/jabatan staf atau mitra terkait (jika diketahui):\r\nRingkasan masalah:\r\nKronologi kejadian:\r\nDampak atau kerugian yang dialami:\r\n\r\nTINDAK LANJUT\r\nLangkah yang sudah dilakukan dan tanggapan yang diterima:\r\nPenyelesaian yang diharapkan:\r\n\r\nBUKTI PENDUKUNG\r\nDaftar lampiran, tangkapan layar, atau percakapan terkait:\r\nHapus atau tutupi data rahasia sebelum melampirkan bukti. Jangan sertakan kata sandi, kode verifikasi, PIN, CVV, Passkey, atau data akses akun.\r\n\r\nInformasi di atas saya sampaikan sesuai kejadian yang saya alami. Mohon laporan ini ditinjau dan balas melalui kontak yang saya cantumkan.\r\n\r\nTerima kasih.",
+    "Template laporan:\r\nHalo Achmad Zaenuddin, Direktur & Founder PT Dincorp Inovasi Asia,\r\n\r\nSaya ingin menyampaikan laporan pelanggan berikut.\r\n\r\nIDENTITAS PELAPOR\r\nNama lengkap:\r\nEmail akun:\r\nKontak balasan (opsional):\r\n\r\nRINCIAN KEJADIAN\r\nNomor pesanan/invoice/tiket (jika ada):\r\nLayanan dan alamat halaman yang digunakan:\r\nTanggal dan waktu kejadian (WIB):\r\nNama/jabatan staf atau mitra terkait (jika diketahui):\r\nRingkasan masalah:\r\nKronologi kejadian:\r\nDampak atau kerugian yang dialami:\r\n\r\nTINDAK LANJUT\r\nLangkah yang sudah dilakukan dan tanggapan yang diterima:\r\nPenyelesaian yang diharapkan:\r\n\r\nBUKTI PENDUKUNG\r\nDaftar lampiran, tangkapan layar, atau percakapan terkait:\r\nHapus atau tutupi data rahasia sebelum melampirkan bukti. Jangan sertakan kata sandi, kode verifikasi, PIN, CVV, Passkey, atau data akses akun.\r\n\r\nInformasi di atas saya sampaikan sesuai kejadian yang saya alami. Mohon laporan ini ditinjau dan balas melalui kontak yang saya cantumkan.\r\n\r\nTerima kasih.",
     'Jangan sertakan kata sandi, kode verifikasi, PIN, CVV, passkey, atau data akses akun dalam laporan.'
   ].join('\r\n');
 }
 
 function diracExecutiveEscalationHtmlV380() {
-  return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" data-dirac-executive-report="v380" style="width:100%;margin:18px 0 0;border-collapse:collapse"><tr><td align="center" style="padding:0 12px"><table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#F7F9FC" style="width:100%;max-width:600px;border-collapse:separate;border-spacing:0;border:1px solid #CBD5E1;border-radius:16px;overflow:hidden;background-color:#F7F9FC"><tr><td style="padding:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="42%" bgcolor="#27B3CB" style="height:4px;line-height:4px;font-size:0;background-color:#27B3CB">&nbsp;</td><td width="34%" bgcolor="#2D6FAD" style="height:4px;line-height:4px;font-size:0;background-color:#2D6FAD">&nbsp;</td><td width="24%" bgcolor="#C69A32" style="height:4px;line-height:4px;font-size:0;background-color:#C69A32">&nbsp;</td></tr></table></td></tr><tr><td bgcolor="#F7F9FC" style="padding:18px 18px 17px;font-family:Arial,Helvetica,sans-serif;background-color:#F7F9FC;color:#172033"><div style="font-size:10px;line-height:1.4;font-weight:800;letter-spacing:.15em;color:#087A8F">JALUR PRIVAT PELANGGAN</div><div style="margin-top:5px;font-size:20px;line-height:1.28;font-weight:800;color:#0F172A">Lapor ke Direktur &amp; Founder</div><p style="margin:8px 0 14px;font-size:13px;line-height:1.55;color:#475569">Dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra dapat dilaporkan langsung kepada Achmad Zaenuddin, Direktur &amp; Founder PT Dirac Inovasi Nusantara.</p><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td bgcolor="#0B6F88" style="padding:0;border-radius:10px;background-color:#0B6F88"><a href="mailto:companydirac@gmail.com?subject=Laporan%20Pelanggan%20ke%20Direktur%20%26%20Founder&amp;body=Halo%20Achmad%20Zaenuddin%2C%20Direktur%20%26%20Founder%20PT%20Dirac%20Inovasi%20Nusantara%2C%0D%0A%0D%0ASaya%20ingin%20menyampaikan%20laporan%20pelanggan%20berikut.%0D%0A%0D%0AIDENTITAS%20PELAPOR%0D%0ANama%20lengkap%3A%0D%0AEmail%20akun%3A%0D%0AKontak%20balasan%20%28opsional%29%3A%0D%0A%0D%0ARINCIAN%20KEJADIAN%0D%0ANomor%20pesanan%2Finvoice%2Ftiket%20%28jika%20ada%29%3A%0D%0ALayanan%20dan%20alamat%20halaman%20yang%20digunakan%3A%0D%0ATanggal%20dan%20waktu%20kejadian%20%28WIB%29%3A%0D%0ANama%2Fjabatan%20staf%20atau%20mitra%20terkait%20%28jika%20diketahui%29%3A%0D%0ARingkasan%20masalah%3A%0D%0AKronologi%20kejadian%3A%0D%0ADampak%20atau%20kerugian%20yang%20dialami%3A%0D%0A%0D%0ATINDAK%20LANJUT%0D%0ALangkah%20yang%20sudah%20dilakukan%20dan%20tanggapan%20yang%20diterima%3A%0D%0APenyelesaian%20yang%20diharapkan%3A%0D%0A%0D%0ABUKTI%20PENDUKUNG%0D%0ADaftar%20lampiran%2C%20tangkapan%20layar%2C%20atau%20percakapan%20terkait%3A%0D%0AHapus%20atau%20tutupi%20data%20rahasia%20sebelum%20melampirkan%20bukti.%20Jangan%20sertakan%20kata%20sandi%2C%20kode%20verifikasi%2C%20PIN%2C%20CVV%2C%20Passkey%2C%20atau%20data%20akses%20akun.%0D%0A%0D%0AInformasi%20di%20atas%20saya%20sampaikan%20sesuai%20kejadian%20yang%20saya%20alami.%20Mohon%20laporan%20ini%20ditinjau%20dan%20balas%20melalui%20kontak%20yang%20saya%20cantumkan.%0D%0A%0D%0ATerima%20kasih." style="display:block;padding:12px 14px;font-size:13px;line-height:1.35;font-weight:800;text-align:center;color:#FFFFFF;text-decoration:none"><font color="#FFFFFF" style="color:#FFFFFF">EMAIL&nbsp;&nbsp;•&nbsp;&nbsp;SIAPKAN LAPORAN</font></a></td></tr></table><p style="margin:12px 0 0;font-size:11px;line-height:1.5;color:#64748B">Lengkapi identitas, kronologi, dampak, dan penyelesaian yang Anda harapkan. Lampirkan bukti setelah menutupi data rahasia. Jangan sertakan kata sandi, kode verifikasi, PIN, CVV, Passkey, atau data akses akun.</p></td></tr></table></td></tr></table>';
+  return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" data-dirac-executive-report="v380" style="width:100%;margin:18px 0 0;border-collapse:collapse"><tr><td align="center" style="padding:0 12px"><table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#F7F9FC" style="width:100%;max-width:600px;border-collapse:separate;border-spacing:0;border:1px solid #CBD5E1;border-radius:16px;overflow:hidden;background-color:#F7F9FC"><tr><td style="padding:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="42%" bgcolor="#27B3CB" style="height:4px;line-height:4px;font-size:0;background-color:#27B3CB">&nbsp;</td><td width="34%" bgcolor="#2D6FAD" style="height:4px;line-height:4px;font-size:0;background-color:#2D6FAD">&nbsp;</td><td width="24%" bgcolor="#C69A32" style="height:4px;line-height:4px;font-size:0;background-color:#C69A32">&nbsp;</td></tr></table></td></tr><tr><td bgcolor="#F7F9FC" style="padding:18px 18px 17px;font-family:Arial,Helvetica,sans-serif;background-color:#F7F9FC;color:#172033"><div style="font-size:10px;line-height:1.4;font-weight:800;letter-spacing:.15em;color:#087A8F">JALUR PRIVAT PELANGGAN</div><div style="margin-top:5px;font-size:20px;line-height:1.28;font-weight:800;color:#0F172A">Lapor ke Direktur &amp; Founder</div><p style="margin:8px 0 14px;font-size:13px;line-height:1.55;color:#475569">Dugaan penyalahgunaan, penipuan, manipulasi, pemaksaan, atau pelanggaran oleh staf/mitra dapat dilaporkan langsung kepada Achmad Zaenuddin, Direktur &amp; Founder PT Dincorp Inovasi Asia.</p><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td bgcolor="#0B6F88" style="padding:0;border-radius:10px;background-color:#0B6F88"><a href="mailto:companydirac@gmail.com?subject=Laporan%20Pelanggan%20ke%20Direktur%20%26%20Founder&amp;body=Halo%20Achmad%20Zaenuddin%2C%20Direktur%20%26%20Founder%20PT%20Dincorp%20Inovasi%20Asia%2C%0D%0A%0D%0ASaya%20ingin%20menyampaikan%20laporan%20pelanggan%20berikut.%0D%0A%0D%0AIDENTITAS%20PELAPOR%0D%0ANama%20lengkap%3A%0D%0AEmail%20akun%3A%0D%0AKontak%20balasan%20%28opsional%29%3A%0D%0A%0D%0ARINCIAN%20KEJADIAN%0D%0ANomor%20pesanan%2Finvoice%2Ftiket%20%28jika%20ada%29%3A%0D%0ALayanan%20dan%20alamat%20halaman%20yang%20digunakan%3A%0D%0ATanggal%20dan%20waktu%20kejadian%20%28WIB%29%3A%0D%0ANama%2Fjabatan%20staf%20atau%20mitra%20terkait%20%28jika%20diketahui%29%3A%0D%0ARingkasan%20masalah%3A%0D%0AKronologi%20kejadian%3A%0D%0ADampak%20atau%20kerugian%20yang%20dialami%3A%0D%0A%0D%0ATINDAK%20LANJUT%0D%0ALangkah%20yang%20sudah%20dilakukan%20dan%20tanggapan%20yang%20diterima%3A%0D%0APenyelesaian%20yang%20diharapkan%3A%0D%0A%0D%0ABUKTI%20PENDUKUNG%0D%0ADaftar%20lampiran%2C%20tangkapan%20layar%2C%20atau%20percakapan%20terkait%3A%0D%0AHapus%20atau%20tutupi%20data%20rahasia%20sebelum%20melampirkan%20bukti.%20Jangan%20sertakan%20kata%20sandi%2C%20kode%20verifikasi%2C%20PIN%2C%20CVV%2C%20Passkey%2C%20atau%20data%20akses%20akun.%0D%0A%0D%0AInformasi%20di%20atas%20saya%20sampaikan%20sesuai%20kejadian%20yang%20saya%20alami.%20Mohon%20laporan%20ini%20ditinjau%20dan%20balas%20melalui%20kontak%20yang%20saya%20cantumkan.%0D%0A%0D%0ATerima%20kasih." style="display:block;padding:12px 14px;font-size:13px;line-height:1.35;font-weight:800;text-align:center;color:#FFFFFF;text-decoration:none"><font color="#FFFFFF" style="color:#FFFFFF">EMAIL&nbsp;&nbsp;•&nbsp;&nbsp;SIAPKAN LAPORAN</font></a></td></tr></table><p style="margin:12px 0 0;font-size:11px;line-height:1.5;color:#64748B">Lengkapi identitas, kronologi, dampak, dan penyelesaian yang Anda harapkan. Lampirkan bukti setelah menutupi data rahasia. Jangan sertakan kata sandi, kode verifikasi, PIN, CVV, Passkey, atau data akses akun.</p></td></tr></table></td></tr></table>';
 }
 
 function diracExecutiveEscalationAppendTextV380(value) {
@@ -1739,10 +1739,10 @@ function diracCanonicalCompanyNameV381() {
   let raw = String(process.env.ORDER_OWNER_FROM_NAME || '').replace(/\s+/g, ' ').trim();
   const repeated = /^(PT\s+[A-Za-z0-9][A-Za-z0-9 .,&'()\/-]{2,76}?)(?:\s*\1)$/i.exec(raw);
   if (repeated) raw = String(repeated[1] || '').replace(/\s+/g, ' ').trim();
-  if (!raw || raw.length > 80 || /[<>\r\n\u0000-\u001f\u007f]/.test(raw)) return 'PT Dirac Inovasi Nusantara';
+  if (!raw || raw.length > 80 || /[<>\r\n\u0000-\u001f\u007f]/.test(raw)) return 'PT Dincorp Inovasi Asia';
   const forbidden = new RegExp(('dig' + 'daya') + '|' + ('dirac' + '\s*' + 'group'), 'i');
-  if (forbidden.test(raw)) return 'PT Dirac Inovasi Nusantara';
-  if (!/^PT\s+[A-Za-z0-9][A-Za-z0-9 .,&'()\/-]{2,76}$/.test(raw)) return 'PT Dirac Inovasi Nusantara';
+  if (forbidden.test(raw)) return 'PT Dincorp Inovasi Asia';
+  if (!/^PT\s+[A-Za-z0-9][A-Za-z0-9 .,&'()\/-]{2,76}$/.test(raw)) return 'PT Dincorp Inovasi Asia';
   return raw;
 }
 
@@ -3162,7 +3162,7 @@ function buildLoginSecurityTenYearBody(incident) {
     code: 'LOGIN_ACCESS_RESTRICTED',
     blocked_years: 10,
     incident_code: incident.incidentCode,
-    message: 'AKSES MASUK DIBATASI\n\nSistem keamanan PT Dirac Inovasi Nusantara mendeteksi percobaan berbahaya berulang pada form masuk.\n\nAkses masuk dari perangkat ini telah dibatasi selama 10 tahun karena terindikasi melakukan manipulasi input dan percobaan menerobos sistem keamanan.\n\nData teknis yang berhasil dikumpulkan:\n\n* Kode Insiden: ' + incident.incidentCode + '\n* Waktu Server: ' + incident.serverTime + '\n* Waktu Perangkat: Sesuai waktu perangkat pengguna\n* Halaman: masuk.html\n* Form: ' + incident.form + '\n* Endpoint Target: ' + incident.endpoint + '\n* Jumlah Percobaan: ' + incident.attemptCount + ' kali\n* Jenis Deteksi: SQL Injection / Manipulasi Input\n* Status Risiko: Tinggi\n* Tindakan Sistem: Akses masuk dibatasi selama 10 tahun\n\nData Jaringan:\n\n* IP Address: ' + incident.maskedIp + '\n* Provider / ISP: Sesuai hasil deteksi sistem\n* ASN Jaringan: Sesuai hasil deteksi sistem\n* Lokasi Jaringan: Sesuai hasil analisis jaringan\n* Deteksi VPN / Proxy: Sesuai hasil pemeriksaan sistem\n\nData Perangkat:\n\n* Browser: ' + incident.userAgentSummary + '\n* Bahasa Browser: ' + incident.language + '\n* Zona Waktu: Sesuai perangkat pengguna\n* Device Key: ' + incident.deviceKey + '\n* Session Key: ' + incident.sessionKey + '\n\nAktivitas ini telah dicatat otomatis oleh sistem keamanan PT Dirac Inovasi Nusantara.\n\nJika ditemukan unsur penyalahgunaan, penyerangan, manipulasi sistem, atau upaya akses tanpa hak, PT Dirac Inovasi Nusantara dapat memproses aktivitas ini sesuai ketentuan yang berlaku.'
+    message: 'AKSES MASUK DIBATASI\n\nSistem keamanan PT Dincorp Inovasi Asia mendeteksi percobaan berbahaya berulang pada form masuk.\n\nAkses masuk dari perangkat ini telah dibatasi selama 10 tahun karena terindikasi melakukan manipulasi input dan percobaan menerobos sistem keamanan.\n\nData teknis yang berhasil dikumpulkan:\n\n* Kode Insiden: ' + incident.incidentCode + '\n* Waktu Server: ' + incident.serverTime + '\n* Waktu Perangkat: Sesuai waktu perangkat pengguna\n* Halaman: masuk.html\n* Form: ' + incident.form + '\n* Endpoint Target: ' + incident.endpoint + '\n* Jumlah Percobaan: ' + incident.attemptCount + ' kali\n* Jenis Deteksi: SQL Injection / Manipulasi Input\n* Status Risiko: Tinggi\n* Tindakan Sistem: Akses masuk dibatasi selama 10 tahun\n\nData Jaringan:\n\n* IP Address: ' + incident.maskedIp + '\n* Provider / ISP: Sesuai hasil deteksi sistem\n* ASN Jaringan: Sesuai hasil deteksi sistem\n* Lokasi Jaringan: Sesuai hasil analisis jaringan\n* Deteksi VPN / Proxy: Sesuai hasil pemeriksaan sistem\n\nData Perangkat:\n\n* Browser: ' + incident.userAgentSummary + '\n* Bahasa Browser: ' + incident.language + '\n* Zona Waktu: Sesuai perangkat pengguna\n* Device Key: ' + incident.deviceKey + '\n* Session Key: ' + incident.sessionKey + '\n\nAktivitas ini telah dicatat otomatis oleh sistem keamanan PT Dincorp Inovasi Asia.\n\nJika ditemukan unsur penyalahgunaan, penyerangan, manipulasi sistem, atau upaya akses tanpa hak, PT Dincorp Inovasi Asia dapat memproses aktivitas ini sesuai ketentuan yang berlaku.'
   };
 }
 
@@ -4808,11 +4808,11 @@ function diracRegisterEmailMimeV331(message, account) {
   const proof = String(message.proof || '');
   const reference = String(message.reference || '');
   const htmlInput = {
-    preheader: 'Kode verifikasi email untuk menyelesaikan pendaftaran PT Dirac Inovasi Nusantara.',
+    preheader: 'Kode verifikasi email untuk menyelesaikan pendaftaran PT Dincorp Inovasi Asia.',
     brandLabel: 'PENDAFTARAN AKUN',
     eyebrow: 'VERIFIKASI EMAIL',
     title: 'Verifikasi Email\nPendaftaran',
-    greeting: 'Yth. Calon Customer PT Dirac Inovasi Nusantara,',
+    greeting: 'Yth. Calon Customer PT Dincorp Inovasi Asia,',
     summary: 'Email ini dikirim karena alamat Anda digunakan untuk memulai pendaftaran. Salin kode verifikasi ke halaman pendaftaran yang masih terbuka.',
     statusLabel: 'STATUS VERIFIKASI',
     statusValue: 'MENUNGGU KONFIRMASI',
@@ -4831,15 +4831,15 @@ function diracRegisterEmailMimeV331(message, account) {
     actionText: 'BUKA HALAMAN PENDAFTARAN',
     warningTitle: 'JAGA KERAHASIAAN KODE',
     warning: 'Jangan berikan kode ini, password, token, cookie, atau data rahasia kepada siapa pun. Jika Anda tidak memulai pendaftaran, abaikan email ini.',
-    supportLead: 'Jika membutuhkan bantuan terkait pendaftaran, gunakan kanal resmi PT Dirac Inovasi Nusantara berikut.'
+    supportLead: 'Jika membutuhkan bantuan terkait pendaftaran, gunakan kanal resmi PT Dincorp Inovasi Asia berikut.'
   };
   const text = diracExecutiveEscalationAppendTextV380(diracSecurityMailTextV327(htmlInput));
   const html = diracExecutiveEscalationAppendHtmlV380(diracSecurityCorporateEmailHtmlV327(htmlInput));
   const messageId = crypto.createHash('sha256').update(proof + '|' + reference + '|register-email-v331').digest('hex') + '@' + diracBaseDomainV250();
   return [
-    'From: ' + diracSecurityAlertMimeHeaderV320('PT Dirac Inovasi Nusantara') + ' <' + account.user + '>',
+    'From: ' + diracSecurityAlertMimeHeaderV320('PT Dincorp Inovasi Asia') + ' <' + account.user + '>',
     'To: ' + message.email,
-    'Subject: Kode verifikasi pendaftaran PT Dirac Inovasi Nusantara [' + reference + ']',
+    'Subject: Kode verifikasi pendaftaran PT Dincorp Inovasi Asia [' + reference + ']',
     'Date: ' + new Date(Number(message.createdAtMs || Date.now())).toUTCString(),
     'Message-ID: <' + messageId + '>',
     'Auto-Submitted: auto-generated',
@@ -11482,7 +11482,7 @@ function customerSecuritySafeCustomerName(value) {
   const raw = String(value || '').trim();
   const fromEmail = raw.includes('@') ? raw.split('@')[0] : raw;
   const cleaned = fromEmail.replace(/[^a-zA-Z0-9À-ž ._'-]/g, ' ').replace(/\s+/g, ' ').trim();
-  return (cleaned || 'Customer PT Dirac Inovasi Nusantara').slice(0, 120);
+  return (cleaned || 'Customer PT Dincorp Inovasi Asia').slice(0, 120);
 }
 
 async function customerSecurityFindOrCreateCustomer({ email, fullName, phone }) {
@@ -11496,7 +11496,7 @@ async function customerSecurityFindOrCreateCustomer({ email, fullName, phone }) 
   }
 
   const body = {
-    name: fullName || 'Customer PT Dirac Inovasi Nusantara',
+    name: fullName || 'Customer PT Dincorp Inovasi Asia',
     email
   };
   if (phone) body.phone = phone;
@@ -15524,7 +15524,7 @@ function customerSecurityRecoveryEmailTextV156(context = {}) {
   const expiresAt = customerSecurityRecoveryFormatWibV326(context.expiresAt || '');
   const emailPdfCode = String(context.emailPdfCode || '').padStart(2, '0').slice(-2);
   return [
-    'PT Dirac Inovasi Nusantara SECURE RECOVERY',
+    'PT Dincorp Inovasi Asia SECURE RECOVERY',
     '',
     'Dokumen pemulihan Passkey terenkripsi telah dibuat untuk akun Anda.',
     '',
@@ -15536,7 +15536,7 @@ function customerSecurityRecoveryEmailTextV156(context = {}) {
     'Password PDF = kode website + 2 digit kode email + password akun Anda. Ketik berurutan tanpa spasi.',
     '',
     'Jangan kirimkan PDF, kode website, atau kode email ini kepada pihak lain.',
-    'Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan PT Dirac Inovasi Nusantara.'
+    'Jika Anda tidak meminta pemulihan ini, segera hubungi bantuan PT Dincorp Inovasi Asia.'
   ].join('\n');
 }
 
@@ -15549,8 +15549,8 @@ function customerSecurityRecoveryEmailHtmlV156(context = {}) {
     brandLabel: 'PEMULIHAN AKUN',
     eyebrow: 'PASSKEY RECOVERY DOCUMENT',
     title: 'Dokumen Pemulihan\nPasskey',
-    greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
-    summary: 'File PDF pemulihan Passkey terenkripsi telah dilampirkan. Gunakan material pemulihan hanya melalui alur resmi PT Dirac Inovasi Nusantara.',
+    greeting: 'Yth. Pengguna PT Dincorp Inovasi Asia,',
+    summary: 'File PDF pemulihan Passkey terenkripsi telah dilampirkan. Gunakan material pemulihan hanya melalui alur resmi PT Dincorp Inovasi Asia.',
     statusLabel: 'STATUS DOKUMEN',
     statusValue: 'PDF TERENKRIPSI SIAP',
     statusNote: 'Dokumen hanya dapat dibuka dengan kombinasi material recovery yang benar dan masih berlaku.',
@@ -15566,7 +15566,7 @@ function customerSecurityRecoveryEmailHtmlV156(context = {}) {
     actionText: 'BUKA HALAMAN MASUK',
     warningTitle: 'JAGA KERAHASIAAN DOKUMEN',
     warning: 'Password PDF mengikuti kombinasi kode website + 2 digit kode email + password akun tanpa spasi. Jangan bagikan file, password, OTP, token, cookie, atau Passkey kepada siapa pun.',
-    supportLead: 'Jika Anda tidak meminta pemulihan ini atau membutuhkan bantuan, gunakan hanya kanal resmi PT Dirac Inovasi Nusantara.'
+    supportLead: 'Jika Anda tidak meminta pemulihan ini atau membutuhkan bantuan, gunakan hanya kanal resmi PT Dincorp Inovasi Asia.'
   });
 }
 
@@ -15624,7 +15624,7 @@ async function customerSecuritySendRecoveryEmailViaSmtp(to, fileName, fileBuffer
   const fromEmail = customerSecurityRecoveryEmailAddress(from);
   if (!isValidAuthEmail(fromEmail)) return { ok: false, status: 503, code: 'RECOVERY_SMTP_FROM_INVALID', message: 'Email pengirim recovery tidak valid.' };
 
-  const subject = 'PT Dirac Inovasi Nusantara - PDF Pemulihan Passkey';
+  const subject = 'PT Dincorp Inovasi Asia - PDF Pemulihan Passkey';
   const text = diracExecutiveEscalationAppendTextV380([
     'File recovery Passkey terenkripsi terlampir.',
     'Request ID: ' + String(context.requestId || ''),
@@ -15692,8 +15692,8 @@ async function customerSecuritySendLostPasskeyRecoveryEmail(to, fileName, fileBu
   if (customerSecurityRecoverySmtpConfig()) {
     return customerSecuritySendRecoveryEmailViaSmtp(email, fileName, fileBuffer, context);
   }
-  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('PT Dirac Inovasi Nusantara <no-reply@' + diracBaseDomainV250() + '>')).trim();
-  const subject = 'PT Dirac Inovasi Nusantara - PDF Pemulihan Passkey';
+  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('PT Dincorp Inovasi Asia <no-reply@' + diracBaseDomainV250() + '>')).trim();
+  const subject = 'PT Dincorp Inovasi Asia - PDF Pemulihan Passkey';
   const text = diracExecutiveEscalationAppendTextV380([
     'File recovery Passkey terenkripsi terlampir.',
     'Request ID: ' + String(context.requestId || ''),
@@ -15718,7 +15718,7 @@ async function customerSecuritySendLostPasskeyRecoveryEmail(to, fileName, fileBu
   if (process.env.BREVO_API_KEY) {
     try {
       const senderEmail = String(process.env.BREVO_SENDER_EMAIL || process.env.DIRAC_RECOVERY_SENDER_EMAIL || '').trim();
-      const senderName = String(process.env.BREVO_SENDER_NAME || 'PT Dirac Inovasi Nusantara').trim();
+      const senderName = String(process.env.BREVO_SENDER_NAME || 'PT Dincorp Inovasi Asia').trim();
       if (!senderEmail) return { ok: false, status: 503, code: 'BREVO_SENDER_MISSING', message: 'BREVO_SENDER_EMAIL belum diatur.' };
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
@@ -19050,7 +19050,7 @@ const DIRAC_SHIPPING_ORIGINS_V401 = Object.freeze({
 // Koordinat hanya perkiraan lokasi, bukan verifikasi GPS gudang atau tarif ekspedisi.
 const DIRAC_SHIPPING_STANDARD_REFERENCE_V641 = Object.freeze({
   code: 'surabaya',
-  label: 'PT Dirac Inovasi Nusantara, Gelang, Tulangan, Sidoarjo',
+  label: 'PT Dincorp Inovasi Asia, Gelang, Tulangan, Sidoarjo',
   facility: 'cv_multi_usaha_mandiri_gelang',
   address: 'Jl. AMD Manunggal III, RT 04/RW 01, Desa Gelang, Kecamatan Tulangan, Kabupaten Sidoarjo, Jawa Timur 61273',
   lat: -7.49635,
@@ -19610,7 +19610,7 @@ function sessionOwnershipCheckoutActiveAuthLinkBody(customerId, email) {
 }
 
 function sessionOwnershipCheckoutBuildProductTitle(body, serviceType) {
-  const base = sessionOwnershipCheckoutCleanText(body.product_title || body.product || body.item_name || body.service_name || body.package_name || 'Pesanan PT Dirac Inovasi Nusantara', 120);
+  const base = sessionOwnershipCheckoutCleanText(body.product_title || body.product || body.item_name || body.service_name || body.package_name || 'Pesanan PT Dincorp Inovasi Asia', 120);
   const details = [];
   const detailPairs = [
     ['Game', body.game || body.game_name],
@@ -20056,7 +20056,7 @@ function sessionOwnershipCheckoutFallbackTitle(serviceType) {
     parfum: 'Pesanan Parfum', laboratorium: 'Pesanan Laboratorium', domain: 'Pesanan Domain', jasa_website: 'Jasa Pembuatan Website', pengembangan_website: 'Pengembangan Website',
     topup_game: 'Top Up Game', isi_pulsa: 'Isi Pulsa', paket_data: 'Paket Data', isi_saldo: 'Isi Saldo', isi_saldo_etoll: 'Isi Saldo E-Toll', transfer_luar_negeri: 'Transfer Luar Negeri'
   };
-  return labels[serviceType] || 'Pesanan PT Dirac Inovasi Nusantara';
+  return labels[serviceType] || 'Pesanan PT Dincorp Inovasi Asia';
 }
 
 function sessionOwnershipCheckoutNormalizeServiceType(value) {
@@ -20083,7 +20083,7 @@ function sessionOwnershipCheckoutSafeName(value) {
   const raw = String(value || '').trim();
   const fromEmail = raw.includes('@') ? raw.split('@')[0] : raw;
   const cleaned = fromEmail.replace(/[^a-zA-Z0-9À-ž ._'-]/g, ' ').replace(/\s+/g, ' ').trim();
-  return (cleaned || 'Customer PT Dirac Inovasi Nusantara').slice(0, 120);
+  return (cleaned || 'Customer PT Dincorp Inovasi Asia').slice(0, 120);
 }
 
 function sessionOwnershipCheckoutCleanText(value, maxLength) {
@@ -23798,7 +23798,7 @@ function diracPasskeyA2FRpId(req) {
 }
 
 function diracPasskeyA2FRpName() {
-  return String(process.env.WEBAUTHN_RP_NAME || process.env.DIRAC_WEBAUTHN_RP_NAME || 'PT Dirac Inovasi Nusantara').trim() || 'PT Dirac Inovasi Nusantara';
+  return String(process.env.WEBAUTHN_RP_NAME || process.env.DIRAC_WEBAUTHN_RP_NAME || 'PT Dincorp Inovasi Asia').trim() || 'PT Dincorp Inovasi Asia';
 }
 
 function diracPasskeyA2FAttestationPolicy() {
@@ -34626,7 +34626,7 @@ function orderMailSmtpConfigLegacyV1(kind) {
   const secure = orderMailEnvTrue(process.env[`${prefix}_SMTP_SECURE`], true);
   const user = String(process.env[`${prefix}_SMTP_USER`] || '').trim();
   const pass = String(process.env[`${prefix}_SMTP_PASS`] || '').trim().replace(/\s+/g, '');
-  const fromName = orderMailCleanText(process.env[`${prefix}_FROM_NAME`] || 'PT Dirac Inovasi Nusantara', 80);
+  const fromName = orderMailCleanText(process.env[`${prefix}_FROM_NAME`] || 'PT Dincorp Inovasi Asia', 80);
   const fromEmail = orderMailNormalizeEmail(process.env[`${prefix}_FROM_EMAIL`] || user);
   const recipients = kind === 'owner' ? orderMailParseEmailList(process.env.ORDER_OWNER_EMAIL || '') : [];
 
@@ -34758,8 +34758,8 @@ function orderMailBuildNewOrderMessages(data) {
 
   const paid = ['paid', 'success', 'settled', 'settlement', 'capture'].includes(String(data.order.payment_status || '').toLowerCase());
   const customerSubject = paid
-    ? `Invoice ${data.order.code} sudah dibayar - PT Dirac Inovasi Nusantara`
-    : `Pesanan ${data.order.code} diterima - PT Dirac Inovasi Nusantara`;
+    ? `Invoice ${data.order.code} sudah dibayar - PT Dincorp Inovasi Asia`
+    : `Pesanan ${data.order.code} diterima - PT Dincorp Inovasi Asia`;
   const ownerSubject = paid
     ? `Pembayaran berhasil ${data.order.code} - ${serviceLabel}`
     : `Order baru ${data.order.code} - ${serviceLabel}`;
@@ -34801,10 +34801,10 @@ function orderMailBuildNewOrderMessages(data) {
     'Email Perusahaan: ' + diracCareEmailV250(),
     ...diracSecuritySocialTextLinesV383()
   ];
-  const paymentSafetyText = 'PT Dirac Inovasi Nusantara tidak pernah meminta password, OTP, PIN, CVV, atau data kartu melalui WhatsApp, Instagram, telepon, maupun balasan email.';
+  const paymentSafetyText = 'PT Dincorp Inovasi Asia tidak pernah meminta password, OTP, PIN, CVV, atau data kartu melalui WhatsApp, Instagram, telepon, maupun balasan email.';
 
   const customerText = [
-    `Yth. ${data.customer.name || 'Pengguna PT Dirac Inovasi Nusantara'},`,
+    `Yth. ${data.customer.name || 'Pengguna PT Dincorp Inovasi Asia'},`,
     '',
     customerIntro,
     `Kode pesanan: ${data.order.code}`,
@@ -34825,10 +34825,10 @@ function orderMailBuildNewOrderMessages(data) {
     itemsText,
     '',
     'Lihat pesanan: ' + diracAppPageOriginV503() + '/pesanan.html',
-    'Bantuan resmi PT Dirac Inovasi Nusantara:',
+    'Bantuan resmi PT Dincorp Inovasi Asia:',
     ...officialSupportText,
     paymentSafetyText,
-    'PT Dirac Inovasi Nusantara'
+    'PT Dincorp Inovasi Asia'
   ].filter((line) => line !== '').join('\n');
 
   const ownerText = [
@@ -34854,14 +34854,14 @@ function orderMailBuildNewOrderMessages(data) {
     'Rincian pesanan:',
     itemsText,
     '',
-    'Bantuan resmi PT Dirac Inovasi Nusantara:',
+    'Bantuan resmi PT Dincorp Inovasi Asia:',
     ...officialSupportText,
     paymentSafetyText
   ].filter((line) => line !== '').join('\n');
 
   const customerHtml = orderMailHtmlShell(customerSubject, `
     <div class="gmail-blend-screen"><div class="gmail-blend-difference">
-      <p style="margin:0 0 12px;font-size:17px;line-height:1.55;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">Yth. <strong style="color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(data.customer.name || 'Pengguna PT Dirac Inovasi Nusantara')}</strong>,</p>
+      <p style="margin:0 0 12px;font-size:17px;line-height:1.55;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">Yth. <strong style="color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${orderMailEscapeHtml(data.customer.name || 'Pengguna PT Dincorp Inovasi Asia')}</strong>,</p>
       <p style="margin:0 0 26px;font-size:16px;line-height:1.65;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">${orderMailEscapeHtml(customerIntro)}</p>
       <div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">DETAIL PEMBAYARAN</div>
     </div></div>
@@ -34993,12 +34993,12 @@ function orderMailOrderUrl(orderCode) {
 function orderMailHtmlShell(title, body, options = {}) {
   const badge = orderMailEscapeHtml(options.badge || 'PAID');
   const total = orderMailEscapeHtml(options.total || '');
-  const displayTitle = orderMailEscapeHtml(options.displayTitle || title || 'PT Dirac Inovasi Nusantara');
+  const displayTitle = orderMailEscapeHtml(options.displayTitle || title || 'PT Dincorp Inovasi Asia');
   const eyebrow = orderMailEscapeHtml(options.eyebrow || 'SECURE PAYMENT NOTIFICATION');
   const brandSubtitle = orderMailEscapeHtml(options.brandSubtitle || 'SECURE PAYMENT NOTIFICATION');
   const orderCode = orderMailEscapeHtml(options.orderCode || '');
   const serviceLabel = orderMailEscapeHtml(options.serviceLabel || '');
-  const preheader = orderMailEscapeHtml(options.preheader || title || 'Notifikasi pembayaran PT Dirac Inovasi Nusantara.');
+  const preheader = orderMailEscapeHtml(options.preheader || title || 'Notifikasi pembayaran PT Dincorp Inovasi Asia.');
   const orderUrl = diracAppPageOriginV503() + '/pesanan.html';
   let orderHost = diracBaseDomainV250();
   try { orderHost = new URL(orderUrl).hostname; } catch (_) {}
@@ -35017,7 +35017,7 @@ function orderMailHtmlShell(title, body, options = {}) {
   const bannerHtml = showBanner ? `
           <tr>
             <td bgcolor="#10151e" style="padding:0;line-height:0;font-size:0;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
-              <img src="${orderMailEscapeHtml(bannerImage)}" width="600" alt="PT Dirac Inovasi Nusantara Pembayaran Berhasil" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;background:#10151e;background-color:#10151e">
+              <img src="${orderMailEscapeHtml(bannerImage)}" width="600" alt="PT Dincorp Inovasi Asia Pembayaran Berhasil" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;background:#10151e;background-color:#10151e">
             </td>
           </tr>` : '';
 
@@ -35037,7 +35037,7 @@ function orderMailHtmlShell(title, body, options = {}) {
 
   const supportHtml = `
               <div class="gmail-blend-screen"><div class="gmail-blend-difference">
-                <div style="margin-top:30px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI PT Dirac Inovasi Nusantara</div>
+                <div style="margin-top:30px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI PT Dincorp Inovasi Asia</div>
                 <p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">Ada kendala terkait pembayaran atau pesanan? Hubungi tim support melalui kanal resmi berikut.</p>
               </div></div>
 
@@ -35050,7 +35050,7 @@ function orderMailHtmlShell(title, body, options = {}) {
               </table>
 
               <div class="gmail-blend-screen"><div class="gmail-blend-difference">
-                <p style="margin:0;font-size:12px;line-height:1.65;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tim PT Dirac Inovasi Nusantara tidak pernah meminta password, OTP, PIN, CVV, atau data kartu melalui WhatsApp, Instagram, telepon, maupun balasan email.</p>
+                <p style="margin:0;font-size:12px;line-height:1.65;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tim PT Dincorp Inovasi Asia tidak pernah meminta password, OTP, PIN, CVV, atau data kartu melalui WhatsApp, Instagram, telepon, maupun balasan email.</p>
               </div></div>`;
 
   return `<!doctype html>
@@ -35095,7 +35095,7 @@ function orderMailHtmlShell(title, body, options = {}) {
           <tr>
             <td class="dirac-pad" bgcolor="#141820" style="padding:27px 32px 13px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
               <div class="gmail-blend-screen"><div class="gmail-blend-difference">
-                <div style="font-size:21px;line-height:1.2;font-weight:800;letter-spacing:.14em;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">PT Dirac Inovasi Nusantara</div>
+                <div style="font-size:21px;line-height:1.2;font-weight:800;letter-spacing:.14em;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">PT Dincorp Inovasi Asia</div>
                 <div style="margin-top:7px;font-size:11px;line-height:1.4;font-weight:700;letter-spacing:.2em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${brandSubtitle}</div>
               </div></div>
             </td>
@@ -35134,7 +35134,7 @@ function orderMailHtmlShell(title, body, options = {}) {
           <tr>
             <td class="dirac-footer-pad" bgcolor="#b9dcff" style="padding:24px 26px 26px;border-top:1px solid #79aee5;background:#b9dcff;background-color:#b9dcff;background-image:linear-gradient(#b9dcff,#b9dcff)">
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10213a" style="width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24466c;border-radius:16px;overflow:hidden;box-shadow:0 10px 24px rgba(14,42,72,.18);background:#10213a;background-color:#10213a;background-image:linear-gradient(#10213a,#10213a)">
-                <tr><td style="padding:22px 24px 23px;border-left:4px solid #27a2bd"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:18px;line-height:1.3;font-weight:800;letter-spacing:.14em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">PT Dirac Inovasi Nusantara</div><div style="margin-top:7px;font-size:11px;line-height:1.5;font-weight:700;letter-spacing:.13em;color:#d9e8ff!important;-webkit-text-fill-color:#d9e8ff!important;mso-color-alt:#d9e8ff">COMMERCE &bull; PAYMENT &bull; SUPPORT</div><div style="margin-top:14px;font-size:13px;line-height:1.55;color:#d7e7f8!important;-webkit-text-fill-color:#d7e7f8!important;mso-color-alt:#d7e7f8">Secure Payment &middot; Verified Notification</div><p style="margin:17px 0 0;font-size:11px;line-height:1.65;color:#bfd0e3!important;-webkit-text-fill-color:#bfd0e3!important;mso-color-alt:#bfd0e3">Email ini dibuat otomatis oleh sistem PT Dirac Inovasi Nusantara. Mohon tidak membalas. Simpan email ini sebagai bukti dan referensi pembayaran.</p></div></div></td></tr>
+                <tr><td style="padding:22px 24px 23px;border-left:4px solid #27a2bd"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:18px;line-height:1.3;font-weight:800;letter-spacing:.14em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">PT Dincorp Inovasi Asia</div><div style="margin-top:7px;font-size:11px;line-height:1.5;font-weight:700;letter-spacing:.13em;color:#d9e8ff!important;-webkit-text-fill-color:#d9e8ff!important;mso-color-alt:#d9e8ff">COMMERCE &bull; PAYMENT &bull; SUPPORT</div><div style="margin-top:14px;font-size:13px;line-height:1.55;color:#d7e7f8!important;-webkit-text-fill-color:#d7e7f8!important;mso-color-alt:#d7e7f8">Secure Payment &middot; Verified Notification</div><p style="margin:17px 0 0;font-size:11px;line-height:1.65;color:#bfd0e3!important;-webkit-text-fill-color:#bfd0e3!important;mso-color-alt:#bfd0e3">Email ini dibuat otomatis oleh sistem PT Dincorp Inovasi Asia. Mohon tidak membalas. Simpan email ini sebagai bukti dan referensi pembayaran.</p></div></div></td></tr>
               </table>
             </td>
           </tr>
@@ -35340,12 +35340,12 @@ async function orderMailSendViaSmtp(config, message, diagnosticV371 = null) {
 
 function orderMailBuildMimeMessage(message) {
   const boundary = 'DIRAC_' + crypto.randomBytes(12).toString('hex');
-  const from = `${orderMailHeaderName(message.fromName || 'PT Dirac Inovasi Nusantara')} <${orderMailNormalizeEmail(message.fromEmail || '')}>`;
+  const from = `${orderMailHeaderName(message.fromName || 'PT Dincorp Inovasi Asia')} <${orderMailNormalizeEmail(message.fromEmail || '')}>`;
   const to = (message.to || []).map((email) => `<${orderMailNormalizeEmail(email)}>`).join(', ');
-  const subject = orderMailHeaderName(message.subject || 'PT Dirac Inovasi Nusantara Order');
+  const subject = orderMailHeaderName(message.subject || 'PT Dincorp Inovasi Asia Order');
   const msgId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@${diracBaseDomainV250()}>`;
   const text = orderMailBase64Body(diracExecutiveEscalationAppendTextV380(message.text || ''));
-  const html = orderMailBase64Body(diracExecutiveEscalationAppendHtmlV380(message.html || '<p>PT Dirac Inovasi Nusantara</p>'));
+  const html = orderMailBase64Body(diracExecutiveEscalationAppendHtmlV380(message.html || '<p>PT Dincorp Inovasi Asia</p>'));
 
   return [
     `From: ${from}`,
@@ -44729,7 +44729,7 @@ function orderMailSmtpConfig(kind) {
     'BREVO_SENDER_NAME',
     'SMTP_FROM_NAME',
     'MAIL_FROM_NAME'
-  ]) || 'PT Dirac Inovasi Nusantara', 80);
+  ]) || 'PT Dincorp Inovasi Asia', 80);
 
   const fromEmail = orderMailNormalizeEmail(orderMailPickEnvV129([
     `${specificPrefix}_FROM_EMAIL`,
@@ -44891,7 +44891,7 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message, diagnos
   if (!recipients.length) return { ok: false, error: 'recipient_missing' };
 
   const fromEmail = orderMailNormalizeEmail(message.fromEmail || cfg.fromEmail || '');
-  const fromName = orderMailCleanText(message.fromName || cfg.fromName || 'PT Dirac Inovasi Nusantara', 80);
+  const fromName = orderMailCleanText(message.fromName || cfg.fromName || 'PT Dincorp Inovasi Asia', 80);
   if (!fromEmail) return { ok: false, error: 'from_email_missing' };
 
   const kindUpper = String(cfg.kind || 'OWNER').toUpperCase();
@@ -44911,9 +44911,9 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message, diagnos
         body: JSON.stringify({
           from: `${fromName} <${fromEmail}>`,
           to: recipients,
-          subject: String(message.subject || 'PT Dirac Inovasi Nusantara Order'),
+          subject: String(message.subject || 'PT Dincorp Inovasi Asia Order'),
           text: diracExecutiveEscalationAppendTextV380(String(message.text || '')),
-          html: diracExecutiveEscalationAppendHtmlV380(String(message.html || '<p>PT Dirac Inovasi Nusantara</p>'))
+          html: diracExecutiveEscalationAppendHtmlV380(String(message.html || '<p>PT Dincorp Inovasi Asia</p>'))
         })
       });
       if (response && response.ok) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, 'resend');
@@ -44941,9 +44941,9 @@ async function orderMailSendViaProviderFallbackSafeV129(config, message, diagnos
         body: JSON.stringify({
           sender: { email: fromEmail, name: fromName },
           to: recipients.map((email) => ({ email })),
-          subject: String(message.subject || 'PT Dirac Inovasi Nusantara Order'),
+          subject: String(message.subject || 'PT Dincorp Inovasi Asia Order'),
           textContent: diracExecutiveEscalationAppendTextV380(String(message.text || '')),
-          htmlContent: diracExecutiveEscalationAppendHtmlV380(String(message.html || '<p>PT Dirac Inovasi Nusantara</p>'))
+          htmlContent: diracExecutiveEscalationAppendHtmlV380(String(message.html || '<p>PT Dincorp Inovasi Asia</p>'))
         })
       });
       if (response && response.ok) diracPaidMailTimingProviderAcceptedV371(diagnosticV371, 'brevo');
@@ -46542,7 +46542,7 @@ function diracV136LooksLikeWeakPasswordPattern(password) {
   const compact = value.toLowerCase().replace(/[^a-z0-9]/g, '');
   if (!compact) return true;
   if (/^(?:qwerty|asdf|zxcv|abcd|1234|1111|0000)/i.test(compact)) return true;
-  if (/(?:123456|654321|abcdef|qwerty|password|admin|PT Dirac Inovasi Nusantara|dirac)/i.test(compact)) return true;
+  if (/(?:123456|654321|abcdef|qwerty|password|admin|PT Dincorp Inovasi Asia|dirac)/i.test(compact)) return true;
   const unique = new Set(compact.split(''));
   if (compact.length >= 10 && unique.size <= 4) return true;
   return false;
@@ -50919,12 +50919,12 @@ function customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(context = {}) {
   const emailSecret = String(context.emailSecret || '').trim();
   const reference = crypto.createHash('sha256').update(requestId, 'utf8').digest('hex').slice(0, 10).toUpperCase();
   return diracSecurityCorporateEmailHtmlV327({
-    preheader: 'Permintaan pemulihan Passkey PT Dirac Inovasi Nusantara.',
+    preheader: 'Permintaan pemulihan Passkey PT Dincorp Inovasi Asia.',
     brandLabel: 'PEMULIHAN AKUN',
     eyebrow: 'PASSKEY RECOVERY',
-    title: 'Pemulihan Passkey\nPT Dirac Inovasi Nusantara',
-    greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
-    summary: 'Gunakan material recovery ini hanya melalui halaman resmi PT Dirac Inovasi Nusantara. Jangan meneruskan email atau material recovery kepada pihak lain.',
+    title: 'Pemulihan Passkey\nPT Dincorp Inovasi Asia',
+    greeting: 'Yth. Pengguna PT Dincorp Inovasi Asia,',
+    summary: 'Gunakan material recovery ini hanya melalui halaman resmi PT Dincorp Inovasi Asia. Jangan meneruskan email atau material recovery kepada pihak lain.',
     statusLabel: 'STATUS PEMULIHAN',
     statusValue: 'MENUNGGU VERIFIKASI',
     statusNote: 'Material recovery hanya berlaku sampai waktu yang tercantum.',
@@ -50940,7 +50940,7 @@ function customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(context = {}) {
     actionText: 'BUKA PEMULIHAN AMAN',
     warningTitle: 'PERINGATAN KEAMANAN',
     warning: 'Jangan membagikan password, kode recovery, OTP, token, cookie, atau Passkey. Jika Anda tidak meminta pemulihan, segera tinjau keamanan akun.',
-    supportLead: 'Gunakan hanya kanal bantuan resmi PT Dirac Inovasi Nusantara untuk pertanyaan terkait pemulihan akun.'
+    supportLead: 'Gunakan hanya kanal bantuan resmi PT Dincorp Inovasi Asia untuk pertanyaan terkait pemulihan akun.'
   });
 }
 
@@ -50969,9 +50969,9 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   const recoveryLink = customerSecurityLostPasskeyOfficialEmailLinkV187(context);
   if (!recoveryLink) return { ok: false, status: 500, code: 'RECOVERY_EMAIL_LINK_INVALID', message: 'Link recovery resmi tidak valid.' };
   const emailContext = Object.assign({}, context, { recoveryLink });
-  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('PT Dirac Inovasi Nusantara <no-reply@' + diracBaseDomainV250() + '>')).trim();
+  const from = String(process.env.DIRAC_RECOVERY_EMAIL_FROM || process.env.DIRAC_EMAIL_FROM || process.env.RESEND_FROM || ('PT Dincorp Inovasi Asia <no-reply@' + diracBaseDomainV250() + '>')).trim();
   const subjectRef = crypto.createHash('sha256').update(recoveryLink, 'utf8').digest('hex').slice(0, 10).toUpperCase();
-  const subject = 'PT Dirac Inovasi Nusantara - Link Pemulihan Passkey [' + subjectRef + ']';
+  const subject = 'PT Dincorp Inovasi Asia - Link Pemulihan Passkey [' + subjectRef + ']';
   const text = diracExecutiveEscalationAppendTextV380([
     'Link recovery Passkey resmi sudah dibuat.',
     'Request ID: ' + String(context.requestId || ''),
@@ -50979,8 +50979,8 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
     'Link resmi: ' + recoveryLink,
     'SECRET_EMAIL_100_CHAR: ' + String(context.emailSecret || ''),
     'Jangan bagikan email secret, link, atau isi pesan ini kepada pihak lain. Website secret hanya tampil di website yang masih login.',
-    'Bantuan resmi PT Dirac Inovasi Nusantara:\nWebsite Resmi: ' + diracBaseOriginV250() + '/\nWhatsApp: 0878 9252 3968\nEmail Support: ' + diracSupportEmailV250() + '\nEmail Perusahaan: ' + diracCareEmailV250() + '\nInstagram: https://www.instagram.com/achzaenuddin15?stkn=MW4zc3FldjAzb21wNg%3D%3D&utm_source=qr',
-    'Tim PT Dirac Inovasi Nusantara tidak pernah meminta Secret Email, Secret Website, password, OTP, atau hasil decrypt melalui WhatsApp, Instagram, telepon, maupun balasan email.'
+    'Bantuan resmi PT Dincorp Inovasi Asia:\nWebsite Resmi: ' + diracBaseOriginV250() + '/\nWhatsApp: 0878 9252 3968\nEmail Support: ' + diracSupportEmailV250() + '\nEmail Perusahaan: ' + diracCareEmailV250() + '\nInstagram: https://www.instagram.com/achzaenuddin15?stkn=MW4zc3FldjAzb21wNg%3D%3D&utm_source=qr',
+    'Tim PT Dincorp Inovasi Asia tidak pernah meminta Secret Email, Secret Website, password, OTP, atau hasil decrypt melalui WhatsApp, Instagram, telepon, maupun balasan email.'
   ].join('\n\n'));
   const html = diracExecutiveEscalationAppendHtmlV380(customerSecurityLostPasskeyRecoveryLinkEmailHtmlV157(emailContext));
 
@@ -51071,7 +51071,7 @@ async function customerSecuritySendLostPasskeyRecoveryLinkEmailV157(to, context 
   if (process.env.BREVO_API_KEY) {
     try {
       const senderEmail = String(process.env.BREVO_SENDER_EMAIL || process.env.DIRAC_RECOVERY_SENDER_EMAIL || '').trim();
-      const senderName = String(process.env.BREVO_SENDER_NAME || 'PT Dirac Inovasi Nusantara').trim();
+      const senderName = String(process.env.BREVO_SENDER_NAME || 'PT Dincorp Inovasi Asia').trim();
       if (!senderEmail) return { ok: false, status: 503, code: 'BREVO_SENDER_MISSING', message: 'BREVO_SENDER_EMAIL belum diatur.' };
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
@@ -51450,8 +51450,8 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
         brandLabel: 'PEMULIHAN AKUN',
         eyebrow: 'PASSKEY RECOVERY CODE',
         title: 'Kode Pemulihan\nPasskey',
-        greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
-        summary: 'Password akun sudah diverifikasi. Gunakan kode ' + emailCodeLengthV355 + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) di bawah hanya pada halaman masuk resmi PT Dirac Inovasi Nusantara. Kode berlaku 5 menit.',
+        greeting: 'Yth. Pengguna PT Dincorp Inovasi Asia,',
+        summary: 'Password akun sudah diverifikasi. Gunakan kode ' + emailCodeLengthV355 + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) di bawah hanya pada halaman masuk resmi PT Dincorp Inovasi Asia. Kode berlaku 5 menit.',
         statusLabel: 'STATUS PEMULIHAN',
         statusValue: 'PASSWORD TERVERIFIKASI',
         statusNote: 'Kode hanya berlaku untuk request ini dan tidak pernah ditampilkan kembali oleh API.',
@@ -51467,14 +51467,14 @@ async function customerSecurityGenerateRecoveryCodesRecoV251(req, res, action, o
         actionUrl: diracRoleOriginV250('auth') + '/masuk.html',
         actionText: 'KEMBALI KE HALAMAN MASUK',
         warningTitle: 'JANGAN BAGIKAN KODE INI',
-        warning: 'Jangan bagikan password, kode ini, OTP, token, atau Passkey kepada siapa pun. Jika Anda tidak meminta pemulihan ini, abaikan email dan hubungi bantuan resmi PT Dirac Inovasi Nusantara.',
+        warning: 'Jangan bagikan password, kode ini, OTP, token, atau Passkey kepada siapa pun. Jika Anda tidak meminta pemulihan ini, abaikan email dan hubungi bantuan resmi PT Dincorp Inovasi Asia.',
         supportLead: 'Butuh bantuan? Hubungi WhatsApp 087892523968 atau ' + diracSupportEmailV250() + '.'
       };
       const eventV346 = Object.freeze({
         kind: 'passkey_recovery_code',
         email: owner.email,
         reference: referenceV346,
-        subject: 'PT Dirac Inovasi Nusantara Security - Kode Pemulihan Passkey [' + referenceV346 + ']',
+        subject: 'PT Dincorp Inovasi Asia Security - Kode Pemulihan Passkey [' + referenceV346 + ']',
         html: diracSecurityCorporateEmailHtmlV327(htmlInputV346),
         text: diracSecurityMailTextV327(htmlInputV346)
       });
@@ -55891,14 +55891,14 @@ function diracSecuritySocialTextLinesV383() {
   ];
 }
 function diracSecurityCorporateEmailHtmlV327(input = {}) {
-  const preheader = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.preheader || input.title || 'Notifikasi keamanan PT Dirac Inovasi Nusantara.', 180));
+  const preheader = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.preheader || input.title || 'Notifikasi keamanan PT Dincorp Inovasi Asia.', 180));
   const bannerUrl = diracSecurityMailEscapeV327(diracSecurityMailBannerUrlV327());
   const websiteUrl = diracSecurityMailEscapeV327(diracBaseOriginV250() + '/');
   const brandLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.brandLabel || 'PEMULIHAN AKUN', 80));
   const eyebrow = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.eyebrow || 'PEMBERITAHUAN KEAMANAN', 90));
   const titleLines = String(input.title || 'Aktivitas Keamanan\nTerdeteksi').split(/\n+/).slice(0, 3)
     .map((line) => diracSecurityMailEscapeV327(diracSecurityMailCleanV327(line, 90))).filter(Boolean).join('<br>');
-  const greeting = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.greeting || 'Yth. Pengguna PT Dirac Inovasi Nusantara,', 160));
+  const greeting = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.greeting || 'Yth. Pengguna PT Dincorp Inovasi Asia,', 160));
   const summary = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.summary || '', 700));
   const statusLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.statusLabel || 'STATUS KEAMANAN', 100));
   const copyCodeExact = diracSecurityMailCodeExactV382(input.copyCode);
@@ -55907,7 +55907,7 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
   const statusNote = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.statusNote || '', 400));
   const detailsLabel = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.detailsLabel || 'DETAIL AKTIVITAS', 100));
   const warningTitle = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warningTitle || 'PERINGATAN KEAMANAN', 100));
-  const warning = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warning || 'Jika aktivitas ini bukan dilakukan oleh Anda, segera amankan akun dan hubungi bantuan resmi PT Dirac Inovasi Nusantara.', 700));
+  const warning = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.warning || 'Jika aktivitas ini bukan dilakukan oleh Anda, segera amankan akun dan hubungi bantuan resmi PT Dincorp Inovasi Asia.', 700));
   const supportLead = diracSecurityMailEscapeV327(diracSecurityMailCleanV327(input.supportLead || 'Butuh bantuan untuk memeriksa aktivitas keamanan? Hubungi tim support melalui kanal resmi berikut.', 300));
   const actionFallback = diracAppPageOriginV503() + '/keamanan.html';
   const actionUrl = diracSecurityMailEscapeV327(diracSecurityMailOfficialUrlV327(input.actionUrl || actionFallback, actionFallback));
@@ -55924,7 +55924,7 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="supported-color-schemes" content="dark">
-  <title>Pemberitahuan PT Dirac Inovasi Nusantara</title>
+  <title>Pemberitahuan PT Dincorp Inovasi Asia</title>
   <style>
     :root { color-scheme:dark; supported-color-schemes:dark; }
     body { margin:0!important; padding:0!important; }
@@ -55953,8 +55953,8 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
     <tr><td class="dirac-outer-pad" align="center" bgcolor="#090c12" style="padding:18px 12px;background:#090c12;background-color:#090c12;background-image:linear-gradient(#090c12,#090c12)">
       <table class="dirac-shell" role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" bgcolor="#141820" style="width:100%;max-width:600px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:18px;overflow:hidden;box-shadow:0 18px 48px rgba(0,0,0,.24);background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
         <tr><td style="padding:0;line-height:0;font-size:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="50%" height="4" bgcolor="#5276e8" style="height:4px;line-height:4px;font-size:0;background:#5276e8;background-color:#5276e8">&nbsp;</td><td width="30%" height="4" bgcolor="#148ba4" style="height:4px;line-height:4px;font-size:0;background:#148ba4;background-color:#148ba4">&nbsp;</td><td width="20%" height="4" bgcolor="#9a741f" style="height:4px;line-height:4px;font-size:0;background:#9a741f;background-color:#9a741f">&nbsp;</td></tr></table></td></tr>
-        <tr><td bgcolor="#10151e" style="padding:0;line-height:0;font-size:0;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><img src="${bannerUrl}" width="600" alt="PT Dirac Inovasi Nusantara" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;background:#10151e;background-color:#10151e"></td></tr>
-        <tr><td class="dirac-pad" bgcolor="#141820" style="padding:27px 32px 13px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:21px;line-height:1.2;font-weight:800;letter-spacing:.14em;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">PT Dirac Inovasi Nusantara</div><div style="margin-top:7px;font-size:11px;line-height:1.4;font-weight:700;letter-spacing:.2em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${brandLabel}</div></div></div></td></tr>
+        <tr><td bgcolor="#10151e" style="padding:0;line-height:0;font-size:0;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><img src="${bannerUrl}" width="600" alt="PT Dincorp Inovasi Asia" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;background:#10151e;background-color:#10151e"></td></tr>
+        <tr><td class="dirac-pad" bgcolor="#141820" style="padding:27px 32px 13px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:21px;line-height:1.2;font-weight:800;letter-spacing:.14em;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">PT Dincorp Inovasi Asia</div><div style="margin-top:7px;font-size:11px;line-height:1.4;font-weight:700;letter-spacing:.2em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">${brandLabel}</div></div></div></td></tr>
         <tr><td class="dirac-pad" bgcolor="#141820" style="padding:24px 32px 32px;background:#141820;background-color:#141820;background-image:linear-gradient(#141820,#141820)">
           <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#9eb6ff!important;-webkit-text-fill-color:#9eb6ff!important;mso-color-alt:#9eb6ff">${eyebrow}</div><div class="dirac-title" style="margin-top:13px;font-size:38px;line-height:1.16;font-weight:800;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${titleLines}</div><p style="margin:25px 0 0;font-size:17px;line-height:1.55;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">${greeting}</p><p style="margin:12px 0 0;font-size:16px;line-height:1.65;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">${summary}</p></div></div>
           ${copyCodeHtml}
@@ -55965,7 +55965,7 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
           ${trustedDetailsHtml}
           ${traceHtml}
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1d1b17" style="width:100%;margin:28px 0;border-collapse:separate;border-spacing:0;border:1px solid #4a4030;border-radius:14px;overflow:hidden;background:#1d1b17;background-color:#1d1b17;background-image:linear-gradient(#1d1b17,#1d1b17)"><tr><td style="padding:18px 20px;border-left:4px solid #9a741f"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.14em;color:#f0c86c!important;-webkit-text-fill-color:#f0c86c!important;mso-color-alt:#f0c86c">${warningTitle}</div><p style="margin:10px 0 0;font-size:14px;line-height:1.65;color:#e8ebef!important;-webkit-text-fill-color:#e8ebef!important;mso-color-alt:#e8ebef">${warning}</p></div></div></td></tr></table>
-          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI PT Dirac Inovasi Nusantara</div><p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${supportLead}</p></div></div>
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI PT Dincorp Inovasi Asia</div><p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">${supportLead}</p></div></div>
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:0 0 13px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WEBSITE RESMI</div><a href="${websiteUrl}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${websiteUrl}</a></div></div></td></tr>
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">WHATSAPP</div><a href="https://wa.me/6287892523968" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">0878 9252 3968</a></div></div></td></tr>
@@ -55973,9 +55973,9 @@ function diracSecurityCorporateEmailHtmlV327(input = {}) {
             <tr><td style="padding:15px 20px;border-left:4px solid #148ba4;border-bottom:1px solid #2c3544"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">EMAIL PERUSAHAAN</div><a href="mailto:${diracCareEmailV250()}" style="display:inline-block;margin-top:5px;font-size:15px;line-height:1.5;font-weight:700;word-break:break-all;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9;text-decoration:none">${diracCareEmailV250()}</a></div></div></td></tr>
             ${socialSupportRowHtml}
           </table>
-          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><p style="margin:0;font-size:12px;line-height:1.65;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tim PT Dirac Inovasi Nusantara tidak pernah meminta kata sandi, kode verifikasi, PIN, CVV, atau data akses akun melalui WhatsApp, Instagram, telepon, maupun balasan email.</p></div></div>
+          <div class="gmail-blend-screen"><div class="gmail-blend-difference"><p style="margin:0;font-size:12px;line-height:1.65;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tim PT Dincorp Inovasi Asia tidak pernah meminta kata sandi, kode verifikasi, PIN, CVV, atau data akses akun melalui WhatsApp, Instagram, telepon, maupun balasan email.</p></div></div>
         </td></tr>
-        ${input.invoiceEmail === true ? `<tr><td class="dirac-footer-pad" bgcolor="#e8f1fa" style="padding:24px 26px;border-top:1px solid #9cb5cf;background-color:#e8f1fa;color:#18324f"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#e8f1fa" style="width:100%;border-collapse:collapse;background-color:#e8f1fa;color:#18324f"><tr><td style="padding:0;font-family:Arial,Helvetica,sans-serif"><div style="font-size:18px;line-height:1.4;font-weight:700;color:#18324f">PT Dirac Inovasi Nusantara</div><div style="margin-top:8px;font-size:12px;line-height:1.5;font-weight:700;color:#284b70">TRANSAKSI &bull; PRIVASI &bull; KEAMANAN</div><p style="margin:14px 0 0;font-size:13px;line-height:1.65;color:#284b70">Invoice PDF ini dikirim atas permintaan Anda dari halaman Invoice. Kata sandi hanya tersedia di halaman Invoice akun. Jangan bagikan file atau kata sandi kepada pihak lain.</p></td></tr></table></td></tr>` : `<tr><td class="dirac-footer-pad" bgcolor="#b9dcff" style="padding:24px 26px 26px;border-top:1px solid #79aee5;background:#b9dcff;background-color:#b9dcff;background-image:linear-gradient(#b9dcff,#b9dcff)"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10213a" style="width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24466c;border-radius:16px;overflow:hidden;box-shadow:0 10px 24px rgba(14,42,72,.18);background:#10213a;background-color:#10213a;background-image:linear-gradient(#10213a,#10213a)"><tr><td style="padding:22px 24px 23px;border-left:4px solid #27a2bd"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:18px;line-height:1.3;font-weight:800;letter-spacing:.14em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">PT Dirac Inovasi Nusantara</div><div style="margin-top:7px;font-size:11px;line-height:1.5;font-weight:700;letter-spacing:.13em;color:#d9e8ff!important;-webkit-text-fill-color:#d9e8ff!important;mso-color-alt:#d9e8ff">AKUN &bull; PRIVASI &bull; BANTUAN</div><div style="margin-top:14px;font-size:13px;line-height:1.55;color:#d7e7f8!important;-webkit-text-fill-color:#d7e7f8!important;mso-color-alt:#d7e7f8">Layanan PT Dirac Inovasi Nusantara</div><p style="margin:17px 0 0;font-size:11px;line-height:1.65;color:#bfd0e3!important;-webkit-text-fill-color:#bfd0e3!important;mso-color-alt:#bfd0e3">Email ini dikirim otomatis. Jangan balas email ini atau bagikan kode verifikasi maupun data akses akun kepada orang lain.</p></div></div></td></tr></table></td></tr>`}
+        ${input.invoiceEmail === true ? `<tr><td class="dirac-footer-pad" bgcolor="#e8f1fa" style="padding:24px 26px;border-top:1px solid #9cb5cf;background-color:#e8f1fa;color:#18324f"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#e8f1fa" style="width:100%;border-collapse:collapse;background-color:#e8f1fa;color:#18324f"><tr><td style="padding:0;font-family:Arial,Helvetica,sans-serif"><div style="font-size:18px;line-height:1.4;font-weight:700;color:#18324f">PT Dincorp Inovasi Asia</div><div style="margin-top:8px;font-size:12px;line-height:1.5;font-weight:700;color:#284b70">TRANSAKSI &bull; PRIVASI &bull; KEAMANAN</div><p style="margin:14px 0 0;font-size:13px;line-height:1.65;color:#284b70">Invoice PDF ini dikirim atas permintaan Anda dari halaman Invoice. Kata sandi hanya tersedia di halaman Invoice akun. Jangan bagikan file atau kata sandi kepada pihak lain.</p></td></tr></table></td></tr>` : `<tr><td class="dirac-footer-pad" bgcolor="#b9dcff" style="padding:24px 26px 26px;border-top:1px solid #79aee5;background:#b9dcff;background-color:#b9dcff;background-image:linear-gradient(#b9dcff,#b9dcff)"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10213a" style="width:100%;border-collapse:separate;border-spacing:0;border:1px solid #24466c;border-radius:16px;overflow:hidden;box-shadow:0 10px 24px rgba(14,42,72,.18);background:#10213a;background-color:#10213a;background-image:linear-gradient(#10213a,#10213a)"><tr><td style="padding:22px 24px 23px;border-left:4px solid #27a2bd"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:18px;line-height:1.3;font-weight:800;letter-spacing:.14em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;mso-color-alt:#ffffff">PT Dincorp Inovasi Asia</div><div style="margin-top:7px;font-size:11px;line-height:1.5;font-weight:700;letter-spacing:.13em;color:#d9e8ff!important;-webkit-text-fill-color:#d9e8ff!important;mso-color-alt:#d9e8ff">AKUN &bull; PRIVASI &bull; BANTUAN</div><div style="margin-top:14px;font-size:13px;line-height:1.55;color:#d7e7f8!important;-webkit-text-fill-color:#d7e7f8!important;mso-color-alt:#d7e7f8">Layanan PT Dincorp Inovasi Asia</div><p style="margin:17px 0 0;font-size:11px;line-height:1.65;color:#bfd0e3!important;-webkit-text-fill-color:#bfd0e3!important;mso-color-alt:#bfd0e3">Email ini dikirim otomatis. Jangan balas email ini atau bagikan kode verifikasi maupun data akses akun kepada orang lain.</p></div></div></td></tr></table></td></tr>`}
         <tr><td style="padding:0 0 18px">${diracExecutiveEscalationHtmlV380()}</td></tr>
         <tr><td style="padding:0;line-height:0;font-size:0"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse"><tr><td width="50%" height="4" bgcolor="#5276e8" style="height:4px;line-height:4px;font-size:0;background:#5276e8;background-color:#5276e8">&nbsp;</td><td width="30%" height="4" bgcolor="#148ba4" style="height:4px;line-height:4px;font-size:0;background:#148ba4;background-color:#148ba4">&nbsp;</td><td width="20%" height="4" bgcolor="#9a741f" style="height:4px;line-height:4px;font-size:0;background:#9a741f;background-color:#9a741f">&nbsp;</td></tr></table></td></tr>
       </table>
@@ -55995,7 +55995,7 @@ function diracSecurityMailTextV327(input = {}) {
   const trace = (input.brandLabel === 'CENTRAL GUARD SECURITY' && Array.isArray(input.trace) ? input.trace : []).slice(0, 30)
     .map((entry, index) => String(index + 1) + '. ' + diracSecurityMailCleanV327(entry && entry.stage, 100) + ' -> ' + diracSecurityMailCleanV327(entry && entry.result, 60) + ' (' + Math.max(0, Number(entry && entry.duration_ms || 0)) + ' ms)');
   return [
-    'PT Dirac Inovasi Nusantara - ' + diracSecurityMailCleanV327(input.eyebrow || 'PEMBERITAHUAN KEAMANAN', 100),
+    'PT Dincorp Inovasi Asia - ' + diracSecurityMailCleanV327(input.eyebrow || 'PEMBERITAHUAN KEAMANAN', 100),
     '',
     diracSecurityMailCleanV327(String(input.title || '').replace(/\n+/g, ' '), 200),
     '',
@@ -56018,7 +56018,7 @@ function diracSecurityMailTextV327(input = {}) {
     'Email Perusahaan: ' + diracCareEmailV250(),
     ...diracSecuritySocialTextLinesV383(),
     '',
-    'PT Dirac Inovasi Nusantara tidak pernah meminta kata sandi, kode verifikasi, PIN, CVV, atau data akses akun melalui telepon, chat, atau balasan email.',
+    'PT Dincorp Inovasi Asia tidak pernah meminta kata sandi, kode verifikasi, PIN, CVV, atau data akses akun melalui telepon, chat, atau balasan email.',
     '',
     diracExecutiveEscalationTextV380()
   ].filter((line, index, all) => line !== '' || (index > 0 && all[index - 1] !== '')).join('\r\n');
@@ -56061,7 +56061,7 @@ async function diracUserSecurityResolveLoginFailureV336(req, payload, action, ht
     brandLabel: 'KEAMANAN AKUN',
     eyebrow: 'PERINGATAN KEAMANAN AKUN',
     title: marker.permanent ? 'Akun Anda\nTerkunci' : 'Maaf, Akses Akun\nDijeda Sementara',
-    greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
+    greeting: 'Yth. Pengguna PT Dincorp Inovasi Asia,',
     summary: marker.permanent
       ? 'Kami memahami situasi ini tidak nyaman. Percobaan password ke-7 belum berhasil dan akun Anda kini terkunci. Silakan hubungi admin di WhatsApp 087892523968 atau ' + diracSupportEmailV250() + ' untuk peninjauan akses.'
       : 'Kami memahami gagal masuk berulang kali bisa membuat khawatir. Percobaan password ke-' + count + ' belum berhasil. Demi menjaga akun Anda, akses masuk dijeda selama ' + duration + '.',
@@ -56084,7 +56084,7 @@ async function diracUserSecurityResolveLoginFailureV336(req, payload, action, ht
     supportLead: 'Kami siap membantu melalui WhatsApp 087892523968 atau ' + diracSupportEmailV250() + '.'
   };
   return Object.freeze({ kind: 'login_password_blocked', email: marker.email, reference,
-    subject: 'PT Dirac Inovasi Nusantara Security - ' + String(htmlInput.title).replace(/\n/g, ' ') + ' [' + reference + ']',
+    subject: 'PT Dincorp Inovasi Asia Security - ' + String(htmlInput.title).replace(/\n/g, ' ') + ' [' + reference + ']',
     html: diracSecurityCorporateEmailHtmlV327(htmlInput), text: diracSecurityMailTextV327(htmlInput) });
 }
 
@@ -56210,11 +56210,11 @@ async function diracUserSecurityResolveAccessBlockV341(req, payload, action, htt
     : marker.scope === 'ip' ? 'Jaringan/perangkat'
       : 'Akun';
   const htmlInput = {
-    preheader: 'Akses masuk akun Anda sedang diblokir oleh kebijakan keamanan PT Dirac Inovasi Nusantara.',
+    preheader: 'Akses masuk akun Anda sedang diblokir oleh kebijakan keamanan PT Dincorp Inovasi Asia.',
     brandLabel: 'KEAMANAN AKUN',
     eyebrow: 'PERINGATAN KEAMANAN AKUN',
     title: 'Akses Akun\nSedang Diblokir',
-    greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
+    greeting: 'Yth. Pengguna PT Dincorp Inovasi Asia,',
     summary: 'Sistem keamanan menolak percobaan masuk yang telah terautentikasi karena akun, perangkat, atau jaringan masih berada dalam status pembatasan keamanan.',
     statusLabel: 'STATUS AKUN',
     statusValue: 'AKSES MASUK DIBLOKIR',
@@ -56237,7 +56237,7 @@ async function diracUserSecurityResolveAccessBlockV341(req, payload, action, htt
     kind: 'account_security_blocked',
     email: marker.email,
     reference,
-    subject: 'PT Dirac Inovasi Nusantara Security - Akses Akun Sedang Diblokir [' + reference + ']',
+    subject: 'PT Dincorp Inovasi Asia Security - Akses Akun Sedang Diblokir [' + reference + ']',
     html: diracSecurityCorporateEmailHtmlV327(htmlInput),
     text: diracSecurityMailTextV327(htmlInput)
   });
@@ -56335,7 +56335,7 @@ function diracUserSecurityResolveEventV327(req, payload, action, committedOnly =
       kind = 'password_changed';
       title = 'Perubahan Password\nTerdeteksi';
       eyebrow = 'PERUBAHAN KATA SANDI';
-      summary = 'Password akun Anda terdeteksi telah berubah dan tahap autentikasi password terbaru berhasil diverifikasi oleh sistem PT Dirac Inovasi Nusantara.';
+      summary = 'Password akun Anda terdeteksi telah berubah dan tahap autentikasi password terbaru berhasil diverifikasi oleh sistem PT Dincorp Inovasi Asia.';
       activity = 'Perubahan password terverifikasi';
       method = 'Email dan password';
     } else {
@@ -56348,11 +56348,11 @@ function diracUserSecurityResolveEventV327(req, payload, action, committedOnly =
         && passkeyMarker.registeredNow === true && !replaced
         && payload && payload.database_saved === true && payload.verified === true && payload.active === true;
       kind = firstRegistration ? 'account_welcome' : 'passkey_changed';
-      title = firstRegistration ? 'Selamat Datang\nDi PT Dirac Inovasi Nusantara'
+      title = firstRegistration ? 'Selamat Datang\nDi PT Dincorp Inovasi Asia'
         : (replaced ? 'Passkey Berhasil\nDiganti' : (passkeyMarker.registeredNow === true ? 'Passkey Berhasil\nDiaktifkan' : 'Passkey Berhasil\nDiperbarui'));
       eyebrow = firstRegistration ? 'ACCOUNT REGISTRATION COMPLETE' : 'PERUBAHAN PASSKEY';
       summary = firstRegistration
-        ? 'Selamat datang di PT Dirac Inovasi Nusantara. Akun Anda telah terdaftar dan Passkey pertama berhasil diaktifkan serta tersimpan. Anda kini dapat melanjutkan ke layanan melalui akun yang telah diverifikasi.'
+        ? 'Selamat datang di PT Dincorp Inovasi Asia. Akun Anda telah terdaftar dan Passkey pertama berhasil diaktifkan serta tersimpan. Anda kini dapat melanjutkan ke layanan melalui akun yang telah diverifikasi.'
         : (replaced
           ? 'Passkey lama telah diganti melalui alur recovery yang terverifikasi. Passkey baru kini menjadi kredensial aktif akun Anda.'
           : 'Passkey akun Anda berhasil diaktifkan atau diperbarui setelah verifikasi keamanan selesai.');
@@ -56369,7 +56369,7 @@ function diracUserSecurityResolveEventV327(req, payload, action, committedOnly =
       kind = 'login_passkey';
       title = 'Login Passkey\nBerhasil';
       eyebrow = 'SECURE PASSKEY LOGIN';
-      summary = 'Login menggunakan Passkey berhasil dan sesi perangkat telah diverifikasi oleh sistem keamanan PT Dirac Inovasi Nusantara.';
+      summary = 'Login menggunakan Passkey berhasil dan sesi perangkat telah diverifikasi oleh sistem keamanan PT Dincorp Inovasi Asia.';
       activity = 'Login akun berhasil';
       method = 'WebAuthn Passkey';
     }
@@ -56384,13 +56384,13 @@ function diracUserSecurityResolveEventV327(req, payload, action, committedOnly =
     ...diracSecurityMailClientRowsV381(client),
     ['REFERENSI', reference]
   ];
-  const warning = 'Jika Anda tidak melakukan aktivitas ini, segera buka Pusat Keamanan, ganti password, tinjau Passkey dan sesi aktif, lalu hubungi bantuan resmi PT Dirac Inovasi Nusantara. Jangan membalas email ini dengan password, OTP, token, atau data rahasia.';
+  const warning = 'Jika Anda tidak melakukan aktivitas ini, segera buka Pusat Keamanan, ganti password, tinjau Passkey dan sesi aktif, lalu hubungi bantuan resmi PT Dincorp Inovasi Asia. Jangan membalas email ini dengan password, OTP, token, atau data rahasia.';
   const htmlInput = {
     preheader: String(title || '').replace(/\n/g, ' ') + ' - Referensi ' + reference,
     brandLabel: 'KEAMANAN AKUN',
     eyebrow,
     title,
-    greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
+    greeting: 'Yth. Pengguna PT Dincorp Inovasi Asia,',
     summary,
     statusLabel: 'STATUS KEAMANAN',
     statusValue,
@@ -56407,7 +56407,7 @@ function diracUserSecurityResolveEventV327(req, payload, action, committedOnly =
     kind,
     email,
     reference,
-    subject: 'PT Dirac Inovasi Nusantara Security - ' + String(title || '').replace(/\n+/g, ' ') + ' [' + reference + ']',
+    subject: 'PT Dincorp Inovasi Asia Security - ' + String(title || '').replace(/\n+/g, ' ') + ' [' + reference + ']',
     html: diracSecurityCorporateEmailHtmlV327(htmlInput),
     text: diracSecurityMailTextV327(htmlInput)
   });
@@ -56418,7 +56418,7 @@ function diracUserSecurityMimeV327(event, config) {
   const senderDomain = String(config.smtpUser || '').split('@')[1] || 'gmail.com';
   const messageId = crypto.createHash('sha256').update(event.reference + '|' + event.kind + '|' + Date.now()).digest('hex').slice(0, 32) + '@' + senderDomain;
   return [
-    'From: ' + diracSecurityAlertMimeHeaderV320('PT Dirac Inovasi Nusantara') + ' <' + config.smtpUser + '>',
+    'From: ' + diracSecurityAlertMimeHeaderV320('PT Dincorp Inovasi Asia') + ' <' + config.smtpUser + '>',
     'To: ' + event.email,
     'Reply-To: ' + config.replyTo,
     'Subject: ' + diracSecurityAlertMimeHeaderV320(event.subject),
@@ -56491,7 +56491,7 @@ async function diracUserSecuritySendV327(event, config) {
         'Idempotency-Key': ('dirac-user-security-' + event.kind + '-' + event.reference).slice(0, 256)
       },
       body: JSON.stringify({
-        from: 'PT Dirac Inovasi Nusantara <' + config.resendFromEmail + '>',
+        from: 'PT Dincorp Inovasi Asia <' + config.resendFromEmail + '>',
         to: [event.email],
         reply_to: config.replyTo,
         subject: event.subject,
@@ -56971,7 +56971,7 @@ function diracSecurityAlertCorporateMimeV327(snapshot, config) {
     brandLabel: 'CENTRAL GUARD SECURITY',
     eyebrow: 'CENTRAL GUARD SECURITY ALERT',
     title,
-    greeting: 'Yth. Owner dan Tim Cyber PT Dirac Inovasi Nusantara,',
+    greeting: 'Yth. Owner dan Tim Cyber PT Dincorp Inovasi Asia,',
     summary: mirrorWriteFailed
       ? 'Central Guard menolak request dan berhasil menulis persistent ban, tetapi penulisan mirror blok akses customer gagal. Sistem tetap fail-closed dan memerlukan pemeriksaan owner atau tim cyber.'
       : (isPersistent
@@ -56989,9 +56989,9 @@ function diracSecurityAlertCorporateMimeV327(snapshot, config) {
     actionText: 'BUKA PUSAT KEAMANAN',
     warningTitle: 'PRIVASI DAN RESPONS INSIDEN',
     warning,
-    supportLead: 'Untuk koordinasi respons insiden, gunakan kanal resmi PT Dirac Inovasi Nusantara berikut dan jangan meneruskan data sensitif melalui email.'
+    supportLead: 'Untuk koordinasi respons insiden, gunakan kanal resmi PT Dincorp Inovasi Asia berikut dan jangan meneruskan data sensitif melalui email.'
   };
-  const subject = '[PT Dirac Inovasi Nusantara ' + snapshot.severity + '] ' + String(title).replace(/\n/g, ' ') + ' [' + trackingId + '] [' + reference + ']';
+  const subject = '[PT Dincorp Inovasi Asia ' + snapshot.severity + '] ' + String(title).replace(/\n/g, ' ') + ' [' + trackingId + '] [' + reference + ']';
   const htmlBody = diracExecutiveEscalationAppendHtmlV380(diracSecurityCorporateEmailHtmlV327(htmlInput));
   const textBody = diracExecutiveEscalationAppendTextV380(diracSecurityMailTextV327(htmlInput));
   const boundary = 'dirac-alert-v327-' + crypto.randomBytes(16).toString('hex');
@@ -57304,7 +57304,7 @@ async function diracInvoiceAttachmentSendV420(input, capability) {
     input.subject, diracExecutiveEscalationAppendTextV380(input.text), diracExecutiveEscalationAppendHtmlV380(input.html),
     invoiceReplyTo, binding.email
   ]), 'utf8') > 96 * 1024) return rejected('INVOICE_MAIL_BODY_TOO_LARGE');
-  const message = Object.freeze({ fromName: 'PT Dirac Inovasi Nusantara', recipients: Object.freeze([binding.email]),
+  const message = Object.freeze({ fromName: 'PT Dincorp Inovasi Asia', recipients: Object.freeze([binding.email]),
     replyTo: invoiceReplyTo, subject: input.subject, text: input.text, html: input.html, reference: binding.reference });
   const stored = { binding, filename: 'invoice-' + binding.reference + '.pdf', base64: attachment.content.toString('base64') };
   DIRAC_INVOICE_MAIL_MESSAGES_V420.set(message, stored);
@@ -57478,14 +57478,14 @@ async function diracSecurityMailProviderHttpV330(provider, targetUrl, headers, b
 
 async function diracSecurityMailBrevoV330(message, config) {
   const payload = {
-    sender: { name: String(message.fromName || 'PT Dirac Inovasi Nusantara'), email: config.brevoFromEmail },
+    sender: { name: String(message.fromName || 'PT Dincorp Inovasi Asia'), email: config.brevoFromEmail },
     to: message.recipients.map((emailAddress) => ({ email: emailAddress })),
     subject: String(message.subject || ''),
     textContent: diracExecutiveEscalationAppendTextV380(String(message.text || '')),
     htmlContent: diracExecutiveEscalationAppendHtmlV380(String(message.html || '')),
     headers: { 'X-Dirac-Reference': String(message.reference || '').slice(0, 64) }
   };
-  if (message.replyTo) payload.replyTo = { name: 'PT Dirac Inovasi Nusantara', email: message.replyTo };
+  if (message.replyTo) payload.replyTo = { name: 'PT Dincorp Inovasi Asia', email: message.replyTo };
   if (Array.isArray(message.bccRecipients) && message.bccRecipients.length) payload.bcc = message.bccRecipients.map((emailAddress) => ({ email: emailAddress }));
   const invoiceAttachmentV420 = diracInvoiceMailAttachmentV420(message);
   if (invoiceAttachmentV420) payload.attachment = [{ name: invoiceAttachmentV420.filename, content: invoiceAttachmentV420.base64 }];
@@ -57498,7 +57498,7 @@ async function diracSecurityMailBrevoV330(message, config) {
 
 async function diracSecurityMailResendV330(message, config) {
   const payload = {
-    from: String(message.fromName || 'PT Dirac Inovasi Nusantara') + ' <' + config.resendFromEmail + '>',
+    from: String(message.fromName || 'PT Dincorp Inovasi Asia') + ' <' + config.resendFromEmail + '>',
     to: message.recipients,
     subject: String(message.subject || ''),
     text: diracExecutiveEscalationAppendTextV380(String(message.text || '')),
@@ -57792,7 +57792,7 @@ function diracSecurityMailParseCorporateMimeV330(mime) {
 diracUserSecuritySendV327 = async function diracUserSecuritySendCascadeV330(event, config) {
   if (!event || !config) return Object.freeze({ ok: false, provider: 'internal', status: 0, limited: false, code: 'USER_SECURITY_EVENT_OR_CONFIG_INVALID' });
   const message = Object.freeze({
-    fromName: 'PT Dirac Inovasi Nusantara',
+    fromName: 'PT Dincorp Inovasi Asia',
     recipients: [event.email],
     replyTo: config.replyTo,
     subject: event.subject,
@@ -57929,10 +57929,10 @@ function diracCustomerMailMimeV352(message, account, replyTo) {
   const reference = String(message && message.reference || crypto.randomBytes(8).toString('hex')).slice(0, 64);
   const messageId = crypto.createHash('sha256').update(reference + '|' + String(message.subject || '') + '|' + Date.now()).digest('hex').slice(0, 32) + '@' + senderDomain;
   const headers = [
-    'From: ' + diracSecurityAlertMimeHeaderV320(String(message.fromName || 'PT Dirac Inovasi Nusantara')) + ' <' + account.user + '>',
+    'From: ' + diracSecurityAlertMimeHeaderV320(String(message.fromName || 'PT Dincorp Inovasi Asia')) + ' <' + account.user + '>',
     'To: ' + (message.recipients || []).join(', '),
     ...(replyTo ? ['Reply-To: ' + replyTo] : []),
-    'Subject: ' + diracSecurityAlertMimeHeaderV320(String(message.subject || 'PT Dirac Inovasi Nusantara')),
+    'Subject: ' + diracSecurityAlertMimeHeaderV320(String(message.subject || 'PT Dincorp Inovasi Asia')),
     'Date: ' + new Date().toUTCString(),
     'Message-ID: <' + messageId + '>',
     'Auto-Submitted: auto-generated',
@@ -58026,7 +58026,7 @@ async function diracCustomerMailSmtpCascadeV352(message, config) {
 diracUserSecuritySendV327 = async function diracUserSecuritySendCascadeV352(event, config) {
   if (!event || !config) return Object.freeze({ ok: false, provider: 'internal', status: 0, limited: false, code: 'USER_SECURITY_EVENT_OR_CONFIG_INVALID' });
   const message = Object.freeze({
-    fromName: 'PT Dirac Inovasi Nusantara', recipients: [event.email], replyTo: config.replyTo,
+    fromName: 'PT Dincorp Inovasi Asia', recipients: [event.email], replyTo: config.replyTo,
     subject: event.subject, text: event.text, html: event.html, reference: event.reference
   });
   return diracSecurityMailProviderCascadeV330(message, config, () => diracCustomerMailSmtpCascadeV352(message, config));
@@ -58038,9 +58038,9 @@ diracRegisterEmailConfigV331 = function diracRegisterEmailConfigCustomerCascadeV
 };
 diracRegisterEmailDeliverV331 = async function diracRegisterEmailDeliverCustomerCascadeV352(message, config) {
   const htmlInput = {
-    preheader: 'Kode verifikasi email untuk menyelesaikan pendaftaran PT Dirac Inovasi Nusantara.',
+    preheader: 'Kode verifikasi email untuk menyelesaikan pendaftaran PT Dincorp Inovasi Asia.',
     brandLabel: 'PENDAFTARAN AKUN', eyebrow: 'VERIFIKASI EMAIL',
-    title: 'Verifikasi Email\nPendaftaran', greeting: 'Yth. Calon Customer PT Dirac Inovasi Nusantara,',
+    title: 'Verifikasi Email\nPendaftaran', greeting: 'Yth. Calon Customer PT Dincorp Inovasi Asia,',
     summary: 'Email ini dikirim karena alamat Anda digunakan untuk memulai pendaftaran. Salin kode verifikasi ke halaman pendaftaran yang masih terbuka.',
     statusLabel: 'STATUS VERIFIKASI', statusValue: 'MENUNGGU KONFIRMASI',
     statusNote: 'Kode ' + String(String(message.proof || '').length) + ' karakter acak (huruf besar, huruf kecil, angka, garis bawah, dan simbol khusus) berlaku selama 5 menit dan hanya dapat digunakan satu kali.',
@@ -58051,11 +58051,11 @@ diracRegisterEmailDeliverV331 = async function diracRegisterEmailDeliverCustomer
     actionUrl: diracRoleOriginV250('auth') + '/masuk.html', actionText: 'BUKA HALAMAN PENDAFTARAN',
     warningTitle: 'JAGA KERAHASIAAN KODE',
     warning: 'Jangan berikan kode ini, password, token, cookie, atau data rahasia kepada siapa pun. Jika Anda tidak memulai pendaftaran, abaikan email ini.',
-    supportLead: 'Jika membutuhkan bantuan terkait pendaftaran, gunakan kanal resmi PT Dirac Inovasi Nusantara berikut.'
+    supportLead: 'Jika membutuhkan bantuan terkait pendaftaran, gunakan kanal resmi PT Dincorp Inovasi Asia berikut.'
   };
   const generic = Object.freeze({
-    fromName: 'PT Dirac Inovasi Nusantara', recipients: [message.email], replyTo: config.replyTo,
-    subject: 'Kode verifikasi pendaftaran PT Dirac Inovasi Nusantara [' + String(message.reference || '') + ']',
+    fromName: 'PT Dincorp Inovasi Asia', recipients: [message.email], replyTo: config.replyTo,
+    subject: 'Kode verifikasi pendaftaran PT Dincorp Inovasi Asia [' + String(message.reference || '') + ']',
     text: diracSecurityMailTextV327(htmlInput), html: diracSecurityCorporateEmailHtmlV327(htmlInput), reference: String(message.reference || '')
   });
   return diracSecurityMailProviderCascadeV330(generic, config, () => diracCustomerMailSmtpCascadeV352(generic, config));
@@ -58199,7 +58199,7 @@ orderMailSmtpConfig = function orderMailSmtpConfigRolePartitionV352(kind) {
     }
     return {
       kind: 'customer', configured: Boolean(cfg), smtpConfigured: false, providerConfigured: Boolean(cfg),
-      fromName: 'PT Dirac Inovasi Nusantara', fromEmail: cfg ? (cfg.brevoFromEmail || cfg.resendFromEmail || cfg.smtpUser) : '',
+      fromName: 'PT Dincorp Inovasi Asia', fromEmail: cfg ? (cfg.brevoFromEmail || cfg.resendFromEmail || cfg.smtpUser) : '',
       recipients: [], customerCascadeV352: cfg || null, patch: DIRAC_MAIL_ROLE_PARTITION_V352
     };
   }
@@ -58209,7 +58209,7 @@ orderMailSmtpConfig = function orderMailSmtpConfigRolePartitionV352(kind) {
     const secure = String(process.env.ORDER_OWNER_SMTP_SECURE || 'true').trim().toLowerCase() === 'true';
     const user = orderMailNormalizeEmail(process.env.ORDER_OWNER_SMTP_USER || '');
     const pass = String(process.env.ORDER_OWNER_SMTP_PASS || process.env.ORDER_OWNER_SMTP_PASSWORD || '').replace(/\s+/g, '');
-    const fromName = orderMailCleanText(process.env.ORDER_OWNER_FROM_NAME || 'PT Dirac Inovasi Nusantara', 80);
+    const fromName = orderMailCleanText(process.env.ORDER_OWNER_FROM_NAME || 'PT Dincorp Inovasi Asia', 80);
     const dedicatedFromEmail = orderMailNormalizeEmail(process.env.ORDER_OWNER_FROM_EMAIL || user);
     const recipients = orderMailParseEmailList(process.env.ORDER_OWNER_EMAIL || '');
     const dedicatedSmtpConfigured = host === 'smtp.gmail.com' && port === 465 && secure === true && user && dedicatedFromEmail === user
@@ -58254,8 +58254,8 @@ orderMailSendViaSmtpSafe = async function orderMailSendViaSmtpSafeRolePartitionV
         return { ok: false, provider: 'internal', status: 0, limited: false, quotaLimited: false, deliveryAmbiguous: false, code: 'CUSTOMER_BCC_RECIPIENT_COLLISION' };
       }
       const generic = Object.freeze({
-        fromName: 'PT Dirac Inovasi Nusantara', recipients, bccRecipients,
-        replyTo: customerCfg.replyTo, subject: String(message.subject || 'PT Dirac Inovasi Nusantara'), text: String(message.text || ''),
+        fromName: 'PT Dincorp Inovasi Asia', recipients, bccRecipients,
+        replyTo: customerCfg.replyTo, subject: String(message.subject || 'PT Dincorp Inovasi Asia'), text: String(message.text || ''),
         html: String(message.html || ''), reference: crypto.createHash('sha256').update(String(message.subject || '') + '|' + String(recipients[0] || '') + '|' + bccRecipients.join(',')).digest('hex').slice(0, 32)
       });
       if (diagnosticV371) diracPaidMailDiagLogV446('cascade_input', {
@@ -58309,7 +58309,7 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
   const legacy = orderMailBuildNewOrderMessagesBeforeCorporateV352(data);
   const paid = String(data && data.order && (data.order.payment_status || data.order.order_status) || '').toLowerCase() === 'paid' || String(data && data.kind || '') === 'paid_invoice';
   const currency = String(data && data.order && data.order.currency || 'IDR').toUpperCase();
-  const customerName = orderMailCleanText(data && data.customer && data.customer.name || '', 120) || 'Pengguna PT Dirac Inovasi Nusantara';
+  const customerName = orderMailCleanText(data && data.customer && data.customer.name || '', 120) || 'Pengguna PT Dincorp Inovasi Asia';
   const customerEmail = orderMailNormalizeEmail(data && data.customer && data.customer.email || '') || '-';
   const customerPhone = orderMailCleanText(data && data.customer && data.customer.phone || '', 80) || '-';
   const shippingAddress = diracCompactAddressForDisplayV634(orderMailCleanText(data && data.order && data.order.shipping_address || data && data.customer && data.customer.shipping_address || '', 1400)) || '-';
@@ -58363,7 +58363,7 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
     ...(orderNote.length > 480 ? [['CATATAN PESANAN (LANJUTAN)', orderNote.slice(480, 700)]] : [])
   ];
   const customerInput = {
-    preheader: paid ? 'Pembayaran pesanan Anda telah diterima dan diverifikasi.' : 'Pesanan Anda telah diterima PT Dirac Inovasi Nusantara.',
+    preheader: paid ? 'Pembayaran pesanan Anda telah diterima dan diverifikasi.' : 'Pesanan Anda telah diterima PT Dincorp Inovasi Asia.',
     brandLabel: 'SECURE PAYMENT', eyebrow: paid ? 'PAYMENT CONFIRMED' : 'ORDER CONFIRMATION',
     title: paid ? 'Pembayaran\nDiterima' : 'Pesanan\nDiterima',
     greeting: 'Yth. ' + customerName + ',',
@@ -58371,12 +58371,12 @@ orderMailBuildNewOrderMessages = function orderMailBuildNewOrderMessagesCorporat
     statusLabel: 'STATUS PEMBAYARAN', statusValue: paid ? 'LUNAS / PAID' : 'MENUNGGU PEMBAYARAN',
     statusNote: paid ? 'Status paid ditetapkan setelah verifikasi webhook dan status pembayaran resmi.' : 'Periksa kembali rincian pembayaran dan pesanan Anda.', detailsLabel: 'RINCIAN INVOICE & PENGIRIMAN',
     rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows), trustedDetailsHtml: orderMailProductCardsHtml(data && data.items, currency), actionUrl: diracAppPageOriginV503() + '/pesanan.html', actionText: 'LIHAT PESANAN',
-    warningTitle: 'KEAMANAN PEMBAYARAN', warning: 'PT Dirac Inovasi Nusantara tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau data kartu melalui balasan email, WhatsApp, Instagram, atau telepon.',
-    supportLead: 'Jika membutuhkan bantuan terkait pembayaran, invoice, alamat pengiriman, atau pesanan, gunakan kanal resmi PT Dirac Inovasi Nusantara.'
+    warningTitle: 'KEAMANAN PEMBAYARAN', warning: 'PT Dincorp Inovasi Asia tidak pernah meminta password, OTP, PIN, CVV, cookie, token, atau data kartu melalui balasan email, WhatsApp, Instagram, atau telepon.',
+    supportLead: 'Jika membutuhkan bantuan terkait pembayaran, invoice, alamat pengiriman, atau pesanan, gunakan kanal resmi PT Dincorp Inovasi Asia.'
   };
   const ownerInput = {
     ...customerInput, brandLabel: 'SECURE PAYMENT ADMIN', eyebrow: paid ? 'VERIFIED PAYMENT RECEIVED' : 'NEW ORDER NOTIFICATION',
-    title: paid ? 'Pembayaran\nDiterima' : 'Order Baru\nDiterima', greeting: 'Yth. Admin / Owner PT Dirac Inovasi Nusantara,',
+    title: paid ? 'Pembayaran\nDiterima' : 'Order Baru\nDiterima', greeting: 'Yth. Admin / Owner PT Dincorp Inovasi Asia,',
     summary: paid ? 'Pembayaran customer telah tervalidasi oleh backend. Data customer, alamat pengiriman, catatan, nilai transaksi, referensi pembayaran, dan seluruh item yang diperlukan untuk fulfilment tercantum di bawah ini.' : 'Order baru telah tercatat pada backend. Data customer, alamat pengiriman, catatan, dan rincian item tercantum di bawah ini.',
     rows: rowsBase.concat(fulfillmentRows, shippingAddressRows, orderNoteRows), trustedDetailsHtml: orderMailProductCardsHtml(data && data.items, currency), actionUrl: diracAppPageOriginV503() + '/pesanan.html', actionText: 'BUKA PESANAN'
   };
@@ -65849,7 +65849,7 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
         invoiceEmail: true,
         preheader: 'Invoice pesanan ' + proof.orderId + ' tersedia dalam lampiran PDF berpassword.',
         brandLabel: 'SECURE PAYMENT', eyebrow: 'INVOICE PEMBAYARAN', title: 'Invoice Anda\nTerlampir',
-        greeting: 'Yth. Pelanggan PT Dirac Inovasi Nusantara,',
+        greeting: 'Yth. Pelanggan PT Dincorp Inovasi Asia,',
         summary: 'Terima kasih. Pembayaran Anda telah terverifikasi. Invoice PDF berpassword tersedia dalam lampiran email ini.',
         statusLabel: 'STATUS PEMBAYARAN', statusValue: 'LUNAS / PAID',
         statusNote: 'Buka lampiran melalui pembaca PDF, lalu masukkan kata sandi 8 digit dari halaman Invoice akun Anda.',
@@ -65858,7 +65858,7 @@ async function diracInvoiceRunPreparedV440(req, res, ctx, proof, email, onPrepar
         actionUrl: origin + '/invoice.html', actionText: 'LIHAT KATA SANDI INVOICE',
         warningTitle: 'JAGA KERAHASIAAN INVOICE',
         warning: 'Kata sandi tidak disertakan dalam email. Anda dapat melihatnya di akun selama 30 hari sejak invoice disiapkan. Kata sandi PDF tetap berlaku. Jangan bagikan file atau kata sandi kepada pihak lain.',
-        supportLead: 'Butuh bantuan membuka lampiran atau memeriksa invoice? Hubungi kanal resmi PT Dirac Inovasi Nusantara berikut.'
+        supportLead: 'Butuh bantuan membuka lampiran atau memeriksa invoice? Hubungi kanal resmi PT Dincorp Inovasi Asia berikut.'
       };
       const result = await diracInvoiceAttachmentSendV420({ to: email, subject: 'Invoice ' + proof.orderId, reference: file.fileId,
         text: diracSecurityMailTextV327(mailInput),
@@ -70495,8 +70495,8 @@ function diracSecurityAlertConfigV320() {
   const user = diracSecurityAlertEmailV320(process.env.DIRAC_SECURITY_ALERT_SMTP_USER);
   const appPassword = String(process.env.DIRAC_SECURITY_ALERT_SMTP_APP_PASSWORD || '').replace(/\s+/g, '');
   const fromEmail = diracSecurityAlertEmailV320(process.env.DIRAC_SECURITY_ALERT_FROM_EMAIL || user);
-  const fromName = String(process.env.DIRAC_SECURITY_ALERT_FROM_NAME || 'PT Dirac Inovasi Nusantara')
-    .replace(/[\r\n<>]/g, '').trim().slice(0, 80) || 'PT Dirac Inovasi Nusantara';
+  const fromName = String(process.env.DIRAC_SECURITY_ALERT_FROM_NAME || 'PT Dincorp Inovasi Asia')
+    .replace(/[\r\n<>]/g, '').trim().slice(0, 80) || 'PT Dincorp Inovasi Asia';
   const recipients = Array.from(new Set(String(process.env.DIRAC_SECURITY_ALERT_TO || '')
     .split(/[;,\s]+/).map(diracSecurityAlertEmailV320).filter(Boolean))).slice(0, 5);
   const hmacSecretText = String(process.env.DIRAC_SECURITY_ALERT_HMAC_SECRET || '');
@@ -70759,7 +70759,7 @@ function diracSecurityAlertBase64LinesV320(value) {
 }
 
 function diracSecurityAlertMessageV320(snapshot, config) {
-  const subject = '[PT Dirac Inovasi Nusantara ' + snapshot.severity + '] ' + snapshot.threat_class + ' · ' + snapshot.failure_id;
+  const subject = '[PT Dincorp Inovasi Asia ' + snapshot.severity + '] ' + snapshot.threat_class + ' · ' + snapshot.failure_id;
   const rows = [
     ['Status', 'BLOCKED / FAIL-CLOSED'],
     ['Klasifikasi', snapshot.threat_class],
@@ -70793,7 +70793,7 @@ function diracSecurityAlertMessageV320(snapshot, config) {
     ? snapshot.trace.map((entry, index) => (index + 1) + '. ' + entry.stage + ' → ' + entry.result + ' (' + entry.duration_ms + ' ms)').join('\n')
     : 'Tidak tersedia.';
   const textBody = [
-    'PT Dirac Inovasi Nusantara — SECURITY INCIDENT',
+    'PT Dincorp Inovasi Asia — SECURITY INCIDENT',
     '',
     ...rows.map((row) => row[0] + ': ' + row[1]),
     '',
@@ -70812,7 +70812,7 @@ function diracSecurityAlertMessageV320(snapshot, config) {
     : '<li>Tidak tersedia.</li>';
   const htmlBody = '<!doctype html><html><body style="margin:0;background:#070b16;font-family:Arial,sans-serif;color:#f8fafc">'
     + '<div style="padding:30px 12px"><div style="max-width:760px;margin:auto;border:1px solid #26334d;border-radius:20px;overflow:hidden;background:#101827">'
-    + '<div style="padding:26px;background:linear-gradient(135deg,#7f1d1d,#dc2626 55%,#f97316)"><div style="font-size:12px;letter-spacing:.18em;font-weight:700">PT Dirac Inovasi Nusantara</div>'
+    + '<div style="padding:26px;background:linear-gradient(135deg,#7f1d1d,#dc2626 55%,#f97316)"><div style="font-size:12px;letter-spacing:.18em;font-weight:700">PT Dincorp Inovasi Asia</div>'
     + '<h1 style="margin:9px 0 4px;font-size:25px">Ancaman diblokir secara otomatis</h1><div style="opacity:.9">' + diracSecurityAlertHtmlV320(snapshot.threat_class) + '</div></div>'
     + '<div style="padding:22px"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#3f1218;color:#fda4af;font-size:12px;font-weight:800">'
     + diracSecurityAlertHtmlV320(snapshot.severity) + ' · FAIL-CLOSED</div><table role="presentation" style="width:100%;border-collapse:collapse;margin-top:18px;font-size:13px">'
@@ -76717,7 +76717,7 @@ function diracPasswordResetMailEventV338(record, client) {
   const input = {
     preheader: 'Password berhasil diganti - Referensi ' + reference,
     brandLabel: 'KEAMANAN AKUN', eyebrow: 'PERUBAHAN KATA SANDI',
-    title: 'Password Berhasil\nDiganti', greeting: 'Yth. Pengguna PT Dirac Inovasi Nusantara,',
+    title: 'Password Berhasil\nDiganti', greeting: 'Yth. Pengguna PT Dincorp Inovasi Asia,',
     summary,
     statusLabel: 'STATUS KEAMANAN', statusValue: 'PASSWORD BARU AKTIF',
     statusNote: 'Kata sandi baru telah aktif setelah verifikasi akun.',
@@ -76734,7 +76734,7 @@ function diracPasswordResetMailEventV338(record, client) {
     supportLead: 'Butuh bantuan memeriksa perubahan akun? Hubungi tim support melalui kanal resmi berikut.'
   };
   return Object.freeze({ kind: 'password_changed', email: record.email, reference,
-    subject: 'PT Dirac Inovasi Nusantara Security - Password Berhasil Diganti [' + reference + ']',
+    subject: 'PT Dincorp Inovasi Asia Security - Password Berhasil Diganti [' + reference + ']',
     html: diracSecurityCorporateEmailHtmlV327(input), text: diracSecurityMailTextV327(input) });
 }
 
