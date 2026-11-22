@@ -263,8 +263,14 @@ function config() {
   const supportSupabaseUrl = env('DIRAC_SUPPORT_SUPABASE_URL').replace(/\/+$/, '');
   const useMainCustomerDatabase = Boolean(customerConfigOnly && !supportSupabaseUrl);
   const supabaseUrl = supportSupabaseUrl || (useMainCustomerDatabase ? env('DOMAIN_SUPABASE_URL').replace(/\/+$/, '') : '');
-  const publishableKey = env('DIRAC_SUPPORT_SUPABASE_PUBLISHABLE_KEY') || env('DIRAC_SUPPORT_SUPABASE_ANON_KEY') || (useMainCustomerDatabase ? env('DOMAIN_SUPABASE_ANON_KEY') : '');
-  const secretKey = env('DIRAC_SUPPORT_SUPABASE_SECRET_KEY') || env('DIRAC_SUPPORT_SUPABASE_SERVICE_ROLE_KEY') || (useMainCustomerDatabase ? env('DOMAIN_SUPABASE_SERVICE_ROLE_KEY') : '');
+  const supportPublishableKey = env('DIRAC_SUPPORT_SUPABASE_PUBLISHABLE_KEY') || env('DIRAC_SUPPORT_SUPABASE_ANON_KEY');
+  const supportSecretKey = env('DIRAC_SUPPORT_SUPABASE_SECRET_KEY') || env('DIRAC_SUPPORT_SUPABASE_SERVICE_ROLE_KEY');
+  const publishableKey = useMainCustomerDatabase ? env('DOMAIN_SUPABASE_ANON_KEY') : supportPublishableKey;
+  const secretKey = useMainCustomerDatabase ? env('DOMAIN_SUPABASE_SERVICE_ROLE_KEY') : supportSecretKey;
+  if (useMainCustomerDatabase && ((supportPublishableKey && supportPublishableKey !== publishableKey)
+      || (supportSecretKey && supportSecretKey !== secretKey))) {
+    throw new PublicError(503, 'SUPPORT_CONFIG_INVALID', 'Konfigurasi database support belum valid.');
+  }
   const cookieSecret = env('DIRAC_SUPPORT_COOKIE_SECRET') || (customerConfigOnly ? supportDerivedCustomerSecretV362('cookie') : '');
   const csrfSecret = env('DIRAC_SUPPORT_CSRF_SECRET') || (customerConfigOnly ? supportDerivedCustomerSecretV362('csrf') : '');
   const ipSecret = env('DIRAC_SUPPORT_IP_HMAC_SECRET') || (customerConfigOnly ? supportDerivedCustomerSecretV362('ip') : '');
@@ -1595,7 +1601,11 @@ async function actionChatBootstrap(req, res) {
 
 async function actionChatStart(req, res, body) {
   exactKeys(body, ['category', 'subject', 'message', 'website', 'consent', 'turnstileToken']);
-  if (String(body.website || '').trim()) throw new PublicError(400, 'AUTOMATION_REJECTED', 'Permintaan tidak valid.');
+  if (String(body.website || '').trim()) {
+    const error = new PublicError(400, 'AUTOMATION_REJECTED', 'Permintaan tidak valid.');
+    error.centralBanReason = 'support_automation_rejected';
+    throw error;
+  }
   if (body.consent !== true) throw new PublicError(400, 'CONSENT_REQUIRED', 'Persetujuan pemrosesan percakapan wajib diberikan.');
   await rateLimit(req, 'chat_start', 3, 600, 900, 'burst'); await rateLimit(req, 'chat_start_daily', 10, 86400, 3600, 'daily');
   await takeRateLimit('chat_start_global', hmac(config().ipSecret, 'chat|global|start', 'hex'), 5000, 86400, 3600);
@@ -2017,9 +2027,8 @@ async function probeTarget(target) {
 }
 
 async function actionMonitorRun(req, res) {
-  const cfg = config(); const expected = env('CRON_SECRET'); const authorization = String(req.headers && req.headers.authorization || ''); const candidate = authorization.replace(/^Bearer\s+/i, '');
-  const cronReused = [cfg.cookieSecret, cfg.csrfSecret, cfg.ipSecret, cfg.mfaEnrollmentSecret].some((secret) => timingEqual(expected, secret));
-  if (Buffer.byteLength(expected, 'utf8') < 32 || cronReused || !timingEqual(expected, candidate)) throw new PublicError(401, 'MONITOR_AUTH_INVALID', 'Monitor tidak diizinkan.');
+  DIRAC_SHARED_CENTRAL_V545.assertPassed(req, res, 'support');
+  const cfg = config();
   const leaseKey = hmac(cfg.ipSecret, 'monitor|global|lease', 'hex');
   try {
     await takeRateLimit('monitor_run_lease', leaseKey, 1, 240, 240);
@@ -2384,7 +2393,10 @@ function supportCentralBrowserAuthenticityV146(ctx) {
     if (parsed.origin !== origin || !DIRAC_SUPPORT_CENTRAL_ALLOWED_REFERER_PATHS_V146.has(parsed.pathname)) throw new PublicError(403, 'REFERER_REJECTED', 'Referer tidak diizinkan.');
   }
   const ua = String(ctx.req.headers && ctx.req.headers['user-agent'] || '');
-  if (DIRAC_SUPPORT_CENTRAL_SCANNER_UA_REGEX_V146.test(ua)) throw new PublicError(403, 'AUTOMATION_REJECTED', 'Klien otomatis tidak diizinkan pada endpoint browser support.');
+  if (DIRAC_SUPPORT_CENTRAL_SCANNER_UA_REGEX_V146.test(ua)) {
+    try { console.warn('[dirac-support-client-signal]', JSON.stringify({ requestId: ctx.requestId, action: ctx.action, code: 'AUTOMATION_REJECTED' })); } catch (_) {}
+    throw new PublicError(403, 'AUTOMATION_REJECTED', 'Klien otomatis tidak diizinkan pada endpoint browser support.');
+  }
 }
 
 function supportCentralStructuralSampleV146(ctx) {
@@ -2704,8 +2716,14 @@ async function supportCentralGuardClassificationV202(ctx) {
 async function supportCentralGuardRateV202(ctx) { await supportCentralDistributedRateV354(ctx); }
 async function supportCentralGuardServerAuthenticationV202(ctx) {
   if (ctx.policy.principal !== 'cron') return;
+  const cfg = config(), expected = env('CRON_SECRET');
   const authorization = String(ctx.req.headers && ctx.req.headers.authorization || '');
-  if (!/^Bearer [^\s]{32,4096}$/.test(authorization)) throw new PublicError(401, 'MONITOR_AUTH_INVALID', 'Monitor tidak diizinkan.');
+  const match = /^Bearer ([^\s]{32,4096})$/.exec(authorization);
+  const reused = [cfg.cookieSecret, cfg.csrfSecret, cfg.ipSecret, cfg.mfaEnrollmentSecret, cfg.adminBindingSecret]
+    .some(secret => timingEqual(expected, secret));
+  if (!match || Buffer.byteLength(expected, 'utf8') < 32 || reused || !timingEqual(expected, match[1])) {
+    throw new PublicError(401, 'MONITOR_AUTH_INVALID', 'Monitor tidak diizinkan.');
+  }
 }
 async function supportCentralGuardBrowserAuthenticityV202(ctx) {
   supportCentralBrowserAuthenticityV146(ctx);
@@ -2937,7 +2955,7 @@ async function handler(req, res) {
       caught = error;
       ctx.phase = 'audit';
       let safe = error instanceof PublicError ? error : new PublicError(500, 'SUPPORT_INTERNAL_ERROR', 'Sistem support sedang mengalami gangguan.');
-      if (error instanceof PublicError && (['support_json_key_rejected', 'support_json_duplicate_key'].includes(error.centralBanReason) || ['AUTOMATION_REJECTED', 'CENTRAL_HEADER_INVALID', 'CENTRAL_HEADERS_TOO_LARGE', 'CENTRAL_BODY_KEY_REJECTED', 'CENTRAL_BODY_COMPLEXITY_REJECTED', 'CENTRAL_BODY_SHAPE_REJECTED', 'CENTRAL_REQUEST_ENCODING_REJECTED', 'BODY_TOO_LARGE', 'CONTENT_LENGTH_INVALID', 'CONTENT_LENGTH_MISMATCH', 'CONTENT_ENCODING_REJECTED', 'RATE_LIMITED'].includes(error.code))) {
+      if (error instanceof PublicError && (['support_json_key_rejected', 'support_json_duplicate_key', 'support_automation_rejected'].includes(error.centralBanReason) || ['CENTRAL_HEADER_INVALID', 'CENTRAL_HEADERS_TOO_LARGE', 'CENTRAL_BODY_KEY_REJECTED', 'CENTRAL_BODY_COMPLEXITY_REJECTED', 'CENTRAL_BODY_SHAPE_REJECTED', 'CENTRAL_REQUEST_ENCODING_REJECTED', 'BODY_TOO_LARGE', 'CONTENT_LENGTH_INVALID', 'CONTENT_LENGTH_MISMATCH', 'CONTENT_ENCODING_REJECTED'].includes(error.code))) {
         try {
           const authority = await supportCentralBanAuthorityV354();
           const persisted = await authority.ban(req, error.centralBanReason || 'support_' + error.code.toLowerCase(), 15 * 60);

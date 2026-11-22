@@ -277,17 +277,26 @@ function securityCredentials() {
   if (!url || !anon || !service) fail('ADMIN_SECURITY_DATABASE_UNAVAILABLE', 503);
   validateSupabaseOrigin(url); return { url, anon, service };
 }
-function multiDbEnabled() { return /^(?:1|true|yes|on)$/i.test(String(process.env.DIRAC_ENABLE_MULTI_DB_ROUTER || process.env.DIRAC_MULTI_DB_ROUTER_ENABLED || '').trim()); }
+const ADMIN_BUSINESS_TARGETS = Object.freeze({
+  customers: 'CORE', security_customer_auth_links: 'CUSTOMER_SECURITY', security_customer_sessions: 'CUSTOMER_SECURITY',
+  domain_passkeys: 'DOMAIN', domain_orders: 'DOMAIN', domain_order_items: 'DOMAIN',
+  orders: 'COMMERCE', order_items: 'COMMERCE', payment_transactions: 'PAYMENT_SERVICE',
+  security_customer_account_requests: 'PAYMENT_SERVICE', security_customer_events: 'PAYMENT_SERVICE'
+});
+function multiDbEnabled() {
+  return [process.env.DIRAC_ENABLE_MULTI_DB_ROUTER, process.env.DIRAC_MULTI_DB_ROUTER_ENABLED]
+    .some(value => /^(?:1|true|yes|on)$/i.test(String(value || '').trim()));
+}
 function businessTarget(table) {
-  const map = { customers: 'CORE', security_customer_auth_links: 'CUSTOMER_SECURITY', security_customer_sessions: 'CUSTOMER_SECURITY', domain_passkeys: 'DOMAIN', domain_orders: 'DOMAIN', domain_order_items: 'DOMAIN', orders: 'COMMERCE', order_items: 'COMMERCE', payment_transactions: 'PAYMENT_SERVICE', security_customer_account_requests: 'PAYMENT_SERVICE', security_customer_events: 'PAYMENT_SERVICE' };
-  if (!multiDbEnabled() || !map[table]) return legacyCredentials();
-  const prefix = 'DIRAC_' + map[table] + '_SUPABASE_';
+  if (!multiDbEnabled()) return legacyCredentials();
+  if (!Object.hasOwn(ADMIN_BUSINESS_TARGETS, table)) fail('ADMIN_DATA_UNAVAILABLE', 503);
+  const prefix = 'DIRAC_' + ADMIN_BUSINESS_TARGETS[table] + '_SUPABASE_';
   const url = String(process.env[prefix + 'URL'] || '').trim().replace(/\/+$/, '');
   const anon = String(process.env[prefix + 'ANON_KEY'] || '').trim();
   const service = String(process.env[prefix + 'SERVICE_ROLE_KEY'] || '').trim();
-  if (url && anon && service) { validateSupabaseOrigin(url); return { url, anon, service }; }
-  if (/^(?:1|true|yes|on)$/i.test(String(process.env.DIRAC_MULTI_DB_STRICT || '').trim())) fail('ADMIN_DATA_UNAVAILABLE', 503);
-  return legacyCredentials();
+  if (!url || !anon || !service) fail('ADMIN_DATA_UNAVAILABLE', 503);
+  validateSupabaseOrigin(url);
+  return { url, anon, service };
 }
 function legacyCredentials() {
   const url = String(process.env.DOMAIN_SUPABASE_URL || '').trim().replace(/\/+$/, '');

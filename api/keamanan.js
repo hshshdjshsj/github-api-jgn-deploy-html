@@ -1327,16 +1327,14 @@ function securitySupabaseTargetV334(path) {
   throw resetError('SECURITY_RESET_DB_PATH_NOT_ALLOWED', 403);
 }
 function securitySupabaseCredentialsV334(target) {
-  const legacyNames = SECURITY_SUPABASE_TARGETS_V334.legacy;
-  const names = SECURITY_SUPABASE_TARGETS_V334[target] || legacyNames;
-  const get = (n) => String(process.env[n] || '').trim();
-  let url = get(names[0]), anon = get(names[1]), service = get(names[2]);
-  if (target === 'security' && (!url || !anon || !service)) throw resetError('SECURITY_RESET_SECURITY_DB_UNAVAILABLE', 503);
-  if ((!url || !anon || !service) && target !== 'legacy') {
-    if (securityEnvTrueV334('DIRAC_MULTI_DB_STRICT')) throw resetError('SECURITY_RESET_DB_TARGET_UNAVAILABLE', 503);
-    url = get(legacyNames[0]); anon = get(legacyNames[1]); service = get(legacyNames[2]);
+  if (!Object.prototype.hasOwnProperty.call(SECURITY_SUPABASE_TARGETS_V334, target)) throw resetError('SECURITY_RESET_DB_TARGET_UNAVAILABLE', 503);
+  const names = SECURITY_SUPABASE_TARGETS_V334[target];
+  const get = (name) => String(process.env[name] || '').trim();
+  const url = get(names[0]), anon = get(names[1]), service = get(names[2]);
+  if (!url || !anon || !service) {
+    if (target === 'security') throw resetError('SECURITY_RESET_SECURITY_DB_UNAVAILABLE', 503);
+    throw resetError(target === 'legacy' ? 'SECURITY_RESET_DB_ENV_MISSING' : 'SECURITY_RESET_DB_TARGET_UNAVAILABLE', 503);
   }
-  if (!url || !anon || !service) throw resetError('SECURITY_RESET_DB_ENV_MISSING', 503);
   let u; try { u = new URL(url); } catch (_) { throw resetError('SECURITY_RESET_DB_URL_INVALID', 503); }
   if (u.protocol !== 'https:' || !/^[a-z0-9-]+\.supabase\.co$/.test(u.hostname) || u.pathname !== '/') throw resetError('SECURITY_RESET_DB_URL_INVALID', 503);
   if (u.username || u.password || u.search || u.hash || (u.port && u.port !== '443')) throw resetError('SECURITY_RESET_DB_URL_INVALID', 503);
