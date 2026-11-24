@@ -74,7 +74,7 @@ const CONTRACTS = Object.freeze({
   admin_partner_request_update: post(['request_id', 'status', 'note', 'approval'], ['request_id', 'status', 'approval']),
   admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
   admin_local_authorize: post(['purpose', 'content_sha256', 'approval'], ['purpose', 'content_sha256', 'approval']),
-  admin_document_prepare: post(['document_kind','reference','page_count','content_sha256','approval'], ['document_kind','reference','page_count','content_sha256','approval']),
+  admin_document_prepare: post(['document_kind','reference','page_count','content_sha256','issuer','approval'], ['document_kind','reference','page_count','content_sha256','approval']),
   admin_document_seal: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'identity','format','page','raw_sha256','file_base64','approval']), required: Object.freeze(['identity','format','page','raw_sha256','file_base64','approval']), maxBodyBytes: 4250000, maxFieldBytes: 4194304, mutation: true, allowArrayItems: false }),
   admin_document_verify: get(['file_sha256','document_id','qr_proof']),
   admin_monitor: get(['view', 'from', 'until'])
@@ -1366,10 +1366,13 @@ function verifyAssertion({ credential, rpId, passkey }) {
 function approvalPayload(action, body) {
   const value = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
   if (action === 'admin_document_prepare') {
-    if (!DOCUMENT_KINDS_V464.includes(value.document_kind) || typeof value.reference !== 'string' || !value.reference || value.reference.length > 253
+    const issuer = value.issuer === undefined ? 'PT Dincorp Inovasi Asia' : value.issuer;
+    if (!DOCUMENT_KINDS_V464.includes(value.document_kind) || !DOCUMENT_ISSUERS_V1.includes(issuer)
+        || (issuer === 'CV Multi Usaha Mandiri' && value.document_kind !== 'quotation')
+        || typeof value.reference !== 'string' || !value.reference || value.reference.length > 253
         || /[\u0000-\u001f\u007f]/.test(value.reference) || !Number.isInteger(value.page_count) || value.page_count < 1 || value.page_count > 64
         || typeof value.content_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.content_sha256)) fail('ADMIN_DOCUMENT_META_INVALID',400);
-    return { action, document_kind: value.document_kind, reference: value.reference, page_count: value.page_count, content_sha256: value.content_sha256 };
+    return { action, document_kind: value.document_kind, issuer, reference: value.reference, page_count: value.page_count, content_sha256: value.content_sha256 };
   }
   if (action === 'admin_document_seal') {
     if (!documentIdentityValidV464(value.identity) || value.identity.owner_scope !== documentAdminScopeV464() || !['png','pdf'].includes(value.format)
@@ -2819,6 +2822,7 @@ const DOCUMENT_VERSION_V464 = 'dirac-document-v464';
 const DOCUMENT_PREFIX_V464 = 's2s-document-v464:';
 const DOCUMENT_MAX_V464 = 3 * 1024 * 1024;
 const DOCUMENT_KINDS_V464 = Object.freeze(['invoice','proforma','quotation','delivery','receipt','statement','cancellation','handover','purchase','authorization','tax_letter','tax_summary','letter']);
+const DOCUMENT_ISSUERS_V1 = Object.freeze(['PT Dincorp Inovasi Asia','CV Multi Usaha Mandiri']);
 function documentErrorV464(code, status = 503) { fail('ADMIN_DOCUMENT_' + code, status); }
 function documentMacV464(value) {
   const key = deriveSecret('document-authenticity-v464');
@@ -3018,7 +3022,7 @@ function documentIdentityValidV464(value) {
         && value.kind === 'invoice' && value.visual_patterns && typeof value.visual_patterns === 'object' && !Array.isArray(value.visual_patterns)
         && stableJson(value.visual_patterns) === stableJson(documentInvoicePatternsV495(value))))
     && value.version === DOCUMENT_VERSION_V464 && /^DV-[a-f0-9]{48}$/.test(value.id)
-    && value.issuer === 'PT Dincorp Inovasi Asia' && DOCUMENT_KINDS_V464.includes(value.kind)
+    && DOCUMENT_ISSUERS_V1.includes(value.issuer) && (value.issuer !== 'CV Multi Usaha Mandiri' || value.kind === 'quotation') && DOCUMENT_KINDS_V464.includes(value.kind)
     && typeof value.reference === 'string' && value.reference.length >= 1 && value.reference.length <= 253 && !/[\u0000-\u001f\u007f]/.test(value.reference)
     && /^[a-f0-9]{64}$/.test(value.content_sha256) && /^[a-f0-9]{64}$/.test(value.owner_scope)
     && Number.isSafeInteger(value.created_at) && value.created_at > 0 && value.created_at <= Date.now() + 1000
@@ -3043,11 +3047,14 @@ function documentQrV464(identity, origin, route = '/admin.html') {
 }
 async function documentPrepareV464(meta, ownerScope, origin, claim, assertContext, route = '/admin.html') {
   assertContext();
-  if (!meta || Object.keys(meta).sort().join(',') !== 'content_sha256,kind,page_count,reference' || !DOCUMENT_KINDS_V464.includes(meta.kind)
+  const metaKeys = meta && Object.keys(meta).sort().join(','), legacyMeta = metaKeys === 'content_sha256,kind,page_count,reference';
+  const issuer = legacyMeta ? 'PT Dincorp Inovasi Asia' : meta && meta.issuer;
+  if (!meta || (!legacyMeta && metaKeys !== 'content_sha256,issuer,kind,page_count,reference') || !DOCUMENT_KINDS_V464.includes(meta.kind)
+      || !DOCUMENT_ISSUERS_V1.includes(issuer) || (issuer === 'CV Multi Usaha Mandiri' && meta.kind !== 'quotation')
       || typeof meta.reference !== 'string' || meta.reference !== meta.reference.trim() || !meta.reference || meta.reference.length > 253
       || /[\u0000-\u001f\u007f]/.test(meta.reference) || !/^[a-f0-9]{64}$/.test(meta.content_sha256)
       || !/^[a-f0-9]{64}$/.test(ownerScope) || !Number.isInteger(meta.page_count) || meta.page_count < 1 || meta.page_count > 64) documentErrorV464('META_INVALID', 400);
-  const value = { version: DOCUMENT_VERSION_V464, id: 'DV-' + crypto.randomBytes(24).toString('hex'), issuer: 'PT Dincorp Inovasi Asia',
+  const value = { version: DOCUMENT_VERSION_V464, id: 'DV-' + crypto.randomBytes(24).toString('hex'), issuer,
     owner_scope: ownerScope, kind: meta.kind, reference: meta.reference, content_sha256: meta.content_sha256, page_count: meta.page_count, created_at: Date.now() };
   if (value.kind === 'invoice') value.visual_patterns = documentInvoicePatternsV495(value);
   const identity = { ...value, mac: documentMacV464(value) };
@@ -3199,7 +3206,7 @@ async function businessDocumentV464(operation, body, origin, assertContext) {
     if (verified && (verified.integrity_verified === true || verified.qr_authentic === true || verified.status === 'issued_id') && verified.kind === 'invoice') { const order = await documentInvoiceOrderV471(verified.reference, assertContext); if (order) verified.order = order; }
     return verified;
   }
-  if (operation === 'document_prepare') return { ok: true, verification: await documentPrepareV464({ kind: body.document_kind, reference: body.reference,
+  if (operation === 'document_prepare') return { ok: true, verification: await documentPrepareV464({ kind: body.document_kind, issuer: body.issuer === undefined ? 'PT Dincorp Inovasi Asia' : body.issuer, reference: body.reference,
     page_count: body.page_count, content_sha256: body.content_sha256 }, documentAdminScopeV464(), origin, claim, assertContext) };
   if (operation === 'document_seal') {
     const bytes = documentBytesV464(body.file_base64), identity = body.identity;
