@@ -1663,6 +1663,7 @@ function customerMailText(message) {
   const parts = mailOriginParts(message.origin), rows = [String(message.body || ''), '', '---', 'PT Dincorp Inovasi Asia', customerMailKindLabel(message.kind)];
   if (parts.siteUrl) rows.push('Website: ' + parts.siteUrl);
   if (parts.supportEmail) rows.push('Email: ' + parts.supportEmail);
+  if (message.orderUrl) rows.push('Lihat pesanan dan tagihan online: ' + message.orderUrl);
   rows.push('WhatsApp: +62 878-9252-3968');
   if (message.attachment) rows.push('Lampiran: ' + message.attachment.name);
   rows.push('', 'Jika ada pertanyaan, balas email ini. Untuk berhenti menerima penawaran, sampaikan permintaan Anda melalui balasan email.');
@@ -1678,7 +1679,7 @@ function customerMailHtml(message) {
   const executiveHtml = adminExecutiveEscalationHtml(supportEmail);
   const heading = mailEscape(shipment ? shipment.title : message.subject), preheader = mailEscape(shipment ? shipment.title + ' · ' + shipment.trackingNumber : labelText + ' · ' + message.subject);
   const statusText = shipment ? ({ prepared: 'BELUM DIKIRIM', shipped: 'DISERAHKAN KE KURIR', in_transit: 'DALAM PERJALANAN', delivered: 'DITERIMA', cancelled: 'DIBATALKAN' }[shipment.status] || 'STATUS BELUM TERSEDIA') : labelText.toUpperCase();
-  const target = shipment ? mailEscape(shipmentCustomerOriginV450(message.origin) + '/cekresi.html') : message.orderNotice === true ? mailEscape(shipmentCustomerOriginV450(message.origin) + '/pesanan.html') : '';
+  const target = shipment ? mailEscape(shipmentCustomerOriginV450(message.origin) + '/cekresi.html') : message.orderNotice === true ? mailEscape(message.orderUrl || shipmentCustomerOriginV450(message.origin) + '/pesanan.html') : '';
   let detailRows = '', routeTimeline = '', correspondence = '', shipmentNote = '';
   if (shipment) {
     const journey = shipmentJourneyV452(shipment.journey), currentPoint = journey ? journey.stops[journey.position] : shipment.location, nextPoint = journey && journey.position < journey.stops.length - 1 && shipment.status !== 'delivered' ? journey.stops[journey.position + 1] : '';
@@ -1701,7 +1702,7 @@ function customerMailHtml(message) {
     detailRows = '<tr><td style="padding:20px"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.13em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">ISI KORESPONDENSI</div><div style="margin-top:10px;font-size:15px;line-height:1.72;word-break:break-word;overflow-wrap:anywhere;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">' + mailEscape(String(message.body || '').replace(/\r\n?/g, '\n')).replace(/\n/g, '<br>') + '</div></div></div></td></tr>';
   }
   const attachment = message.attachment ? '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:13px 0 0;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><tr><td style="padding:16px 20px"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.13em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">LAMPIRAN</div><div style="margin-top:6px;font-size:15px;line-height:1.55;font-weight:700;word-break:break-word;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">' + mailEscape(message.attachment.name) + '</div></div></div></td></tr></table>' : '';
-  const actionButton = target ? '<table class="dirac-button" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:0 0 9px;border-collapse:separate"><tr><td align="center" bgcolor="#5276e8" style="border-radius:10px;background:#5276e8;background-color:#5276e8"><a href="' + target + '" style="display:block;padding:17px 18px;font-size:15px;line-height:1.2;font-weight:800;letter-spacing:.04em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;text-decoration:none;border-radius:10px">' + (message.orderNotice === true ? 'LIHAT PESANAN / TAGIHAN' : 'LIHAT RINCIAN PENGIRIMAN') + '</a></td></tr></table>' : '';
+  const actionButton = target ? '<table class="dirac-button" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:0 0 9px;border-collapse:separate"><tr><td align="center" bgcolor="#5276e8" style="border-radius:10px;background:#5276e8;background-color:#5276e8"><a href="' + target + '" style="display:block;padding:17px 18px;font-size:15px;line-height:1.2;font-weight:800;letter-spacing:.04em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;text-decoration:none;border-radius:10px">' + (message.orderUrl ? 'LIHAT INVOICE ONLINE' : message.orderNotice === true ? 'LIHAT PESANAN / TAGIHAN' : 'LIHAT RINCIAN PENGIRIMAN') + '</a></td></tr></table>' : '';
   const targetHost = target ? mailEscape(new URL(target).hostname) : '';
   const warningTitle = shipment ? 'CATATAN PENGIRIMAN' : 'PERTANYAAN TENTANG EMAIL INI';
   const warningText = shipment ? shipmentNote : (privateKind ? 'Dokumen ini hanya untuk penerima yang tercantum. Jika ada pertanyaan tentang transaksi, balas email ini.' : 'Jika ada pertanyaan, balas email ini. Untuk berhenti menerima penawaran, sampaikan permintaan Anda melalui balasan email.');
@@ -1872,7 +1873,13 @@ async function sendCustomerMail(message, assertContext) {
 async function businessSmtpSend(body, origin, assertContext) {
   if (!body || body.legal_confirm !== true) fail('ADMIN_SMTP_LEGAL_CONFIRMATION_REQUIRED', 400);
   const provider = adminSmtpProvider(body.provider), kind = adminSmtpDocumentKind(body.document_kind), recipients = adminSmtpRecipients(body.recipients, body.recipient_count, body.recipients_sha256, kind), subject = adminSmtpSubject(body.subject, body.subject_sha256), content = adminSmtpBody(body.body_text, body.body_sha256), attachment = adminSmtpAttachment(body);
-  try { const result = await sendCustomerMail({ origin, provider, recipients, subject, body: content, kind, attachment }, assertContext); if (result && result.configurationUnavailable === true) fail('ADMIN_SMTP_CONFIGURATION_UNAVAILABLE', 503); if (!customerMailAcceptedV451(result, provider, recipients.length)) fail('ADMIN_SMTP_DELIVERY_UNCONFIRMED', 503); return { ok: true, accepted: result.accepted, provider: result.provider, requested_provider: provider, document_kind: kind, attachment: !!attachment }; }
+  const orderMarker = kind === 'invoice' ? /^\[\[DIRAC_ORDER_ID:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]\]$/m.exec(content) : null;
+  if (content.includes('[[DIRAC_ORDER_ID:') && (!orderMarker || kind !== 'invoice')) fail('ADMIN_SMTP_BODY_INVALID', 400);
+  const orderId = orderMarker ? orderMarker[1].toLowerCase() : '';
+  if (orderId && (!attachment || attachment.type !== 'application/pdf')) fail('ADMIN_SMTP_ATTACHMENT_INVALID', 400);
+  const visibleContent = orderMarker ? content.replace(orderMarker[0], '').trim() : content;
+  const orderUrl = orderId ? shipmentCustomerOriginV450(origin) + '/pesanan.html?order_id=' + encodeURIComponent(orderId) : '';
+  try { const result = await sendCustomerMail({ origin, provider, recipients, subject, body: visibleContent, kind, attachment, orderNotice: !!orderUrl, orderUrl }, assertContext); if (result && result.configurationUnavailable === true) fail('ADMIN_SMTP_CONFIGURATION_UNAVAILABLE', 503); if (!customerMailAcceptedV451(result, provider, recipients.length)) fail('ADMIN_SMTP_DELIVERY_UNCONFIRMED', 503); return { ok: true, accepted: result.accepted, provider: result.provider, requested_provider: provider, document_kind: kind, attachment: !!attachment }; }
   finally { if (attachment && attachment.bytes) attachment.bytes.fill(0); }
 }
 
