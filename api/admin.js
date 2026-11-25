@@ -1373,7 +1373,7 @@ function approvalPayload(action, body) {
         || typeof value.reference !== 'string' || !value.reference || value.reference.length > 253
         || /[\u0000-\u001f\u007f]/.test(value.reference) || !Number.isInteger(value.page_count) || value.page_count < 1 || value.page_count > 64
         || typeof value.content_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.content_sha256)) fail('ADMIN_DOCUMENT_META_INVALID',400);
-    return { action, document_kind: value.document_kind, issuer, reference: value.reference, page_count: value.page_count, content_sha256: value.content_sha256, ...(value.history_profile === undefined ? {} : { history_profile: docHistoryProfileV1(value.history_profile) }) };
+    return { action, document_kind: value.document_kind, issuer, reference: value.reference, page_count: value.page_count, content_sha256: value.content_sha256 };
   }
   if (action === 'admin_document_seal') {
     if (!documentIdentityValidV464(value.identity) || value.identity.owner_scope !== documentAdminScopeV464() || !['png','pdf'].includes(value.format)
@@ -3206,61 +3206,6 @@ async function documentInvoiceOrderV471(reference, assertContext) {
   if (!regular || !laboratory || !regular.ok || !laboratory.ok || !Array.isArray(regular.data) || !Array.isArray(laboratory.data) || regular.data.length > 1 || laboratory.data.length > 1 || regular.data.length + laboratory.data.length !== 1) return null;
   try { return orderPublic(regular.data.length ? regular.data[0] : laboratory.data[0], regular.data.length ? 'regular' : 'laboratorium'); } catch (_) { return null; }
 }
-// Document-only storage: no new table, RPC or environment. The existing owner session and passkey approval remain mandatory.
-const DOC_HISTORY_FIELDS_V1 = Object.freeze({recipient:160,email:254,phone:60,address:600,customerReference:100,nib:80,npwp:80});
-const DOC_HISTORY_TTL_V1 = 365 * 86400;
-function docHistoryProfileV1(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== Object.keys(DOC_HISTORY_FIELDS_V1).length
-      || !Object.entries(DOC_HISTORY_FIELDS_V1).every(([key,max]) => Object.prototype.hasOwnProperty.call(value,key) && typeof value[key] === 'string' && value[key].length <= max && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(value[key]))) documentErrorV464('HISTORY_INVALID',400);
-  if (!value.recipient.trim() || (value.email && !isEmail(value.email))) documentErrorV464('HISTORY_INVALID',400);
-  return Object.fromEntries(Object.keys(DOC_HISTORY_FIELDS_V1).map(key => [key,value[key].trim()]));
-}
-function docHistoryKeyV1(issuer) {
-  if (!DOCUMENT_ISSUERS_V1.includes(issuer)) documentErrorV464('HISTORY_ISSUER_INVALID',400);
-  return PREFIX + 'doc-history:' + digest(documentAdminScopeV464() + ':' + issuer);
-}
-function docHistoryCipherKeyV1() {
-  const master = deriveSecret('admin-document-history-aes256-v1');
-  try { return Buffer.from(master.subarray(0,32)); } finally { master.fill(0); }
-}
-function docHistoryEncryptV1(rows,key) {
-  const secret=docHistoryCipherKeyV1(), iv=crypto.randomBytes(12), plain=Buffer.from(JSON.stringify(rows),'utf8');
-  try {
-    const cipher=crypto.createCipheriv('aes-256-gcm',secret,iv); cipher.setAAD(Buffer.from('dirac-admin-document-history-v1:'+key));
-    const data=Buffer.concat([cipher.update(plain),cipher.final()]);
-    return {version:'dirac-admin-document-history-v1',revision:randomToken(),iv:iv.toString('base64url'),data:data.toString('base64url'),tag:cipher.getAuthTag().toString('base64url')};
-  } finally { secret.fill(0);plain.fill(0); }
-}
-function docHistoryDecryptV1(record,key) {
-  if (!record || record.version!=='dirac-admin-document-history-v1' || !exactToken(record.revision) || !/^[A-Za-z0-9_-]{16}$/.test(record.iv||'') || !/^[A-Za-z0-9_-]{22}$/.test(record.tag||'') || typeof record.data!=='string' || !/^[A-Za-z0-9_-]{1,180000}$/.test(record.data)) documentErrorV464('HISTORY_STATE_INVALID');
-  const secret=docHistoryCipherKeyV1();let plain,part,tail;
-  try {
-    const decipher=crypto.createDecipheriv('aes-256-gcm',secret,Buffer.from(record.iv,'base64url'));decipher.setAAD(Buffer.from('dirac-admin-document-history-v1:'+key));decipher.setAuthTag(Buffer.from(record.tag,'base64url'));
-    part=decipher.update(Buffer.from(record.data,'base64url'));tail=decipher.final();plain=Buffer.concat([part,tail]);
-    const rows=JSON.parse(plain.toString('utf8'));
-    if(!Array.isArray(rows)||rows.length>20)documentErrorV464('HISTORY_STATE_INVALID');
-    return rows.map(docHistoryProfileV1);
-  } catch (_) {documentErrorV464('HISTORY_STATE_INVALID');}
-  finally {secret.fill(0);if(plain)plain.fill(0);if(part)part.fill(0);if(tail)tail.fill(0);}
-}
-async function docHistoryReadV1(issuer,assertContext) {
-  const key=docHistoryKeyV1(issuer);assertContext();const entry=await securityRead(key);assertContext();
-  if(!entry||entry.ok!==true)documentErrorV464('HISTORY_STORE_UNAVAILABLE');
-  return {key,entry,rows:entry.found?docHistoryDecryptV1(entry.record,key):[]};
-}
-async function docHistorySaveV1(issuer,profile,assertContext) {
-  const normalized=docHistoryProfileV1(profile), prior=await docHistoryReadV1(issuer,assertContext);
-  const same=row=>stableJson(row)===stableJson(normalized);
-  const rows=[normalized,...prior.rows.filter(row=>!same(row))].slice(0,20), next=docHistoryEncryptV1(rows,prior.key);
-  assertContext();
-  if(!prior.entry.found){const ok=await securityClaim(prior.key,next,DOC_HISTORY_TTL_V1);assertContext();if(!ok)documentErrorV464('HISTORY_CONFLICT',409);return;}
-  const oldExpiry=Date.parse(prior.entry.expiresAt);
-  if(!Number.isFinite(oldExpiry))documentErrorV464('HISTORY_STATE_INVALID');
-  const expiry=new Date(Math.max(Date.now()+DOC_HISTORY_TTL_V1*1000,oldExpiry+1)).toISOString();
-  const result=await dbFetch('/rest/v1/dirac_s2s_security?security_key=eq.'+encodeURIComponent(prior.key)+'&expires_at=eq.'+encodeURIComponent(prior.entry.expiresAt)+'&select=security_key,record_json,expires_at',{method:'PATCH',prefer:'return=representation',body:{security_key:prior.key,record_json:next,expires_at:expiry}},'security');
-  assertContext();const row=result&&result.ok&&Array.isArray(result.data)&&result.data.length===1?result.data[0]:null;
-  if(!row||row.security_key!==prior.key||Date.parse(row.expires_at)!==Date.parse(expiry)||!row.record_json||row.record_json.revision!==next.revision)documentErrorV464('HISTORY_CONFLICT',409);
-}
 async function docReserveNumberV1(reference,assertContext) {
   // Global across all admin document kinds and both issuers. A failed issuance burns its number.
   const key=PREFIX+'doc-number:'+digest(reference.normalize('NFKC').trim().toUpperCase());
@@ -3276,16 +3221,15 @@ async function businessDocumentV464(operation, body, origin, assertContext) {
     return verified;
   }
   if (operation === 'document_history') {
-    const history=await docHistoryReadV1(body.issuer,assertContext);
-    return {ok:true,issuer:body.issuer,profiles:history.rows};
+    const issuer = String(body && body.issuer || '');
+    if (!DOCUMENT_ISSUERS_V1.includes(issuer)) documentErrorV464('HISTORY_ISSUER_INVALID', 400);
+    return { ok: true, issuer, profiles: [] };
   }
   if (operation === 'document_prepare') {
     const checked=approvalPayload('admin_document_prepare',body);
     await docReserveNumberV1(checked.reference,assertContext);
     const verification=await documentPrepareV464({kind:checked.document_kind,issuer:checked.issuer,reference:checked.reference,page_count:checked.page_count,content_sha256:checked.content_sha256},documentAdminScopeV464(),origin,claim,assertContext);
-    let history_saved=null;
-    if(checked.history_profile){try{await docHistorySaveV1(checked.issuer,checked.history_profile,assertContext);history_saved=true;}catch(_){assertContext();history_saved=false;}}
-    return {ok:true,verification,history_saved};
+    return {ok:true,verification};
   }
   if (operation === 'document_seal') {
     const bytes = documentBytesV464(body.file_base64), identity = body.identity;
