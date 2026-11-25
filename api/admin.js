@@ -74,9 +74,10 @@ const CONTRACTS = Object.freeze({
   admin_partner_request_update: post(['request_id', 'status', 'note', 'approval'], ['request_id', 'status', 'approval']),
   admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
   admin_local_authorize: post(['purpose', 'content_sha256', 'approval'], ['purpose', 'content_sha256', 'approval']),
-  admin_document_prepare: post(['document_kind','reference','page_count','content_sha256','issuer','approval'], ['document_kind','reference','page_count','content_sha256','approval']),
+  admin_document_prepare: post(['document_kind','reference','page_count','content_sha256','issuer','history_profile','approval'], ['document_kind','reference','page_count','content_sha256','approval']),
   admin_document_seal: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'identity','format','page','raw_sha256','file_base64','approval']), required: Object.freeze(['identity','format','page','raw_sha256','file_base64','approval']), maxBodyBytes: 4250000, maxFieldBytes: 4194304, mutation: true, allowArrayItems: false }),
   admin_document_verify: get(['file_sha256','document_id','qr_proof']),
+  admin_document_history: get(['issuer']),
   admin_monitor: get(['view', 'from', 'until'])
 });
 const ACTIONS = Object.freeze(Object.keys(CONTRACTS));
@@ -1372,7 +1373,7 @@ function approvalPayload(action, body) {
         || typeof value.reference !== 'string' || !value.reference || value.reference.length > 253
         || /[\u0000-\u001f\u007f]/.test(value.reference) || !Number.isInteger(value.page_count) || value.page_count < 1 || value.page_count > 64
         || typeof value.content_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.content_sha256)) fail('ADMIN_DOCUMENT_META_INVALID',400);
-    return { action, document_kind: value.document_kind, issuer, reference: value.reference, page_count: value.page_count, content_sha256: value.content_sha256 };
+    return { action, document_kind: value.document_kind, issuer, reference: value.reference, page_count: value.page_count, content_sha256: value.content_sha256, ...(value.history_profile === undefined ? {} : { history_profile: docHistoryProfileV1(value.history_profile) }) };
   }
   if (action === 'admin_document_seal') {
     if (!documentIdentityValidV464(value.identity) || value.identity.owner_scope !== documentAdminScopeV464() || !['png','pdf'].includes(value.format)
@@ -2078,7 +2079,7 @@ async function execute(ops) {
     const token = await issue(ops, scope, 'session', { factors: 'email+passkey+totp', factorBinding: digest(enrolled.factorGuardV466) }, SESSION_SECONDS); ops.setSession(token, SESSION_SECONDS); const loginAlert = await ops.loginAlert(); return { ok: true, login_alert_sent: loginAlert && loginAlert.ok === true, stage: 'complete', authenticated: true, expires_in: null, persistent_session: true, action_email_required: false, action_passkey_required: true };
   }
   if (action === 'admin_logout') { const active = await session(ops, scope, false, false); if (active) await consume(ops, active); await ops.clearSession(); return { ok: true }; }
-  await session(ops, scope); const operation = { admin_account_lookup: 'account_lookup', admin_account_upgrade: 'account_upgrade', admin_orders: 'orders', admin_order_cancel: 'order_cancel', admin_order_price: 'order_price', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_banned_data: 'banned_data', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_account_disable: 'account_create', admin_account_enable: 'account_create', admin_account_delete: 'account_create', admin_account_password_reset: 'account_create', admin_account_passkey_reset: 'account_create', admin_partner_requests: 'partner_requests', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_monitor: 'monitor' }[action];
+  await session(ops, scope); const operation = { admin_account_lookup: 'account_lookup', admin_account_upgrade: 'account_upgrade', admin_orders: 'orders', admin_order_cancel: 'order_cancel', admin_order_price: 'order_price', admin_shipment_update: 'shipment_update', admin_shipment_cancel: 'shipment_cancel', admin_blocks: 'blocks', admin_banned_data: 'banned_data', admin_unban: 'unban', admin_banned_pdf: 'banned_pdf', admin_account_create: 'account_create', admin_account_disable: 'account_create', admin_account_enable: 'account_create', admin_account_delete: 'account_create', admin_account_password_reset: 'account_create', admin_account_passkey_reset: 'account_create', admin_partner_requests: 'partner_requests', admin_partner_request_update: 'partner_request_update', admin_smtp_send: 'smtp_send', admin_local_authorize: 'local_authorize', admin_document_prepare: 'document_prepare', admin_document_seal: 'document_seal', admin_document_verify: 'document_verify', admin_document_history: 'document_history', admin_monitor: 'monitor' }[action];
   if (!operation) fail('ADMIN_ACTION_INVALID', 400);
   if (Object.prototype.hasOwnProperty.call(ADMIN_APPROVAL_MUTATIONS, action)) { const approval = await ticket(ops, scope, body.approval, 'action-approval'); if (approval.value.operation !== action || approval.value.payloadHash !== approvalPayloadHash(action, body)) fail('ADMIN_ACTION_APPROVAL_MISMATCH', 403); await consume(ops, approval); }
   if (action === 'admin_smtp_send') { await throttle(ops, scope, 'smtp-send-minute', 2, 60); await throttle(ops, scope, 'smtp-send-hour', 5, 3600); }
@@ -2809,7 +2810,7 @@ function adminCentralBanRequired(error) {
 }
 function adminGuardSelfTest() {
   try {
-    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_order_cancel','admin_order_price','admin_blocks','admin_banned_data','admin_unban','admin_banned_pdf','admin_account_lookup','admin_account_upgrade','admin_account_create','admin_account_disable','admin_account_enable','admin_account_delete','admin_account_password_reset','admin_account_passkey_reset','admin_partner_requests','admin_partner_request_update','admin_smtp_send','admin_local_authorize','admin_document_prepare','admin_document_seal','admin_document_verify','admin_monitor'];
+    const expected = ['admin_entry','admin_security_report','admin_login','admin_status','admin_email_start','admin_email_verify','admin_action_passkey_start','admin_action_passkey_verify','admin_passkey_start','admin_passkey_verify','admin_passkey_recovery_start','admin_passkey_recovery_verify','admin_totp_verify','admin_logout','admin_orders','admin_shipment_update','admin_shipment_cancel','admin_order_cancel','admin_order_price','admin_blocks','admin_banned_data','admin_unban','admin_banned_pdf','admin_account_lookup','admin_account_upgrade','admin_account_create','admin_account_disable','admin_account_enable','admin_account_delete','admin_account_password_reset','admin_account_passkey_reset','admin_partner_requests','admin_partner_request_update','admin_smtp_send','admin_local_authorize','admin_document_prepare','admin_document_seal','admin_document_verify','admin_document_history','admin_monitor'];
     return Object.isFrozen(CONTRACTS) && Object.isFrozen(ACTIONS) && ACTIONS.length === expected.length && expected.every((name, index) => ACTIONS[index] === name && Object.isFrozen(CONTRACTS[name]) && Object.isFrozen(CONTRACTS[name].methods) && Object.isFrozen(CONTRACTS[name].allowed) && Object.isFrozen(CONTRACTS[name].required))
       && exactToken(randomToken()) && PASSWORD_COOKIE.startsWith('__Host-') && SESSION_COOKIE.startsWith('__Host-') && adminSecretState().configured === true;
   } catch (_) { return false; }
@@ -3198,6 +3199,67 @@ async function documentInvoiceOrderV471(reference, assertContext) {
   if (!regular || !laboratory || !regular.ok || !laboratory.ok || !Array.isArray(regular.data) || !Array.isArray(laboratory.data) || regular.data.length > 1 || laboratory.data.length > 1 || regular.data.length + laboratory.data.length !== 1) return null;
   try { return orderPublic(regular.data.length ? regular.data[0] : laboratory.data[0], regular.data.length ? 'regular' : 'laboratorium'); } catch (_) { return null; }
 }
+// Document-only storage: no new table, RPC or environment. The existing owner session and passkey approval remain mandatory.
+const DOC_HISTORY_FIELDS_V1 = Object.freeze({recipient:160,email:254,phone:60,address:600,customerReference:100,nib:80,npwp:80});
+const DOC_HISTORY_TTL_V1 = 365 * 86400;
+function docHistoryProfileV1(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== Object.keys(DOC_HISTORY_FIELDS_V1).length
+      || !Object.entries(DOC_HISTORY_FIELDS_V1).every(([key,max]) => Object.prototype.hasOwnProperty.call(value,key) && typeof value[key] === 'string' && value[key].length <= max && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(value[key]))) documentErrorV464('HISTORY_INVALID',400);
+  if (!value.recipient.trim() || (value.email && !isEmail(value.email))) documentErrorV464('HISTORY_INVALID',400);
+  return Object.fromEntries(Object.keys(DOC_HISTORY_FIELDS_V1).map(key => [key,value[key].trim()]));
+}
+function docHistoryKeyV1(issuer) {
+  if (!DOCUMENT_ISSUERS_V1.includes(issuer)) documentErrorV464('HISTORY_ISSUER_INVALID',400);
+  return PREFIX + 'doc-history:' + digest(documentAdminScopeV464() + ':' + issuer);
+}
+function docHistoryCipherKeyV1() {
+  const master = deriveSecret('admin-document-history-aes256-v1');
+  try { return Buffer.from(master.subarray(0,32)); } finally { master.fill(0); }
+}
+function docHistoryEncryptV1(rows,key) {
+  const secret=docHistoryCipherKeyV1(), iv=crypto.randomBytes(12), plain=Buffer.from(JSON.stringify(rows),'utf8');
+  try {
+    const cipher=crypto.createCipheriv('aes-256-gcm',secret,iv); cipher.setAAD(Buffer.from('dirac-admin-document-history-v1:'+key));
+    const data=Buffer.concat([cipher.update(plain),cipher.final()]);
+    return {version:'dirac-admin-document-history-v1',revision:randomToken(),iv:iv.toString('base64url'),data:data.toString('base64url'),tag:cipher.getAuthTag().toString('base64url')};
+  } finally { secret.fill(0);plain.fill(0); }
+}
+function docHistoryDecryptV1(record,key) {
+  if (!record || record.version!=='dirac-admin-document-history-v1' || !exactToken(record.revision) || !/^[A-Za-z0-9_-]{16}$/.test(record.iv||'') || !/^[A-Za-z0-9_-]{22}$/.test(record.tag||'') || typeof record.data!=='string' || !/^[A-Za-z0-9_-]{1,180000}$/.test(record.data)) documentErrorV464('HISTORY_STATE_INVALID');
+  const secret=docHistoryCipherKeyV1();let plain,part,tail;
+  try {
+    const decipher=crypto.createDecipheriv('aes-256-gcm',secret,Buffer.from(record.iv,'base64url'));decipher.setAAD(Buffer.from('dirac-admin-document-history-v1:'+key));decipher.setAuthTag(Buffer.from(record.tag,'base64url'));
+    part=decipher.update(Buffer.from(record.data,'base64url'));tail=decipher.final();plain=Buffer.concat([part,tail]);
+    const rows=JSON.parse(plain.toString('utf8'));
+    if(!Array.isArray(rows)||rows.length>20)documentErrorV464('HISTORY_STATE_INVALID');
+    return rows.map(docHistoryProfileV1);
+  } catch (_) {documentErrorV464('HISTORY_STATE_INVALID');}
+  finally {secret.fill(0);if(plain)plain.fill(0);if(part)part.fill(0);if(tail)tail.fill(0);}
+}
+async function docHistoryReadV1(issuer,assertContext) {
+  const key=docHistoryKeyV1(issuer);assertContext();const entry=await securityRead(key);assertContext();
+  if(!entry||entry.ok!==true)documentErrorV464('HISTORY_STORE_UNAVAILABLE');
+  return {key,entry,rows:entry.found?docHistoryDecryptV1(entry.record,key):[]};
+}
+async function docHistorySaveV1(issuer,profile,assertContext) {
+  const normalized=docHistoryProfileV1(profile), prior=await docHistoryReadV1(issuer,assertContext);
+  const same=row=>stableJson(row)===stableJson(normalized);
+  const rows=[normalized,...prior.rows.filter(row=>!same(row))].slice(0,20), next=docHistoryEncryptV1(rows,prior.key);
+  assertContext();
+  if(!prior.entry.found){const ok=await securityClaim(prior.key,next,DOC_HISTORY_TTL_V1);assertContext();if(!ok)documentErrorV464('HISTORY_CONFLICT',409);return;}
+  const oldExpiry=Date.parse(prior.entry.expiresAt);
+  if(!Number.isFinite(oldExpiry))documentErrorV464('HISTORY_STATE_INVALID');
+  const expiry=new Date(Math.max(Date.now()+DOC_HISTORY_TTL_V1*1000,oldExpiry+1)).toISOString();
+  const result=await dbFetch('/rest/v1/dirac_s2s_security?security_key=eq.'+encodeURIComponent(prior.key)+'&expires_at=eq.'+encodeURIComponent(prior.entry.expiresAt)+'&select=security_key,record_json,expires_at',{method:'PATCH',prefer:'return=representation',body:{security_key:prior.key,record_json:next,expires_at:expiry}},'security');
+  assertContext();const row=result&&result.ok&&Array.isArray(result.data)&&result.data.length===1?result.data[0]:null;
+  if(!row||row.security_key!==prior.key||Date.parse(row.expires_at)!==Date.parse(expiry)||!row.record_json||row.record_json.revision!==next.revision)documentErrorV464('HISTORY_CONFLICT',409);
+}
+async function docReserveNumberV1(reference,assertContext) {
+  // Global across all admin document kinds and both issuers. A failed issuance burns its number.
+  const key=PREFIX+'doc-number:'+digest(reference.normalize('NFKC').trim().toUpperCase());
+  assertContext();const ok=await securityClaim(key,{version:'dirac-admin-document-number-v1',reserved:true},ENROLLMENT_SECONDS);assertContext();
+  if(!ok)documentErrorV464('NUMBER_UNAVAILABLE',409);
+}
 async function businessDocumentV464(operation, body, origin, assertContext) {
   const read = async key => { assertContext(); const result = await securityRead(key); assertContext(); if (!result || !result.ok) documentErrorV464('STORE_UNAVAILABLE'); return result.found ? result.record : null; };
   const claim = async (key, record) => { assertContext(); const ok = await securityClaim(key, record, ENROLLMENT_SECONDS); assertContext(); return ok; };
@@ -3206,8 +3268,18 @@ async function businessDocumentV464(operation, body, origin, assertContext) {
     if (verified && (verified.integrity_verified === true || verified.qr_authentic === true || verified.status === 'issued_id') && verified.kind === 'invoice') { const order = await documentInvoiceOrderV471(verified.reference, assertContext); if (order) verified.order = order; }
     return verified;
   }
-  if (operation === 'document_prepare') return { ok: true, verification: await documentPrepareV464({ kind: body.document_kind, issuer: body.issuer === undefined ? 'PT Dincorp Inovasi Asia' : body.issuer, reference: body.reference,
-    page_count: body.page_count, content_sha256: body.content_sha256 }, documentAdminScopeV464(), origin, claim, assertContext) };
+  if (operation === 'document_history') {
+    const history=await docHistoryReadV1(body.issuer,assertContext);
+    return {ok:true,issuer:body.issuer,profiles:history.rows};
+  }
+  if (operation === 'document_prepare') {
+    const checked=approvalPayload('admin_document_prepare',body);
+    await docReserveNumberV1(checked.reference,assertContext);
+    const verification=await documentPrepareV464({kind:checked.document_kind,issuer:checked.issuer,reference:checked.reference,page_count:checked.page_count,content_sha256:checked.content_sha256},documentAdminScopeV464(),origin,claim,assertContext);
+    let history_saved=null;
+    if(checked.history_profile){try{await docHistorySaveV1(checked.issuer,checked.history_profile,assertContext);history_saved=true;}catch(_){assertContext();history_saved=false;}}
+    return {ok:true,verification,history_saved};
+  }
   if (operation === 'document_seal') {
     const bytes = documentBytesV464(body.file_base64), identity = body.identity;
     if (crypto.createHash('sha256').update(bytes).digest('hex') !== body.raw_sha256) documentErrorV464('HASH_MISMATCH', 400);
@@ -3316,7 +3388,7 @@ async function businessMonitor(body) {
   let rows = [], ready = false; if (result && result.ok && Array.isArray(result.data) && result.data.length <= 20) { rows = result.data; ready = true; }
   const memory = process.memoryUsage(); return { ok: true, time: new Date().toISOString(), guard: { self_test_ok: adminGuardSelfTest(), static_gate_ok: ADMIN_STATIC_GATE.ok, scope: 'Central Guard bersama: seluruh 30 tahap wajib sebelum handler admin.' }, runtime: { uptime_seconds: Math.floor(process.uptime()), rss_bytes: memory.rss, heap_used_bytes: memory.heapUsed, heap_total_bytes: memory.heapTotal }, events_ready: ready, events: ready ? rows.map(row => ({ event_type: String(row && row.event_type || '').slice(0, 100), status: String(row && row.status || '').slice(0, 40), risk_level: String(row && row.risk_level || '').slice(0, 40), description: String(row && row.description || '').slice(0, 240), created_at: String(row && row.created_at || '').slice(0, 48) })) : [], ...(view === 'overview' ? { overview_summary: summary } : {}) };
 }
-async function business(operation, body, origin, assertContext) { if (operation === 'account_lookup') return businessAccountLookupV544(body, origin, assertContext); if (operation === 'account_upgrade') return businessAccountUpgradeV544(body, origin, assertContext); if (['document_prepare','document_seal','document_verify'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'order_cancel' || operation === 'order_price') return businessOrderChangeV1(operation, body, origin, assertContext); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'banned_data') return businessBannedDataV476(body); if (operation === 'unban') return businessUnban(body); if (operation === 'banned_pdf') return businessBannedPdfV476(body, origin, assertContext); if (operation === 'account_create') return businessAccountManage(body, origin, assertContext); if (operation === 'partner_requests') return businessPartnerRequestsV478(assertContext); if (operation === 'partner_request_update') return businessPartnerRequestUpdateV478(body, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(body); fail('ADMIN_OPERATION_INVALID', 400); }
+async function business(operation, body, origin, assertContext) { if (operation === 'account_lookup') return businessAccountLookupV544(body, origin, assertContext); if (operation === 'account_upgrade') return businessAccountUpgradeV544(body, origin, assertContext); if (['document_prepare','document_seal','document_verify','document_history'].includes(operation)) return businessDocumentV464(operation,body,origin,assertContext); if (operation === 'local_authorize') { const checked = approvalPayload('admin_local_authorize', body); assertContext(); return { ok: true, authorized: true, purpose: checked.purpose, content_sha256: checked.content_sha256, one_time: true }; } if (operation === 'orders') return businessOrders(body); if (operation === 'order_cancel' || operation === 'order_price') return businessOrderChangeV1(operation, body, origin, assertContext); if (operation === 'shipment_update') return businessShipment(body, false, origin, assertContext); if (operation === 'shipment_cancel') return businessShipment(body, true, origin, assertContext); if (operation === 'blocks') return businessBlocks(body); if (operation === 'banned_data') return businessBannedDataV476(body); if (operation === 'unban') return businessUnban(body); if (operation === 'banned_pdf') return businessBannedPdfV476(body, origin, assertContext); if (operation === 'account_create') return businessAccountManage(body, origin, assertContext); if (operation === 'partner_requests') return businessPartnerRequestsV478(assertContext); if (operation === 'partner_request_update') return businessPartnerRequestUpdateV478(body, assertContext); if (operation === 'smtp_send') return businessSmtpSend(body, origin, assertContext); if (operation === 'monitor') return businessMonitor(body); fail('ADMIN_OPERATION_INVALID', 400); }
 
 function adminCentralBanReason(error) {
   const raw = String(error && error.code || 'admin_failure').trim().toLowerCase().replace(/[^a-z0-9_:-]+/g, '_').replace(/^_+|_+$/g, '');
@@ -3439,7 +3511,7 @@ function buildOps(req, res, state) {
     verifySecret: value => { assertFullGuard(); const current = adminSecretState(); return current.configured && typeof value === 'string' && safeEqual(digest(value), digest(current.secret)); },
     publishPassword: async () => { assertFullGuard(); const current = adminSecretState(); if (!current.configured) fail('ADMIN_CREDENTIAL_NOT_CONFIGURED', 503); await publishPasswordProof(req, res, state.origin, state.device, current.secret); },
     securityReport: async report => { assertFullGuard(); const evidence = report && ADMIN_VERIFIED_SECURITY_REPORTS.get(report); if (state.action !== 'admin_security_report' || !evidence || evidence.body !== state.body || evidence.origin !== state.origin) fail('SECURITY_REPORT_EVIDENCE_REJECTED', 403); ADMIN_VERIFIED_SECURITY_REPORTS.delete(report); const centralBan = await adminCentralBanFailure(req, Object.assign(new Error('ADMIN_SECURITY_REPORT_ONE_STRIKE'), { code: 'ADMIN_SECURITY_REPORT_ONE_STRIKE', status: 403, statusCode: 403 })); if (!centralBan || centralBan.ok !== true) fail('ADMIN_CENTRAL_BAN_PERSISTENCE_UNAVAILABLE', 503); assertFullGuard(); res.setHeader('Retry-After', String(SECURITY_BLOCK_SECONDS)); res.setHeader('X-Dirac-Central-Ban', '1'); return { blockedUntil: centralBan.blocked_until_ms, central_ban: true }; },
-    business: async (operation, body) => { assertFullGuard(); CENTRAL_V545.assertPassed(req, res, 'admin'); if (!state.passwordAuthority || !['orders', 'order_cancel', 'order_price', 'shipment_update', 'shipment_cancel', 'blocks', 'banned_data', 'unban', 'banned_pdf', 'account_lookup', 'account_upgrade', 'account_create', 'partner_requests', 'partner_request_update', 'smtp_send', 'local_authorize', 'document_prepare', 'document_seal', 'document_verify', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
+    business: async (operation, body) => { assertFullGuard(); CENTRAL_V545.assertPassed(req, res, 'admin'); if (!state.passwordAuthority || !['orders', 'order_cancel', 'order_price', 'shipment_update', 'shipment_cancel', 'blocks', 'banned_data', 'unban', 'banned_pdf', 'account_lookup', 'account_upgrade', 'account_create', 'partner_requests', 'partner_request_update', 'smtp_send', 'local_authorize', 'document_prepare', 'document_seal', 'document_verify', 'document_history', 'monitor'].includes(operation)) fail('ADMIN_THREE_FACTORS_REQUIRED', 403); const result = await business(operation, body, state.origin, assertFullGuard); assertFullGuard(); return result; }
   });
   state.deactivate = () => { active = false; records.clear(); };
   return ops;
