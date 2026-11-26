@@ -1404,7 +1404,7 @@ function approvalPayload(action, body) {
     if (hasDocumentShare) {
       if (typeof value.document_id !== 'string' || !/^DV-[a-f0-9]{48}$/.test(value.document_id)
           || typeof value.document_snapshot_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.document_snapshot_sha256)
-          || !value.document_snapshot || typeof value.document_snapshot !== 'object' || Array.isArray(value.document_snapshot)) fail('ADMIN_DOCUMENT_SHARE_APPROVAL_INVALID', 400);
+          || (value.document_snapshot !== undefined && (!value.document_snapshot || typeof value.document_snapshot !== 'object' || Array.isArray(value.document_snapshot)))) fail('ADMIN_DOCUMENT_SHARE_APPROVAL_INVALID', 400);
       result.document_id = value.document_id;
       result.document_snapshot_sha256 = value.document_snapshot_sha256;
     }
