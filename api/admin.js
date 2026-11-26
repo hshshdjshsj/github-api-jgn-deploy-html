@@ -3122,6 +3122,197 @@ function documentIdentityValidV464(value) {
     && Number.isSafeInteger(value.created_at) && value.created_at > 0 && value.created_at <= Date.now() + 1000
     && Number.isInteger(value.page_count) && value.page_count >= 1 && value.page_count <= 64 && documentSignedV464(value));
 }
+
+const DOCUMENT_DIAGNOSTIC_V1 = 'dirac-document-validation-diagnostic-v1';
+function documentDiagnosticLogV1(event, detail) {
+  try {
+    console.error('[' + DOCUMENT_DIAGNOSTIC_V1 + '] ' + JSON.stringify({
+      patch: DOCUMENT_DIAGNOSTIC_V1,
+      event: String(event || 'unknown').slice(0, 80),
+      ...(detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {})
+    }));
+  } catch (_) {}
+}
+function documentDiagnosticSafeV1(check) {
+  try { return { ok: check() === true, error_code: '' }; }
+  catch (error) { return { ok: false, error_code: String(error && (error.code || error.name) || 'diagnostic_exception').slice(0, 80) }; }
+}
+function documentDiagnosticObjectV1(value) {
+  return !!(value && typeof value === 'object' && !Array.isArray(value));
+}
+function documentDiagnosticKeysV1(value) {
+  return documentDiagnosticObjectV1(value) ? Object.keys(value).sort().join(',') : '';
+}
+function documentDiagnosticOwnerV1(value) {
+  if (!documentDiagnosticObjectV1(value) || !Object.prototype.hasOwnProperty.call(value, '__dirac_storage_owner_v539')) return 'absent';
+  return value.__dirac_storage_owner_v539 === 'admin' ? 'admin'
+    : value.__dirac_storage_owner_v539 === 'shared' ? 'shared' : 'other';
+}
+function documentDiagnosticTagV1(actual, expected) {
+  return typeof actual === 'string' && /^[A-Za-z0-9_-]{86}$/.test(actual) && typeof expected === 'string' && safeEqual(actual, expected);
+}
+function documentDiagnosticIdentityV1(value) {
+  const object = documentDiagnosticObjectV1(value), keys = documentDiagnosticKeysV1(value);
+  const visualPresent = object && Object.prototype.hasOwnProperty.call(value, 'visual_patterns');
+  const visualObject = visualPresent && documentDiagnosticObjectV1(value.visual_patterns);
+  const visualExpected = !visualPresent ? { ok: true, error_code: '' }
+    : documentDiagnosticSafeV1(() => visualObject && value.kind === 'invoice'
+      && stableJson(value.visual_patterns) === stableJson(documentInvoicePatternsV495(value)));
+  const signed = documentDiagnosticSafeV1(() => documentSignedV464(value));
+  const valid = documentDiagnosticSafeV1(() => documentIdentityValidV464(value));
+  const reference = object && typeof value.reference === 'string' ? value.reference : '';
+  return {
+    object,
+    keys,
+    keys_exact: keys === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version'
+      || keys === 'content_sha256,created_at,id,issuer,kind,mac,owner_scope,page_count,reference,version,visual_patterns',
+    storage_owner: documentDiagnosticOwnerV1(value),
+    version_valid: object && value.version === DOCUMENT_VERSION_V464,
+    id_format_valid: object && typeof value.id === 'string' && /^DV-[a-f0-9]{48}$/.test(value.id),
+    issuer_allowed: object && DOCUMENT_ISSUERS_V1.includes(value.issuer),
+    issuer_kind_compatible: object && (value.issuer !== 'CV Multi Usaha Mandiri' || value.kind === 'quotation'),
+    kind_allowed: object && DOCUMENT_KINDS_V464.includes(value.kind),
+    reference_is_string: object && typeof value.reference === 'string',
+    reference_length: reference.length,
+    reference_control_chars_absent: object && typeof value.reference === 'string' && !/[\u0000-\u001f\u007f]/.test(value.reference),
+    content_sha256_format_valid: object && typeof value.content_sha256 === 'string' && /^[a-f0-9]{64}$/.test(value.content_sha256),
+    owner_scope_format_valid: object && typeof value.owner_scope === 'string' && /^[a-f0-9]{64}$/.test(value.owner_scope),
+    created_at_safe_integer: object && Number.isSafeInteger(value.created_at),
+    created_at_positive: object && Number.isSafeInteger(value.created_at) && value.created_at > 0,
+    created_at_not_future: object && Number.isSafeInteger(value.created_at) && value.created_at <= Date.now() + 1000,
+    page_count_integer: object && Number.isInteger(value.page_count),
+    page_count_range_valid: object && Number.isInteger(value.page_count) && value.page_count >= 1 && value.page_count <= 64,
+    visual_patterns_present: visualPresent,
+    visual_patterns_object_valid: !visualPresent || visualObject,
+    visual_patterns_expected: visualExpected.ok,
+    visual_patterns_error_code: visualExpected.error_code,
+    mac_format_valid: object && typeof value.mac === 'string' && /^[A-Za-z0-9_-]{86}$/.test(value.mac),
+    mac_signature_valid: signed.ok,
+    mac_signature_error_code: signed.error_code,
+    validator_valid: valid.ok,
+    validator_error_code: valid.error_code
+  };
+}
+function documentDiagnosticHiddenV1(value) {
+  const present = documentDiagnosticObjectV1(value) && Object.prototype.hasOwnProperty.call(value, 'hidden_patterns');
+  if (!present) return { present: false, valid: true, version: '', keys: '', keys_exact: true, version_supported: true };
+  const actual = value.hidden_patterns, object = documentDiagnosticObjectV1(actual);
+  const version = object && typeof actual.version === 'string' ? actual.version : '';
+  const keys = documentDiagnosticKeysV1(actual);
+  let expectedKeys = '', validation = { ok: false, error_code: 'unsupported_version' }, tags = null;
+  if (version === DOCUMENT_HIDDEN_VERSION_V526) {
+    expectedKeys = 'artifact,content,identity,issuance,owner,version';
+    validation = documentDiagnosticSafeV1(() => documentInvoiceHiddenValidV526(value));
+  } else if (version === DOCUMENT_HIDDEN_VERSION_V527) {
+    expectedKeys = 'artifact,commercial,content,geometry,identity,issuance,lineage,owner,version';
+    validation = documentDiagnosticSafeV1(() => documentInvoiceHiddenValidV527(value));
+  } else if (version === DOCUMENT_HIDDEN_VERSION_V528) {
+    expectedKeys = 'artifact,chain,claims,commercial,content,geometry,identity,issuance,lineage,owner,raw,version';
+    validation = documentDiagnosticSafeV1(() => documentInvoiceHiddenValidV528(value));
+  } else if (version === DOCUMENT_HIDDEN_VERSION_V530) {
+    expectedKeys = 'aggregate,artifact,chain,claims,commercial,content,custody,geometry,identity,issuance,lineage,manifest,owner,raw,version';
+    validation = documentDiagnosticSafeV1(() => documentInvoiceHiddenValidV530(value));
+  } else if (version === DOCUMENT_HIDDEN_VERSION_V531) {
+    expectedKeys = 'aggregate,artifact,chain,chronology,claims,commercial,content,custody,finality,geometry,identity,issuance,lineage,manifest,owner,partition,protocol,raw,rendering,version';
+    validation = documentDiagnosticSafeV1(() => documentInvoiceHiddenValidV531(value));
+  } else if (version === DOCUMENT_HIDDEN_VERSION_V534) {
+    expectedKeys = 'aggregate,artifact,chain,chronology,claims,commercial,content,custody,finality,geometry,identity,issuance,lineage,manifest,owner,partition,protocol,raw,rendering,verifier,version';
+    let expected = null, expectedError = '';
+    try { expected = documentInvoiceHiddenV534(value); }
+    catch (error) { expectedError = String(error && (error.code || error.name) || 'diagnostic_exception').slice(0, 80); }
+    tags = {
+      identity: !!expected && documentDiagnosticTagV1(actual.identity, expected.identity),
+      content: !!expected && documentDiagnosticTagV1(actual.content, expected.content),
+      owner: !!expected && documentDiagnosticTagV1(actual.owner, expected.owner),
+      artifact: !!expected && documentDiagnosticTagV1(actual.artifact, expected.artifact),
+      issuance: !!expected && documentDiagnosticTagV1(actual.issuance, expected.issuance),
+      commercial: !!expected && documentDiagnosticTagV1(actual.commercial, expected.commercial),
+      geometry: !!expected && documentDiagnosticTagV1(actual.geometry, expected.geometry),
+      lineage: !!expected && documentDiagnosticTagV1(actual.lineage, expected.lineage),
+      raw: !!expected && documentDiagnosticTagV1(actual.raw, expected.raw),
+      claims: !!expected && documentDiagnosticTagV1(actual.claims, expected.claims),
+      chain: !!expected && documentDiagnosticTagV1(actual.chain, expected.chain),
+      manifest: !!expected && documentDiagnosticTagV1(actual.manifest, expected.manifest),
+      custody: !!expected && documentDiagnosticTagV1(actual.custody, expected.custody),
+      aggregate: !!expected && documentDiagnosticTagV1(actual.aggregate, expected.aggregate),
+      protocol: !!expected && documentDiagnosticTagV1(actual.protocol, expected.protocol),
+      partition: !!expected && documentDiagnosticTagV1(actual.partition, expected.partition),
+      rendering: !!expected && documentDiagnosticTagV1(actual.rendering, expected.rendering),
+      chronology: !!expected && documentDiagnosticTagV1(actual.chronology, expected.chronology),
+      finality: !!expected && documentDiagnosticTagV1(actual.finality, expected.finality),
+      verifier: !!expected && documentDiagnosticTagV1(actual.verifier, expected.verifier)
+    };
+    const tagsValid = tags.identity && tags.content && tags.owner && tags.artifact && tags.issuance
+      && tags.commercial && tags.geometry && tags.lineage && tags.raw && tags.claims && tags.chain
+      && tags.manifest && tags.custody && tags.aggregate && tags.protocol && tags.partition
+      && tags.rendering && tags.chronology && tags.finality && tags.verifier;
+    validation = { ok: object && value.identity && value.identity.kind === 'invoice'
+      && actual.version === DOCUMENT_HIDDEN_VERSION_V534 && keys === expectedKeys && tagsValid, error_code: expectedError };
+  }
+  return { present: true, object, version, keys, keys_exact: !!expectedKeys && keys === expectedKeys,
+    version_supported: !!expectedKeys, valid: validation.ok, error_code: validation.error_code, tag_checks: tags };
+}
+function documentDiagnosticRecordV1(record, fileSha, id, ownerScope) {
+  const recordObject = documentDiagnosticObjectV1(record), recordKeys = documentDiagnosticKeysV1(record);
+  const seal = recordObject ? record.seal : null, sealObject = documentDiagnosticObjectV1(seal);
+  const identity = sealObject ? seal.identity : null, identityObject = documentDiagnosticObjectV1(identity);
+  const recordMac = documentDiagnosticSafeV1(() => documentSignedV464(record));
+  const sealMac = documentDiagnosticSafeV1(() => documentSignedV464(seal));
+  const identityDetails = documentDiagnosticIdentityV1(identity);
+  const hiddenDetails = documentDiagnosticHiddenV1(seal);
+  const sealKeys = documentDiagnosticKeysV1(seal);
+  const fileBytesValid = recordObject && Number.isSafeInteger(record.file_bytes)
+    && record.file_bytes >= 10 && record.file_bytes <= DOCUMENT_MAX_V464;
+  const rawBytesValid = sealObject && Number.isSafeInteger(seal.raw_bytes) && seal.raw_bytes >= 10
+    && recordObject && seal.raw_bytes < record.file_bytes;
+  const pageFormatValid = sealObject && identityObject && Number.isInteger(seal.page)
+    && (seal.format === 'png' ? seal.page >= 1 && Number.isInteger(identity.page_count) && seal.page <= identity.page_count
+      : seal.format === 'pdf' ? seal.page === 0 : false);
+  return {
+    correlation: {
+      file_sha256_tag: fileSha ? digest(fileSha).slice(0, 20) : '',
+      document_id_tag: id ? digest(id).slice(0, 20) : '',
+      owner_scope_tag: ownerScope ? digest(ownerScope).slice(0, 20) : ''
+    },
+    record: {
+      object: recordObject,
+      keys: recordKeys,
+      keys_exact: recordKeys === 'file_bytes,file_sha256,mac,seal,version',
+      storage_owner: documentDiagnosticOwnerV1(record),
+      version_valid: recordObject && record.version === DOCUMENT_VERSION_V464,
+      file_sha256_matches_input: recordObject && record.file_sha256 === fileSha,
+      file_bytes_valid: !!fileBytesValid,
+      mac_format_valid: recordObject && typeof record.mac === 'string' && /^[A-Za-z0-9_-]{86}$/.test(record.mac),
+      mac_signature_valid: recordMac.ok,
+      mac_signature_error_code: recordMac.error_code
+    },
+    seal: {
+      object: sealObject,
+      keys: sealKeys,
+      keys_exact: sealKeys === 'artifact_id,created_at,format,identity,mac,page,raw_bytes,raw_sha256,version'
+        || sealKeys === 'artifact_id,created_at,format,hidden_patterns,identity,mac,page,raw_bytes,raw_sha256,version',
+      storage_owner: documentDiagnosticOwnerV1(seal),
+      version_valid: sealObject && seal.version === DOCUMENT_VERSION_V464,
+      mac_format_valid: sealObject && typeof seal.mac === 'string' && /^[A-Za-z0-9_-]{86}$/.test(seal.mac),
+      mac_signature_valid: sealMac.ok,
+      mac_signature_error_code: sealMac.error_code,
+      artifact_id_format_valid: sealObject && typeof seal.artifact_id === 'string' && /^[a-f0-9]{48}$/.test(seal.artifact_id),
+      raw_sha256_format_valid: sealObject && typeof seal.raw_sha256 === 'string' && /^[a-f0-9]{64}$/.test(seal.raw_sha256),
+      raw_bytes_valid: !!rawBytesValid,
+      created_at_safe_integer: sealObject && Number.isSafeInteger(seal.created_at),
+      created_at_not_future: sealObject && Number.isSafeInteger(seal.created_at) && seal.created_at <= Date.now() + 1000,
+      format_allowed: sealObject && ['png', 'pdf'].includes(seal.format),
+      page_integer: sealObject && Number.isInteger(seal.page),
+      page_format_valid: !!pageFormatValid,
+      hidden_patterns: hiddenDetails,
+      identity: identityDetails
+    },
+    comparisons: {
+      document_id_matches_input: identityObject && identity.id === id,
+      owner_scope_matches_input: identityObject && identity.owner_scope === ownerScope
+    }
+  };
+}
 const DOCUMENT_QR_VERSION_V470 = 'dirac-document-qr-v470';
 function documentQrProofV470(identity) {
   if (!documentIdentityValidV464(identity)) documentErrorV464('IDENTITY_INVALID');
@@ -3218,14 +3409,44 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
   assertContext();
   const fileSha = input.file_sha256 || '', id = input.document_id || '', qrProof = input.qr_proof || '';
   if ((!fileSha && !id) || (fileSha && !/^[a-f0-9]{64}$/.test(fileSha)) || (id && !/^DV-[a-f0-9]{48}$/.test(id)) || (qrProof && !/^[A-Za-z0-9_-]{43}$/.test(qrProof))) documentErrorV464('VERIFY_INVALID', 400);
-  const record = await read(DOCUMENT_PREFIX_V464 + (fileSha ? 'file:' + fileSha : 'id:' + id));
+  const recordKey = DOCUMENT_PREFIX_V464 + (fileSha ? 'file:' + fileSha : 'id:' + id);
+  let record;
+  try { record = await read(recordKey); }
+  catch (error) {
+    if (ownerScope) documentDiagnosticLogV1('document_record_read_error', {
+      flow: 'admin_smtp_send_document_share', key_type: fileSha ? 'file' : 'identity',
+      file_sha256_tag: fileSha ? digest(fileSha).slice(0, 20) : '',
+      document_id_tag: id ? digest(id).slice(0, 20) : '',
+      error_code: String(error && (error.code || error.name) || 'read_exception').slice(0, 80),
+      error_status: Number(error && (error.status || error.statusCode) || 0)
+    });
+    throw error;
+  }
   assertContext();
   if (!record) {
     if (fileSha && id) {
-      const identity = await read(DOCUMENT_PREFIX_V464 + 'id:' + id);
+      let identity;
+      try { identity = await read(DOCUMENT_PREFIX_V464 + 'id:' + id); }
+      catch (error) {
+        if (ownerScope) documentDiagnosticLogV1('document_identity_read_error', {
+          flow: 'admin_smtp_send_document_share', document_id_tag: digest(id).slice(0, 20),
+          error_code: String(error && (error.code || error.name) || 'read_exception').slice(0, 80),
+          error_status: Number(error && (error.status || error.statusCode) || 0)
+        });
+        throw error;
+      }
       assertContext();
       if (identity) {
-        if (!documentIdentityValidV464(identity)) documentErrorV464('RECORD_INVALID');
+        if (!documentIdentityValidV464(identity)) {
+          if (ownerScope) {
+            try { documentDiagnosticLogV1('document_identity_record_invalid', {
+              flow: 'admin_smtp_send_document_share', document_id_tag: digest(id).slice(0, 20),
+              identity: documentDiagnosticIdentityV1(identity)
+            }); }
+            catch (error) { documentDiagnosticLogV1('document_identity_diagnostic_failed', { error_code: String(error && (error.code || error.name) || 'diagnostic_exception').slice(0, 80) }); }
+          }
+          documentErrorV464('RECORD_INVALID');
+        }
         if (ownerScope && identity.owner_scope !== ownerScope) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, qr_authentic: false, message: 'Pemilik dokumen tidak cocok.' };
         const qrAuthentic = documentQrProofMatchesV470(identity, qrProof);
         return { ok: true, verified: false, status: qrAuthentic ? 'qr_reuse_or_modified_file' : 'unregistered_file_with_id', integrity_verified: false,
@@ -3236,6 +3457,10 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
             : 'Nomor penerbitan ditemukan, tetapi keaslian kode QR dan berkas belum terverifikasi.' };
       }
     }
+    if (ownerScope) documentDiagnosticLogV1('document_file_and_identity_record_missing', {
+      flow: 'admin_smtp_send_document_share', file_sha256_tag: fileSha ? digest(fileSha).slice(0, 20) : '',
+      document_id_tag: id ? digest(id).slice(0, 20) : '', file_record_found: false, identity_record_found: false
+    });
     return { ok: true, verified: false, status: 'unregistered', integrity_verified: false, qr_authentic: false,
       message: 'Berkas tidak cocok dengan catatan penerbitan. Foto, hasil scan, dokumen lama, atau berkas yang diubah belum dapat diverifikasi; hasil ini tidak menentukan kebenaran isinya.' };
   }
@@ -3250,7 +3475,19 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
         || !Number.isSafeInteger(seal.created_at) || seal.created_at > Date.now() + 1000 || !['png','pdf'].includes(seal.format)
         || !documentIdentityValidV464(seal.identity) || !Number.isInteger(seal.page)
         || (Object.prototype.hasOwnProperty.call(seal, 'hidden_patterns') && !documentInvoiceHiddenValidV526(seal) && !documentInvoiceHiddenValidV527(seal) && !documentInvoiceHiddenValidV528(seal) && !documentInvoiceHiddenValidV530(seal) && !documentInvoiceHiddenValidV531(seal) && !documentInvoiceHiddenValidV534(seal))
-        || (seal.format === 'png' ? seal.page < 1 || seal.page > seal.identity.page_count : seal.page !== 0)) documentErrorV464('RECORD_INVALID');
+        || (seal.format === 'png' ? seal.page < 1 || seal.page > seal.identity.page_count : seal.page !== 0)) {
+      if (ownerScope) {
+        try { documentDiagnosticLogV1('document_file_record_invalid', {
+          flow: 'admin_smtp_send_document_share', checks: documentDiagnosticRecordV1(record, fileSha, id, ownerScope)
+        }); }
+        catch (error) { documentDiagnosticLogV1('document_file_diagnostic_failed', {
+          file_sha256_tag: fileSha ? digest(fileSha).slice(0, 20) : '',
+          document_id_tag: id ? digest(id).slice(0, 20) : '',
+          error_code: String(error && (error.code || error.name) || 'diagnostic_exception').slice(0, 80)
+        }); }
+      }
+      documentErrorV464('RECORD_INVALID');
+    }
     if ((id && seal.identity.id !== id) || (ownerScope && seal.identity.owner_scope !== ownerScope) || (qrProof && !documentQrProofMatchesV470(seal.identity, qrProof))) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, qr_authentic: false, message: 'ID, QR, atau pemilik dokumen tidak cocok.' };
     return { ok: true, verified: true, status: 'authentic_file', integrity_verified: true, qr_authentic: qrProof ? true : undefined, issuer: seal.identity.issuer,
       document_id: seal.identity.id, reference: seal.identity.reference, kind: seal.identity.kind, format: seal.format, page: seal.page,
@@ -3272,7 +3509,19 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
            : ['identity','content','owner','artifact','issuance'], method: 'registered_file_sha256_domain_hmac_sha512' } } : {}),
       identical_copies_possible: true, message: 'Berkas ini sesuai dengan dokumen asli yang diterbitkan. Kode QR yang disalin ke berkas lain tidak membuktikan keaslian berkas tersebut.' };
   }
-  if (!documentIdentityValidV464(record)) documentErrorV464('RECORD_INVALID');
+  if (!documentIdentityValidV464(record)) {
+    if (ownerScope) {
+      try { documentDiagnosticLogV1('document_identity_record_invalid', {
+        flow: 'admin_smtp_send_document_share', document_id_tag: id ? digest(id).slice(0, 20) : '',
+        identity: documentDiagnosticIdentityV1(record)
+      }); }
+      catch (error) { documentDiagnosticLogV1('document_identity_diagnostic_failed', {
+        document_id_tag: id ? digest(id).slice(0, 20) : '',
+        error_code: String(error && (error.code || error.name) || 'diagnostic_exception').slice(0, 80)
+      }); }
+    }
+    documentErrorV464('RECORD_INVALID');
+  }
   if (ownerScope && record.owner_scope !== ownerScope) return { ok: true, verified: false, status: 'mismatch', integrity_verified: false, qr_authentic: false, message: 'Pemilik dokumen tidak cocok.' };
   const qrAuthentic = documentQrProofMatchesV470(record, qrProof);
   return { ok: true, verified: false, status: qrAuthentic ? 'qr_only_authentic' : 'issued_id', integrity_verified: false, qr_authentic: qrAuthentic,
@@ -3438,17 +3687,78 @@ function documentShareChunkBytesV1(result, shareId, index, expectedBytes) {
 }
 async function documentShareCreateV1(snapshotInput, expectedSnapshotSha, documentId, fileSha, recipient, fileBytes, assertContext) {
   assertContext();
-  if (!/^DV-[a-f0-9]{48}$/.test(String(documentId || '')) || !/^[a-f0-9]{64}$/.test(String(fileSha || '')) || !/^[a-f0-9]{64}$/.test(String(expectedSnapshotSha || ''))) documentErrorV464('SHARE_INVALID', 400);
-  if (!Buffer.isBuffer(fileBytes) || fileBytes.length < 10 || fileBytes.length > ADMIN_SMTP_ATTACHMENT_MAX_BYTES) documentErrorV464('SHARE_FILE_INVALID', 400);
+  if (!/^DV-[a-f0-9]{48}$/.test(String(documentId || '')) || !/^[a-f0-9]{64}$/.test(String(fileSha || '')) || !/^[a-f0-9]{64}$/.test(String(expectedSnapshotSha || ''))) {
+    documentDiagnosticLogV1('document_share_input_invalid', {
+      document_id_format_valid: /^DV-[a-f0-9]{48}$/.test(String(documentId || '')),
+      file_sha256_format_valid: /^[a-f0-9]{64}$/.test(String(fileSha || '')),
+      snapshot_sha256_format_valid: /^[a-f0-9]{64}$/.test(String(expectedSnapshotSha || ''))
+    });
+    documentErrorV464('SHARE_INVALID', 400);
+  }
+  if (!Buffer.isBuffer(fileBytes) || fileBytes.length < 10 || fileBytes.length > ADMIN_SMTP_ATTACHMENT_MAX_BYTES) {
+    documentDiagnosticLogV1('document_share_attachment_invalid', {
+      is_buffer: Buffer.isBuffer(fileBytes), attachment_bytes: Buffer.isBuffer(fileBytes) ? fileBytes.length : -1,
+      maximum_bytes: ADMIN_SMTP_ATTACHMENT_MAX_BYTES
+    });
+    documentErrorV464('SHARE_FILE_INVALID', 400);
+  }
   const snapshotHash = crypto.createHash('sha256').update(JSON.stringify(snapshotInput)).digest('hex');
-  if (!safeEqual(snapshotHash, expectedSnapshotSha)) documentErrorV464('SHARE_CONTENT_MISMATCH', 409);
-  const verified = await documentVerifyV464({ file_sha256: fileSha, document_id: documentId }, securityRead, assertContext, documentAdminScopeV464());
+  if (!safeEqual(snapshotHash, expectedSnapshotSha)) {
+    documentDiagnosticLogV1('document_share_snapshot_hash_mismatch', {
+      actual_snapshot_sha256_tag: digest(snapshotHash).slice(0, 20),
+      expected_snapshot_sha256_tag: digest(expectedSnapshotSha).slice(0, 20),
+      snapshot_input_object: documentDiagnosticObjectV1(snapshotInput)
+    });
+    documentErrorV464('SHARE_CONTENT_MISMATCH', 409);
+  }
+  const adminScope = documentAdminScopeV464();
+  documentDiagnosticLogV1('document_share_verify_start', {
+    document_id_tag: digest(documentId).slice(0, 20), file_sha256_tag: digest(fileSha).slice(0, 20),
+    snapshot_sha256_tag: digest(expectedSnapshotSha).slice(0, 20), owner_scope_tag: digest(adminScope).slice(0, 20),
+    attachment_bytes: fileBytes.length, snapshot_hash_matches: safeEqual(snapshotHash, expectedSnapshotSha)
+  });
+  let verified;
+  try { verified = await documentVerifyV464({ file_sha256: fileSha, document_id: documentId }, securityRead, assertContext, adminScope); }
+  catch (error) {
+    documentDiagnosticLogV1('document_share_verify_exception', {
+      document_id_tag: digest(documentId).slice(0, 20), file_sha256_tag: digest(fileSha).slice(0, 20),
+      error_code: String(error && (error.code || error.name) || 'verify_exception').slice(0, 80),
+      error_status: Number(error && (error.status || error.statusCode) || 0)
+    });
+    throw error;
+  }
   assertContext();
   if (!verified || verified.ok !== true || verified.verified !== true || verified.format !== 'pdf' || verified.document_id !== documentId
-      || verified.file_sha256 !== fileSha || verified.content_sha256 !== expectedSnapshotSha) documentErrorV464('SHARE_FILE_UNVERIFIED', 409);
+      || verified.file_sha256 !== fileSha || verified.content_sha256 !== expectedSnapshotSha) {
+    documentDiagnosticLogV1('document_share_file_unverified', {
+      document_id_tag: digest(documentId).slice(0, 20), file_sha256_tag: digest(fileSha).slice(0, 20),
+      checks: {
+        result_object: documentDiagnosticObjectV1(verified),
+        ok: !!verified && verified.ok === true,
+        verified: !!verified && verified.verified === true,
+        format_pdf: !!verified && verified.format === 'pdf',
+        document_id_matches: !!verified && verified.document_id === documentId,
+        file_sha256_matches: !!verified && verified.file_sha256 === fileSha,
+        content_sha256_matches_snapshot: !!verified && verified.content_sha256 === expectedSnapshotSha
+      },
+      verified_status: verified && typeof verified.status === 'string' ? verified.status : ''
+    });
+    documentErrorV464('SHARE_FILE_UNVERIFIED', 409);
+  }
   const snapshot = documentShareSnapshotV1(snapshotInput);
   if (snapshot.kind !== verified.kind || snapshot.reference !== verified.reference || snapshot.issuerName !== verified.issuer
-      || snapshot.email !== String(recipient || '').trim().toLowerCase()) documentErrorV464('SHARE_SCOPE_MISMATCH', 409);
+      || snapshot.email !== String(recipient || '').trim().toLowerCase()) {
+    documentDiagnosticLogV1('document_share_scope_mismatch', {
+      document_id_tag: digest(documentId).slice(0, 20), file_sha256_tag: digest(fileSha).slice(0, 20),
+      checks: {
+        kind_matches: snapshot.kind === verified.kind,
+        reference_matches: snapshot.reference === verified.reference,
+        issuer_matches: snapshot.issuerName === verified.issuer,
+        recipient_matches: snapshot.email === String(recipient || '').trim().toLowerCase()
+      }
+    });
+    documentErrorV464('SHARE_SCOPE_MISMATCH', 409);
+  }
   const createdAt = Date.now(), expiresAt = createdAt + DOCUMENT_SHARE_TTL_MS_V1, shareId = crypto.randomBytes(24).toString('base64url');
   const payload = { version: DOCUMENT_SHARE_VERSION_V1, created_at: createdAt, expires_at: expiresAt, share_id: shareId,
     document_id: documentId, document_kind: verified.kind, issuer: verified.issuer, reference: verified.reference,
