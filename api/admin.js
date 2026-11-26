@@ -2,6 +2,7 @@
 
 // Standalone administrator endpoint. The browser page is handled entirely by this module.
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 const CENTRAL_V545 = require('../lib/central-guard.js');
 const tls = require('node:tls');
 const ADMIN_STANDALONE_FETCH = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
@@ -72,7 +73,7 @@ const CONTRACTS = Object.freeze({
   admin_account_passkey_reset: post(['email', 'approval'], ['email', 'approval']),
   admin_partner_requests: get(),
   admin_partner_request_update: post(['request_id', 'status', 'note', 'approval'], ['request_id', 'status', 'approval']),
-  admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
+  admin_smtp_send: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'document_id', 'document_snapshot', 'document_snapshot_sha256', 'legal_confirm', 'approval']), required: Object.freeze(['provider', 'recipients', 'recipient_count', 'recipients_sha256', 'subject', 'subject_sha256', 'body_text', 'body_sha256', 'document_kind', 'attachment_name', 'attachment_type', 'attachment_base64', 'attachment_sha256', 'legal_confirm', 'approval']), maxBodyBytes: ADMIN_SMTP_BODY_MAX_BYTES, maxFieldBytes: ADMIN_SMTP_BODY_MAX_BYTES, mutation: true, allowArrayItems: false }),
   admin_local_authorize: post(['purpose', 'content_sha256', 'approval'], ['purpose', 'content_sha256', 'approval']),
   admin_document_prepare: post(['document_kind','reference','page_count','content_sha256','issuer','history_profile','approval'], ['document_kind','reference','page_count','content_sha256','approval']),
   admin_document_seal: Object.freeze({ methods: Object.freeze(['POST']), allowed: Object.freeze(['action', ...COMMON_PROOF, 'identity','format','page','raw_sha256','file_base64','approval']), required: Object.freeze(['identity','format','page','raw_sha256','file_base64','approval']), maxBodyBytes: 4250000, maxFieldBytes: 4194304, mutation: true, allowArrayItems: false }),
@@ -1397,7 +1398,18 @@ function approvalPayload(action, body) {
   if (Object.prototype.hasOwnProperty.call(ADMIN_ACCOUNT_ACTION_MODES, action)) { const account = adminAccountMutationPayload({ ...value, mode: ADMIN_ACCOUNT_ACTION_MODES[action] }); return { action, ...account }; }
   if (action === 'admin_account_upgrade') return { action, ...adminAccountUpgradePayloadV544(value) };
   if (action === 'admin_partner_request_update') { const request = adminPartnerRequestUpdatePayloadV478(value); return { action, ...request }; }
-  if (action === 'admin_smtp_send') return { action, provider: value.provider, recipient_count: value.recipient_count, recipients_sha256: value.recipients_sha256, subject_sha256: value.subject_sha256, body_sha256: value.body_sha256, document_kind: value.document_kind, attachment_name: value.attachment_name || '', attachment_type: value.attachment_type || '', attachment_sha256: value.attachment_sha256 || '', legal_confirm: value.legal_confirm === true };
+  if (action === 'admin_smtp_send') {
+    const result = { action, provider: value.provider, recipient_count: value.recipient_count, recipients_sha256: value.recipients_sha256, subject_sha256: value.subject_sha256, body_sha256: value.body_sha256, document_kind: value.document_kind, attachment_name: value.attachment_name || '', attachment_type: value.attachment_type || '', attachment_sha256: value.attachment_sha256 || '', legal_confirm: value.legal_confirm === true };
+    const hasDocumentShare = value.document_id !== undefined || value.document_snapshot !== undefined || value.document_snapshot_sha256 !== undefined;
+    if (hasDocumentShare) {
+      if (typeof value.document_id !== 'string' || !/^DV-[a-f0-9]{48}$/.test(value.document_id)
+          || typeof value.document_snapshot_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.document_snapshot_sha256)
+          || !value.document_snapshot || typeof value.document_snapshot !== 'object' || Array.isArray(value.document_snapshot)) fail('ADMIN_DOCUMENT_SHARE_APPROVAL_INVALID', 400);
+      result.document_id = value.document_id;
+      result.document_snapshot_sha256 = value.document_snapshot_sha256;
+    }
+    return result;
+  }
   fail('ADMIN_ACTION_APPROVAL_OPERATION_INVALID', 400);
 }
 function approvalPayloadHash(action, body) { return digest(stableJson(approvalPayload(action, body))); }
@@ -1584,7 +1596,7 @@ async function sendAdminMail(message) {
 
 function adminSmtpDocumentKind(value) {
   const kind = String(value || '').trim().toLowerCase();
-  if (!['offer', 'announcement', 'invoice', 'proforma', 'quotation', 'receipt', 'delivery', 'document'].includes(kind)) fail('ADMIN_SMTP_DOCUMENT_KIND_INVALID', 400);
+  if (!['offer', 'announcement', 'document', ...DOCUMENT_KINDS_V464].includes(kind)) fail('ADMIN_SMTP_DOCUMENT_KIND_INVALID', 400);
   return kind;
 }
 function adminSmtpProvider(value) {
@@ -1656,6 +1668,14 @@ function customerMailKindLabel(kind) {
   if (kind === 'proforma') return 'Proforma invoice';
   if (kind === 'receipt') return 'Kuitansi';
   if (kind === 'delivery') return 'Surat jalan';
+  if (kind === 'statement') return 'Surat pernyataan';
+  if (kind === 'cancellation') return 'Surat pembatalan';
+  if (kind === 'handover') return 'Berita acara serah terima';
+  if (kind === 'purchase') return 'Surat pesanan';
+  if (kind === 'authorization') return 'Surat kuasa';
+  if (kind === 'tax_letter') return 'Surat perpajakan';
+  if (kind === 'tax_summary') return 'Kertas kerja pajak';
+  if (kind === 'letter') return 'Surat perusahaan';
   return 'Dokumen perusahaan';
 }
 function customerMailText(message) {
@@ -1664,14 +1684,61 @@ function customerMailText(message) {
   if (parts.siteUrl) rows.push('Website: ' + parts.siteUrl);
   if (parts.supportEmail) rows.push('Email: ' + parts.supportEmail);
   if (message.orderUrl) rows.push('Lihat pesanan dan tagihan online: ' + message.orderUrl);
+  if (message.documentDetails) rows.push('', documentMailPlainTextV1(message.documentDetails));
+  if (message.documentUrl) rows.push('Lihat ' + customerMailKindLabel(message.kind) + ' online: ' + message.documentUrl);
+  if (message.documentShareExpiresAt) rows.push('Tautan online berlaku sampai: ' + message.documentShareExpiresAt);
   rows.push('WhatsApp: +62 878-9252-3968');
   if (message.attachment) rows.push('Lampiran: ' + message.attachment.name);
   rows.push('', 'Jika ada pertanyaan, balas email ini. Untuk berhenti menerima penawaran, sampaikan permintaan Anda melalui balasan email.');
   return rows.join('\n');
 }
+function documentMailMoneyV1(value, currency) {
+  return new Intl.NumberFormat('id-ID', { style: 'currency', currency, minimumFractionDigits: value % 100 ? 2 : 0, maximumFractionDigits: 2 }).format(value / 100);
+}
+function documentMailDateV1(value) {
+  return value ? new Date(value + 'T12:00:00Z').toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }) : '—';
+}
+function documentMailPlainTextV1(details) {
+  const lines = [details.title + ' · ' + details.reference, 'Tanggal: ' + documentMailDateV1(details.date), 'Pelanggan: ' + details.recipient];
+  if (details.customerReference) lines.push('Referensi pelanggan: ' + details.customerReference);
+  if (details.items.length) {
+    lines.push('', 'RINCIAN PRODUK / JASA');
+    details.items.forEach((item, index) => lines.push((index + 1) + '. ' + item.description + ' | ' + item.quantity + ' ' + item.unit + ' | ' + documentMailMoneyV1(item.price, details.currency) + ' | ' + documentMailMoneyV1(item.total, details.currency)));
+    if (!['delivery', 'handover'].includes(details.kind)) lines.push('Subtotal: ' + documentMailMoneyV1(details.subtotal, details.currency), 'Diskon: ' + documentMailMoneyV1(details.discount, details.currency), 'Ongkos kirim: ' + documentMailMoneyV1(details.shipping, details.currency), 'PPN: ' + documentMailMoneyV1(details.tax, details.currency), 'TOTAL: ' + documentMailMoneyV1(details.total, details.currency));
+  } else if (details.kind === 'receipt') {
+    lines.push('', 'KEPERLUAN: ' + details.purpose, 'METODE PEMBAYARAN: ' + (details.paymentMethod || 'Tidak dicantumkan'), 'JUMLAH DITERIMA: ' + documentMailMoneyV1(details.total, details.currency));
+  } else {
+    lines.push('', 'PERIHAL: ' + details.subject, details.body);
+  }
+  if (details.due) lines.push('Berlaku / jatuh tempo: ' + documentMailDateV1(details.due));
+  if (details.status) lines.push('Status / keterangan: ' + details.status);
+  if (details.notes) lines.push('Catatan: ' + details.notes);
+  return lines.join('\n');
+}
+function documentMailDetailsHtmlV1(details) {
+  const cell = (value, align = 'left') => '<td align="' + align + '" style="padding:11px 12px;border-bottom:1px solid #2c3544;font-size:13px;line-height:1.5;color:#e8edf4;vertical-align:top;word-break:break-word">' + mailEscape(value) + '</td>';
+  const meta = [
+    ['JENIS DOKUMEN', details.title], ['NOMOR DOKUMEN', details.reference], ['TANGGAL', documentMailDateV1(details.date)],
+    ['PELANGGAN', details.recipient], ['REFERENSI PELANGGAN', details.customerReference], ['EMAIL PENERIMA', details.email]
+  ].filter(row => row[1]);
+  const metaHtml = meta.map(row => '<tr><td style="width:36%;padding:10px 12px;border-bottom:1px solid #2c3544;font-size:11px;line-height:1.45;font-weight:800;letter-spacing:.08em;color:#9ba8b8">' + mailEscape(row[0]) + '</td>' + cell(row[1]) + '</tr>').join('');
+  let body = '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:14px 0 0;border-collapse:collapse;border:1px solid #2c3544;background:#10151e">' + metaHtml + '</table>';
+  if (details.items.length) {
+    const rows = details.items.map((item, index) => '<tr>' + cell(String(index + 1), 'center') + cell(item.description + (item.productCode ? '\nKode: ' + item.productCode : '')) + cell(item.quantity + ' ' + item.unit, 'right') + cell(documentMailMoneyV1(item.price, details.currency), 'right') + cell(documentMailMoneyV1(item.total, details.currency), 'right') + '</tr>').join('');
+    const financial = ['delivery', 'handover'].includes(details.kind) ? '' : '<tr><td colspan="4" align="right" style="padding:10px 12px;border-top:1px solid #2c3544;color:#aeb7c4;font-size:12px">Subtotal</td>' + cell(documentMailMoneyV1(details.subtotal, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:8px 12px;color:#aeb7c4;font-size:12px">Diskon</td>' + cell(documentMailMoneyV1(details.discount, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:8px 12px;color:#aeb7c4;font-size:12px">Ongkos kirim</td>' + cell(documentMailMoneyV1(details.shipping, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:8px 12px;color:#aeb7c4;font-size:12px">PPN</td>' + cell(documentMailMoneyV1(details.tax, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:13px 12px;border-top:1px solid #52627a;color:#f0c86c;font-size:13px;font-weight:800">TOTAL</td><td align="right" style="padding:13px 12px;border-top:1px solid #52627a;color:#f0c86c;font-size:14px;font-weight:800">' + mailEscape(documentMailMoneyV1(details.total, details.currency)) + '</td></tr>';
+    body += '<div style="margin:20px 0 8px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#aeb7c4">RINCIAN PRODUK / JASA</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;border:1px solid #2c3544;background:#10151e"><thead><tr><th style="padding:10px 8px;text-align:center;color:#9ba8b8;font-size:10px">NO.</th><th style="padding:10px 8px;text-align:left;color:#9ba8b8;font-size:10px">PRODUK / JASA</th><th style="padding:10px 8px;text-align:right;color:#9ba8b8;font-size:10px">JUMLAH</th><th style="padding:10px 8px;text-align:right;color:#9ba8b8;font-size:10px">HARGA</th><th style="padding:10px 8px;text-align:right;color:#9ba8b8;font-size:10px">TOTAL</th></tr></thead><tbody>' + rows + financial + '</tbody></table>';
+  } else if (details.kind === 'receipt') {
+    body += '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:18px 0 0;border-collapse:collapse;border:1px solid #2c3544;background:#10151e"><tr>' + cell('KEPERLUAN') + cell(details.purpose) + '</tr><tr>' + cell('METODE PEMBAYARAN') + cell(details.paymentMethod || 'Tidak dicantumkan') + '</tr><tr>' + cell('JUMLAH DITERIMA') + '<td align="right" style="padding:13px 12px;color:#f0c86c;font-size:15px;font-weight:800">' + mailEscape(documentMailMoneyV1(details.total, details.currency)) + '</td></tr></table>';
+  } else {
+    body += '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:18px 0 0;border-collapse:collapse;border:1px solid #2c3544;background:#10151e"><tr>' + cell('PERIHAL') + cell(details.subject) + '</tr><tr><td colspan="2" style="padding:15px 14px;color:#e8edf4;font-size:13px;line-height:1.7;white-space:pre-line">' + mailEscape(details.body) + '</td></tr></table>';
+  }
+  const tail = [details.due ? 'Berlaku / jatuh tempo: ' + documentMailDateV1(details.due) : '', details.status ? 'Status: ' + details.status : '', details.notes ? 'Catatan: ' + details.notes : ''].filter(Boolean);
+  if (tail.length) body += '<div style="margin:13px 0 0;padding:12px 14px;border-left:3px solid #148ba4;background:#10151e;color:#c5ccd6;font-size:12px;line-height:1.65">' + tail.map(mailEscape).join('<br>') + '</div>';
+  return body;
+}
 function customerMailHtml(message) {
   const parts = mailOriginParts(message.origin), shipment = message.shipmentNotice === true ? message.shipmentDetails : null;
-  const privateKind = ['invoice', 'proforma', 'receipt', 'delivery'].includes(message.kind), labelText = customerMailKindLabel(message.kind);
+  const privateKind = !!message.documentDetails || ['invoice', 'proforma', 'receipt', 'delivery'].includes(message.kind), labelText = customerMailKindLabel(message.kind);
   const banner = parts.bannerUrl ? '<tr><td bgcolor="#10151e" style="padding:0;line-height:0;font-size:0;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><img src="' + mailEscape(parts.bannerUrl) + '" width="600" alt="PT Dincorp Inovasi Asia" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;background:#10151e;background-color:#10151e"></td></tr>' : '';
   const supportEmail = mailEscape(parts.supportEmail || ''), careEmail = mailEscape(parts.careEmail || ''), websiteUrl = mailEscape(parts.siteUrl || '');
   const socialSupportRowHtml = `<tr><td style="padding:16px 18px 13px;border-left:4px solid #148ba4"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">MEDIA SOSIAL</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;table-layout:fixed;border-collapse:collapse"><tr><td width="33.33%" align="center" valign="top" style="width:33.33%;padding:10px 2px;vertical-align:top"><a href="https://x.com/achzaenuddin?s=11" target="_blank" rel="noopener noreferrer" aria-label="X" style="display:block;color:#E2E8F0;text-decoration:none"><table role="presentation" align="center" width="44" height="44" cellpadding="0" cellspacing="0" border="0" style="width:44px;height:44px;border:1px solid #8B7B58;border-radius:50%;border-collapse:separate;table-layout:fixed;margin:0 auto"><tr><td align="center" valign="middle" width="42" height="42" style="width:42px;height:42px;padding:0;font-size:0;line-height:0;vertical-align:middle"><span style="display:block;color:#E2E8F0;font-family:Arial,Helvetica,sans-serif;font-size:20px;font-weight:700;line-height:28px;text-align:center">X</span></td></tr></table><span style="display:block;margin-top:8px;color:#E2E8F0;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;line-height:16px;text-align:center;white-space:nowrap">X</span></a></td><td width="33.33%" align="center" valign="top" style="width:33.33%;padding:10px 2px;vertical-align:top"><a href="https://www.facebook.com/share/1J3EEbguNX/?mibextid=wwXIfr" target="_blank" rel="noopener noreferrer" aria-label="Facebook" style="display:block;color:#E2E8F0;text-decoration:none"><table role="presentation" align="center" width="44" height="44" cellpadding="0" cellspacing="0" border="0" style="width:44px;height:44px;border:1px solid #8B7B58;border-radius:50%;border-collapse:separate;table-layout:fixed;margin:0 auto"><tr><td align="center" valign="middle" width="42" height="42" style="width:42px;height:42px;padding:0;font-size:0;line-height:0;vertical-align:middle"><span style="display:block;color:#E2E8F0;font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:700;line-height:28px;text-align:center">f</span></td></tr></table><span style="display:block;margin-top:8px;color:#E2E8F0;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;line-height:16px;text-align:center;white-space:nowrap">Facebook</span></a></td><td width="33.33%" align="center" valign="top" style="width:33.33%;padding:10px 2px;vertical-align:top"><a href="https://www.instagram.com/achzaenuddin15?stkn=MW4zc3FldjAzb21wNg%3D%3D&utm_source=qr" target="_blank" rel="noopener noreferrer" aria-label="Instagram" style="display:block;color:#E2E8F0;text-decoration:none"><table role="presentation" align="center" width="44" height="44" cellpadding="0" cellspacing="0" border="0" style="width:44px;height:44px;border:1px solid #8B7B58;border-radius:50%;border-collapse:separate;table-layout:fixed;margin:0 auto"><tr><td align="center" valign="middle" width="42" height="42" style="width:42px;height:42px;padding:0;font-size:0;line-height:0;vertical-align:middle"><table role="presentation" width="22" height="22" cellpadding="0" cellspacing="0" border="0" style="width:22px;height:22px;border:2px solid #E2E8F0;border-radius:6px;border-collapse:separate;table-layout:fixed"><tr><td align="center" valign="middle" style="padding:0;font-size:0;line-height:0"><table role="presentation" width="10" height="10" cellpadding="0" cellspacing="0" border="0" style="width:10px;height:10px;border:2px solid #E2E8F0;border-radius:50%;border-collapse:separate"><tr><td style="padding:0;font-size:0;line-height:0">&nbsp;</td></tr></table></td></tr></table></td></tr></table><span style="display:block;margin-top:8px;color:#E2E8F0;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;line-height:16px;text-align:center;white-space:nowrap">Instagram</span></a></td></tr><tr><td width="33.33%" align="center" valign="top" style="width:33.33%;padding:10px 2px;vertical-align:top"><a href="https://www.threads.com/@achzaenuddin15?igshid=NTc4MTIwNjQ2YQ==" target="_blank" rel="noopener noreferrer" aria-label="Threads" style="display:block;color:#E2E8F0;text-decoration:none"><table role="presentation" align="center" width="44" height="44" cellpadding="0" cellspacing="0" border="0" style="width:44px;height:44px;border:1px solid #8B7B58;border-radius:50%;border-collapse:separate;table-layout:fixed;margin:0 auto"><tr><td align="center" valign="middle" width="42" height="42" style="width:42px;height:42px;padding:0;font-size:0;line-height:0;vertical-align:middle"><span style="display:block;color:#E2E8F0;font-family:Arial,Helvetica,sans-serif;font-size:23px;font-weight:700;line-height:28px;text-align:center">@</span></td></tr></table><span style="display:block;margin-top:8px;color:#E2E8F0;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;line-height:16px;text-align:center;white-space:nowrap">Threads</span></a></td><td width="33.33%" align="center" valign="top" style="width:33.33%;padding:10px 2px;vertical-align:top"><a href="https://www.linkedin.com/in/pt-dirac-inovasi-nusantara" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn" style="display:block;color:#E2E8F0;text-decoration:none"><table role="presentation" align="center" width="44" height="44" cellpadding="0" cellspacing="0" border="0" style="width:44px;height:44px;border:1px solid #8B7B58;border-radius:50%;border-collapse:separate;table-layout:fixed;margin:0 auto"><tr><td align="center" valign="middle" width="42" height="42" style="width:42px;height:42px;padding:0;font-size:0;line-height:0;vertical-align:middle"><span style="display:block;color:#E2E8F0;font-family:Arial,Helvetica,sans-serif;font-size:17px;font-weight:700;line-height:28px;text-align:center">in</span></td></tr></table><span style="display:block;margin-top:8px;color:#E2E8F0;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;line-height:16px;text-align:center;white-space:nowrap">LinkedIn</span></a></td><td width="33.33%" align="center" valign="top" style="width:33.33%;padding:10px 2px;vertical-align:top"><a href="https://www.tiktok.com/@achzaenuddin" target="_blank" rel="noopener noreferrer" aria-label="TikTok" style="display:block;color:#E2E8F0;text-decoration:none"><table role="presentation" align="center" width="44" height="44" cellpadding="0" cellspacing="0" border="0" style="width:44px;height:44px;border:1px solid #8B7B58;border-radius:50%;border-collapse:separate;table-layout:fixed;margin:0 auto"><tr><td align="center" valign="middle" width="42" height="42" style="width:42px;height:42px;padding:0;font-size:0;line-height:0;vertical-align:middle"><span style="display:block;color:#E2E8F0;font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:700;line-height:28px;text-align:center">&#9834;</span></td></tr></table><span style="display:block;margin-top:8px;color:#E2E8F0;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;line-height:16px;text-align:center;white-space:nowrap">TikTok</span></a></td></tr></table></div></div></td></tr>`;
@@ -1679,7 +1746,7 @@ function customerMailHtml(message) {
   const executiveHtml = adminExecutiveEscalationHtml(supportEmail);
   const heading = mailEscape(shipment ? shipment.title : message.subject), preheader = mailEscape(shipment ? shipment.title + ' · ' + shipment.trackingNumber : labelText + ' · ' + message.subject);
   const statusText = shipment ? ({ prepared: 'BELUM DIKIRIM', shipped: 'DISERAHKAN KE KURIR', in_transit: 'DALAM PERJALANAN', delivered: 'DITERIMA', cancelled: 'DIBATALKAN' }[shipment.status] || 'STATUS BELUM TERSEDIA') : labelText.toUpperCase();
-  const target = shipment ? mailEscape(shipmentCustomerOriginV450(message.origin) + '/cekresi.html') : message.orderNotice === true ? mailEscape(message.orderUrl || shipmentCustomerOriginV450(message.origin) + '/pesanan.html') : '';
+  const target = message.documentUrl ? mailEscape(message.documentUrl) : shipment ? mailEscape(shipmentCustomerOriginV450(message.origin) + '/cekresi.html') : message.orderNotice === true ? mailEscape(message.orderUrl || shipmentCustomerOriginV450(message.origin) + '/pesanan.html') : '';
   let detailRows = '', routeTimeline = '', correspondence = '', shipmentNote = '';
   if (shipment) {
     const journey = shipmentJourneyV452(shipment.journey), currentPoint = journey ? journey.stops[journey.position] : shipment.location, nextPoint = journey && journey.position < journey.stops.length - 1 && shipment.status !== 'delivered' ? journey.stops[journey.position + 1] : '';
@@ -1701,11 +1768,13 @@ function customerMailHtml(message) {
   } else {
     detailRows = '<tr><td style="padding:20px"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.13em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">ISI KORESPONDENSI</div><div style="margin-top:10px;font-size:15px;line-height:1.72;word-break:break-word;overflow-wrap:anywhere;color:#c5ccd6!important;-webkit-text-fill-color:#c5ccd6!important;mso-color-alt:#c5ccd6">' + mailEscape(String(message.body || '').replace(/\r\n?/g, '\n')).replace(/\n/g, '<br>') + '</div></div></div></td></tr>';
   }
+  const documentDetailsHtml = message.documentDetails ? documentMailDetailsHtmlV1(message.documentDetails) : '';
   const attachment = message.attachment ? '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:13px 0 0;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)"><tr><td style="padding:16px 20px"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:11px;line-height:1.4;font-weight:800;letter-spacing:.13em;color:#7f8a99!important;-webkit-text-fill-color:#7f8a99!important;mso-color-alt:#7f8a99">LAMPIRAN</div><div style="margin-top:6px;font-size:15px;line-height:1.55;font-weight:700;word-break:break-word;color:#f4f6f9!important;-webkit-text-fill-color:#f4f6f9!important;mso-color-alt:#f4f6f9">' + mailEscape(message.attachment.name) + '</div></div></div></td></tr></table>' : '';
-  const actionButton = target ? '<table class="dirac-button" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:0 0 9px;border-collapse:separate"><tr><td align="center" bgcolor="#5276e8" style="border-radius:10px;background:#5276e8;background-color:#5276e8"><a href="' + target + '" style="display:block;padding:17px 18px;font-size:15px;line-height:1.2;font-weight:800;letter-spacing:.04em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;text-decoration:none;border-radius:10px">' + (message.orderUrl ? 'LIHAT INVOICE ONLINE' : message.orderNotice === true ? 'LIHAT PESANAN / TAGIHAN' : 'LIHAT RINCIAN PENGIRIMAN') + '</a></td></tr></table>' : '';
+  const actionText = message.documentUrl ? 'LIHAT ' + labelText.toUpperCase() + ' ONLINE' : message.orderUrl ? 'LIHAT INVOICE ONLINE' : message.orderNotice === true ? 'LIHAT PESANAN / TAGIHAN' : 'LIHAT RINCIAN PENGIRIMAN';
+  const actionButton = target ? '<table class="dirac-button" role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:0 0 9px;border-collapse:separate"><tr><td align="center" bgcolor="#5276e8" style="border-radius:10px;background:#5276e8;background-color:#5276e8"><a href="' + target + '" style="display:block;padding:17px 18px;font-size:15px;line-height:1.2;font-weight:800;letter-spacing:.04em;color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;text-decoration:none;border-radius:10px">' + actionText + '</a></td></tr></table>' : '';
   const targetHost = target ? mailEscape(new URL(target).hostname) : '';
-  const warningTitle = shipment ? 'CATATAN PENGIRIMAN' : 'PERTANYAAN TENTANG EMAIL INI';
-  const warningText = shipment ? shipmentNote : (privateKind ? 'Dokumen ini hanya untuk penerima yang tercantum. Jika ada pertanyaan tentang transaksi, balas email ini.' : 'Jika ada pertanyaan, balas email ini. Untuk berhenti menerima penawaran, sampaikan permintaan Anda melalui balasan email.');
+  const warningTitle = shipment ? 'CATATAN PENGIRIMAN' : message.documentDetails ? 'KEAMANAN DOKUMEN' : 'PERTANYAAN TENTANG EMAIL INI';
+  const warningText = shipment ? shipmentNote : message.documentDetails ? 'Dokumen ini hanya ditujukan kepada penerima yang tercantum. Tautan online bersifat pribadi dan berlaku sampai ' + String(message.documentShareExpiresAt || 'masa berlaku berakhir') + '. Jangan teruskan tautan kepada pihak lain.' : (privateKind ? 'Dokumen ini hanya untuk penerima yang tercantum. Jika ada pertanyaan tentang transaksi, balas email ini.' : 'Jika ada pertanyaan, balas email ini. Untuk berhenti menerima penawaran, sampaikan permintaan Anda melalui balasan email.');
   return `<!doctype html>
 <html lang="id">
 <head>
@@ -1750,7 +1819,7 @@ function customerMailHtml(message) {
           ${actionButton}
           ${targetHost ? '<div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="margin:0 0 25px;text-align:center;font-size:12px;line-height:1.5;color:#8f99a7!important;-webkit-text-fill-color:#8f99a7!important;mso-color-alt:#8f99a7">Tujuan resmi: ' + targetHost + '</div><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">DETAIL INFORMASI</div></div></div>' : '<div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">DETAIL INFORMASI</div></div></div>'}
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:13px 0 0;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">${detailRows}</table>
-          ${correspondence}${attachment}
+          ${correspondence}${documentDetailsHtml}${attachment}
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#1d1b17" style="width:100%;margin:28px 0;border-collapse:separate;border-spacing:0;border:1px solid #4a4030;border-radius:14px;overflow:hidden;background:#1d1b17;background-color:#1d1b17;background-image:linear-gradient(#1d1b17,#1d1b17)"><tr><td style="padding:18px 20px;border-left:4px solid #9a741f"><div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.14em;color:#f0c86c!important;-webkit-text-fill-color:#f0c86c!important;mso-color-alt:#f0c86c">${warningTitle}</div><p style="margin:10px 0 0;font-size:14px;line-height:1.65;color:#e8ebef!important;-webkit-text-fill-color:#e8ebef!important;mso-color-alt:#e8ebef">${mailEscape(warningText)}</p></div></div></td></tr></table>
           <div class="gmail-blend-screen"><div class="gmail-blend-difference"><div style="font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.16em;color:#aeb7c4!important;-webkit-text-fill-color:#aeb7c4!important;mso-color-alt:#aeb7c4">BANTUAN RESMI PT Dincorp Inovasi Asia</div><p style="margin:9px 0 13px;font-size:14px;line-height:1.6;color:#9aa4b2!important;-webkit-text-fill-color:#9aa4b2!important;mso-color-alt:#9aa4b2">Butuh bantuan atau klarifikasi? Gunakan kanal resmi perusahaan.</p></div></div>
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#10151e" style="width:100%;margin:0 0 13px;border-collapse:separate;border-spacing:0;border:1px solid #2c3544;border-radius:14px;overflow:hidden;background:#10151e;background-color:#10151e;background-image:linear-gradient(#10151e,#10151e)">
@@ -1873,14 +1942,31 @@ async function sendCustomerMail(message, assertContext) {
 async function businessSmtpSend(body, origin, assertContext) {
   if (!body || body.legal_confirm !== true) fail('ADMIN_SMTP_LEGAL_CONFIRMATION_REQUIRED', 400);
   const provider = adminSmtpProvider(body.provider), kind = adminSmtpDocumentKind(body.document_kind), recipients = adminSmtpRecipients(body.recipients, body.recipient_count, body.recipients_sha256, kind), subject = adminSmtpSubject(body.subject, body.subject_sha256), content = adminSmtpBody(body.body_text, body.body_sha256), attachment = adminSmtpAttachment(body);
+  const hasDocumentShare = body.document_id !== undefined || body.document_snapshot !== undefined || body.document_snapshot_sha256 !== undefined;
   const orderMarker = kind === 'invoice' ? /^\[\[DIRAC_ORDER_ID:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]\]$/m.exec(content) : null;
-  if (content.includes('[[DIRAC_ORDER_ID:') && (!orderMarker || kind !== 'invoice')) fail('ADMIN_SMTP_BODY_INVALID', 400);
+  if (content.includes('[[DIRAC_ORDER_ID:') && (!orderMarker || kind !== 'invoice' || hasDocumentShare)) fail('ADMIN_SMTP_BODY_INVALID', 400);
   const orderId = orderMarker ? orderMarker[1].toLowerCase() : '';
   if (orderId && (!attachment || attachment.type !== 'application/pdf')) fail('ADMIN_SMTP_ATTACHMENT_INVALID', 400);
   const visibleContent = orderMarker ? content.replace(orderMarker[0], '').trim() : content;
   const orderUrl = orderId ? shipmentCustomerOriginV450(origin) + '/pesanan.html?order_id=' + encodeURIComponent(orderId) : '';
-  try { const result = await sendCustomerMail({ origin, provider, recipients, subject, body: visibleContent, kind, attachment, orderNotice: !!orderUrl, orderUrl }, assertContext); if (result && result.configurationUnavailable === true) fail('ADMIN_SMTP_CONFIGURATION_UNAVAILABLE', 503); if (!customerMailAcceptedV451(result, provider, recipients.length)) fail('ADMIN_SMTP_DELIVERY_UNCONFIRMED', 503); return { ok: true, accepted: result.accepted, provider: result.provider, requested_provider: provider, document_kind: kind, attachment: !!attachment }; }
-  finally { if (attachment && attachment.bytes) attachment.bytes.fill(0); }
+  try {
+    if (hasDocumentShare) {
+      if (!body.document_id || !body.document_snapshot || !body.document_snapshot_sha256 || !DOCUMENT_KINDS_V464.includes(kind)
+          || recipients.length !== 1 || !attachment || attachment.type !== 'application/pdf' || orderId) fail('ADMIN_DOCUMENT_SHARE_INPUT_INVALID', 400);
+      const share = await documentShareCreateV1(body.document_snapshot, body.document_snapshot_sha256, body.document_id, attachment.sha256, recipients[0], attachment.bytes, assertContext);
+      const documentUrl = new URL('/document-view.html', origin).origin + '/document-view.html#share=' + share.token;
+      const result = await sendCustomerMail({ origin, provider, recipients, subject, body: visibleContent, kind, attachment,
+        documentUrl, documentDetails: share.snapshot, documentShareExpiresAt: share.expiresAt }, assertContext);
+      if (result && result.configurationUnavailable === true) fail('ADMIN_SMTP_CONFIGURATION_UNAVAILABLE', 503);
+      if (!customerMailAcceptedV451(result, provider, recipients.length)) fail('ADMIN_SMTP_DELIVERY_UNCONFIRMED', 503);
+      return { ok: true, accepted: result.accepted, provider: result.provider, requested_provider: provider, document_kind: kind,
+        attachment: true, online_view: true, online_view_expires_at: share.expiresAt };
+    }
+    const result = await sendCustomerMail({ origin, provider, recipients, subject, body: visibleContent, kind, attachment, orderNotice: !!orderUrl, orderUrl }, assertContext);
+    if (result && result.configurationUnavailable === true) fail('ADMIN_SMTP_CONFIGURATION_UNAVAILABLE', 503);
+    if (!customerMailAcceptedV451(result, provider, recipients.length)) fail('ADMIN_SMTP_DELIVERY_UNCONFIRMED', 503);
+    return { ok: true, accepted: result.accepted, provider: result.provider, requested_provider: provider, document_kind: kind, attachment: !!attachment };
+  } finally { if (attachment && attachment.bytes) attachment.bytes.fill(0); }
 }
 
 function checkOperations(ops) {
@@ -3197,6 +3283,313 @@ async function documentVerifyV464(input, read, assertContext, ownerScope = '') {
       : 'Nomor verifikasi terdaftar. Nomor saja tidak membuktikan keaslian dokumen. Unggah berkas asli untuk pemeriksaan.' };
 }
 
+const DOCUMENT_SHARE_VERSION_V1 = 'dirac-document-share-v1';
+const DOCUMENT_SHARE_TTL_MS_V1 = 90 * 86400000;
+const DOCUMENT_SHARE_MAX_PLAIN_V1 = 262144;
+const DOCUMENT_SHARE_MAX_TOKEN_V1 = 200000;
+const DOCUMENT_SHARE_FILE_VERSION_V1 = 'dirac-document-share-pdf-v1';
+const DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1 = 'dirac-document-share-pdf-chunk-v1';
+const DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 = 512 * 1024;
+const DOCUMENT_SHARE_FILE_CHUNK_COUNT_V1 = 4;
+function documentShareReadyV1() {
+  const key = deriveSecret('document-share-v1');
+  try { return Buffer.isBuffer(key) && key.length >= 32; } finally { key.fill(0); }
+}
+function documentShareTextV1(value, maximum, required = false) {
+  if (typeof value !== 'string') documentErrorV464('SHARE_INVALID', 400);
+  const text = value.replace(/\r\n?/g, '\n').trim();
+  if (text.length > maximum || (required && !text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(text)) documentErrorV464('SHARE_INVALID', 400);
+  return text;
+}
+function documentShareDateV1(value, required = false) {
+  const text = documentShareTextV1(value, 10, required);
+  if (text && (!/^\d{4}-\d{2}-\d{2}$/.test(text) || !Number.isFinite(Date.parse(text + 'T12:00:00Z')) || new Date(text + 'T12:00:00Z').toISOString().slice(0, 10) !== text)) documentErrorV464('SHARE_INVALID', 400);
+  return text;
+}
+function documentShareMoneyV1(value) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 99999999999999) documentErrorV464('SHARE_INVALID', 400);
+  return value;
+}
+function documentShareSnapshotV1(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !DOCUMENT_KINDS_V464.includes(value.kind)) documentErrorV464('SHARE_INVALID', 400);
+  const kind = value.kind, issuerName = documentShareTextV1(value.issuerName, 80, true), issuerProfile = documentShareTextV1(value.issuerProfile, 20, true);
+  if (!DOCUMENT_ISSUERS_V1.includes(issuerName) || (issuerName === 'CV Multi Usaha Mandiri' ? kind !== 'quotation' || issuerProfile !== 'cv_mum' : issuerProfile !== 'pt_dincorp')) documentErrorV464('SHARE_INVALID', 400);
+  const currency = documentShareTextV1(value.currency, 3, true);
+  if (!['IDR', 'USD', 'SGD', 'EUR'].includes(currency)) documentErrorV464('SHARE_INVALID', 400);
+  const itemsInput = Array.isArray(value.items) ? value.items : null;
+  const itemKinds = ['invoice', 'proforma', 'quotation', 'delivery', 'handover', 'purchase'];
+  if (!itemsInput || itemsInput.length > 100 || (itemKinds.includes(kind) ? itemsInput.length < 1 : itemsInput.length !== 0)) documentErrorV464('SHARE_INVALID', 400);
+  const items = itemsInput.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) documentErrorV464('SHARE_INVALID', 400);
+    const description = documentShareTextV1(item.description, 300, true), unit = documentShareTextV1(item.unit, 24, true);
+    const quantity = item.quantity, price = documentShareMoneyV1(item.price), total = documentShareMoneyV1(item.total);
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999 || !Number.isSafeInteger(price * quantity) || price * quantity !== total) documentErrorV464('SHARE_INVALID', 400);
+    if (['delivery', 'handover'].includes(kind) && (price !== 0 || total !== 0)) documentErrorV464('SHARE_INVALID', 400);
+    return { description, unit, quantity, price, total, productCode: documentShareTextV1(typeof item.productCode === 'string' ? item.productCode : '', 80) };
+  });
+  const subtotal = documentShareMoneyV1(value.subtotal), discount = documentShareMoneyV1(value.discount), shipping = documentShareMoneyV1(value.shipping), tax = documentShareMoneyV1(value.tax), total = documentShareMoneyV1(value.total);
+  const sum = items.reduce((amount, item) => amount + item.total, 0);
+  if (!Number.isSafeInteger(sum) || (itemKinds.includes(kind) && subtotal !== sum)) documentErrorV464('SHARE_INVALID', 400);
+  if (['delivery', 'handover'].includes(kind) && (subtotal || discount || shipping || tax || total)) documentErrorV464('SHARE_INVALID', 400);
+  if (['invoice', 'proforma', 'quotation', 'purchase'].includes(kind) && (discount > subtotal || total !== subtotal - discount + shipping + tax)) documentErrorV464('SHARE_INVALID', 400);
+  if (!itemKinds.includes(kind) && (subtotal || discount || shipping || tax || (kind === 'receipt' ? total <= 0 : total !== 0))) documentErrorV464('SHARE_INVALID', 400);
+  const email = documentShareTextV1(value.email, 254, true).toLowerCase();
+  if (!isEmail(email)) documentErrorV464('SHARE_INVALID', 400);
+  const issuerEmail = documentShareTextV1(value.issuerEmail, 254, true);
+  if (!isEmail(issuerEmail)) documentErrorV464('SHARE_INVALID', 400);
+  const snapshot = {
+    kind, title: documentShareTextV1(value.title, 100, true), legal: documentShareTextV1(value.legal, 220, true), issuerProfile, issuerName,
+    issuerEmail, issuerPhone: documentShareTextV1(value.issuerPhone, 60), reference: documentShareTextV1(value.reference, 253, true),
+    date: documentShareDateV1(value.date, true), due: documentShareDateV1(typeof value.due === 'string' ? value.due : ''),
+    customerReference: documentShareTextV1(typeof value.customerReference === 'string' ? value.customerReference : '', 100),
+    recipient: documentShareTextV1(value.recipient, 160, true), address: documentShareTextV1(value.address, 600, true), email,
+    phone: documentShareTextV1(typeof value.phone === 'string' ? value.phone : '', 60), signer: documentShareTextV1(value.signer, 100, true),
+    signerRole: documentShareTextV1(value.signerRole, 100, true), notes: documentShareTextV1(typeof value.notes === 'string' ? value.notes : '', 1600),
+    currency, nib: documentShareTextV1(typeof value.nib === 'string' ? value.nib : '', 80), npwp: documentShareTextV1(typeof value.npwp === 'string' ? value.npwp : '', 80),
+    status: documentShareTextV1(typeof value.status === 'string' ? value.status : '', 80), items, subtotal, discount, shipping, tax, total,
+    purpose: documentShareTextV1(typeof value.purpose === 'string' ? value.purpose : '', 1000),
+    paymentMethod: documentShareTextV1(typeof value.paymentMethod === 'string' ? value.paymentMethod : '', 100),
+    subject: documentShareTextV1(value.subject, 180, true), body: documentShareTextV1(value.body, 12000, true),
+    attachmentNote: documentShareTextV1(typeof value.attachmentNote === 'string' ? value.attachmentNote : '', 160),
+    closing: documentShareTextV1(typeof value.closing === 'string' ? value.closing : '', 500)
+  };
+  if (kind === 'receipt' && !snapshot.purpose) documentErrorV464('SHARE_INVALID', 400);
+  return snapshot;
+}
+function documentShareEncryptionKeyV1() {
+  const derived = deriveSecret('document-share-v1');
+  try { return crypto.createHash('sha256').update(derived).digest(); } finally { derived.fill(0); }
+}
+function documentShareFileEncryptionKeyV1() {
+  const derived = deriveSecret('document-share-v1');
+  try { return crypto.createHmac('sha256', derived).update('dirac-document-share-pdf-v1', 'utf8').digest(); }
+  finally { derived.fill(0); }
+}
+function documentShareFileManifestKeyV1(shareId) {
+  if (!/^[A-Za-z0-9_-]{32}$/.test(String(shareId || ''))) documentErrorV464('SHARE_INVALID', 404);
+  return 's2s-admin-v405:document-share-v1:manifest:' + shareId;
+}
+function documentShareFileChunkKeyV1(shareId, index) {
+  if (!/^[A-Za-z0-9_-]{32}$/.test(String(shareId || '')) || !Number.isInteger(index) || index < 0 || index >= DOCUMENT_SHARE_FILE_CHUNK_COUNT_V1) documentErrorV464('SHARE_INVALID', 404);
+  return 's2s-admin-v405:document-share-v1:chunk:' + shareId + ':' + index;
+}
+function documentShareFileAadV1(shareId, fileSha, fileBytes, expiresAt) {
+  return Buffer.from([DOCUMENT_SHARE_FILE_VERSION_V1, shareId, fileSha, String(fileBytes), String(expiresAt)].join('\0'), 'utf8');
+}
+async function documentShareStoreFileV1(shareId, fileBytes, fileSha, expiresAt, assertContext) {
+  assertContext();
+  if (!Buffer.isBuffer(fileBytes) || fileBytes.length < 10 || fileBytes.length > ADMIN_SMTP_ATTACHMENT_MAX_BYTES
+      || !/^[a-f0-9]{64}$/.test(String(fileSha || '')) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) documentErrorV464('SHARE_FILE_INVALID', 400);
+  const actualSha = crypto.createHash('sha256').update(fileBytes).digest('hex');
+  if (!safeEqual(actualSha, fileSha)) documentErrorV464('SHARE_FILE_HASH_MISMATCH', 409);
+  const ttl = Math.ceil((expiresAt - Date.now()) / 1000);
+  if (!Number.isSafeInteger(ttl) || ttl < 60 || ttl > Math.ceil(DOCUMENT_SHARE_TTL_MS_V1 / 1000) + 1) documentErrorV464('SHARE_EXPIRY_INVALID', 503);
+  const iv = crypto.randomBytes(12), key = documentShareFileEncryptionKeyV1();
+  const aad = documentShareFileAadV1(shareId, fileSha, fileBytes.length, expiresAt);
+  let encrypted = null, tag = null;
+  try {
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    cipher.setAAD(aad);
+    encrypted = Buffer.concat([cipher.update(fileBytes), cipher.final()]);
+    tag = cipher.getAuthTag();
+    const chunk0 = encrypted.subarray(0, DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1);
+    const chunk1 = encrypted.subarray(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1, DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 2);
+    const chunk2 = encrypted.subarray(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 2, DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 3);
+    const chunk3 = encrypted.subarray(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 3, DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 4);
+    const claimed = await Promise.all([
+      securityClaim(documentShareFileChunkKeyV1(shareId, 0), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 0, ciphertext: chunk0.toString('base64url') }, ttl),
+      securityClaim(documentShareFileChunkKeyV1(shareId, 1), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 1, ciphertext: chunk1.toString('base64url') }, ttl),
+      securityClaim(documentShareFileChunkKeyV1(shareId, 2), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 2, ciphertext: chunk2.toString('base64url') }, ttl),
+      securityClaim(documentShareFileChunkKeyV1(shareId, 3), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 3, ciphertext: chunk3.toString('base64url') }, ttl)
+    ]);
+    assertContext();
+    if (claimed.length !== 4 || claimed[0] !== true || claimed[1] !== true || claimed[2] !== true || claimed[3] !== true) documentErrorV464('SHARE_STORAGE_FAILED', 503);
+    const manifest = {
+      version: DOCUMENT_SHARE_FILE_VERSION_V1, share_id: shareId, file_sha256: fileSha,
+      file_bytes: fileBytes.length, expires_at: expiresAt, chunk_count: DOCUMENT_SHARE_FILE_CHUNK_COUNT_V1,
+      iv: iv.toString('base64url'), tag: tag.toString('base64url')
+    };
+    const committed = await securityClaim(documentShareFileManifestKeyV1(shareId), manifest, ttl);
+    assertContext();
+    if (committed !== true) documentErrorV464('SHARE_STORAGE_FAILED', 503);
+    return true;
+  } finally {
+    key.fill(0); iv.fill(0); aad.fill(0);
+    if (encrypted) encrypted.fill(0);
+    if (tag) tag.fill(0);
+  }
+}
+function documentShareRecordOwnerValidV1(record) {
+  return record && (record.__dirac_storage_owner_v539 === undefined || record.__dirac_storage_owner_v539 === 'admin');
+}
+function documentShareChunkBytesV1(result, shareId, index, expectedBytes) {
+  if (!result || result.ok !== true || result.found !== true || !result.record || typeof result.record !== 'object' || Array.isArray(result.record)) documentErrorV464('SHARE_FILE_MISSING', 404);
+  const record = result.record;
+  const keys = Object.keys(record).filter(name => name !== '__dirac_storage_owner_v539').sort().join(',');
+  if (!documentShareRecordOwnerValidV1(record) || keys !== 'ciphertext,index,share_id,version'
+      || record.version !== DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1 || record.share_id !== shareId || record.index !== index
+      || typeof record.ciphertext !== 'string' || record.ciphertext.length > Math.ceil(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 / 3) * 4 + 8) documentErrorV464('SHARE_FILE_INVALID', 404);
+  const bytes = Buffer.from(record.ciphertext, 'base64url');
+  if (bytes.toString('base64url') !== record.ciphertext || bytes.length !== expectedBytes) {
+    bytes.fill(0);
+    documentErrorV464('SHARE_FILE_INVALID', 404);
+  }
+  return bytes;
+}
+async function documentShareCreateV1(snapshotInput, expectedSnapshotSha, documentId, fileSha, recipient, fileBytes, assertContext) {
+  assertContext();
+  if (!/^DV-[a-f0-9]{48}$/.test(String(documentId || '')) || !/^[a-f0-9]{64}$/.test(String(fileSha || '')) || !/^[a-f0-9]{64}$/.test(String(expectedSnapshotSha || ''))) documentErrorV464('SHARE_INVALID', 400);
+  if (!Buffer.isBuffer(fileBytes) || fileBytes.length < 10 || fileBytes.length > ADMIN_SMTP_ATTACHMENT_MAX_BYTES) documentErrorV464('SHARE_FILE_INVALID', 400);
+  const snapshotHash = crypto.createHash('sha256').update(JSON.stringify(snapshotInput)).digest('hex');
+  if (!safeEqual(snapshotHash, expectedSnapshotSha)) documentErrorV464('SHARE_CONTENT_MISMATCH', 409);
+  const verified = await documentVerifyV464({ file_sha256: fileSha, document_id: documentId }, securityRead, assertContext, documentAdminScopeV464());
+  assertContext();
+  if (!verified || verified.ok !== true || verified.verified !== true || verified.format !== 'pdf' || verified.document_id !== documentId
+      || verified.file_sha256 !== fileSha || verified.content_sha256 !== expectedSnapshotSha) documentErrorV464('SHARE_FILE_UNVERIFIED', 409);
+  const snapshot = documentShareSnapshotV1(snapshotInput);
+  if (snapshot.kind !== verified.kind || snapshot.reference !== verified.reference || snapshot.issuerName !== verified.issuer
+      || snapshot.email !== String(recipient || '').trim().toLowerCase()) documentErrorV464('SHARE_SCOPE_MISMATCH', 409);
+  const createdAt = Date.now(), expiresAt = createdAt + DOCUMENT_SHARE_TTL_MS_V1, shareId = crypto.randomBytes(24).toString('base64url');
+  const payload = { version: DOCUMENT_SHARE_VERSION_V1, created_at: createdAt, expires_at: expiresAt, share_id: shareId,
+    document_id: documentId, document_kind: verified.kind, issuer: verified.issuer, reference: verified.reference,
+    content_sha256: verified.content_sha256, file_sha256: fileSha, file_bytes: fileBytes.length,
+    snapshot_sha256: digest(stableJson(snapshot)), snapshot };
+  const plain = Buffer.from(stableJson(payload), 'utf8');
+  if (plain.length > DOCUMENT_SHARE_MAX_PLAIN_V1) { plain.fill(0); documentErrorV464('SHARE_TOO_LARGE', 413); }
+  const compressed = zlib.deflateRawSync(plain, { level: 9 }); plain.fill(0);
+  if (compressed.length > 131072) { compressed.fill(0); documentErrorV464('SHARE_TOO_LARGE', 413); }
+  const iv = crypto.randomBytes(12), key = documentShareEncryptionKeyV1();
+  let token = '';
+  try {
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    cipher.setAAD(Buffer.from(DOCUMENT_SHARE_VERSION_V1, 'utf8'));
+    const encrypted = Buffer.concat([cipher.update(compressed), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    token = 'dsv1.' + iv.toString('base64url') + '.' + encrypted.toString('base64url') + '.' + tag.toString('base64url');
+    encrypted.fill(0); tag.fill(0);
+    if (token.length > DOCUMENT_SHARE_MAX_TOKEN_V1) documentErrorV464('SHARE_TOO_LARGE', 413);
+    await documentShareStoreFileV1(shareId, fileBytes, fileSha, expiresAt, assertContext);
+    assertContext();
+    return { token, snapshot, expiresAt: new Date(expiresAt).toISOString() };
+  } finally { compressed.fill(0); key.fill(0); iv.fill(0); }
+}
+async function documentShareDecodeV1(token, assertContext) {
+  assertContext();
+  if (typeof token !== 'string' || token.length > DOCUMENT_SHARE_MAX_TOKEN_V1) documentErrorV464('SHARE_INVALID', 404);
+  const match = /^dsv1\.([A-Za-z0-9_-]{16})\.([A-Za-z0-9_-]{1,174800})\.([A-Za-z0-9_-]{22})$/.exec(token);
+  if (!match) documentErrorV464('SHARE_INVALID', 404);
+  const iv = Buffer.from(match[1], 'base64url'), encrypted = Buffer.from(match[2], 'base64url'), tag = Buffer.from(match[3], 'base64url');
+  if (iv.length !== 12 || iv.toString('base64url') !== match[1] || tag.length !== 16 || tag.toString('base64url') !== match[3]
+      || !encrypted.length || encrypted.toString('base64url') !== match[2]) documentErrorV464('SHARE_INVALID', 404);
+  const key = documentShareEncryptionKeyV1();
+  let compressed, plain, payload;
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    let decrypted;
+    try {
+      decipher.setAAD(Buffer.from(DOCUMENT_SHARE_VERSION_V1, 'utf8'));
+      decipher.setAuthTag(tag);
+      decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+    } catch (_) { documentErrorV464('SHARE_INVALID', 404); }
+    compressed = decrypted;
+    plain = zlib.inflateRawSync(compressed, { maxOutputLength: DOCUMENT_SHARE_MAX_PLAIN_V1 });
+    payload = JSON.parse(plain.toString('utf8'));
+  } catch (error) {
+    if (error && String(error.code || '').startsWith('ADMIN_DOCUMENT_')) throw error;
+    documentErrorV464('SHARE_INVALID', 404);
+  } finally { key.fill(0); iv.fill(0); encrypted.fill(0); tag.fill(0); if (compressed) compressed.fill(0); if (plain) plain.fill(0); }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+      || Object.keys(payload).sort().join(',') !== 'content_sha256,created_at,document_id,document_kind,expires_at,file_bytes,file_sha256,issuer,reference,share_id,snapshot,snapshot_sha256,version'
+      || payload.version !== DOCUMENT_SHARE_VERSION_V1 || !Number.isSafeInteger(payload.created_at) || !Number.isSafeInteger(payload.expires_at)
+      || payload.created_at > Date.now() + 60000 || payload.expires_at <= Date.now() || payload.expires_at <= payload.created_at
+      || payload.expires_at > payload.created_at + DOCUMENT_SHARE_TTL_MS_V1 + 1000 || !/^[A-Za-z0-9_-]{32}$/.test(String(payload.share_id || ''))
+      || !/^DV-[a-f0-9]{48}$/.test(String(payload.document_id || '')) || !/^[a-f0-9]{64}$/.test(String(payload.file_sha256 || ''))
+      || !Number.isSafeInteger(payload.file_bytes) || payload.file_bytes < 10 || payload.file_bytes > ADMIN_SMTP_ATTACHMENT_MAX_BYTES
+      || !/^[a-f0-9]{64}$/.test(String(payload.content_sha256 || '')) || !/^[a-f0-9]{64}$/.test(String(payload.snapshot_sha256 || ''))
+      || !DOCUMENT_KINDS_V464.includes(payload.document_kind) || !DOCUMENT_ISSUERS_V1.includes(payload.issuer) || typeof payload.reference !== 'string') documentErrorV464('SHARE_INVALID', 404);
+  let snapshot;
+  try { snapshot = documentShareSnapshotV1(payload.snapshot); } catch (_) { documentErrorV464('SHARE_INVALID', 404); }
+  if (stableJson(snapshot) !== stableJson(payload.snapshot) || digest(stableJson(snapshot)) !== payload.snapshot_sha256
+      || snapshot.kind !== payload.document_kind || snapshot.reference !== payload.reference || snapshot.issuerName !== payload.issuer) documentErrorV464('SHARE_INVALID', 404);
+  const verified = await documentVerifyV464({ file_sha256: payload.file_sha256, document_id: payload.document_id }, securityRead, assertContext, documentAdminScopeV464());
+  assertContext();
+  if (!verified || verified.ok !== true || verified.verified !== true || verified.format !== 'pdf' || verified.document_id !== payload.document_id
+      || verified.file_sha256 !== payload.file_sha256 || verified.content_sha256 !== payload.content_sha256
+      || verified.kind !== payload.document_kind || verified.issuer !== payload.issuer || verified.reference !== payload.reference) documentErrorV464('SHARE_INVALID', 404);
+  return { ok: true, snapshot, document: { id: payload.document_id, kind: payload.document_kind, issuer: payload.issuer,
+    reference: payload.reference, content_sha256: payload.content_sha256, file_sha256: payload.file_sha256,
+    file_bytes: payload.file_bytes, share_id: payload.share_id }, expires_at: new Date(payload.expires_at).toISOString(), expires_at_ms: payload.expires_at };
+}
+async function documentSharePublicReadV2(token, assertContext) {
+  if (typeof assertContext !== 'function') documentErrorV464('SHARE_CONTEXT_REQUIRED', 503);
+  assertContext();
+  if (typeof token !== 'string' || token.length > DOCUMENT_SHARE_MAX_TOKEN_V1) documentErrorV464('SHARE_INVALID', 404);
+  const rateAllowed = await documentShareRateLimitV1(digest(token), 60, 60);
+  assertContext();
+  if (rateAllowed !== true) documentErrorV464('SHARE_RATE_LIMITED', 429);
+  const decoded = await documentShareDecodeV1(token, assertContext);
+  assertContext();
+  const share = decoded.document, manifestResult = await securityRead(documentShareFileManifestKeyV1(share.share_id));
+  assertContext();
+  if (!manifestResult || manifestResult.ok !== true || manifestResult.found !== true || !manifestResult.record
+      || typeof manifestResult.record !== 'object' || Array.isArray(manifestResult.record)) documentErrorV464('SHARE_FILE_MISSING', 404);
+  const manifest = manifestResult.record;
+  const manifestKeys = Object.keys(manifest).filter(name => name !== '__dirac_storage_owner_v539').sort().join(',');
+  if (!documentShareRecordOwnerValidV1(manifest) || manifestKeys !== 'chunk_count,expires_at,file_bytes,file_sha256,iv,share_id,tag,version'
+      || manifest.version !== DOCUMENT_SHARE_FILE_VERSION_V1 || manifest.share_id !== share.share_id
+      || manifest.file_sha256 !== share.file_sha256 || manifest.file_bytes !== share.file_bytes
+      || manifest.expires_at !== decoded.expires_at_ms || manifest.chunk_count !== DOCUMENT_SHARE_FILE_CHUNK_COUNT_V1) documentErrorV464('SHARE_FILE_INVALID', 404);
+  const [stored0, stored1, stored2, stored3] = await Promise.all([
+    securityRead(documentShareFileChunkKeyV1(share.share_id, 0)),
+    securityRead(documentShareFileChunkKeyV1(share.share_id, 1)),
+    securityRead(documentShareFileChunkKeyV1(share.share_id, 2)),
+    securityRead(documentShareFileChunkKeyV1(share.share_id, 3))
+  ]);
+  assertContext();
+  const expected0 = Math.max(0, Math.min(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1, share.file_bytes));
+  const expected1 = Math.max(0, Math.min(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1, share.file_bytes - DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1));
+  const expected2 = Math.max(0, Math.min(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1, share.file_bytes - DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 2));
+  const expected3 = Math.max(0, Math.min(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1, share.file_bytes - DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 3));
+  const chunk0 = documentShareChunkBytesV1(stored0, share.share_id, 0, expected0);
+  const chunk1 = documentShareChunkBytesV1(stored1, share.share_id, 1, expected1);
+  const chunk2 = documentShareChunkBytesV1(stored2, share.share_id, 2, expected2);
+  const chunk3 = documentShareChunkBytesV1(stored3, share.share_id, 3, expected3);
+  let encrypted = null, file = null, iv = null, tag = null, key = null, aad = null;
+  try {
+    encrypted = Buffer.concat([chunk0, chunk1, chunk2, chunk3], share.file_bytes);
+    iv = Buffer.from(String(manifest.iv || ''), 'base64url');
+    tag = Buffer.from(String(manifest.tag || ''), 'base64url');
+    if (iv.length !== 12 || iv.toString('base64url') !== manifest.iv || tag.length !== 16 || tag.toString('base64url') !== manifest.tag
+        || encrypted.length !== share.file_bytes) documentErrorV464('SHARE_FILE_INVALID', 404);
+    key = documentShareFileEncryptionKeyV1();
+    aad = documentShareFileAadV1(share.share_id, share.file_sha256, share.file_bytes, decoded.expires_at_ms);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAAD(aad);
+    decipher.setAuthTag(tag);
+    file = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+    const actualSha = crypto.createHash('sha256').update(file).digest('hex');
+    if (file.length !== share.file_bytes || !safeEqual(actualSha, share.file_sha256)) documentErrorV464('SHARE_FILE_HASH_MISMATCH', 404);
+    assertContext();
+    const result = { file, document: share, snapshot: decoded.snapshot, expires_at: decoded.expires_at };
+    file = null;
+    return result;
+  } catch (error) {
+    if (file) file.fill(0);
+    if (error && String(error.code || '').startsWith('ADMIN_DOCUMENT_')) throw error;
+    documentErrorV464('SHARE_FILE_INVALID', 404);
+  } finally {
+    chunk0.fill(0); chunk1.fill(0); chunk2.fill(0); chunk3.fill(0);
+    if (encrypted) encrypted.fill(0);
+    if (iv) iv.fill(0);
+    if (tag) tag.fill(0);
+    if (key) key.fill(0);
+    if (aad) aad.fill(0);
+  }
+}
+async function documentShareRateLimitV1(scopeHash, limit = 60, seconds = 60) {
+  if (!/^[a-f0-9]{64}$/.test(String(scopeHash || ''))) documentErrorV464('SHARE_RATE_INVALID', 503);
+  return atomicRate('s2s-document-share-view-v1:' + scopeHash, limit, seconds);
+}
 function documentAdminScopeV464() { return digest('document-admin-v464:' + ADMIN_USER_ID); }
 async function documentInvoiceOrderV471(reference, assertContext) {
   if (!/^ORD-\d{8}-[A-F0-9]{8}$/.test(String(reference || ''))) return null;
@@ -3705,7 +4098,331 @@ const ADMIN_CENTRAL_POLICY_V545 = CENTRAL_V545.policy(Object.freeze({
   'MFA': async ctx => { if(ctx.method!=='OPTIONS'&&!['admin_entry','admin_security_report','admin_login'].includes(ctx.action)&&!ADMIN_FACTOR_ACTIONS_V545.has(ctx.action)){const ops=adminPreludeOpsV545(ctx),scope=checkOperations(ops);await session(ops,scope,ctx.action!=='admin_status'&&ctx.action!=='admin_logout');} },
   'integrity': ctx => { const proof=CENTRAL_V545.audit(ctx.req);if(!proof||proof.completed!==29||proof.current!==29||ADMIN_CENTRAL_CONTEXTS_V545.get(ctx.req)!==ctx)fail('ADMIN_FULL_GUARD_REQUIRED',503);adminPolicyShapeV545(ctx); }
 }));
+const MAX_BODY_BYTES_V1 = 200016;
+const SHARE_TOKEN_RE_V1 = /^dsv1\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{1,174800}\.[A-Za-z0-9_-]{22}$/;
+const BASE_DOMAIN_RE_V1 = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
+function documentShareFailV1(code, status) {
+  throw Object.assign(new Error(code), { code, status, statusCode: status });
+}
+
+function documentShareCleanHostV1(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw || /[\u0000-\u0020\u007f/@\\,?#]/.test(raw)) return '';
+  let parsed;
+  try { parsed = new URL('https://' + raw); } catch (_) { return ''; }
+  if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.host !== raw) return '';
+  return parsed.host;
+}
+
+function documentShareLoopbackV1(hostname) {
+  const value = String(hostname || '').toLowerCase();
+  return value === 'localhost' || value === '::1' || /^127(?:\.\d{1,3}){3}$/.test(value);
+}
+
+function documentShareResolveOriginV1(req, ctx) {
+  const headers = req.headers || {};
+  const host = documentShareCleanHostV1(headers.host);
+  const forwarded = headers['x-forwarded-host'] ? documentShareCleanHostV1(headers['x-forwarded-host']) : '';
+  if (!host || (headers['x-forwarded-host'] && !forwarded) || (forwarded && forwarded !== host)) {
+    documentShareFailV1('DOCUMENT_SHARE_HOST_INVALID', 403);
+  }
+  const base = String(process.env.DIRAC_BASE_DOMAIN || '').trim().toLowerCase().replace(/\.$/, '');
+  if (!BASE_DOMAIN_RE_V1.test(base)) documentShareFailV1('DOCUMENT_SHARE_DOMAIN_UNAVAILABLE', 503);
+  const rawOrigin = String(headers.origin || '').trim();
+  if (!rawOrigin || rawOrigin.length > 300) documentShareFailV1('DOCUMENT_SHARE_ORIGIN_INVALID', 403);
+  let parsedOrigin;
+  try { parsedOrigin = new URL(rawOrigin); } catch (_) { documentShareFailV1('DOCUMENT_SHARE_ORIGIN_INVALID', 403); }
+  if (parsedOrigin.origin !== rawOrigin || parsedOrigin.username || parsedOrigin.password || parsedOrigin.search || parsedOrigin.hash
+      || parsedOrigin.pathname !== '/') documentShareFailV1('DOCUMENT_SHARE_ORIGIN_INVALID', 403);
+  const production = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
+  const parsedHost = new URL('https://' + host);
+  const localRequest = documentShareLoopbackV1(parsedOrigin.hostname) && documentShareLoopbackV1(parsedHost.hostname);
+  if (production || !localRequest) {
+    const expectedOrigin = 'https://pt.' + base;
+    if (host !== 'api.' + base || rawOrigin !== expectedOrigin || parsedOrigin.protocol !== 'https:') {
+      documentShareFailV1('DOCUMENT_SHARE_ORIGIN_INVALID', 403);
+    }
+    ctx.baseDomain = base;
+    return expectedOrigin;
+  }
+  if (!documentShareLoopbackV1(parsedOrigin.hostname) || parsedOrigin.host !== host
+      || !['http:', 'https:'].includes(parsedOrigin.protocol)) documentShareFailV1('DOCUMENT_SHARE_ORIGIN_INVALID', 403);
+  ctx.baseDomain = base;
+  return parsedOrigin.origin;
+}
+
+function documentShareCommonHeadersV1(res) {
+  res.setHeader('Cache-Control', 'private, no-store, no-cache, max-age=0, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+}
+
+function documentShareCorsHeadersV1(res, origin) {
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'content-type');
+  res.setHeader('Access-Control-Max-Age', '300');
+  res.setHeader('Vary', 'Origin');
+}
+
+function documentShareSendErrorV1(res, status, code, origin) {
+  if (res.writableEnded === true) return;
+  if (res.headersSent === true) { if (typeof res.end === 'function') res.end(); return; }
+  documentShareCommonHeadersV1(res);
+  if (origin) documentShareCorsHeadersV1(res, origin);
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.end(JSON.stringify({ ok: false, code }));
+}
+
+const DOCUMENT_SHARE_POLICY_V1 = CENTRAL_V545.policy(Object.freeze({
+  identity: ctx => {
+    const raw = String(ctx.req.url || '');
+    ctx.method = String(ctx.req.method || '').toUpperCase();
+    if (raw !== '/api/admin?action=admin_document_share_public' || raw.length > 2048 || !['POST', 'OPTIONS'].includes(ctx.method)) {
+      documentShareFailV1('DOCUMENT_SHARE_REQUEST_INVALID', 400);
+    }
+    ctx.rawUrl = raw;
+  },
+  'memory ban': ctx => {
+    if (ctx.req.aborted === true || ctx.req.signal && ctx.req.signal.aborted === true || ctx.res.destroyed === true) {
+      documentShareFailV1('DOCUMENT_SHARE_REQUEST_CANCELLED', 503);
+    }
+  },
+  'persistent ban': async ctx => {
+    const health = require('./health.js');
+    const authority = health.__diracCentralBanAuthorityV354;
+    if (!authority || authority.version !== 'dirac-central-ban-authority-v354' || typeof authority.check !== 'function') {
+      documentShareFailV1('DOCUMENT_SHARE_BAN_AUTHORITY_UNAVAILABLE', 503);
+    }
+    const decision = await authority.check(ctx.req);
+    if (!decision || decision.ok !== true) documentShareFailV1('DOCUMENT_SHARE_BAN_CHECK_UNAVAILABLE', 503);
+    if (decision.blocked === true) documentShareFailV1('DOCUMENT_SHARE_ACCESS_BLOCKED', 403);
+    ctx.banChecked = true;
+    ctx.health = health;
+  },
+  'action format': ctx => {
+    if (!ctx.banChecked || ctx.rawUrl !== '/api/admin?action=admin_document_share_public') documentShareFailV1('DOCUMENT_SHARE_ACTION_INVALID', 400);
+  },
+  alias: ctx => {
+    if (String(ctx.req.url || '') !== ctx.rawUrl || ctx.req.originalUrl && String(ctx.req.originalUrl) !== ctx.rawUrl) {
+      documentShareFailV1('DOCUMENT_SHARE_ALIAS_INVALID', 400);
+    }
+  },
+  whitelist: ctx => {
+    if (!['POST', 'OPTIONS'].includes(ctx.method)) documentShareFailV1('DOCUMENT_SHARE_METHOD_INVALID', 405);
+  },
+  'server role': ctx => {
+    if (String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production'
+        && String(process.env.DIRAC_APP_ROLE || '').trim().toLowerCase() !== 'auth') {
+      documentShareFailV1('DOCUMENT_SHARE_SERVER_ROLE_INVALID', 403);
+    }
+  },
+  'ENV partition': ctx => {
+    const base = String(process.env.DIRAC_BASE_DOMAIN || '').trim().toLowerCase().replace(/\.$/, '');
+    if (!BASE_DOMAIN_RE_V1.test(base) || typeof documentShareReadyV1 !== 'function'
+        || documentShareReadyV1() !== true) {
+      documentShareFailV1('DOCUMENT_SHARE_CONFIGURATION_UNAVAILABLE', 503);
+    }
+    ctx.baseDomain = base;
+  },
+  classification: ctx => { ctx.classification = 'read_only_document_share_v1'; },
+  'rate limit': async ctx => {
+    if (ctx.method === 'OPTIONS') return;
+    const authority = ctx.health && ctx.health.__diracCentralSupportRateLimitV365;
+    if (!authority || typeof authority.network !== 'function' || typeof authority.take !== 'function') {
+      documentShareFailV1('DOCUMENT_SHARE_RATE_AUTHORITY_UNAVAILABLE', 503);
+    }
+    const network = authority.network(ctx.req);
+    if (!network) documentShareFailV1('DOCUMENT_SHARE_NETWORK_UNAVAILABLE', 503);
+    const key = 'support-rate-v364:' + crypto.createHash('sha256').update('document-share-public-v1:' + network).digest('hex');
+    const result = await authority.take({ blockSeconds: 60, key, limit: 120, windowSeconds: 60 });
+    if (!result || result.ok !== true) {
+      documentShareFailV1(result && result.reason === 'distributed_rate_limit' ? 'DOCUMENT_SHARE_RATE_LIMITED' : 'DOCUMENT_SHARE_RATE_UNAVAILABLE',
+        result && result.reason === 'distributed_rate_limit' ? 429 : 503);
+    }
+  },
+  'server authentication': ctx => {
+    const headers = ctx.req.headers || {};
+    if (headers.authorization || headers['x-dirac-s2s'] || headers['x-dirac-server-id'] || headers['x-dirac-target-server-id']) {
+      documentShareFailV1('DOCUMENT_SHARE_CLIENT_HEADERS_INVALID', 403);
+    }
+  },
+  'browser authenticity': ctx => {
+    ctx.origin = documentShareResolveOriginV1(ctx.req, ctx);
+    documentShareCorsHeadersV1(ctx.res, ctx.origin);
+  },
+  CSRF: ctx => {
+    const headers = ctx.req.headers || {};
+    if (ctx.method === 'OPTIONS') {
+      if (String(headers['access-control-request-method'] || '').toUpperCase() !== 'POST'
+          || String(headers['access-control-request-headers'] || '').trim().toLowerCase() !== 'content-type') {
+        documentShareFailV1('DOCUMENT_SHARE_PREFLIGHT_INVALID', 403);
+      }
+    } else if (!headers.origin || String(headers.origin) !== ctx.origin) {
+      documentShareFailV1('DOCUMENT_SHARE_CSRF_INVALID', 403);
+    }
+  },
+  'page nonce': ctx => { ctx.accessMode = 'high_entropy_document_share_token_v1'; },
+  'browser signal': ctx => {
+    const headers = ctx.req.headers || {};
+    const site = String(headers['sec-fetch-site'] || '').toLowerCase();
+    const mode = String(headers['sec-fetch-mode'] || '').toLowerCase();
+    const dest = String(headers['sec-fetch-dest'] || '').toLowerCase();
+    if ((site && !['same-origin', 'same-site'].includes(site)) || (mode && !['cors', 'same-origin'].includes(mode))
+        || (dest && dest !== 'empty')) documentShareFailV1('DOCUMENT_SHARE_BROWSER_SIGNAL_INVALID', 403);
+  },
+  'device binding': ctx => {
+    if (ctx.req.headers && ctx.req.headers.cookie) documentShareFailV1('DOCUMENT_SHARE_COOKIE_NOT_ALLOWED', 403);
+  },
+  'admin authentication': ctx => {
+    if (ctx.accessMode !== 'high_entropy_document_share_token_v1'
+        || typeof documentSharePublicReadV2 !== 'function') {
+      documentShareFailV1('DOCUMENT_SHARE_AUTHORITY_UNAVAILABLE', 503);
+    }
+  },
+  'public-read policy': ctx => {
+    const headers = ctx.req.headers || {};
+    if (ctx.method === 'POST') {
+      if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(String(headers['content-type'] || '').trim())
+          || headers['content-encoding'] && String(headers['content-encoding']).trim().toLowerCase() !== 'identity') {
+        documentShareFailV1('DOCUMENT_SHARE_CONTENT_TYPE_INVALID', 415);
+      }
+      if (headers['transfer-encoding']) documentShareFailV1('DOCUMENT_SHARE_BODY_FRAMING_INVALID', 400);
+      const declared = String(headers['content-length'] || '').trim();
+      if (declared && (!/^(?:0|[1-9][0-9]{0,11})$/.test(declared) || Number(declared) > MAX_BODY_BYTES_V1)) {
+        documentShareFailV1('DOCUMENT_SHARE_BODY_TOO_LARGE', 413);
+      }
+    } else if (Number(headers['content-length'] || 0) !== 0 || headers['transfer-encoding']) {
+      documentShareFailV1('DOCUMENT_SHARE_PREFLIGHT_BODY_INVALID', 400);
+    }
+  },
+  'body validation': async ctx => {
+    ctx.body = ctx.method === 'POST'
+      ? await readJsonBody(ctx.req, MAX_BODY_BYTES_V1)
+      : null;
+  },
+  'light guard': ctx => {
+    if (ctx.method === 'POST' && (!ctx.body || typeof ctx.body !== 'object' || Array.isArray(ctx.body)
+        || Object.keys(ctx.body).sort().join(',') !== 'token')) documentShareFailV1('DOCUMENT_SHARE_BODY_INVALID', 400);
+  },
+  'contract validation': ctx => {
+    if (ctx.method === 'POST' && (typeof ctx.body.token !== 'string' || !SHARE_TOKEN_RE_V1.test(ctx.body.token))) {
+      documentShareFailV1('DOCUMENT_SHARE_TOKEN_INVALID', 404);
+    }
+  },
+  'A2F signature': async ctx => {
+    if (ctx.method === 'POST') {
+      const assertContext = () => {
+        if (!CENTRAL_V545.at(ctx.req, 'health', 21) || ctx.req !== ctx.originalReq || ctx.res !== ctx.originalRes
+            || ctx.rawUrl !== String(ctx.req.url || '') || ctx.method !== String(ctx.req.method || '').toUpperCase()
+            || Date.now() - ctx.startedAt > 30000) documentShareFailV1('DOCUMENT_SHARE_CONTEXT_INVALID', 503);
+        return true;
+      };
+      ctx.shared = await documentSharePublicReadV2(ctx.body.token, assertContext);
+      if (!ctx.shared || !Buffer.isBuffer(ctx.shared.file)) documentShareFailV1('DOCUMENT_SHARE_FILE_INVALID', 404);
+      ctx.outputFile = ctx.shared.file;
+    }
+  },
+  'security report': ctx => { if (ctx.method === 'POST' && ctx.accessMode !== 'high_entropy_document_share_token_v1') documentShareFailV1('DOCUMENT_SHARE_ACCESS_INVALID', 403); },
+  'request sample': ctx => {
+    if (ctx.method === 'POST' && Buffer.byteLength(JSON.stringify(ctx.body), 'utf8') > MAX_BODY_BYTES_V1) {
+      documentShareFailV1('DOCUMENT_SHARE_BODY_TOO_LARGE', 413);
+    }
+  },
+  'threat detection': ctx => {
+    if (ctx.method === 'POST' && /[\u0000-\u0020\u007f]/.test(ctx.body.token)) documentShareFailV1('DOCUMENT_SHARE_TOKEN_INVALID', 404);
+  },
+  'zero-day protection': ctx => {
+    const headers = ctx.req.headers || {};
+    if (headers.authorization || headers['x-dirac-s2s'] || headers['x-dirac-server-id'] || headers['x-dirac-target-server-id']
+        || headers['transfer-encoding'] || headers['content-encoding'] && String(headers['content-encoding']).trim().toLowerCase() !== 'identity') {
+      documentShareFailV1('DOCUMENT_SHARE_REQUEST_REJECTED', 403);
+    }
+  },
+  'IDOR/BOLA': ctx => {
+    if (ctx.method === 'POST') {
+      const shared = ctx.shared, file = ctx.outputFile, document = shared && shared.document;
+      if (!shared || !Buffer.isBuffer(file) || !document || typeof document !== 'object'
+          || !/^DV-[a-f0-9]{48}$/.test(String(document.id || '')) || !/^[a-f0-9]{64}$/.test(String(document.file_sha256 || ''))
+          || !Number.isSafeInteger(document.file_bytes) || file.length < 10 || file.length > 2097152
+          || file.length !== document.file_bytes || crypto.createHash('sha256').update(file).digest('hex') !== document.file_sha256
+          || file[0] !== 0x25 || file[1] !== 0x50 || file[2] !== 0x44 || file[3] !== 0x46 || file[4] !== 0x2d) {
+        documentShareFailV1('DOCUMENT_SHARE_RECORD_SCOPE_INVALID', 404);
+      }
+    }
+  },
+  'circuit breaker': ctx => {
+    if (Date.now() - ctx.startedAt > 30000) documentShareFailV1('DOCUMENT_SHARE_TIMEOUT', 503);
+  },
+  MFA: ctx => {
+    if (ctx.method === 'POST' && ctx.accessMode !== 'high_entropy_document_share_token_v1') {
+      documentShareFailV1('DOCUMENT_SHARE_ACCESS_INVALID', 403);
+    }
+  },
+  integrity: ctx => {
+    const proof = CENTRAL_V545.audit(ctx.req);
+    if (!proof || proof.completed !== 29 || proof.current !== 29 || proof.stage !== 'integrity'
+        || ctx.req !== ctx.originalReq || ctx.res !== ctx.originalRes
+        || (ctx.method === 'POST' && (!ctx.shared || !Buffer.isBuffer(ctx.outputFile)))) {
+      documentShareFailV1('DOCUMENT_SHARE_CENTRAL_GUARD_REQUIRED', 503);
+    }
+  }
+}));
+
+async function documentShareHandlerV1(req, res) {
+  const ctx = { req, res, originalReq: req, originalRes: res, method: '', rawUrl: '', startedAt: Date.now(),
+    baseDomain: '', origin: '', body: null, outputFile: null, outputCommitted: false };
+  try {
+    const outcome = await CENTRAL_V545.run(req, res, 'health', DOCUMENT_SHARE_POLICY_V1, async stage => {
+      await stage.guard(ctx);
+      return CENTRAL_V545.PASSED;
+    });
+    if (!outcome.passed) return outcome.value;
+    CENTRAL_V545.assertPassed(req, res, 'health');
+    if (ctx.method === 'OPTIONS') {
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+    const shared = ctx.shared;
+    if (!shared || !Buffer.isBuffer(ctx.outputFile)) documentShareFailV1('DOCUMENT_SHARE_FILE_INVALID', 404);
+    const filename = (String(shared.document.kind || 'dokumen') + '-' + String(shared.document.reference || 'dokumen'))
+      .replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 120) || 'dokumen';
+    documentShareCommonHeadersV1(res);
+    documentShareCorsHeadersV1(res, ctx.origin);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Length, X-Dirac-Document-SHA256');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', String(ctx.outputFile.length));
+    res.setHeader('Content-Disposition', 'inline; filename="' + filename + '.pdf"');
+    res.setHeader('X-Dirac-Document-SHA256', shared.document.file_sha256);
+    res.statusCode = 200;
+    const cleanup = () => { if (ctx.outputFile) { ctx.outputFile.fill(0); ctx.outputFile = null; } };
+    if (typeof res.once === 'function') { res.once('finish', cleanup); res.once('close', cleanup); }
+    res.end(ctx.outputFile, cleanup);
+    ctx.outputCommitted = true;
+  } catch (error) {
+    const rawStatus = Number(error && (error.statusCode || error.status));
+    const status = [400, 403, 404, 408, 413, 415, 429, 503].includes(rawStatus) ? rawStatus : 503;
+    const code = status === 429 ? 'DOCUMENT_SHARE_RATE_LIMITED'
+      : status === 404 ? 'DOCUMENT_SHARE_UNAVAILABLE'
+      : status === 415 ? 'DOCUMENT_SHARE_REQUEST_UNSUPPORTED'
+      : status === 403 ? 'DOCUMENT_SHARE_ACCESS_DENIED'
+      : 'DOCUMENT_SHARE_UNAVAILABLE';
+    documentShareSendErrorV1(res, status, code, ctx.origin);
+  } finally {
+    if (ctx.outputFile && !ctx.outputCommitted) { ctx.outputFile.fill(0); ctx.outputFile = null; }
+    CENTRAL_V545.close(req, res);
+  }
+}
+
+
 async function adminHandler(req,res) {
+  if (String(req && req.url || '') === '/api/admin?action=admin_document_share_public') return documentShareHandlerV1(req, res);
   const ctx={req,res,method:String(req&&req.method||'').toUpperCase(),startedAt:Date.now(),origin:'',bodyReady:false,bodyConsumed:false};
   ADMIN_CENTRAL_CONTEXTS_V545.set(req,ctx);
   try {
@@ -3727,6 +4444,11 @@ Object.defineProperties(adminHandler, {
   __diracShipmentDailyV450: { value: shipmentDailyV450 },
   __diracShipmentDataV453: { value: Object.freeze({ validate: shipmentExtrasCheckV453, validateRow: validateShipmentRow, receipt: shipmentReceiptPublicV453, deliveryRef: shipmentDeliveryRefV453, event: shipmentEventPublicV453, buildReceipt: shipmentReceiptBuildV453 }) },
   __diracDocumentAuthenticityV464: { value: DOCUMENT_SERVICE_V464 },
+  __diracDocumentSharePublicReadV1: { value: documentShareDecodeV1 },
+  __diracDocumentSharePublicReadV2: { value: documentSharePublicReadV2 },
+  __diracDocumentShareReadJsonBodyV1: { value: readJsonBody },
+  __diracDocumentShareRateLimitV1: { value: documentShareRateLimitV1 },
+  __diracDocumentShareReadyV1: { value: documentShareReadyV1 },
   __diracAdminContractsV405: { value: CONTRACTS },
   __diracAdminActionsV405: { value: ACTIONS },
   __diracAdminEmailV405: { value: ADMIN_EMAIL },
