@@ -3624,6 +3624,52 @@ function documentShareFileChunkKeyV1(shareId, index) {
 function documentShareFileAadV1(shareId, fileSha, fileBytes, expiresAt) {
   return Buffer.from([DOCUMENT_SHARE_FILE_VERSION_V1, shareId, fileSha, String(fileBytes), String(expiresAt)].join('\0'), 'utf8');
 }
+async function documentShareStorageClaimV1(key, record, ttl, stage, index) {
+  if (!/^[A-Za-z0-9:._-]{1,500}$/.test(String(key || '')) || !record || typeof record !== 'object' || Array.isArray(record)
+      || !Number.isSafeInteger(ttl) || ttl < 60 || ttl > ENROLLMENT_SECONDS) fail('ADMIN_STORAGE_CLAIM_INVALID', 503);
+  let result;
+  try {
+    result = await dbFetch('/rest/v1/rpc/dirac_central_atomic_claim_record_v230', {
+      method: 'POST',
+      body: { p_table_name: 'dirac_s2s_security', p_security_key: key, p_record_json: record,
+        p_expires_at: new Date(Date.now() + ttl * 1000).toISOString() }
+    }, 'security');
+  } catch (error) {
+    documentDiagnosticLogV1('document_share_storage_claim_exception', {
+      stage: stage === 'manifest' ? 'manifest' : 'chunk',
+      chunk_index: Number.isInteger(index) ? index : null,
+      storage_key_tag: digest(key).slice(0, 20),
+      record_bytes: Buffer.byteLength(JSON.stringify(record), 'utf8'),
+      error_code: String(error && (error.code || error.name) || 'storage_claim_exception').slice(0, 80),
+      error_status: Number(error && (error.status || error.statusCode) || 0)
+    });
+    throw error;
+  }
+  const accepted = !!(result && result.ok === true && result.data === true);
+  if (!accepted) {
+    const data = result && result.data;
+    const transport = result && result.diagnostic_transport && typeof result.diagnostic_transport === 'object'
+      ? result.diagnostic_transport : {};
+    const databaseCode = data && typeof data === 'object' && typeof data.code === 'string'
+      && /^[A-Za-z0-9_]{1,40}$/.test(data.code) ? data.code : '';
+    documentDiagnosticLogV1('document_share_storage_claim_failed', {
+      stage: stage === 'manifest' ? 'manifest' : 'chunk',
+      chunk_index: Number.isInteger(index) ? index : null,
+      storage_key_tag: digest(key).slice(0, 20),
+      record_bytes: Buffer.byteLength(JSON.stringify(record), 'utf8'),
+      rpc_ok: !!(result && result.ok === true),
+      rpc_status: Number(result && result.status || 0),
+      rpc_result_type: data === null || data === undefined ? 'null' : Array.isArray(data) ? 'array' : typeof data,
+      rpc_result_true: data === true,
+      rpc_error_code: databaseCode,
+      transport_name: String(transport.name || '').slice(0, 80),
+      transport_code: String(transport.code || '').slice(0, 80),
+      transport_aborted: transport.aborted === true
+    });
+  }
+  return accepted;
+}
+
 async function documentShareStoreFileV1(shareId, fileBytes, fileSha, expiresAt, assertContext) {
   assertContext();
   if (!Buffer.isBuffer(fileBytes) || fileBytes.length < 10 || fileBytes.length > ADMIN_SMTP_ATTACHMENT_MAX_BYTES
@@ -3645,10 +3691,10 @@ async function documentShareStoreFileV1(shareId, fileBytes, fileSha, expiresAt, 
     const chunk2 = encrypted.subarray(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 2, DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 3);
     const chunk3 = encrypted.subarray(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 3, DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 4);
     const claimed = await Promise.all([
-      securityClaim(documentShareFileChunkKeyV1(shareId, 0), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 0, ciphertext: chunk0.toString('base64url') }, ttl),
-      securityClaim(documentShareFileChunkKeyV1(shareId, 1), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 1, ciphertext: chunk1.toString('base64url') }, ttl),
-      securityClaim(documentShareFileChunkKeyV1(shareId, 2), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 2, ciphertext: chunk2.toString('base64url') }, ttl),
-      securityClaim(documentShareFileChunkKeyV1(shareId, 3), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 3, ciphertext: chunk3.toString('base64url') }, ttl)
+      documentShareStorageClaimV1(documentShareFileChunkKeyV1(shareId, 0), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 0, ciphertext: chunk0.toString('base64url') }, ttl, 'chunk', 0),
+      documentShareStorageClaimV1(documentShareFileChunkKeyV1(shareId, 1), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 1, ciphertext: chunk1.toString('base64url') }, ttl, 'chunk', 1),
+      documentShareStorageClaimV1(documentShareFileChunkKeyV1(shareId, 2), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 2, ciphertext: chunk2.toString('base64url') }, ttl, 'chunk', 2),
+      documentShareStorageClaimV1(documentShareFileChunkKeyV1(shareId, 3), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 3, ciphertext: chunk3.toString('base64url') }, ttl, 'chunk', 3)
     ]);
     assertContext();
     if (claimed.length !== 4 || claimed[0] !== true || claimed[1] !== true || claimed[2] !== true || claimed[3] !== true) documentErrorV464('SHARE_STORAGE_FAILED', 503);
@@ -3657,7 +3703,7 @@ async function documentShareStoreFileV1(shareId, fileBytes, fileSha, expiresAt, 
       file_bytes: fileBytes.length, expires_at: expiresAt, chunk_count: DOCUMENT_SHARE_FILE_CHUNK_COUNT_V1,
       iv: iv.toString('base64url'), tag: tag.toString('base64url')
     };
-    const committed = await securityClaim(documentShareFileManifestKeyV1(shareId), manifest, ttl);
+    const committed = await documentShareStorageClaimV1(documentShareFileManifestKeyV1(shareId), manifest, ttl, 'manifest', null);
     assertContext();
     if (committed !== true) documentErrorV464('SHARE_STORAGE_FAILED', 503);
     return true;
