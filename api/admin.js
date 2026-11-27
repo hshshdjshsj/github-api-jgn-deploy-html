@@ -1370,7 +1370,6 @@ function approvalPayload(action, body) {
   if (action === 'admin_document_prepare') {
     const issuer = value.issuer === undefined ? 'PT Dincorp Inovasi Asia' : value.issuer;
     if (!DOCUMENT_KINDS_V464.includes(value.document_kind) || !DOCUMENT_ISSUERS_V1.includes(issuer)
-        || (issuer === 'CV Multi Usaha Mandiri' && value.document_kind !== 'quotation')
         || typeof value.reference !== 'string' || !value.reference || value.reference.length > 253
         || /[\u0000-\u001f\u007f]/.test(value.reference) || !Number.isInteger(value.page_count) || value.page_count < 1 || value.page_count > 64
         || typeof value.content_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.content_sha256)) fail('ADMIN_DOCUMENT_META_INVALID',400);
@@ -3116,7 +3115,7 @@ function documentIdentityValidV464(value) {
         && value.kind === 'invoice' && value.visual_patterns && typeof value.visual_patterns === 'object' && !Array.isArray(value.visual_patterns)
         && stableJson(value.visual_patterns) === stableJson(documentInvoicePatternsV495(value))))
     && value.version === DOCUMENT_VERSION_V464 && /^DV-[a-f0-9]{48}$/.test(value.id)
-    && DOCUMENT_ISSUERS_V1.includes(value.issuer) && (value.issuer !== 'CV Multi Usaha Mandiri' || value.kind === 'quotation') && DOCUMENT_KINDS_V464.includes(value.kind)
+    && DOCUMENT_ISSUERS_V1.includes(value.issuer) && DOCUMENT_KINDS_V464.includes(value.kind)
     && typeof value.reference === 'string' && value.reference.length >= 1 && value.reference.length <= 253 && !/[\u0000-\u001f\u007f]/.test(value.reference)
     && /^[a-f0-9]{64}$/.test(value.content_sha256) && /^[a-f0-9]{64}$/.test(value.owner_scope)
     && Number.isSafeInteger(value.created_at) && value.created_at > 0 && value.created_at <= Date.now() + 1000
@@ -3170,7 +3169,7 @@ function documentDiagnosticIdentityV1(value) {
     version_valid: object && value.version === DOCUMENT_VERSION_V464,
     id_format_valid: object && typeof value.id === 'string' && /^DV-[a-f0-9]{48}$/.test(value.id),
     issuer_allowed: object && DOCUMENT_ISSUERS_V1.includes(value.issuer),
-    issuer_kind_compatible: object && (value.issuer !== 'CV Multi Usaha Mandiri' || value.kind === 'quotation'),
+    issuer_kind_compatible: object && DOCUMENT_ISSUERS_V1.includes(value.issuer) && DOCUMENT_KINDS_V464.includes(value.kind),
     kind_allowed: object && DOCUMENT_KINDS_V464.includes(value.kind),
     reference_is_string: object && typeof value.reference === 'string',
     reference_length: reference.length,
@@ -3335,7 +3334,7 @@ async function documentPrepareV464(meta, ownerScope, origin, claim, assertContex
   const metaKeys = meta && Object.keys(meta).sort().join(','), legacyMeta = metaKeys === 'content_sha256,kind,page_count,reference';
   const issuer = legacyMeta ? 'PT Dincorp Inovasi Asia' : meta && meta.issuer;
   if (!meta || (!legacyMeta && metaKeys !== 'content_sha256,issuer,kind,page_count,reference') || !DOCUMENT_KINDS_V464.includes(meta.kind)
-      || !DOCUMENT_ISSUERS_V1.includes(issuer) || (issuer === 'CV Multi Usaha Mandiri' && meta.kind !== 'quotation')
+      || !DOCUMENT_ISSUERS_V1.includes(issuer)
       || typeof meta.reference !== 'string' || meta.reference !== meta.reference.trim() || !meta.reference || meta.reference.length > 253
       || /[\u0000-\u001f\u007f]/.test(meta.reference) || !/^[a-f0-9]{64}$/.test(meta.content_sha256)
       || !/^[a-f0-9]{64}$/.test(ownerScope) || !Number.isInteger(meta.page_count) || meta.page_count < 1 || meta.page_count > 64) documentErrorV464('META_INVALID', 400);
@@ -3562,7 +3561,7 @@ function documentShareMoneyV1(value) {
 function documentShareSnapshotV1(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || !DOCUMENT_KINDS_V464.includes(value.kind)) documentErrorV464('SHARE_INVALID', 400);
   const kind = value.kind, issuerName = documentShareTextV1(value.issuerName, 80, true), issuerProfile = documentShareTextV1(value.issuerProfile, 20, true);
-  if (!DOCUMENT_ISSUERS_V1.includes(issuerName) || (issuerName === 'CV Multi Usaha Mandiri' ? kind !== 'quotation' || issuerProfile !== 'cv_mum' : issuerProfile !== 'pt_dincorp')) documentErrorV464('SHARE_INVALID', 400);
+  if (!DOCUMENT_ISSUERS_V1.includes(issuerName) || (issuerName === 'CV Multi Usaha Mandiri' ? issuerProfile !== 'cv_mum' : issuerProfile !== 'pt_dincorp')) documentErrorV464('SHARE_INVALID', 400);
   const currency = documentShareTextV1(value.currency, 3, true);
   if (!['IDR', 'USD', 'SGD', 'EUR'].includes(currency)) documentErrorV464('SHARE_INVALID', 400);
   const itemsInput = Array.isArray(value.items) ? value.items : null;
@@ -3718,7 +3717,7 @@ async function documentShareCreateV1(snapshotInput, expectedSnapshotSha, documen
     attachment_bytes: fileBytes.length, snapshot_hash_matches: safeEqual(snapshotHash, expectedSnapshotSha)
   });
   let verified;
-  try { verified = await documentVerifyV464({ file_sha256: fileSha, document_id: documentId }, securityRead, assertContext, adminScope); }
+  try { verified = await documentVerifyV464({ file_sha256: fileSha, document_id: documentId }, async key => { assertContext(); const result = await securityRead(key); assertContext(); if (!result || !result.ok) documentErrorV464('STORE_UNAVAILABLE'); return result.found ? result.record : null; }, assertContext, adminScope); }
   catch (error) {
     documentDiagnosticLogV1('document_share_verify_exception', {
       document_id_tag: digest(documentId).slice(0, 20), file_sha256_tag: digest(fileSha).slice(0, 20),
@@ -3821,7 +3820,7 @@ async function documentShareDecodeV1(token, assertContext) {
   try { snapshot = documentShareSnapshotV1(payload.snapshot); } catch (_) { documentErrorV464('SHARE_INVALID', 404); }
   if (stableJson(snapshot) !== stableJson(payload.snapshot) || digest(stableJson(snapshot)) !== payload.snapshot_sha256
       || snapshot.kind !== payload.document_kind || snapshot.reference !== payload.reference || snapshot.issuerName !== payload.issuer) documentErrorV464('SHARE_INVALID', 404);
-  const verified = await documentVerifyV464({ file_sha256: payload.file_sha256, document_id: payload.document_id }, securityRead, assertContext, documentAdminScopeV464());
+  const verified = await documentVerifyV464({ file_sha256: payload.file_sha256, document_id: payload.document_id }, async key => { assertContext(); const result = await securityRead(key); assertContext(); if (!result || !result.ok) documentErrorV464('STORE_UNAVAILABLE'); return result.found ? result.record : null; }, assertContext, documentAdminScopeV464());
   assertContext();
   if (!verified || verified.ok !== true || verified.verified !== true || verified.format !== 'pdf' || verified.document_id !== payload.document_id
       || verified.file_sha256 !== payload.file_sha256 || verified.content_sha256 !== payload.content_sha256
