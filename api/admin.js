@@ -1698,15 +1698,17 @@ function documentMailDateV1(value) {
   return value ? new Date(value + 'T12:00:00Z').toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }) : '—';
 }
 function documentMailPlainTextV1(details) {
+  const optionalItems = !['invoice','proforma','quotation','delivery','handover','purchase'].includes(details.kind);
   const lines = [details.title + ' · ' + details.reference, 'Tanggal: ' + documentMailDateV1(details.date), 'Pelanggan: ' + details.recipient];
   if (details.customerReference) lines.push('Referensi pelanggan: ' + details.customerReference);
   if (details.items.length) {
     lines.push('', 'RINCIAN PRODUK / JASA');
-    details.items.forEach((item, index) => lines.push((index + 1) + '. ' + item.description + ' | ' + item.quantity + ' ' + item.unit + ' | ' + documentMailMoneyV1(item.price, details.currency) + ' | ' + documentMailMoneyV1(item.total, details.currency)));
-    if (!['delivery', 'handover'].includes(details.kind)) lines.push('Subtotal: ' + documentMailMoneyV1(details.subtotal, details.currency), 'Diskon: ' + documentMailMoneyV1(details.discount, details.currency), 'Ongkos kirim: ' + documentMailMoneyV1(details.shipping, details.currency), 'PPN: ' + documentMailMoneyV1(details.tax, details.currency), 'TOTAL: ' + documentMailMoneyV1(details.total, details.currency));
-  } else if (details.kind === 'receipt') {
+    details.items.forEach((item, index) => lines.push((index + 1) + '. ' + item.description + ' | ' + item.quantity + ' ' + item.unit + (optionalItems ? '' : ' | ' + documentMailMoneyV1(item.price, details.currency) + ' | ' + documentMailMoneyV1(item.total, details.currency))));
+    if (!optionalItems && !['delivery', 'handover'].includes(details.kind)) lines.push('Subtotal: ' + documentMailMoneyV1(details.subtotal, details.currency), 'Diskon: ' + documentMailMoneyV1(details.discount, details.currency), 'Ongkos kirim: ' + documentMailMoneyV1(details.shipping, details.currency), 'PPN: ' + documentMailMoneyV1(details.tax, details.currency), 'TOTAL: ' + documentMailMoneyV1(details.total, details.currency));
+  }
+  if ((!details.items.length || optionalItems) && details.kind === 'receipt') {
     lines.push('', 'KEPERLUAN: ' + details.purpose, 'METODE PEMBAYARAN: ' + (details.paymentMethod || 'Tidak dicantumkan'), 'JUMLAH DITERIMA: ' + documentMailMoneyV1(details.total, details.currency));
-  } else {
+  } else if (!details.items.length || optionalItems) {
     lines.push('', 'PERIHAL: ' + details.subject, details.body);
   }
   if (details.due) lines.push('Berlaku / jatuh tempo: ' + documentMailDateV1(details.due));
@@ -1715,6 +1717,7 @@ function documentMailPlainTextV1(details) {
   return lines.join('\n');
 }
 function documentMailDetailsHtmlV1(details) {
+  const optionalItems = !['invoice','proforma','quotation','delivery','handover','purchase'].includes(details.kind);
   const cell = (value, align = 'left') => '<td align="' + align + '" style="padding:11px 12px;border-bottom:1px solid #2c3544;font-size:13px;line-height:1.5;color:#e8edf4;vertical-align:top;word-break:break-word">' + mailEscape(value) + '</td>';
   const meta = [
     ['JENIS DOKUMEN', details.title], ['NOMOR DOKUMEN', details.reference], ['TANGGAL', documentMailDateV1(details.date)],
@@ -1723,12 +1726,13 @@ function documentMailDetailsHtmlV1(details) {
   const metaHtml = meta.map(row => '<tr><td style="width:36%;padding:10px 12px;border-bottom:1px solid #2c3544;font-size:11px;line-height:1.45;font-weight:800;letter-spacing:.08em;color:#9ba8b8">' + mailEscape(row[0]) + '</td>' + cell(row[1]) + '</tr>').join('');
   let body = '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:14px 0 0;border-collapse:collapse;border:1px solid #2c3544;background:#10151e">' + metaHtml + '</table>';
   if (details.items.length) {
-    const rows = details.items.map((item, index) => '<tr>' + cell(String(index + 1), 'center') + cell(item.description + (item.productCode ? '\nKode: ' + item.productCode : '')) + cell(item.quantity + ' ' + item.unit, 'right') + cell(documentMailMoneyV1(item.price, details.currency), 'right') + cell(documentMailMoneyV1(item.total, details.currency), 'right') + '</tr>').join('');
-    const financial = ['delivery', 'handover'].includes(details.kind) ? '' : '<tr><td colspan="4" align="right" style="padding:10px 12px;border-top:1px solid #2c3544;color:#aeb7c4;font-size:12px">Subtotal</td>' + cell(documentMailMoneyV1(details.subtotal, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:8px 12px;color:#aeb7c4;font-size:12px">Diskon</td>' + cell(documentMailMoneyV1(details.discount, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:8px 12px;color:#aeb7c4;font-size:12px">Ongkos kirim</td>' + cell(documentMailMoneyV1(details.shipping, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:8px 12px;color:#aeb7c4;font-size:12px">PPN</td>' + cell(documentMailMoneyV1(details.tax, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:13px 12px;border-top:1px solid #52627a;color:#f0c86c;font-size:13px;font-weight:800">TOTAL</td><td align="right" style="padding:13px 12px;border-top:1px solid #52627a;color:#f0c86c;font-size:14px;font-weight:800">' + mailEscape(documentMailMoneyV1(details.total, details.currency)) + '</td></tr>';
-    body += '<div style="margin:20px 0 8px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#aeb7c4">RINCIAN PRODUK / JASA</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;border:1px solid #2c3544;background:#10151e"><thead><tr><th style="padding:10px 8px;text-align:center;color:#9ba8b8;font-size:10px">NO.</th><th style="padding:10px 8px;text-align:left;color:#9ba8b8;font-size:10px">PRODUK / JASA</th><th style="padding:10px 8px;text-align:right;color:#9ba8b8;font-size:10px">JUMLAH</th><th style="padding:10px 8px;text-align:right;color:#9ba8b8;font-size:10px">HARGA</th><th style="padding:10px 8px;text-align:right;color:#9ba8b8;font-size:10px">TOTAL</th></tr></thead><tbody>' + rows + financial + '</tbody></table>';
-  } else if (details.kind === 'receipt') {
+    const rows = details.items.map((item, index) => '<tr>' + cell(String(index + 1), 'center') + cell(item.description + (item.productCode ? '\nKode: ' + item.productCode : '')) + cell(item.quantity + ' ' + item.unit, 'right') + (optionalItems ? '' : cell(documentMailMoneyV1(item.price, details.currency), 'right') + cell(documentMailMoneyV1(item.total, details.currency), 'right')) + '</tr>').join('');
+    const financial = optionalItems || ['delivery', 'handover'].includes(details.kind) ? '' : '<tr><td colspan="4" align="right" style="padding:10px 12px;border-top:1px solid #2c3544;color:#aeb7c4;font-size:12px">Subtotal</td>' + cell(documentMailMoneyV1(details.subtotal, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:8px 12px;color:#aeb7c4;font-size:12px">Diskon</td>' + cell(documentMailMoneyV1(details.discount, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:8px 12px;color:#aeb7c4;font-size:12px">Ongkos kirim</td>' + cell(documentMailMoneyV1(details.shipping, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:8px 12px;color:#aeb7c4;font-size:12px">PPN</td>' + cell(documentMailMoneyV1(details.tax, details.currency), 'right') + '</tr><tr><td colspan="4" align="right" style="padding:13px 12px;border-top:1px solid #52627a;color:#f0c86c;font-size:13px;font-weight:800">TOTAL</td><td align="right" style="padding:13px 12px;border-top:1px solid #52627a;color:#f0c86c;font-size:14px;font-weight:800">' + mailEscape(documentMailMoneyV1(details.total, details.currency)) + '</td></tr>';
+    body += '<div style="margin:20px 0 8px;font-size:12px;line-height:1.4;font-weight:800;letter-spacing:.12em;color:#aeb7c4">RINCIAN PRODUK / JASA</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;border:1px solid #2c3544;background:#10151e"><thead><tr><th style="padding:10px 8px;text-align:center;color:#9ba8b8;font-size:10px">NO.</th><th style="padding:10px 8px;text-align:left;color:#9ba8b8;font-size:10px">PRODUK / JASA</th><th style="padding:10px 8px;text-align:right;color:#9ba8b8;font-size:10px">JUMLAH</th>' + (optionalItems ? '' : '<th style="padding:10px 8px;text-align:right;color:#9ba8b8;font-size:10px">HARGA</th><th style="padding:10px 8px;text-align:right;color:#9ba8b8;font-size:10px">TOTAL</th>') + '</tr></thead><tbody>' + rows + financial + '</tbody></table>';
+  }
+  if ((!details.items.length || optionalItems) && details.kind === 'receipt') {
     body += '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:18px 0 0;border-collapse:collapse;border:1px solid #2c3544;background:#10151e"><tr>' + cell('KEPERLUAN') + cell(details.purpose) + '</tr><tr>' + cell('METODE PEMBAYARAN') + cell(details.paymentMethod || 'Tidak dicantumkan') + '</tr><tr>' + cell('JUMLAH DITERIMA') + '<td align="right" style="padding:13px 12px;color:#f0c86c;font-size:15px;font-weight:800">' + mailEscape(documentMailMoneyV1(details.total, details.currency)) + '</td></tr></table>';
-  } else {
+  } else if (!details.items.length || optionalItems) {
     body += '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;margin:18px 0 0;border-collapse:collapse;border:1px solid #2c3544;background:#10151e"><tr>' + cell('PERIHAL') + cell(details.subject) + '</tr><tr><td colspan="2" style="padding:15px 14px;color:#e8edf4;font-size:13px;line-height:1.7;white-space:pre-line">' + mailEscape(details.body) + '</td></tr></table>';
   }
   const tail = [details.due ? 'Berlaku / jatuh tempo: ' + documentMailDateV1(details.due) : '', details.status ? 'Status: ' + details.status : '', details.notes ? 'Catatan: ' + details.notes : ''].filter(Boolean);
@@ -3566,13 +3570,13 @@ function documentShareSnapshotV1(value) {
   if (!['IDR', 'USD', 'SGD', 'EUR'].includes(currency)) documentErrorV464('SHARE_INVALID', 400);
   const itemsInput = Array.isArray(value.items) ? value.items : null;
   const itemKinds = ['invoice', 'proforma', 'quotation', 'delivery', 'handover', 'purchase'];
-  if (!itemsInput || itemsInput.length > 100 || (itemKinds.includes(kind) ? itemsInput.length < 1 : itemsInput.length !== 0)) documentErrorV464('SHARE_INVALID', 400);
+  if (!itemsInput || itemsInput.length > 100 || (itemKinds.includes(kind) && itemsInput.length < 1)) documentErrorV464('SHARE_INVALID', 400);
   const items = itemsInput.map(item => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) documentErrorV464('SHARE_INVALID', 400);
     const description = documentShareTextV1(item.description, 300, true), unit = documentShareTextV1(item.unit, 24, true);
     const quantity = item.quantity, price = documentShareMoneyV1(item.price), total = documentShareMoneyV1(item.total);
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999 || !Number.isSafeInteger(price * quantity) || price * quantity !== total) documentErrorV464('SHARE_INVALID', 400);
-    if (['delivery', 'handover'].includes(kind) && (price !== 0 || total !== 0)) documentErrorV464('SHARE_INVALID', 400);
+    if ((!itemKinds.includes(kind) || ['delivery', 'handover'].includes(kind)) && (price !== 0 || total !== 0)) documentErrorV464('SHARE_INVALID', 400);
     return { description, unit, quantity, price, total, productCode: documentShareTextV1(typeof item.productCode === 'string' ? item.productCode : '', 80) };
   });
   const subtotal = documentShareMoneyV1(value.subtotal), discount = documentShareMoneyV1(value.discount), shipping = documentShareMoneyV1(value.shipping), tax = documentShareMoneyV1(value.tax), total = documentShareMoneyV1(value.total);
