@@ -371,7 +371,11 @@ async function dbFetch(path, options = {}, target = '') {
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
     if (options.prefer) headers.Prefer = options.prefer;
     const storedBodyV539 = options.body === undefined ? undefined : require('../lib/data-protection.js').encode(cleanPath, options.body, Boolean(process.env.DOMAIN_SUPABASE_URL) && new URL(process.env.DOMAIN_SUPABASE_URL).origin === new URL(creds.url).origin, method);
-    const compactStorageV539 = require('../lib/security-state.js').request(cleanPath, method, storedBodyV539, options.prefer || '', require('../lib/security-state.js').owner(options.body));
+    const storage = require('../lib/security-state.js');
+    const selector = target === 'security' && method === 'GET' && parsedPathV547.pathname === '/rest/v1/dirac_s2s_security'
+      ? parsedPathV547.searchParams.get('security_key') : '';
+    const shareRead = /^eq\.s2s-admin-v405:document-share-v1:(?:manifest:[A-Za-z0-9_-]{32}|chunk:[A-Za-z0-9_-]{32}:[0-3])$/.test(selector || '');
+    const compactStorageV539 = storage.request(cleanPath, method, storedBodyV539, options.prefer || '', shareRead ? 'admin' : storage.owner(options.body));
     const wireBodyV539 = compactStorageV539 ? compactStorageV539.body : storedBodyV539;
     if (wireBodyV539 !== undefined) headers['Content-Type'] = 'application/json';
     const response = await ADMIN_STANDALONE_FETCH(creds.url + (compactStorageV539 ? compactStorageV539.path : require('../lib/data-protection.js').storagePathV1(cleanPath)), { method: compactStorageV539 ? compactStorageV539.method : method, headers, body: wireBodyV539 === undefined ? undefined : JSON.stringify(wireBodyV539), redirect: 'error', signal: controller.signal });
@@ -932,7 +936,15 @@ async function securityRead(key) {
   if (!result.data.length) return { ok: true, found: false };
   const row = result.data[0], expires = Date.parse(String(row && row.expires_at || ''));
   if (!row || row.security_key !== key || !Number.isFinite(expires) || !row.record_json || typeof row.record_json !== 'object' || Array.isArray(row.record_json)) return { ok: false };
-  return expires <= Date.now() ? { ok: true, found: false } : { ok: true, found: true, record: row.record_json, expiresAt: row.expires_at };
+  if (expires <= Date.now()) return { ok: true, found: false };
+  let record = row.record_json;
+  if (/^s2s-document-v464:(?:id:DV-[a-f0-9]{48}|file:[a-f0-9]{64})$/.test(key)
+      && Object.hasOwn(record, '__dirac_storage_owner_v539')) {
+    if (record.__dirac_storage_owner_v539 !== require('../lib/security-state.js').owner({ security_key: key })) return { ok: false };
+    const { __dirac_storage_owner_v539, ...signedRecord } = record;
+    record = signedRecord;
+  }
+  return { ok: true, found: true, record, expiresAt: row.expires_at };
 }
 
 function enrollmentKey(key) { return typeof key === 'string' && /^s2s-admin-v405:enrollment:[a-f0-9]{64}$/.test(key); }
@@ -3329,7 +3341,7 @@ function documentQrV464(identity, origin, route = '/admin.html') {
   const url = new URL(origin);
   if ((url.protocol !== 'https:' && !loopbackHost(url.hostname)) || url.origin !== origin || url.username || url.password) documentErrorV464('ORIGIN_INVALID');
   const proof = documentQrProofV470(identity);
-  const code = require('qrcode').create(origin + route + '#verify=' + identity.id + '&proof=' + proof, { errorCorrectionLevel: 'H' });
+  const code = require('../lib/kode-qr.js').create(origin + route + '#verify=' + identity.id + '&proof=' + proof, { errorCorrectionLevel: 'H' });
   if (!code.modules || code.modules.size > 81) documentErrorV464('QR_LIMIT');
   return { size: code.modules.size, data: Array.from(code.modules.data), quiet: 4, proof };
 }
