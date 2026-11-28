@@ -374,7 +374,7 @@ async function dbFetch(path, options = {}, target = '') {
     const storage = require('../lib/security-state.js');
     const selector = target === 'security' && method === 'GET' && parsedPathV547.pathname === '/rest/v1/dirac_s2s_security'
       ? parsedPathV547.searchParams.get('security_key') : '';
-    const shareRead = /^eq\.s2s-admin-v405:document-share-v1:(?:manifest:[A-Za-z0-9_-]{32}|chunk:[A-Za-z0-9_-]{32}:[0-3])$/.test(selector || '');
+    const shareRead = /^eq\.s2s-admin-v405:document-share-v1:(?:manifest:[A-Za-z0-9_-]{32}|chunk:[A-Za-z0-9_-]{32}:[0-3](?::part:(?:[1-9]|1[01]))?)$/.test(selector || '');
     const compactStorageV539 = storage.request(cleanPath, method, storedBodyV539, options.prefer || '', shareRead ? 'admin' : storage.owner(options.body));
     const wireBodyV539 = compactStorageV539 ? compactStorageV539.body : storedBodyV539;
     if (wireBodyV539 !== undefined) headers['Content-Type'] = 'application/json';
@@ -3555,6 +3555,9 @@ const DOCUMENT_SHARE_FILE_VERSION_V1 = 'dirac-document-share-pdf-v1';
 const DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1 = 'dirac-document-share-pdf-chunk-v1';
 const DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 = 512 * 1024;
 const DOCUMENT_SHARE_FILE_CHUNK_COUNT_V1 = 4;
+const DOCUMENT_SHARE_FILE_PARTS_VERSION_V2 = 'dirac-document-share-pdf-parts-v2';
+const DOCUMENT_SHARE_FILE_PART_VERSION_V2 = 'dirac-document-share-pdf-part-v2';
+const DOCUMENT_SHARE_FILE_PART_CHARS_V2 = 60000;
 function documentShareReadyV1() {
   const key = deriveSecret('document-share-v1');
   try { return Buffer.isBuffer(key) && key.length >= 32; } finally { key.fill(0); }
@@ -3637,6 +3640,10 @@ function documentShareFileChunkKeyV1(shareId, index) {
   if (!/^[A-Za-z0-9_-]{32}$/.test(String(shareId || '')) || !Number.isInteger(index) || index < 0 || index >= DOCUMENT_SHARE_FILE_CHUNK_COUNT_V1) documentErrorV464('SHARE_INVALID', 404);
   return 's2s-admin-v405:document-share-v1:chunk:' + shareId + ':' + index;
 }
+function documentShareFilePartKeyV2(shareId, index, part) {
+  if (!Number.isInteger(part) || part < 1 || part > 11) documentErrorV464('SHARE_INVALID', 404);
+  return documentShareFileChunkKeyV1(shareId, index) + ':part:' + part;
+}
 function documentShareFileAadV1(shareId, fileSha, fileBytes, expiresAt) {
   return Buffer.from([DOCUMENT_SHARE_FILE_VERSION_V1, shareId, fileSha, String(fileBytes), String(expiresAt)].join('\0'), 'utf8');
 }
@@ -3686,6 +3693,49 @@ async function documentShareStorageClaimV1(key, record, ttl, stage, index) {
   return accepted;
 }
 
+// The existing claim RPC accepts at most 65,536 JSONB bytes per record.
+// Keep the same RPC, four logical chunks and encryption; bound each stored part.
+async function documentShareStoreChunkV2(shareId, index, ciphertext, ttl, assertContext) {
+  assertContext();
+  const key = documentShareFileChunkKeyV1(shareId, index);
+  if (typeof ciphertext !== 'string' || ciphertext.length > Math.ceil(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 4 / 3)
+      || !/^[A-Za-z0-9_-]*$/.test(ciphertext)) documentErrorV464('SHARE_FILE_INVALID', 503);
+  if (ciphertext.length <= DOCUMENT_SHARE_FILE_PART_CHARS_V2) {
+    const accepted = await documentShareStorageClaimV1(key, { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1,
+      share_id: shareId, index, ciphertext }, ttl, 'chunk', index);
+    assertContext();
+    return accepted;
+  }
+  const partCount = Math.ceil(ciphertext.length / DOCUMENT_SHARE_FILE_PART_CHARS_V2);
+  const storePart = async part => {
+    assertContext();
+    if (part >= partCount) return;
+    const accepted = await documentShareStorageClaimV1(documentShareFilePartKeyV2(shareId, index, part), {
+      version: DOCUMENT_SHARE_FILE_PART_VERSION_V2, share_id: shareId, index, part,
+      ciphertext: ciphertext.slice(part * DOCUMENT_SHARE_FILE_PART_CHARS_V2, (part + 1) * DOCUMENT_SHARE_FILE_PART_CHARS_V2)
+    }, ttl, 'chunk', index);
+    assertContext();
+    if (accepted !== true) documentErrorV464('SHARE_STORAGE_FAILED', 503);
+  };
+  // One write per logical chunk at a time avoids queuing all parts on the bucket lock.
+  await storePart(1);
+  await storePart(2);
+  await storePart(3);
+  await storePart(4);
+  await storePart(5);
+  await storePart(6);
+  await storePart(7);
+  await storePart(8);
+  await storePart(9);
+  await storePart(10);
+  await storePart(11);
+  const accepted = await documentShareStorageClaimV1(key, { version: DOCUMENT_SHARE_FILE_PARTS_VERSION_V2,
+    share_id: shareId, index, part_count: partCount, ciphertext: ciphertext.slice(0, DOCUMENT_SHARE_FILE_PART_CHARS_V2)
+  }, ttl, 'chunk', index);
+  assertContext();
+  return accepted;
+}
+
 async function documentShareStoreFileV1(shareId, fileBytes, fileSha, expiresAt, assertContext) {
   assertContext();
   if (!Buffer.isBuffer(fileBytes) || fileBytes.length < 10 || fileBytes.length > ADMIN_SMTP_ATTACHMENT_MAX_BYTES
@@ -3707,10 +3757,10 @@ async function documentShareStoreFileV1(shareId, fileBytes, fileSha, expiresAt, 
     const chunk2 = encrypted.subarray(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 2, DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 3);
     const chunk3 = encrypted.subarray(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 3, DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 4);
     const claimed = await Promise.all([
-      documentShareStorageClaimV1(documentShareFileChunkKeyV1(shareId, 0), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 0, ciphertext: chunk0.toString('base64url') }, ttl, 'chunk', 0),
-      documentShareStorageClaimV1(documentShareFileChunkKeyV1(shareId, 1), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 1, ciphertext: chunk1.toString('base64url') }, ttl, 'chunk', 1),
-      documentShareStorageClaimV1(documentShareFileChunkKeyV1(shareId, 2), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 2, ciphertext: chunk2.toString('base64url') }, ttl, 'chunk', 2),
-      documentShareStorageClaimV1(documentShareFileChunkKeyV1(shareId, 3), { version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index: 3, ciphertext: chunk3.toString('base64url') }, ttl, 'chunk', 3)
+      documentShareStoreChunkV2(shareId, 0, chunk0.toString('base64url'), ttl, assertContext),
+      documentShareStoreChunkV2(shareId, 1, chunk1.toString('base64url'), ttl, assertContext),
+      documentShareStoreChunkV2(shareId, 2, chunk2.toString('base64url'), ttl, assertContext),
+      documentShareStoreChunkV2(shareId, 3, chunk3.toString('base64url'), ttl, assertContext)
     ]);
     assertContext();
     if (claimed.length !== 4 || claimed[0] !== true || claimed[1] !== true || claimed[2] !== true || claimed[3] !== true) documentErrorV464('SHARE_STORAGE_FAILED', 503);
@@ -3745,6 +3795,47 @@ function documentShareChunkBytesV1(result, shareId, index, expectedBytes) {
     documentErrorV464('SHARE_FILE_INVALID', 404);
   }
   return bytes;
+}
+async function documentShareReadChunkV2(result, shareId, index, expectedBytes, assertContext) {
+  assertContext();
+  if (!result || !result.record || result.record.version !== DOCUMENT_SHARE_FILE_PARTS_VERSION_V2) {
+    return documentShareChunkBytesV1(result, shareId, index, expectedBytes);
+  }
+  const record = result.record;
+  const keys = Object.keys(record).filter(name => name !== '__dirac_storage_owner_v539').sort().join(',');
+  const expectedChars = Math.ceil(expectedBytes * 4 / 3);
+  const partCount = Math.ceil(expectedChars / DOCUMENT_SHARE_FILE_PART_CHARS_V2);
+  if (result.ok !== true || result.found !== true || Array.isArray(record) || !documentShareRecordOwnerValidV1(record)
+      || keys !== 'ciphertext,index,part_count,share_id,version' || record.share_id !== shareId || record.index !== index
+      || !Number.isInteger(expectedBytes) || expectedBytes < 1 || expectedBytes > DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1
+      || partCount < 2 || partCount > 12 || record.part_count !== partCount
+      || typeof record.ciphertext !== 'string' || record.ciphertext.length !== DOCUMENT_SHARE_FILE_PART_CHARS_V2
+      || !/^[A-Za-z0-9_-]+$/.test(record.ciphertext)) documentErrorV464('SHARE_FILE_INVALID', 404);
+  const readPart = async part => {
+    assertContext();
+    if (part >= partCount) return '';
+    const stored = await securityRead(documentShareFilePartKeyV2(shareId, index, part));
+    assertContext();
+    if (!stored || stored.ok !== true || stored.found !== true || !stored.record
+        || typeof stored.record !== 'object' || Array.isArray(stored.record)) documentErrorV464('SHARE_FILE_MISSING', 404);
+    const fragment = stored.record;
+    const fragmentKeys = Object.keys(fragment).filter(name => name !== '__dirac_storage_owner_v539').sort().join(',');
+    const expectedLength = Math.min(DOCUMENT_SHARE_FILE_PART_CHARS_V2, expectedChars - part * DOCUMENT_SHARE_FILE_PART_CHARS_V2);
+    if (!documentShareRecordOwnerValidV1(fragment) || fragmentKeys !== 'ciphertext,index,part,share_id,version'
+        || fragment.version !== DOCUMENT_SHARE_FILE_PART_VERSION_V2 || fragment.share_id !== shareId
+        || fragment.index !== index || fragment.part !== part || typeof fragment.ciphertext !== 'string'
+        || fragment.ciphertext.length !== expectedLength || !/^[A-Za-z0-9_-]+$/.test(fragment.ciphertext)) documentErrorV464('SHARE_FILE_INVALID', 404);
+    return fragment.ciphertext;
+  };
+  const [part1, part2, part3, part4, part5, part6, part7, part8, part9, part10, part11] = await Promise.all([
+    readPart(1), readPart(2), readPart(3), readPart(4), readPart(5), readPart(6),
+    readPart(7), readPart(8), readPart(9), readPart(10), readPart(11)
+  ]);
+  assertContext();
+  return documentShareChunkBytesV1({ ok: true, found: true, record: {
+    version: DOCUMENT_SHARE_FILE_CHUNK_VERSION_V1, share_id: shareId, index,
+    ciphertext: record.ciphertext + part1 + part2 + part3 + part4 + part5 + part6 + part7 + part8 + part9 + part10 + part11
+  } }, shareId, index, expectedBytes);
 }
 async function documentShareCreateV1(snapshotInput, expectedSnapshotSha, documentId, fileSha, recipient, fileBytes, assertContext) {
   assertContext();
@@ -3921,10 +4012,12 @@ async function documentSharePublicReadV2(token, assertContext) {
   const expected1 = Math.max(0, Math.min(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1, share.file_bytes - DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1));
   const expected2 = Math.max(0, Math.min(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1, share.file_bytes - DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 2));
   const expected3 = Math.max(0, Math.min(DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1, share.file_bytes - DOCUMENT_SHARE_FILE_CHUNK_BYTES_V1 * 3));
-  const chunk0 = documentShareChunkBytesV1(stored0, share.share_id, 0, expected0);
-  const chunk1 = documentShareChunkBytesV1(stored1, share.share_id, 1, expected1);
-  const chunk2 = documentShareChunkBytesV1(stored2, share.share_id, 2, expected2);
-  const chunk3 = documentShareChunkBytesV1(stored3, share.share_id, 3, expected3);
+  const [chunk0, chunk1, chunk2, chunk3] = await Promise.all([
+    documentShareReadChunkV2(stored0, share.share_id, 0, expected0, assertContext),
+    documentShareReadChunkV2(stored1, share.share_id, 1, expected1, assertContext),
+    documentShareReadChunkV2(stored2, share.share_id, 2, expected2, assertContext),
+    documentShareReadChunkV2(stored3, share.share_id, 3, expected3, assertContext)
+  ]);
   let encrypted = null, file = null, iv = null, tag = null, key = null, aad = null;
   try {
     encrypted = Buffer.concat([chunk0, chunk1, chunk2, chunk3], share.file_bytes);
